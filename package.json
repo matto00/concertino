@@ -1,0 +1,46 @@
+{
+  "name": "concertino",
+  "version": "0.1.0",
+  "description": "A harness-agnostic, evidence-gated agent orchestra for autonomous ticket delivery (orchestrator + executor + evaluator + cold skeptic). Renders into Claude Code and OpenAI Codex from one neutral core.",
+  "bin": {
+    "concertino": "bin/concertino"
+  },
+  "files": [
+    "bin/",
+    "core/",
+    "adapters/",
+    "config/",
+    "docs/",
+    ".claude-plugin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "test": "node bin/concertino sync --out=/tmp/concertino-selftest --config=config/examples/helio.json --dry-run"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "agents",
+    "subagents",
+    "agent-orchestration",
+    "ai",
+    "autonomous",
+    "ticket-delivery",
+    "plugin",
+    "iron-laws"
+  ],
+  "author": "Matt",
+  "license": "MIT",
+  "homepage": "https://github.com/matto00/concertino#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/matto00/concertino.git"
+  },
+  "bugs": {
+    "url": "https://github.com/matto00/concertino/issues"
+  }
+}
