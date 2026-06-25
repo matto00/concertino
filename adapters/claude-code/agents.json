@@ -1,0 +1,61 @@
+{
+  "_comment": "Per-role frontmatter for the Claude Code adapter. `concertino sync` composes `tools` = base ++ (uiTools[ui.tool] if ui.enabled & role uses UI) ++ (mcpTools[ticketProvider.kind] if present), then prepends the rendered role body. Agents are emitted as .claude/agents/concertino-<role>.md.",
+  "playwrightTools": [
+    "mcp__playwright__browser_navigate",
+    "mcp__playwright__browser_navigate_back",
+    "mcp__playwright__browser_snapshot",
+    "mcp__playwright__browser_evaluate",
+    "mcp__playwright__browser_click",
+    "mcp__playwright__browser_type",
+    "mcp__playwright__browser_fill_form",
+    "mcp__playwright__browser_select_option",
+    "mcp__playwright__browser_press_key",
+    "mcp__playwright__browser_wait_for",
+    "mcp__playwright__browser_console_messages",
+    "mcp__playwright__browser_network_requests",
+    "mcp__playwright__browser_resize",
+    "mcp__playwright__browser_take_screenshot",
+    "mcp__playwright__browser_hover",
+    "mcp__playwright__browser_close"
+  ],
+  "roles": {
+    "orchestrator": {
+      "model": "sonnet",
+      "color": "green",
+      "description": "Orchestrates the {{project}} ticket-delivery workflow end-to-end: fetches the ticket, creates the worktree, drives Planning -> Execution -> Evaluation, delivers, and cleans up. Spawns the executor/evaluator/skeptic sub-agents. Invoked by /concertino-deliver.",
+      "baseTools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Agent", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList"],
+      "usesUi": false,
+      "mcpTools": {
+        "linear": ["mcp__linear__get_issue", "mcp__linear__save_issue", "mcp__linear__save_comment", "mcp__linear__list_issue_statuses"]
+      }
+    },
+    "executor": {
+      "model": "sonnet",
+      "color": "orange",
+      "description": "Implementation agent for the {{project}} ticket-delivery workflow. Implements the planned change, runs verification gates, commits. Resumable across evaluation cycles. Invoked only by the orchestrator.",
+      "baseTools": ["Read", "Edit", "Write", "Bash", "Grep", "Glob"],
+      "usesUi": false,
+      "mcpTools": {}
+    },
+    "evaluator": {
+      "model": "sonnet",
+      "color": "purple",
+      "description": "Code-review agent for the {{project}} ticket-delivery workflow. Three-phase review (spec/code/UI), re-runs gates, writes a structured report. Resumable across cycles. Invoked only by the orchestrator.",
+      "baseTools": ["Read", "Write", "Bash", "Grep", "Glob"],
+      "usesUi": true,
+      "mcpTools": {
+        "linear": ["mcp__linear__get_issue"]
+      }
+    },
+    "skeptic": {
+      "model": "sonnet",
+      "color": "red",
+      "description": "Cold adversarial verification gate for the {{project}} ticket-delivery workflow. Spawned fresh at the design-soundness and final gates; verifies against ground truth, owns subjective design judgment. Invoked only by the orchestrator.",
+      "baseTools": ["Read", "Write", "Bash", "Grep", "Glob"],
+      "usesUi": true,
+      "mcpTools": {
+        "linear": ["mcp__linear__get_issue"]
+      }
+    }
+  }
+}

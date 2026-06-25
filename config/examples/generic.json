@@ -1,0 +1,32 @@
+{
+  "$schema": "../concertino.schema.json",
+  "harnesses": ["claude-code"],
+  "project": { "name": "my-project", "baseBranch": "main" },
+  "ticketProvider": { "kind": "github", "idExample": "#123" },
+  "specProvider": { "kind": "none", "changeDir": ".concertino/changes/<CHANGE_NAME>" },
+  "worktree": {
+    "base": ".concertino/worktrees",
+    "ports": { "frontendBase": 3000, "backendBase": 4000 },
+    "envFiles": [".env"],
+    "hooks": ["npm ci"]
+  },
+  "devServers": {
+    "frontend": {
+      "cwd": ".",
+      "start": "PORT=$DEV_PORT npm run dev",
+      "health": "http://localhost:$DEV_PORT",
+      "timeoutSec": 60
+    }
+  },
+  "gates": [
+    { "name": "lint", "when": "always", "command": "npm run lint" },
+    { "name": "test", "when": "always", "command": "npm test" },
+    { "name": "build", "when": "always", "command": "npm run build" }
+  ],
+  "canonicalDocs": [
+    { "path": "CONTRIBUTING.md", "summary": "code-quality standard", "bindTo": ["executor", "evaluator"], "when": "always" }
+  ],
+  "ui": { "enabled": true, "tool": "playwright", "triggers": ["src/**"], "breakpoints": [1280, 768, 0] },
+  "budgets": { "executionCycles": 3, "skepticDesignRounds": 3, "skepticFinalRounds": 2, "debugAttempts": 2 },
+  "commitTrailer": "Co-Authored-By: Claude <noreply@anthropic.com>"
+}

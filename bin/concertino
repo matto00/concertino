@@ -1,0 +1,327 @@
+#!/usr/bin/env node
+'use strict';
+
+/*
+ * concertino — render the agent orchestra from core/ + a project config into
+ * each harness's native layout. Zero dependencies.
+ *
+ *   concertino init [--example=helio|generic] [--out=DIR]
+ *   concertino sync [--config=PATH] [--out=DIR] [--harness=claude-code,codex] [--dry-run]
+ *   concertino help
+ */
+
+const fs = require('fs');
+const path = require('path');
+
+const REPO = path.resolve(__dirname, '..');
+const CORE = path.join(REPO, 'core');
+const ADAPTERS = path.join(REPO, 'adapters');
+const CODEX_MODEL = 'gpt-5.1-codex'; // placeholder; adjust per your Codex setup
+
+// ---------- tiny helpers --------------------------------------------------
+const read = (p) => fs.readFileSync(p, 'utf8');
+const exists = (p) => fs.existsSync(p);
+function write(p, s, dry) {
+  if (dry) { console.log('  would write ' + p); return; }
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, s);
+  console.log('  wrote ' + p);
+}
+function copy(src, dest, dry) {
+  if (dry) { console.log('  would copy ' + dest); return; }
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(src, dest);
+}
+const bt = (s) => '`' + s + '`';
+function parseArgs(argv) {
+  const out = { _: [] };
+  for (const a of argv) {
+    const m = /^--([^=]+)(?:=(.*))?$/.exec(a);
+    if (m) out[m[1]] = m[2] === undefined ? true : m[2];
+    else out._.push(a);
+  }
+  return out;
+}
+
+// ---------- config defaults ----------------------------------------------
+function withDefaults(c) {
+  c.harnesses = c.harnesses || ['claude-code', 'codex'];
+  c.project.baseBranch = c.project.baseBranch || 'main';
+  c.ticketProvider.idExample = c.ticketProvider.idExample || 'TICKET-123';
+  const sp = c.specProvider || (c.specProvider = { kind: 'none' });
+  if (!sp.changeDir) sp.changeDir = sp.kind === 'openspec'
+    ? 'openspec/changes/<CHANGE_NAME>' : '.concertino/changes/<CHANGE_NAME>';
+  c.worktree.base = c.worktree.base || '.concertino/worktrees';
+  c.worktree.envFiles = c.worktree.envFiles || [];
+  c.worktree.hooks = c.worktree.hooks || [];
+  c.canonicalDocs = c.canonicalDocs || [];
+  c.ui = c.ui || { enabled: false, tool: 'none' };
+  c.budgets = Object.assign(
+    { executionCycles: 3, skepticDesignRounds: 3, skepticFinalRounds: 2, debugAttempts: 2 },
+    c.budgets || {}
+  );
+  c.commitTrailer = c.commitTrailer || '';
+  return c;
+}
+
+// ---------- template rendering -------------------------------------------
+function getVar(c, key) {
+  switch (key) {
+    case '_ticketPrefixExample': return c.ticketProvider.idExample;
+    case '_breakpointsNote':
+      return (c.ui.breakpoints && c.ui.breakpoints.length)
+        ? ' (resize to: ' + c.ui.breakpoints.join(' / ') + ')' : '';
+    case '_skepticUiCondition':
+      return c.ui.enabled ? '(skip if no UI changes)' : '(N/A — no UI configured for this project)';
+    default: {
+      let v = c;
+      for (const part of key.split('.')) v = (v == null ? undefined : v[part]);
+      return v == null ? '' : String(v);
+    }
+  }
+}
+
+function block(name, c, harness) {
+  const sp = c.specProvider;
+  const fence = (cmd) => '   ```bash\n   ' + cmd + '\n   ```';
+  const docList = (role) => {
+    const ds = c.canonicalDocs.filter((d) => d.bindTo.includes(role));
+    if (!ds.length) return '   - (none configured)';
+    return ds.map((d) => {
+      const when = (d.when && d.when !== 'always')
+        ? 'binding when changes match ' + bt(d.when) : 'binding always';
+      return '   - ' + bt(d.path) + ' — ' + (d.summary || 'project standard') + ' (' + when + ').';
+    }).join('\n');
+  };
+  switch (name) {
+    case 'docsExecutor': return docList('executor');
+    case 'docsEvaluator': return docList('evaluator');
+    case 'docsSkeptic': return docList('skeptic');
+    case 'gates': {
+      const groups = [];
+      for (const g of c.gates) {
+        let grp = groups.find((x) => x.when === g.when);
+        if (!grp) groups.push((grp = { when: g.when, items: [] }));
+        grp.items.push(g);
+      }
+      return groups.map((grp) => {
+        const head = grp.when === 'always'
+          ? 'Always:' : 'When changed files match ' + bt(grp.when) + ':';
+        return head + '\n' + grp.items.map((g) => '  - ' + bt(g.command)).join('\n');
+      }).join('\n\n');
+    }
+    case 'specReadNote':
+      return sp.kind === 'openspec'
+        ? "Do **not** read the proposal/design/tasks here — step 3's apply instructions return them via `contextFiles`; reading them twice wastes tokens."
+        : 'Then read the planning artifacts in the change dir (proposal, design, tasks) — written during planning.';
+    case 'specApply':
+      return sp.kind === 'openspec' && sp.applyCmd
+        ? fence(sp.applyCmd) + '\n\n   Read every file listed in the returned `contextFiles` array.'
+        : '   Read the planning artifacts in the change dir (proposal, design, tasks).';
+    case 'specScaffold':
+      return sp.kind === 'openspec' && sp.scaffoldCmd
+        ? fence(sp.scaffoldCmd)
+        : '   Create the change directory and write the proposal/design/tasks artifacts.';
+    case 'specArchive':
+      return sp.kind === 'openspec' && sp.archiveCmd
+        ? fence('rm -f ' + sp.changeDir + '/files-modified.md\n   ' + sp.archiveCmd)
+          + '\n\n   Commit the archive as a separate commit.'
+        : '   Move the change directory into your archive location and commit.';
+    case 'uiReview':
+      if (!c.ui.enabled)
+        return 'This project has no UI review configured — mark Phase 3 **N/A** and skip the dev-server steps below.';
+      return 'Run if any UI-affecting files changed (triggers: '
+        + (c.ui.triggers || []).map(bt).join(', ')
+        + '). Otherwise mark Phase 3 **N/A**.';
+    case 'ticketProvider':
+      return {
+        linear: 'Use the Linear MCP: `mcp__linear__get_issue` to fetch, `mcp__linear__save_issue` to set status, `mcp__linear__save_comment` to comment.',
+        github: 'Use the GitHub CLI: `gh issue view <id> --json title,body,labels` to fetch; `gh issue comment` / `gh issue edit` to update.',
+        manual: 'No external ticket system — the ticket text is provided inline or in the change dir `ticket.md`; skip status updates.'
+      }[c.ticketProvider.kind] || '';
+    case 'harnessResume':
+      return harness === 'codex'
+        ? "Codex has no programmatic multi-agent dispatch or warm-resume. Run the loop **sequentially in a single thread**: where this spec says \"spawn\" or \"resume\" an agent, instead **switch into that role**, perform its steps (reading its spec), and persist `workflow-state.md` between phases. Approximate the skeptic's cold property by re-reading ground truth from scratch (the diff, the files, the running app) and ignoring your own earlier narrative at each gate. See `docs/harness-capabilities.md`."
+        : "You spawn sub-agents with the `Agent` tool and resume the executor + evaluator **warm** via `SendMessage` across cycles. The skeptic is **always a fresh `Agent` spawn** (cold). If `SendMessage` is unavailable, fall back to a fresh spawn whose prompt begins `RESUME — do not start over`, pointing the agent at `workflow-state.md` to recover — it resumes, never restarts.";
+    default: return '{{block:' + name + '}}';
+  }
+}
+
+function renderBody(text, c, harness) {
+  let out = text.split('<change-dir>').join(c.specProvider.changeDir);
+  out = out.replace(/\{\{block:([a-zA-Z]+)\}\}/g, (_, n) => block(n, c, harness));
+  out = out.replace(/\{\{var:([a-zA-Z0-9_.]+)\}\}/g, (_, k) => getVar(c, k));
+  return out;
+}
+
+// ---------- .concertino.env ----------------------------------------------
+function envValue(v) { return "'" + String(v).replace(/'/g, "'\\''") + "'"; }
+function renderEnv(c) {
+  const L = [];
+  L.push('# Generated by `concertino sync` — do not edit by hand.');
+  L.push('CONCERTINO_WORKTREE_BASE=' + envValue(c.worktree.base));
+  L.push('CONCERTINO_FRONTEND_PORT_BASE=' + c.worktree.ports.frontendBase);
+  L.push('CONCERTINO_BACKEND_PORT_BASE=' + c.worktree.ports.backendBase);
+  L.push('CONCERTINO_ENV_FILES=' + envValue(c.worktree.envFiles.join(' ')));
+  L.push('CONCERTINO_WORKTREE_HOOKS=' + envValue(c.worktree.hooks.join(';')));
+  const ds = c.devServers || {};
+  for (const side of ['backend', 'frontend']) {
+    const s = ds[side];
+    const U = side.toUpperCase();
+    if (s) {
+      L.push('CONCERTINO_' + U + '_CWD=' + envValue(s.cwd || '.'));
+      L.push('CONCERTINO_' + U + '_START=' + envValue(s.start));
+      L.push('CONCERTINO_' + U + '_HEALTH=' + envValue(s.health));
+      L.push('CONCERTINO_' + U + '_TIMEOUT=' + (s.timeoutSec || 120));
+    } else {
+      L.push('CONCERTINO_' + U + '_START=' + envValue(''));
+    }
+  }
+  return L.join('\n') + '\n';
+}
+
+// ---------- harness emitters ---------------------------------------------
+function emitClaude(c, out, dry) {
+  const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
+  for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic']) {
+    const r = meta.roles[role];
+    let tools = r.baseTools.slice();
+    if (r.usesUi && c.ui.enabled && c.ui.tool === 'playwright') tools = tools.concat(meta.playwrightTools);
+    const mcp = (r.mcpTools && r.mcpTools[c.ticketProvider.kind]) || [];
+    tools = tools.concat(mcp);
+    const body = renderBody(read(path.join(CORE, 'roles', role + '.md')), c, 'claude-code');
+    const desc = r.description.split('{{project}}').join(c.project.name);
+    const fm = [
+      '---',
+      'name: concertino-' + role,
+      'description: >-',
+      '  ' + desc,
+      'model: ' + r.model,
+      'color: ' + r.color,
+      'tools:',
+      ...tools.map((t) => '  - ' + t),
+      '---',
+      ''
+    ].join('\n');
+    write(path.join(out, '.claude', 'agents', 'concertino-' + role + '.md'), fm + body, dry);
+  }
+  const cmd = read(path.join(ADAPTERS, 'claude-code', 'command.md'))
+    .split('{{project}}').join(c.project.name)
+    .split('{{idExample}}').join(c.ticketProvider.idExample);
+  write(path.join(out, '.claude', 'commands', 'concertino-deliver.md'), cmd, dry);
+}
+
+function emitCodex(c, out, dry) {
+  const header = read(path.join(ADAPTERS, 'codex', 'header.md')).split('{{project}}').join(c.project.name);
+  const roleSections = ['orchestrator', 'executor', 'evaluator', 'skeptic'].map((role) => {
+    const body = renderBody(read(path.join(CORE, 'roles', role + '.md')), c, 'codex');
+    return '## Role: ' + role[0].toUpperCase() + role.slice(1) + '\n\n' + body;
+  }).join('\n\n---\n\n');
+  let blockText = header.replace('<!-- CONCERTINO:ROLES -->', roleSections)
+    + '\n\n<!-- CONCERTINO:END -->\n';
+
+  const agentsPath = path.join(out, 'AGENTS.md');
+  let full;
+  if (exists(agentsPath)) {
+    const cur = read(agentsPath);
+    const re = /<!-- CONCERTINO:BEGIN[\s\S]*?<!-- CONCERTINO:END -->\n?/;
+    full = re.test(cur) ? cur.replace(re, blockText) : cur.trimEnd() + '\n\n' + blockText;
+  } else {
+    full = blockText;
+  }
+  write(agentsPath, full, dry);
+
+  const tmpl = read(path.join(ADAPTERS, 'codex', 'agent.toml.tmpl'));
+  const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
+  for (const role of ['executor', 'evaluator']) {
+    const body = renderBody(read(path.join(CORE, 'roles', role + '.md')), c, 'codex');
+    const desc = meta.roles[role].description.split('{{project}}').join(c.project.name);
+    const toml = tmpl.split('{{role}}').join(role)
+      .split('{{description}}').join(desc.replace(/"/g, '\\"'))
+      .split('{{model}}').join(CODEX_MODEL)
+      .split('{{body}}').join(body);
+    write(path.join(out, '.codex', 'agents', 'concertino-' + role + '.toml'), toml, dry);
+  }
+  copy(path.join(ADAPTERS, 'codex', 'prompt.md'), path.join(out, '.codex', 'prompts', 'concertino-deliver.md'), dry);
+  if (!dry) console.log('  wrote ' + path.join(out, '.codex', 'prompts', 'concertino-deliver.md'));
+}
+
+// ---------- copy shared assets into the project --------------------------
+function copyAssets(out, dry, withScripts) {
+  for (const f of fs.readdirSync(path.join(CORE, 'laws')))
+    copy(path.join(CORE, 'laws', f), path.join(out, '.concertino', 'laws', f), dry);
+  copy(path.join(CORE, 'workflow-state.template.md'), path.join(out, '.concertino', 'workflow-state.template.md'), dry);
+  if (withScripts) {
+    for (const f of fs.readdirSync(path.join(CORE, 'scripts'))) {
+      const dest = path.join(out, 'scripts', 'concertino', f);
+      copy(path.join(CORE, 'scripts', f), dest, dry);
+      if (!dry && f.endsWith('.sh')) fs.chmodSync(dest, 0o755);
+    }
+  }
+  if (!dry) console.log('  refreshed .concertino/ assets' + (withScripts ? ' + scripts/concertino/' : ''));
+}
+
+// ---------- commands ------------------------------------------------------
+function loadConfig(args, out) {
+  const p = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
+  if (!exists(p)) { console.error('No config at ' + p + ' — run `concertino init` first.'); process.exit(1); }
+  return withDefaults(JSON.parse(read(p)));
+}
+
+function cmdSync(args) {
+  const out = path.resolve(args.out || '.');
+  const c = loadConfig(args, out);
+  const dry = !!args['dry-run'];
+  const harnesses = args.harness ? args.harness.split(',') : c.harnesses;
+  console.log('concertino sync → ' + out + (dry ? '  (dry run)' : ''));
+  console.log('  harnesses: ' + harnesses.join(', '));
+  copyAssets(out, dry, false);
+  write(path.join(out, 'scripts', 'concertino', '.concertino.env'), renderEnv(c), dry);
+  if (harnesses.includes('claude-code')) emitClaude(c, out, dry);
+  if (harnesses.includes('codex')) emitCodex(c, out, dry);
+  console.log('done.');
+}
+
+function cmdInit(args) {
+  const out = path.resolve(args.out || '.');
+  const example = args.example || 'generic';
+  const cfgPath = path.join(out, 'concertino.config.json');
+  console.log('concertino init → ' + out);
+  if (exists(cfgPath)) {
+    console.log('  concertino.config.json already exists — keeping it.');
+  } else {
+    copy(path.join(REPO, 'config', 'examples', example + '.json'), cfgPath, false);
+    // strip the repo-relative $schema pointer from the scaffolded copy
+    const obj = JSON.parse(read(cfgPath)); delete obj['$schema'];
+    fs.writeFileSync(cfgPath, JSON.stringify(obj, null, 2) + '\n');
+    console.log('  wrote ' + cfgPath + '  (from example: ' + example + ')');
+  }
+  copyAssets(out, false, true);
+  const c = withDefaults(JSON.parse(read(cfgPath)));
+  write(path.join(out, 'scripts', 'concertino', '.concertino.env'), renderEnv(c), false);
+  console.log('\nNext: edit concertino.config.json for your stack, then run `concertino sync`.');
+}
+
+function help() {
+  console.log(`concertino — render the agent orchestra from core/ + your config.
+
+  concertino init [--example=helio|generic] [--out=DIR]
+      Scaffold concertino.config.json, copy scripts + laws, write .concertino.env.
+
+  concertino sync [--config=PATH] [--out=DIR] [--harness=claude-code,codex] [--dry-run]
+      Render the harness files (Claude agents/command, Codex AGENTS.md/.codex)
+      and regenerate .concertino.env from the config.
+
+  concertino help`);
+}
+
+const args = parseArgs(process.argv.slice(2));
+const cmd = args._[0] || 'help';
+try {
+  if (cmd === 'init') cmdInit(args);
+  else if (cmd === 'sync') cmdSync(args);
+  else help();
+} catch (e) {
+  console.error('error: ' + e.message);
+  process.exit(1);
+}

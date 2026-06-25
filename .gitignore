@@ -1,0 +1,12 @@
+# Concertino working state (generated per-project, never committed to the plugin repo)
+.concertino/
+scripts/concertino/.concertino.env
+
+# Rendered harness output when this repo is used as a consuming project
+/.claude/agents/concertino-*.md
+/.claude/commands/concertino-*.md
+
+# Editor / OS
+.DS_Store
+*.log
+node_modules/

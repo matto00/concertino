@@ -1,0 +1,9 @@
+{
+  "name": "concertino",
+  "description": "A harness-agnostic, evidence-gated agent orchestra for autonomous ticket delivery (orchestrator + executor + evaluator + cold skeptic).",
+  "version": "0.1.0",
+  "author": { "name": "Matt" },
+  "homepage": "https://github.com/matto00/concertino",
+  "repository": "https://github.com/matto00/concertino",
+  "license": "MIT"
+}

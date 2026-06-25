@@ -1,0 +1,140 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/matto00/concertino/config/concertino.schema.json",
+  "title": "Concertino project config",
+  "description": "Per-project configuration that parameterizes the Concertino agent orchestra. `concertino sync` renders the harness-specific files from core/ + this config.",
+  "type": "object",
+  "required": ["project", "ticketProvider", "specProvider", "worktree", "gates"],
+  "additionalProperties": false,
+  "properties": {
+    "harnesses": {
+      "type": "array",
+      "description": "Which harness adapters to render on sync.",
+      "items": { "enum": ["claude-code", "codex"] },
+      "default": ["claude-code", "codex"]
+    },
+    "project": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "Human label used in agent prose." },
+        "baseBranch": { "type": "string", "default": "main", "description": "Branch PRs target and diffs compare against." }
+      }
+    },
+    "ticketProvider": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["linear", "github", "manual"] },
+        "idExample": { "type": "string", "description": "Sample ticket id, e.g. HEL-26, used in rendered examples." }
+      }
+    },
+    "specProvider": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["openspec", "none"] },
+        "changeDir": { "type": "string", "description": "Change directory template; <CHANGE_NAME> is filled at runtime.", "default": "openspec/changes/<CHANGE_NAME>" },
+        "scaffoldCmd": { "type": "string", "description": "Command to scaffold a new change (<CHANGE_NAME> substituted at runtime)." },
+        "applyCmd": { "type": "string", "description": "Command returning apply instructions + contextFiles." },
+        "validateCmd": { "type": "string" },
+        "archiveCmd": { "type": "string" }
+      }
+    },
+    "worktree": {
+      "type": "object",
+      "required": ["ports"],
+      "additionalProperties": false,
+      "properties": {
+        "base": { "type": "string", "default": ".concertino/worktrees" },
+        "ports": {
+          "type": "object",
+          "required": ["frontendBase", "backendBase"],
+          "additionalProperties": false,
+          "properties": {
+            "frontendBase": { "type": "integer", "description": "DEV_PORT = frontendBase + ticketNumber." },
+            "backendBase": { "type": "integer", "description": "BACKEND_PORT = backendBase + ticketNumber." }
+          }
+        },
+        "envFiles": { "type": "array", "items": { "type": "string" }, "description": "Uncommitted files copied into each worktree (e.g. backend/.env).", "default": [] },
+        "hooks": { "type": "array", "items": { "type": "string" }, "description": "Commands run inside the worktree after creation (e.g. npx husky install).", "default": [] }
+      }
+    },
+    "devServers": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Backend/frontend dev-server commands. Omit a side that doesn't exist.",
+      "properties": {
+        "backend": { "$ref": "#/$defs/server" },
+        "frontend": { "$ref": "#/$defs/server" }
+      }
+    },
+    "gates": {
+      "type": "array",
+      "description": "Verification gates. Each runs only when changed files match `when`.",
+      "items": {
+        "type": "object",
+        "required": ["name", "when", "command"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "when": { "type": "string", "description": "Glob matched against changed files, or 'always'." },
+          "command": { "type": "string" }
+        }
+      }
+    },
+    "canonicalDocs": {
+      "type": "array",
+      "description": "Project standards agents are bound to read just-in-time.",
+      "items": {
+        "type": "object",
+        "required": ["path", "bindTo"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string" },
+          "summary": { "type": "string" },
+          "bindTo": { "type": "array", "items": { "enum": ["executor", "evaluator", "skeptic"] } },
+          "when": { "type": "string", "default": "always", "description": "'always' or a glob; binding only applies when changed files match." }
+        }
+      },
+      "default": []
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "tool": { "enum": ["playwright", "none"], "default": "playwright" },
+        "triggers": { "type": "array", "items": { "type": "string" }, "description": "Globs that trigger UI review." },
+        "breakpoints": { "type": "array", "items": { "type": "integer" } }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "executionCycles": { "type": "integer", "default": 3 },
+        "skepticDesignRounds": { "type": "integer", "default": 3 },
+        "skepticFinalRounds": { "type": "integer", "default": 2 },
+        "debugAttempts": { "type": "integer", "default": 2 }
+      }
+    },
+    "commitTrailer": { "type": "string", "description": "Trailer appended to commits.", "default": "" }
+  },
+  "$defs": {
+    "server": {
+      "type": "object",
+      "required": ["start", "health"],
+      "additionalProperties": false,
+      "properties": {
+        "cwd": { "type": "string", "default": ".", "description": "Worktree-relative working dir." },
+        "start": { "type": "string", "description": "Start command (no nohup/redirect); may reference $DEV_PORT / $BACKEND_PORT." },
+        "health": { "type": "string", "description": "Health URL (may reference ports)." },
+        "timeoutSec": { "type": "integer", "default": 120 }
+      }
+    }
+  }
+}

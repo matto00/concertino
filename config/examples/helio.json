@@ -1,0 +1,53 @@
+{
+  "$schema": "../concertino.schema.json",
+  "harnesses": ["claude-code", "codex"],
+  "project": { "name": "helio", "baseBranch": "main" },
+  "ticketProvider": { "kind": "linear", "idExample": "HEL-26" },
+  "specProvider": {
+    "kind": "openspec",
+    "changeDir": "openspec/changes/<CHANGE_NAME>",
+    "scaffoldCmd": "openspec new change \"<CHANGE_NAME>\"",
+    "applyCmd": "openspec instructions apply --change \"<CHANGE_NAME>\" --json",
+    "validateCmd": "openspec validate --change \"<CHANGE_NAME>\"",
+    "archiveCmd": "openspec archive \"<CHANGE_NAME>\" --yes"
+  },
+  "worktree": {
+    "base": ".claude/worktrees",
+    "ports": { "frontendBase": 5173, "backendBase": 8080 },
+    "envFiles": ["backend/.env"],
+    "hooks": ["npx husky install"]
+  },
+  "devServers": {
+    "backend": {
+      "cwd": "backend",
+      "start": "PORT=$BACKEND_PORT CORS_ALLOWED_ORIGINS=http://localhost:$DEV_PORT sbt run",
+      "health": "http://localhost:$BACKEND_PORT/health",
+      "timeoutSec": 300
+    },
+    "frontend": {
+      "cwd": "frontend",
+      "start": "PORT=$DEV_PORT BACKEND_PORT=$BACKEND_PORT npm run dev",
+      "health": "http://localhost:$DEV_PORT",
+      "timeoutSec": 60
+    }
+  },
+  "gates": [
+    { "name": "lint", "when": "frontend/**", "command": "npm run lint" },
+    { "name": "format", "when": "frontend/**", "command": "npm run format:check" },
+    { "name": "test", "when": "frontend/**", "command": "npm test" },
+    { "name": "build", "when": "frontend/**", "command": "npm --prefix frontend run build" },
+    { "name": "backend-test", "when": "backend/**", "command": "cd backend && sbt test" }
+  ],
+  "canonicalDocs": [
+    { "path": "CONTRIBUTING.md", "summary": "code-quality standard (imports/qualifiers, file-size budgets, AI-collaborator expectations)", "bindTo": ["executor", "evaluator"], "when": "always" },
+    { "path": "DESIGN.md", "summary": "design-language standard (--app-*/--space-*/--text-* tokens, shared components, light/dark parity)", "bindTo": ["executor", "evaluator", "skeptic"], "when": "frontend/**" }
+  ],
+  "ui": {
+    "enabled": true,
+    "tool": "playwright",
+    "triggers": ["frontend/**", "backend/src/main/scala/routes/ApiRoutes.scala", "schemas/**", "openspec/specs/**"],
+    "breakpoints": [1440, 1100, 768, 0]
+  },
+  "budgets": { "executionCycles": 3, "skepticDesignRounds": 3, "skepticFinalRounds": 2, "debugAttempts": 2 },
+  "commitTrailer": "Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
+}
