@@ -7,18 +7,28 @@ harness's native layout.
 
 ## 1. Install
 
-Point at a checkout of this repo (or the installed plugin's `bin/`):
-
 ```bash
-node /path/to/concertino/bin/concertino init --example=generic   # or --example=helio
+npm install -g concertino     # then `concertino ...`
+# or run without installing:  npx concertino <command>
 ```
 
-`init` (run from your project root, or with `--out=DIR`):
+Then, from your project root (or with `--out=DIR`):
 
-- writes `concertino.config.json` (from the chosen example),
+```bash
+concertino init                    # interactive TUI (recommended)
+concertino init --example=helio    # or start from an example profile
+concertino init --yes              # or non-interactive generic defaults
+```
+
+`init`:
+
+- writes `concertino.config.json` (from your answers, or the chosen example),
 - copies the procedure scripts to `scripts/concertino/`,
 - copies the Iron Laws + workflow-state template to `.concertino/`,
-- writes `scripts/concertino/.concertino.env`.
+- writes `scripts/concertino/.concertino.env`,
+- scaffolds the spec provider: with `openspec` it offers to `npm i -D openspec`
+  and run `openspec init`; with `none` it creates a `spec/` dir at the repo root.
+  (Skip with `--no-spec-setup`; force openspec non-interactively with `--openspec-init`.)
 
 ## 2. Configure
 
@@ -43,9 +53,9 @@ Edit `concertino.config.json`. The schema is `config/concertino.schema.json`
 ## 3. Sync
 
 ```bash
-node /path/to/concertino/bin/concertino sync          # renders all configured harnesses
-node /path/to/concertino/bin/concertino sync --harness=claude-code
-node /path/to/concertino/bin/concertino sync --dry-run
+concertino sync                      # renders all configured harnesses
+concertino sync --harness=claude-code
+concertino sync --dry-run
 ```
 
 This regenerates `.concertino.env` and the harness files. **Re-run `sync` after every

@@ -1,6 +1,6 @@
 {
   "name": "concertino",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A harness-agnostic, evidence-gated agent orchestra for autonomous ticket delivery (orchestrator + executor + evaluator + cold skeptic). Renders into Claude Code and OpenAI Codex from one neutral core.",
   "bin": {
     "concertino": "bin/concertino"

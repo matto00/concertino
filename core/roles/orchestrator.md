@@ -72,8 +72,9 @@ Execute directly (no subagent).
    Write the full ticket content (title, description, acceptance criteria) to
    `WORKTREE_PATH/<change-dir>/ticket.md`. Sub-agents read this instead of receiving
    ticket content inline.
-3. **Create planning artifacts** (proposal/design/tasks, and spec deltas if the
-   change affects a contract) in dependency order. Validate them before handoff.
+3. **Create the planning artifacts** (proposal/design/tasks, plus spec deltas if
+   the change affects a contract), in dependency order:
+{{block:specArtifacts}}
 4. **Escalate if needed:** stop and present an `ESCALATION` block for new external
    dependencies, major architectural changes, breaking API changes, or scope
    significantly beyond the ticket. Self-approve everything else.
@@ -181,6 +182,8 @@ After the human confirms merge:
    ```
 
 2. Set the ticket to **Done** and post a closing comment (what shipped + merged PR link).
+3. **Hygiene check** (report only — do not auto-fix):
+{{block:hygiene}}
 
 ---
 

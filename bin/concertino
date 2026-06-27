@@ -12,11 +12,26 @@
 
 const fs = require('fs');
 const path = require('path');
+const readline = require('readline');
+const { execSync } = require('child_process');
 
 const REPO = path.resolve(__dirname, '..');
 const CORE = path.join(REPO, 'core');
 const ADAPTERS = path.join(REPO, 'adapters');
 const CODEX_MODEL = 'gpt-5.1-codex'; // placeholder; adjust per your Codex setup
+let VERSION = '0.0.0';
+try { VERSION = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version; } catch (_) {}
+
+function banner() {
+  return [
+    '',
+    '  ===========================================',
+    '   CONCERTINO  ·  the agent orchestra',
+    '   v' + VERSION,
+    '  ===========================================',
+    ''
+  ].join('\n');
+}
 
 // ---------- tiny helpers --------------------------------------------------
 const read = (p) => fs.readFileSync(p, 'utf8');
@@ -50,7 +65,7 @@ function withDefaults(c) {
   c.ticketProvider.idExample = c.ticketProvider.idExample || 'TICKET-123';
   const sp = c.specProvider || (c.specProvider = { kind: 'none' });
   if (!sp.changeDir) sp.changeDir = sp.kind === 'openspec'
-    ? 'openspec/changes/<CHANGE_NAME>' : '.concertino/changes/<CHANGE_NAME>';
+    ? 'openspec/changes/<CHANGE_NAME>' : 'spec/changes/<CHANGE_NAME>';
   c.worktree.base = c.worktree.base || '.concertino/worktrees';
   c.worktree.envFiles = c.worktree.envFiles || [];
   c.worktree.hooks = c.worktree.hooks || [];
@@ -121,12 +136,67 @@ function block(name, c, harness) {
     case 'specScaffold':
       return sp.kind === 'openspec' && sp.scaffoldCmd
         ? fence(sp.scaffoldCmd)
-        : '   Create the change directory and write the proposal/design/tasks artifacts.';
+        : '   Create the change directory ' + bt(sp.changeDir) + '.';
+    case 'specArtifacts': {
+      if (sp.kind === 'openspec') {
+        const validate = sp.validateCmd || 'openspec validate --change "<CHANGE_NAME>"';
+        return [
+          "   - Get the build order: `openspec status --change \"<CHANGE_NAME>\" --json | jq 'del(.context)'` — parse `applyRequires` and the `artifacts` list.",
+          "   - For each artifact with status `ready`: `openspec instructions <artifact-id> --change \"<CHANGE_NAME>\" --json | jq 'del(.context)'`. Use the returned `rules`, `template`, `instruction`, `outputPath`, `dependencies` — read the dependency files, then write the artifact to `outputPath` following `template`.",
+          '   - Re-run `openspec status` after each; stop when every `applyRequires` id has `status: "done"`.',
+          "   - `jq 'del(.context)'` strips the static context block openspec repeats on every call (already in your system context and `openspec/config.yaml`) — keep it to save tokens.",
+          '',
+          '   Validate before handoff (fix any errors first):',
+          '   ```bash',
+          '   ' + validate,
+          '   ```'
+        ].join('\n');
+      }
+      return [
+        '   - Write `proposal.md` (what & why), `design.md` (approach + key decisions), and',
+        '     `tasks.md` (an ordered checklist) into the change dir.',
+        '   - If the change alters an API/schema contract, capture the delta alongside them.',
+        '   - Confirm the artifacts cover every acceptance criterion before handoff.'
+      ].join('\n');
+    }
     case 'specArchive':
-      return sp.kind === 'openspec' && sp.archiveCmd
-        ? fence('rm -f ' + sp.changeDir + '/files-modified.md\n   ' + sp.archiveCmd)
-          + '\n\n   Commit the archive as a separate commit.'
-        : '   Move the change directory into your archive location and commit.';
+      if (sp.kind === 'openspec' && sp.archiveCmd) {
+        return [
+          '   ```bash',
+          '   rm -f ' + sp.changeDir + '/files-modified.md',
+          '   ' + sp.archiveCmd,
+          '   ```',
+          '',
+          "   (`rm` drops the executor's handoff file so it doesn't trip spec-hygiene checks;",
+          '   add `--skip-specs` to the archive for infra/doc-only changes.)',
+          '',
+          '   **Fill synced spec Purposes.** `openspec archive` writes a placeholder',
+          '   `## Purpose` (`TBD - created by archiving change <CHANGE_NAME>`) into every',
+          '   capability spec it creates or updates. Before committing, find and fix them:',
+          '   ```bash',
+          '   grep -rl "TBD - created by archiving change <CHANGE_NAME>" openspec/specs/',
+          '   ```',
+          '   For each match, rewrite the `## Purpose` body to a one-line sentence drawn from',
+          "   `proposal.md`. Leave other changes' specs untouched.",
+          '',
+          '   Commit the archive as a separate commit.'
+        ].join('\n');
+      }
+      return '   Move the change directory into your archive location (e.g. `spec/archive/`) and commit it as a separate commit.';
+    case 'hygiene': {
+      const lines = [
+        '   ```bash',
+        '   git worktree list                            # any stragglers?',
+        '   git status --short                           # stray changes to tracked files?',
+        '   ls *.png 2>/dev/null || true                 # leftover UI-review screenshots?'
+      ];
+      if (sp.kind === 'openspec')
+        lines.push('   ls openspec/changes/ 2>/dev/null | grep -v archive || true   # un-archived changes?');
+      lines.push('   ```');
+      lines.push('');
+      lines.push('   Report anything unexpected as a "Hygiene note:" — do not fix automatically.');
+      return lines.join('\n');
+    }
     case 'uiReview':
       if (!c.ui.enabled)
         return 'This project has no UI review configured — mark Phase 3 **N/A** and skip the dev-server steps below.';
@@ -261,6 +331,113 @@ function copyAssets(out, dry, withScripts) {
   if (!dry) console.log('  refreshed .concertino/ assets' + (withScripts ? ' + scripts/concertino/' : ''));
 }
 
+// ---------- interactive init (TUI) ---------------------------------------
+function makeAsk() {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q, def) => new Promise((res) => {
+    const sfx = (def !== undefined && def !== '') ? ' [' + def + ']' : '';
+    rl.question('  ' + q + sfx + ': ', (a) => res(((a || '').trim()) || (def || '')));
+  });
+  return { rl, ask };
+}
+async function askChoice(ask, q, opts, def) {
+  for (;;) {
+    const a = (await ask(q + ' (' + opts.join('/') + ')', def)).toLowerCase();
+    if (opts.includes(a)) return a;
+    console.log('    please choose one of: ' + opts.join(', '));
+  }
+}
+async function askYN(ask, q, def) {
+  const a = (await ask(q + ' (y/n)', def ? 'y' : 'n')).toLowerCase();
+  return a.startsWith('y');
+}
+function idExampleFor(kind) {
+  return { linear: 'ABC-123', github: '#123', manual: 'TICKET-1' }[kind] || 'TICKET-1';
+}
+function buildConfig(a) {
+  const cfg = {
+    harnesses: ['claude-code', 'codex'],
+    project: { name: a.name, baseBranch: a.baseBranch },
+    ticketProvider: { kind: a.ticket, idExample: idExampleFor(a.ticket) },
+    specProvider: a.spec === 'openspec'
+      ? {
+          kind: 'openspec',
+          changeDir: 'openspec/changes/<CHANGE_NAME>',
+          scaffoldCmd: 'openspec new change "<CHANGE_NAME>"',
+          applyCmd: 'openspec instructions apply --change "<CHANGE_NAME>" --json',
+          validateCmd: 'openspec validate --change "<CHANGE_NAME>"',
+          archiveCmd: 'openspec archive "<CHANGE_NAME>" --yes'
+        }
+      : { kind: 'none', changeDir: 'spec/changes/<CHANGE_NAME>' },
+    worktree: {
+      base: '.concertino/worktrees',
+      ports: { frontendBase: a.frontendBase, backendBase: a.backendBase },
+      envFiles: [],
+      hooks: []
+    },
+    gates: [
+      { name: 'lint', when: 'always', command: 'npm run lint' },
+      { name: 'test', when: 'always', command: 'npm test' },
+      { name: 'build', when: 'always', command: 'npm run build' }
+    ],
+    canonicalDocs: [
+      { path: 'CONTRIBUTING.md', summary: 'code-quality standard', bindTo: ['executor', 'evaluator'], when: 'always' }
+    ],
+    ui: a.hasUi
+      ? { enabled: true, tool: 'playwright', triggers: ['src/**'], breakpoints: [1280, 768, 0] }
+      : { enabled: false, tool: 'none' },
+    budgets: { executionCycles: 3, skepticDesignRounds: 3, skepticFinalRounds: 2, debugAttempts: 2 },
+    commitTrailer: a.trailer
+  };
+  if (a.hasUi) {
+    cfg.devServers = {
+      frontend: { cwd: '.', start: 'PORT=$DEV_PORT npm run dev', health: 'http://localhost:$DEV_PORT', timeoutSec: 60 }
+    };
+  }
+  return cfg;
+}
+async function promptConfig() {
+  const { rl, ask } = makeAsk();
+  try {
+    console.log("  Let's configure Concertino for this project.");
+    console.log('  Press Enter to accept the [default]. Edit concertino.config.json after for the rest.\n');
+    const name = await ask('Project name', path.basename(process.cwd()));
+    const baseBranch = await ask('Base branch', 'main');
+    const ticket = await askChoice(ask, 'Ticket provider', ['linear', 'github', 'manual'], 'github');
+    const spec = await askChoice(ask, 'Spec provider', ['openspec', 'none'], 'openspec');
+    const frontendBase = parseInt(await ask('Frontend dev-port base', '3000'), 10) || 3000;
+    const backendBase = parseInt(await ask('Backend dev-port base', '4000'), 10) || 4000;
+    const hasUi = await askYN(ask, 'Browser UI to review (enables Playwright)?', true);
+    const trailer = await ask('Commit trailer', 'Co-Authored-By: Claude <noreply@anthropic.com>');
+    return buildConfig({ name, baseBranch, ticket, spec, frontendBase, backendBase, hasUi, trailer });
+  } finally {
+    rl.close();
+  }
+}
+
+// ---------- provider scaffolding -----------------------------------------
+function setupOpenspec(out) {
+  console.log('\n  Setting up OpenSpec…');
+  try {
+    execSync('npm install --save-dev openspec', { cwd: out, stdio: 'inherit' });
+  } catch (e) {
+    console.log('  ! could not npm-install openspec (' + e.message + '). Install it yourself: npm i -D openspec');
+    return;
+  }
+  try {
+    execSync('npx --no-install openspec init', { cwd: out, stdio: 'inherit' });
+    console.log('  OpenSpec initialized.');
+  } catch (e) {
+    console.log('  ! `openspec init` failed (' + e.message + '). Run it manually when ready.');
+  }
+}
+function setupNoneSpecDir(out) {
+  for (const d of ['spec/changes', 'spec/archive']) fs.mkdirSync(path.join(out, d), { recursive: true });
+  const keep = path.join(out, 'spec', 'archive', '.gitkeep');
+  if (!exists(keep)) fs.writeFileSync(keep, '');
+  console.log('  created spec/ (changes/ + archive/) at the repo root.');
+}
+
 // ---------- commands ------------------------------------------------------
 function loadConfig(args, out) {
   const p = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
@@ -282,46 +459,93 @@ function cmdSync(args) {
   console.log('done.');
 }
 
-function cmdInit(args) {
+function writeConfigFromExample(out, example, cfgPath) {
+  copy(path.join(REPO, 'config', 'examples', example + '.json'), cfgPath, false);
+  const obj = JSON.parse(read(cfgPath)); delete obj['$schema']; // strip repo-relative pointer
+  fs.writeFileSync(cfgPath, JSON.stringify(obj, null, 2) + '\n');
+  return obj;
+}
+
+async function cmdInit(args) {
   const out = path.resolve(args.out || '.');
-  const example = args.example || 'generic';
   const cfgPath = path.join(out, 'concertino.config.json');
-  console.log('concertino init → ' + out);
+  console.log(banner());
+  console.log('concertino init → ' + out + '\n');
+
+  let cfg, interactive = false;
   if (exists(cfgPath)) {
     console.log('  concertino.config.json already exists — keeping it.');
+    cfg = JSON.parse(read(cfgPath));
+  } else if (args.example) {
+    cfg = writeConfigFromExample(out, args.example, cfgPath);
+    console.log('  wrote ' + cfgPath + '  (from example: ' + args.example + ')');
+  } else if (args.yes || !process.stdin.isTTY) {
+    cfg = writeConfigFromExample(out, 'generic', cfgPath);
+    console.log('  wrote ' + cfgPath + '  (generic defaults — non-interactive)');
   } else {
-    copy(path.join(REPO, 'config', 'examples', example + '.json'), cfgPath, false);
-    // strip the repo-relative $schema pointer from the scaffolded copy
-    const obj = JSON.parse(read(cfgPath)); delete obj['$schema'];
-    fs.writeFileSync(cfgPath, JSON.stringify(obj, null, 2) + '\n');
-    console.log('  wrote ' + cfgPath + '  (from example: ' + example + ')');
+    interactive = true;
+    cfg = await promptConfig();
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+    console.log('\n  wrote ' + cfgPath);
   }
+
   copyAssets(out, false, true);
-  const c = withDefaults(JSON.parse(read(cfgPath)));
-  write(path.join(out, 'scripts', 'concertino', '.concertino.env'), renderEnv(c), false);
-  console.log('\nNext: edit concertino.config.json for your stack, then run `concertino sync`.');
+  const full = withDefaults(JSON.parse(JSON.stringify(cfg)));
+  write(path.join(out, 'scripts', 'concertino', '.concertino.env'), renderEnv(full), false);
+
+  // Provider scaffolding. Only auto-run for fresh interactive configs (or explicit
+  // --openspec-init) so wiring into an existing repo (--example) never re-inits it.
+  if (!args['no-spec-setup']) {
+    if (full.specProvider.kind === 'openspec' && (args['openspec-init'] || (interactive && await confirmOpenspecInit()))) {
+      setupOpenspec(out);
+    } else if (full.specProvider.kind === 'none') {
+      setupNoneSpecDir(out);
+    }
+  }
+
+  console.log('\n  Next:');
+  console.log('    1. review concertino.config.json  (field guide: docs/config-reference.md)');
+  console.log('    2. concertino sync');
+  console.log('    3. Claude Code: /concertino-deliver <TICKET_ID>');
+}
+
+async function confirmOpenspecInit() {
+  const { rl, ask } = makeAsk();
+  try { return await askYN(ask, '\n  Install OpenSpec (npm i -D openspec) and run `openspec init` now?', true); }
+  finally { rl.close(); }
 }
 
 function help() {
-  console.log(`concertino — render the agent orchestra from core/ + your config.
+  console.log(banner());
+  console.log(`render the agent orchestra from core/ + your project config.
 
-  concertino init [--example=helio|generic] [--out=DIR]
-      Scaffold concertino.config.json, copy scripts + laws, write .concertino.env.
+  concertino init [--out=DIR]
+      Interactive setup (TUI): write concertino.config.json, copy scripts + laws,
+      and scaffold the spec provider (openspec init, or a spec/ dir for 'none').
+      Flags:
+        --example=helio|generic   skip prompts; start from an example profile
+        --yes                     skip prompts; use generic defaults
+        --openspec-init           force openspec install + init (non-interactive)
+        --no-spec-setup           don't touch the spec provider
 
   concertino sync [--config=PATH] [--out=DIR] [--harness=claude-code,codex] [--dry-run]
       Render the harness files (Claude agents/command, Codex AGENTS.md/.codex)
-      and regenerate .concertino.env from the config.
+      and regenerate .concertino.env from the config. Re-run after every edit.
 
-  concertino help`);
+  concertino help
+
+Docs: docs/quickstart.md · docs/config-reference.md · docs/adapting-to-your-project.md`);
 }
 
 const args = parseArgs(process.argv.slice(2));
 const cmd = args._[0] || 'help';
-try {
-  if (cmd === 'init') cmdInit(args);
-  else if (cmd === 'sync') cmdSync(args);
-  else help();
-} catch (e) {
-  console.error('error: ' + e.message);
-  process.exit(1);
-}
+(async () => {
+  try {
+    if (cmd === 'init') await cmdInit(args);
+    else if (cmd === 'sync') cmdSync(args);
+    else help();
+  } catch (e) {
+    console.error('error: ' + e.message);
+    process.exit(1);
+  }
+})();

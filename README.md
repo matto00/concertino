@@ -53,21 +53,29 @@ concertino/
 
 ## Quick start
 
+Install once (or use `npx concertino` with no install):
+
+```bash
+npm install -g concertino     # then `concertino ...`
+# or, no install:  npx concertino <command>
+```
+
 In your project repo:
 
 ```bash
-# 1. Scaffold config, scripts, and the canonical-doc templates
-node /path/to/concertino/bin/concertino init --harness=claude-code
+# 1. Interactive setup: writes concertino.config.json, copies scripts + laws,
+#    and scaffolds the spec provider (openspec init, or a spec/ dir).
+concertino init
 
-# 2. Edit concertino.config.json for your stack (gates, dev-server commands, ports)
-
-# 3. Render the harness files from core + your config
-node /path/to/concertino/bin/concertino sync
+# 2. Render the harness files from core + your config (re-run after every edit)
+concertino sync
 ```
 
 Then in Claude Code: `/concertino-deliver <TICKET_ID>`.
 
-See [`docs/adapting-to-your-project.md`](docs/adapting-to-your-project.md) for the full config walkthrough and [`docs/harness-capabilities.md`](docs/harness-capabilities.md) for what differs between Claude Code and Codex.
+Prefer a starting profile over the prompts? `concertino init --example=helio` (or `--example=generic`, or `--yes` for defaults).
+
+See [`docs/quickstart.md`](docs/quickstart.md) to get running, [`docs/config-reference.md`](docs/config-reference.md) for every config field, [`docs/adapting-to-your-project.md`](docs/adapting-to-your-project.md) for the full walkthrough, and [`docs/harness-capabilities.md`](docs/harness-capabilities.md) for what differs between Claude Code and Codex.
 
 ## Acknowledgements / Prior Art
 

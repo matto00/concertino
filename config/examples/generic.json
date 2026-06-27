@@ -3,7 +3,7 @@
   "harnesses": ["claude-code"],
   "project": { "name": "my-project", "baseBranch": "main" },
   "ticketProvider": { "kind": "github", "idExample": "#123" },
-  "specProvider": { "kind": "none", "changeDir": ".concertino/changes/<CHANGE_NAME>" },
+  "specProvider": { "kind": "none", "changeDir": "spec/changes/<CHANGE_NAME>" },
   "worktree": {
     "base": ".concertino/worktrees",
     "ports": { "frontendBase": 3000, "backendBase": 4000 },
