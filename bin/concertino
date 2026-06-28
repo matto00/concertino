@@ -7,10 +7,12 @@
  *
  *   concertino init [--example=helio|generic] [--out=DIR]
  *   concertino sync [--config=PATH] [--out=DIR] [--harness=claude-code,codex] [--dry-run]
+ *   concertino update <key=value> [...] [--config=PATH] [--out=DIR] [--dry-run]
  *   concertino help
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const { execSync } = require('child_process');
@@ -18,36 +20,87 @@ const { execSync } = require('child_process');
 const REPO = path.resolve(__dirname, '..');
 const CORE = path.join(REPO, 'core');
 const ADAPTERS = path.join(REPO, 'adapters');
-const CODEX_MODEL = 'gpt-5.1-codex'; // placeholder; adjust per your Codex setup
+const CODEX_MODEL_FALLBACK = 'codex-mini-latest'; // used only if config has no models.codex
 let VERSION = '0.0.0';
 try { VERSION = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version; } catch (_) {}
 
+// ---------- ANSI colors (disabled when not a TTY) -------------------------
+const TTY = !!process.stdout.isTTY;
+const bold   = (s) => TTY ? `\x1b[1m${s}\x1b[22m` : s;
+const dim    = (s) => TTY ? `\x1b[2m${s}\x1b[22m` : s;
+const cyan   = (s) => TTY ? `\x1b[36m${s}\x1b[39m` : s;
+const green  = (s) => TTY ? `\x1b[32m${s}\x1b[39m` : s;
+const yellow = (s) => TTY ? `\x1b[33m${s}\x1b[39m` : s;
+const gray   = (s) => TTY ? `\x1b[90m${s}\x1b[39m` : s;
+const blue   = (s) => TTY ? `\x1b[34m${s}\x1b[39m` : s;
+const red    = (s) => TTY ? `\x1b[31m${s}\x1b[39m` : s;
+
+// ---------- banner + TUI chrome -------------------------------------------
 function banner() {
+  const W = 44;
+  const hr = '─'.repeat(W + 2);
+  if (TTY) {
+    return [
+      '',
+      blue('╭' + hr + '╮'),
+      blue('│ ') + bold('CONCERTINO') + dim('  ·  the agent orchestra') + ' '.repeat(W - 34) + blue(' │'),
+      blue('│ ') + dim('v' + VERSION) + ' '.repeat(W - VERSION.length - 1) + blue(' │'),
+      blue('╰' + hr + '╯'),
+      ''
+    ].join('\n');
+  }
   return [
     '',
-    '  ===========================================',
-    '   CONCERTINO  ·  the agent orchestra',
-    '   v' + VERSION,
-    '  ===========================================',
+    '╭' + hr + '╮',
+    '│ CONCERTINO  ·  the agent orchestra' + ' '.repeat(W - 34) + ' │',
+    '│ v' + VERSION + ' '.repeat(W - VERSION.length - 1) + ' │',
+    '╰' + hr + '╯',
     ''
   ].join('\n');
+}
+
+function section(title) {
+  const prefix = `  ─── ${title} `;
+  const fill = '─'.repeat(Math.max(2, 42 - prefix.length));
+  console.log('\n' + (TTY ? gray(prefix + fill) : prefix + fill));
 }
 
 // ---------- tiny helpers --------------------------------------------------
 const read = (p) => fs.readFileSync(p, 'utf8');
 const exists = (p) => fs.existsSync(p);
 function write(p, s, dry) {
-  if (dry) { console.log('  would write ' + p); return; }
+  if (dry) { console.log('  ' + dim('would write') + ' ' + p); return; }
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, s);
-  console.log('  wrote ' + p);
+  console.log('  ' + green('wrote') + ' ' + p);
 }
 function copy(src, dest, dry) {
-  if (dry) { console.log('  would copy ' + dest); return; }
+  if (dry) { console.log('  ' + dim('would copy') + ' ' + dest); return; }
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.copyFileSync(src, dest);
 }
 const bt = (s) => '`' + s + '`';
+function readRoleFile(role, out) {
+  const override = path.join(out, '.concertino', 'roles', role + '.md');
+  return exists(override) ? read(override) : read(path.join(CORE, 'roles', role + '.md'));
+}
+function findAdded(original, enriched, prefix) {
+  const result = [];
+  for (const key of Object.keys(enriched)) {
+    const dotPath = prefix ? prefix + '.' + key : key;
+    if (original == null || !(key in original)) {
+      result.push({ path: dotPath, val: enriched[key] });
+    } else if (
+      typeof enriched[key] === 'object' && enriched[key] !== null &&
+      !Array.isArray(enriched[key]) &&
+      typeof original[key] === 'object' && original[key] !== null &&
+      !Array.isArray(original[key])
+    ) {
+      result.push(...findAdded(original[key], enriched[key], dotPath));
+    }
+  }
+  return result;
+}
 function parseArgs(argv) {
   const out = { _: [] };
   for (const a of argv) {
@@ -56,6 +109,65 @@ function parseArgs(argv) {
     else out._.push(a);
   }
   return out;
+}
+
+// ---------- gate auto-detection ------------------------------------------
+function detectGates(dir) {
+  const has = (f) => exists(path.join(dir, f));
+  const gates = [];
+  const sources = [];
+
+  if (has('package.json')) {
+    let scripts = {};
+    try { scripts = JSON.parse(read(path.join(dir, 'package.json'))).scripts || {}; } catch (_) {}
+    sources.push('package.json');
+    if (scripts.lint)          gates.push({ name: 'lint',      when: 'always', command: 'npm run lint' });
+    if (scripts['type-check']) gates.push({ name: 'typecheck', when: 'always', command: 'npm run type-check' });
+    else if (scripts.tsc)      gates.push({ name: 'typecheck', when: 'always', command: 'npm run tsc' });
+    if (scripts.test)          gates.push({ name: 'test',      when: 'always', command: 'npm test' });
+    if (scripts.build)         gates.push({ name: 'build',     when: 'always', command: 'npm run build' });
+  }
+
+  if (has('pyproject.toml') || has('setup.py')) {
+    sources.push(has('pyproject.toml') ? 'pyproject.toml' : 'setup.py');
+    gates.push({ name: 'lint', when: 'always', command: 'ruff check .' });
+    gates.push({ name: 'test', when: 'always', command: 'pytest' });
+  }
+
+  if (has('Cargo.toml')) {
+    sources.push('Cargo.toml');
+    gates.push({ name: 'test',   when: 'always', command: 'cargo test' });
+    gates.push({ name: 'clippy', when: 'always', command: 'cargo clippy -- -D warnings' });
+  }
+
+  if (has('go.mod')) {
+    sources.push('go.mod');
+    gates.push({ name: 'test', when: 'always', command: 'go test ./...' });
+    gates.push({ name: 'vet',  when: 'always', command: 'go vet ./...' });
+  }
+
+  if (has('build.sbt')) {
+    sources.push('build.sbt');
+    gates.push({ name: 'test', when: 'always', command: 'sbt test' });
+  }
+
+  if (gates.length) {
+    return {
+      detected: true,
+      label: sources.join(', '),
+      gates,
+    };
+  }
+
+  return {
+    detected: false,
+    label: null,
+    gates: [
+      { name: 'lint',  when: 'always', command: 'echo "TODO: configure lint gate"' },
+      { name: 'test',  when: 'always', command: 'echo "TODO: configure test gate"' },
+      { name: 'build', when: 'always', command: 'echo "TODO: configure build gate"' },
+    ],
+  };
 }
 
 // ---------- config defaults ----------------------------------------------
@@ -75,8 +187,30 @@ function withDefaults(c) {
     { executionCycles: 3, skepticDesignRounds: 3, skepticFinalRounds: 2, debugAttempts: 2 },
     c.budgets || {}
   );
+  c.models = Object.assign(
+    { orchestrator: 'sonnet', executor: 'sonnet', evaluator: 'sonnet', skeptic: 'sonnet', codex: CODEX_MODEL_FALLBACK },
+    c.models || {}
+  );
   c.commitTrailer = c.commitTrailer || '';
   return c;
+}
+
+// ---------- deep-set + coerce (for `update` command) ---------------------
+function deepSet(obj, dotKey, value) {
+  const parts = dotKey.split('.');
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (cur[parts[i]] == null || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
+    cur = cur[parts[i]];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
+function coerce(v) {
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  if (/^\d+$/.test(v)) return parseInt(v, 10);
+  return v;
 }
 
 // ---------- template rendering -------------------------------------------
@@ -206,7 +340,7 @@ function block(name, c, harness) {
     case 'ticketProvider':
       return {
         linear: 'Use the Linear MCP: `mcp__linear__get_issue` to fetch, `mcp__linear__save_issue` to set status, `mcp__linear__save_comment` to comment.',
-        github: 'Use the GitHub CLI: `gh issue view <id> --json title,body,labels` to fetch; `gh issue comment` / `gh issue edit` to update.',
+        github: 'Use the GitHub MCP: `mcp__github__get_issue` to fetch (number, title, body, labels); `mcp__github__create_issue_comment` to comment; `mcp__github__update_issue` to set labels (use a label like `in-progress` / `done` to track status). For PR creation use `gh pr create` via Bash as normal.',
         manual: 'No external ticket system — the ticket text is provided inline or in the change dir `ticket.md`; skip status updates.'
       }[c.ticketProvider.kind] || '';
     case 'harnessResume':
@@ -219,6 +353,7 @@ function block(name, c, harness) {
 
 function renderBody(text, c, harness) {
   let out = text.split('<change-dir>').join(c.specProvider.changeDir);
+  out = out.split('<base>').join(c.project.baseBranch || 'main');
   out = out.replace(/\{\{block:([a-zA-Z]+)\}\}/g, (_, n) => block(n, c, harness));
   out = out.replace(/\{\{var:([a-zA-Z0-9_.]+)\}\}/g, (_, k) => getVar(c, k));
   return out;
@@ -228,7 +363,7 @@ function renderBody(text, c, harness) {
 function envValue(v) { return "'" + String(v).replace(/'/g, "'\\''") + "'"; }
 function renderEnv(c) {
   const L = [];
-  L.push('# Generated by `concertino sync` — do not edit by hand.');
+  L.push('# concertino:sync v' + VERSION + ' — do not edit by hand.');
   L.push('CONCERTINO_WORKTREE_BASE=' + envValue(c.worktree.base));
   L.push('CONCERTINO_FRONTEND_PORT_BASE=' + c.worktree.ports.frontendBase);
   L.push('CONCERTINO_BACKEND_PORT_BASE=' + c.worktree.ports.backendBase);
@@ -259,14 +394,16 @@ function emitClaude(c, out, dry) {
     if (r.usesUi && c.ui.enabled && c.ui.tool === 'playwright') tools = tools.concat(meta.playwrightTools);
     const mcp = (r.mcpTools && r.mcpTools[c.ticketProvider.kind]) || [];
     tools = tools.concat(mcp);
-    const body = renderBody(read(path.join(CORE, 'roles', role + '.md')), c, 'claude-code');
+    const body = renderBody(readRoleFile(role, out), c, 'claude-code');
     const desc = r.description.split('{{project}}').join(c.project.name);
+    const model = (c.models && c.models[role]) || r.model;
     const fm = [
       '---',
+      '# concertino:sync v' + VERSION,
       'name: concertino-' + role,
       'description: >-',
       '  ' + desc,
-      'model: ' + r.model,
+      'model: ' + model,
       'color: ' + r.color,
       'tools:',
       ...tools.map((t) => '  - ' + t),
@@ -304,16 +441,16 @@ function emitCodex(c, out, dry) {
   const tmpl = read(path.join(ADAPTERS, 'codex', 'agent.toml.tmpl'));
   const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
   for (const role of ['executor', 'evaluator']) {
-    const body = renderBody(read(path.join(CORE, 'roles', role + '.md')), c, 'codex');
+    const body = renderBody(readRoleFile(role, out), c, 'codex');
     const desc = meta.roles[role].description.split('{{project}}').join(c.project.name);
     const toml = tmpl.split('{{role}}').join(role)
       .split('{{description}}').join(desc.replace(/"/g, '\\"'))
-      .split('{{model}}').join(CODEX_MODEL)
+      .split('{{model}}').join((c.models && c.models.codex) || CODEX_MODEL_FALLBACK)
       .split('{{body}}').join(body);
-    write(path.join(out, '.codex', 'agents', 'concertino-' + role + '.toml'), toml, dry);
+    write(path.join(out, '.codex', 'agents', 'concertino-' + role + '.toml'), '# concertino:sync v' + VERSION + '\n' + toml, dry);
   }
   copy(path.join(ADAPTERS, 'codex', 'prompt.md'), path.join(out, '.codex', 'prompts', 'concertino-deliver.md'), dry);
-  if (!dry) console.log('  wrote ' + path.join(out, '.codex', 'prompts', 'concertino-deliver.md'));
+  if (!dry) console.log('  ' + green('wrote') + ' ' + path.join(out, '.codex', 'prompts', 'concertino-deliver.md'));
 }
 
 // ---------- copy shared assets into the project --------------------------
@@ -328,35 +465,40 @@ function copyAssets(out, dry, withScripts) {
       if (!dry && f.endsWith('.sh')) fs.chmodSync(dest, 0o755);
     }
   }
-  if (!dry) console.log('  refreshed .concertino/ assets' + (withScripts ? ' + scripts/concertino/' : ''));
+  if (!dry) console.log('  ' + green('refreshed') + ' .concertino/ assets' + (withScripts ? ' + scripts/concertino/' : ''));
 }
 
-// ---------- interactive init (TUI) ---------------------------------------
-function makeAsk() {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const ask = (q, def) => new Promise((res) => {
-    const sfx = (def !== undefined && def !== '') ? ' [' + def + ']' : '';
-    rl.question('  ' + q + sfx + ': ', (a) => res(((a || '').trim()) || (def || '')));
+// ---------- interactive init (TUI) ----------------------------------------
+function makeAsk(rl) {
+  return (label, def, step) => new Promise((res) => {
+    const stepPfx = (step != null) ? gray(`[${step}]`) + ' ' : '  ';
+    const defSufx = (def !== undefined && def !== '') ? ' ' + dim(`[${def}]`) : '';
+    const prompt = `  ${stepPfx}${cyan(label)}${defSufx}${gray(' › ')}`;
+    rl.question(prompt, (a) => res(((a || '').trim()) || (def || '')));
   });
-  return { rl, ask };
 }
-async function askChoice(ask, q, opts, def) {
+
+async function askChoice(ask, label, opts, def, step) {
+  const optStr = opts.map((o) => o === def ? bold(o) : o).join(dim('/'));
   for (;;) {
-    const a = (await ask(q + ' (' + opts.join('/') + ')', def)).toLowerCase();
-    if (opts.includes(a)) return a;
-    console.log('    please choose one of: ' + opts.join(', '));
+    const raw = (await ask(`${label} ${dim('(' + optStr + ')')}`, def, step)).toLowerCase().trim();
+    if (opts.includes(raw)) return raw;
+    console.log(`  ${yellow('!')} please choose one of: ${opts.join(', ')}`);
   }
 }
-async function askYN(ask, q, def) {
-  const a = (await ask(q + ' (y/n)', def ? 'y' : 'n')).toLowerCase();
-  return a.startsWith('y');
+
+async function askYN(ask, label, def, step) {
+  const a = await ask(`${label} ${dim('(y/n)')}`, def ? 'y' : 'n', step);
+  return a.toLowerCase().startsWith('y');
 }
+
 function idExampleFor(kind) {
   return { linear: 'ABC-123', github: '#123', manual: 'TICKET-1' }[kind] || 'TICKET-1';
 }
+
 function buildConfig(a) {
   const cfg = {
-    harnesses: ['claude-code', 'codex'],
+    harnesses: a.harnesses || ['claude-code', 'codex'],
     project: { name: a.name, baseBranch: a.baseBranch },
     ticketProvider: { kind: a.ticket, idExample: idExampleFor(a.ticket) },
     specProvider: a.spec === 'openspec'
@@ -375,19 +517,24 @@ function buildConfig(a) {
       envFiles: [],
       hooks: []
     },
-    gates: [
-      { name: 'lint', when: 'always', command: 'npm run lint' },
-      { name: 'test', when: 'always', command: 'npm test' },
-      { name: 'build', when: 'always', command: 'npm run build' }
+    gates: a.gates || [
+      { name: 'lint',  when: 'always', command: 'echo "TODO: configure lint gate"' },
+      { name: 'test',  when: 'always', command: 'echo "TODO: configure test gate"' },
+      { name: 'build', when: 'always', command: 'echo "TODO: configure build gate"' },
     ],
-    canonicalDocs: [
-      { path: 'CONTRIBUTING.md', summary: 'code-quality standard', bindTo: ['executor', 'evaluator'], when: 'always' }
-    ],
+    canonicalDocs: [],
+    models: {
+      orchestrator: 'sonnet',
+      executor: 'sonnet',
+      evaluator: 'sonnet',
+      skeptic: 'sonnet',
+      codex: a.codexModel || 'codex-mini-latest',
+    },
     ui: a.hasUi
       ? { enabled: true, tool: 'playwright', triggers: ['src/**'], breakpoints: [1280, 768, 0] }
       : { enabled: false, tool: 'none' },
     budgets: { executionCycles: 3, skepticDesignRounds: 3, skepticFinalRounds: 2, debugAttempts: 2 },
-    commitTrailer: a.trailer
+    commitTrailer: a.trailer,
   };
   if (a.hasUi) {
     cfg.devServers = {
@@ -396,20 +543,78 @@ function buildConfig(a) {
   }
   return cfg;
 }
-async function promptConfig() {
-  const { rl, ask } = makeAsk();
+
+async function promptConfig(out) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = makeAsk(rl);
+  let step = 0;
+  const s = () => ++step;
+
+  // Detect gates before prompting so we can show the result in context.
+  const detection = detectGates(out);
+
   try {
-    console.log("  Let's configure Concertino for this project.");
-    console.log('  Press Enter to accept the [default]. Edit concertino.config.json after for the rest.\n');
-    const name = await ask('Project name', path.basename(process.cwd()));
-    const baseBranch = await ask('Base branch', 'main');
-    const ticket = await askChoice(ask, 'Ticket provider', ['linear', 'github', 'manual'], 'github');
-    const spec = await askChoice(ask, 'Spec provider', ['openspec', 'none'], 'openspec');
-    const frontendBase = parseInt(await ask('Frontend dev-port base', '3000'), 10) || 3000;
-    const backendBase = parseInt(await ask('Backend dev-port base', '4000'), 10) || 4000;
-    const hasUi = await askYN(ask, 'Browser UI to review (enables Playwright)?', true);
-    const trailer = await ask('Commit trailer', 'Co-Authored-By: Claude <noreply@anthropic.com>');
-    return buildConfig({ name, baseBranch, ticket, spec, frontendBase, backendBase, hasUi, trailer });
+    console.log(
+      `  Configure Concertino for this project.\n` +
+      `  Press ${dim('↵')} to accept ${dim('[defaults]')}. Edit ${dim('concertino.config.json')} afterward for advanced fields.\n`
+    );
+
+    section('Project');
+    const name = await ask('Project name', path.basename(out), s());
+    const baseBranch = await ask('Base branch', 'main', s());
+
+    section('Integrations');
+    const ticket      = await askChoice(ask, 'Ticket provider', ['linear', 'github', 'manual'],       'github',       s());
+    const spec        = await askChoice(ask, 'Spec provider',   ['openspec', 'none'],                 'openspec',     s());
+    const harnessPick = await askChoice(ask, 'Harnesses',       ['claude-code', 'codex', 'both'],     'claude-code',  s());
+    const harnesses   = harnessPick === 'both' ? ['claude-code', 'codex'] : [harnessPick];
+    const codexModel  = harnesses.includes('codex')
+      ? await ask('Codex model ID', 'codex-mini-latest', s())
+      : null;
+
+    section('Dev servers');
+    console.log(dim('  DEV_PORT = frontendBase + ticketNumber — keeps parallel tickets collision-free.'));
+    const frontendBase = parseInt(await ask('Frontend port base', '5173', s()), 10) || 5173;
+    const backendBase  = parseInt(await ask('Backend port base',  '8080', s()), 10) || 8080;
+    const hasUi  = await askYN(ask, 'Browser UI (enables Playwright)?', false, s());
+
+    section('Extras');
+    const trailer = await ask('Commit trailer', 'Co-Authored-By: Claude <noreply@anthropic.com>', s());
+
+    // Summary
+    section('Summary');
+    const gateNames = detection.gates.map((g) => g.name).join(', ');
+    const gateNote = detection.detected
+      ? green('✓') + ' detected from ' + detection.label + ' → ' + gateNames
+      : yellow('!') + ' no project files found — placeholder gates written';
+    const rows = [
+      ['Project',    `${bold(name)}  ${dim('@')}  ${baseBranch}`],
+      ['Harnesses',  harnesses.join(', ') + (codexModel ? dim('  model: ' + codexModel) : '')],
+      ['Tickets',    ticket],
+      ['Spec',       spec],
+      ['Ports',    `frontend ${frontendBase}+N  ·  backend ${backendBase}+N`],
+      ['UI',       hasUi ? 'playwright' : 'none'],
+      ['Gates',    gateNote],
+      ['Trailer',  dim(trailer || '(none)')],
+    ];
+    for (const [k, v] of rows) {
+      console.log(`  ${gray(k.padEnd(10))}  ${v}`);
+    }
+
+    section('What to customize next');
+    const gatesLine = detection.detected
+      ? '  gates           — verify the auto-detected commands match your project'
+      : '  gates           — replace placeholder commands with your actual lint/test/build';
+    console.log(dim(
+      gatesLine + '\n' +
+      '  canonicalDocs   — add your standards docs (CONTRIBUTING.md, DESIGN.md, etc.)\n' +
+      '  devServers      — fill in start commands + health URLs if using dev servers\n' +
+      '  worktree.hooks  — post-checkout commands (npm ci, husky install, etc.)\n' +
+      '  models          — set executor/evaluator/skeptic to opus|sonnet|haiku as needed'
+    ));
+    console.log('');
+
+    return buildConfig({ name, baseBranch, ticket, spec, harnesses, codexModel, frontendBase, backendBase, hasUi, trailer, gates: detection.gates });
   } finally {
     rl.close();
   }
@@ -421,14 +626,14 @@ function setupOpenspec(out) {
   try {
     execSync('npm install --save-dev openspec', { cwd: out, stdio: 'inherit' });
   } catch (e) {
-    console.log('  ! could not npm-install openspec (' + e.message + '). Install it yourself: npm i -D openspec');
+    console.log(`  ${yellow('!')} could not npm-install openspec (${e.message}). Install it yourself: npm i -D openspec`);
     return;
   }
   try {
     execSync('npx --no-install openspec init', { cwd: out, stdio: 'inherit' });
     console.log('  OpenSpec initialized.');
   } catch (e) {
-    console.log('  ! `openspec init` failed (' + e.message + '). Run it manually when ready.');
+    console.log(`  ${yellow('!')} \`openspec init\` failed (${e.message}). Run it manually when ready.`);
   }
 }
 function setupNoneSpecDir(out) {
@@ -439,29 +644,620 @@ function setupNoneSpecDir(out) {
 }
 
 // ---------- commands ------------------------------------------------------
+
+function cmdEject(args) {
+  const role    = args.role;
+  const harness = args.harness || 'claude-code';
+  const out     = path.resolve(args.out || '.');
+  const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
+
+  if (!role) {
+    console.error(red('error: ') + '--role is required  (orchestrator | executor | evaluator | skeptic)');
+    process.exit(1);
+  }
+  if (!exists(cfgPath)) {
+    console.error(red('error: ') + 'no config at ' + cfgPath);
+    process.exit(1);
+  }
+
+  const c = withDefaults(JSON.parse(read(cfgPath)));
+
+  if (harness === 'claude-code') {
+    const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
+    const r = meta.roles[role];
+    if (!r) {
+      console.error(red('error: ') + 'unknown role "' + role + '" — valid: ' + Object.keys(meta.roles).join(', '));
+      process.exit(1);
+    }
+    let tools = r.baseTools.slice();
+    if (r.usesUi && c.ui.enabled && c.ui.tool === 'playwright') tools = tools.concat(meta.playwrightTools);
+    tools = tools.concat((r.mcpTools && r.mcpTools[c.ticketProvider.kind]) || []);
+    const overridePath = path.join(out, '.concertino', 'roles', role + '.md');
+    if (exists(overridePath)) process.stderr.write(dim('note: using local override .concertino/roles/' + role + '.md\n'));
+    const body = renderBody(readRoleFile(role, out), c, 'claude-code');
+    const desc  = r.description.split('{{project}}').join(c.project.name);
+    const model = (c.models && c.models[role]) || r.model;
+    const fm = ['---', '# concertino:sync v' + VERSION, 'name: concertino-' + role, 'description: >-', '  ' + desc, 'model: ' + model, 'color: ' + r.color, 'tools:', ...tools.map((t) => '  - ' + t), '---', ''].join('\n');
+    process.stdout.write(fm + body);
+  } else if (harness === 'codex') {
+    if (!['executor', 'evaluator'].includes(role)) {
+      console.error(red('error: ') + 'codex harness only has executor and evaluator');
+      process.exit(1);
+    }
+    const tmpl = read(path.join(ADAPTERS, 'codex', 'agent.toml.tmpl'));
+    const meta  = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
+    const body  = renderBody(readRoleFile(role, out), c, 'codex');
+    const desc  = meta.roles[role].description.split('{{project}}').join(c.project.name);
+    const toml  = '# concertino:sync v' + VERSION + '\n' + tmpl
+      .split('{{role}}').join(role)
+      .split('{{description}}').join(desc.replace(/"/g, '\\"'))
+      .split('{{model}}').join((c.models && c.models.codex) || CODEX_MODEL_FALLBACK)
+      .split('{{body}}').join(body);
+    process.stdout.write(toml);
+  } else {
+    console.error(red('error: ') + 'unknown harness "' + harness + '" — valid: claude-code, codex');
+    process.exit(1);
+  }
+}
+
+function cmdMigrate(args) {
+  const out     = path.resolve(args.out || '.');
+  const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
+  const dry     = !!args['dry-run'];
+
+  if (!exists(cfgPath)) {
+    console.error(red('error: ') + 'no config at ' + cfgPath + ' — run `concertino init` first.');
+    process.exit(1);
+  }
+
+  console.log('concertino migrate → ' + cfgPath + (dry ? dim('  (dry run)') : ''));
+
+  const raw      = JSON.parse(read(cfgPath));
+  const enriched = withDefaults(JSON.parse(JSON.stringify(raw)));
+  const added    = findAdded(raw, enriched, '');
+
+  if (!added.length) {
+    console.log('  ' + green('✓') + ' nothing to migrate — config is already up to date');
+    return;
+  }
+
+  for (const { path: p, val } of added) {
+    console.log('  ' + green('+') + ' ' + cyan(p) + dim(' = ') + JSON.stringify(val));
+  }
+
+  if (!dry) {
+    fs.writeFileSync(cfgPath, JSON.stringify(enriched, null, 2) + '\n');
+    console.log(green('\ndone.') + dim('  run `concertino validate` to review the result'));
+  } else {
+    console.log(dim('\n  (dry run — nothing written)'));
+  }
+}
+
+function cmdDoctor(args) {
+  const out = path.resolve(args.out || '.');
+  const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
+  console.log('concertino doctor');
+  const errs = [], warns = [];
+  const ok   = (label, val) => console.log(`  ${green('✓')} ${gray(String(label).padEnd(18))} ${val ?? ''}`);
+  const warn = (msg)        => { warns.push(msg); console.log(`  ${yellow('!')} ${msg}`); };
+  const fail = (msg)        => { errs.push(msg);  console.log(`  ${red('✗')} ${msg}`); };
+  const shell = (cmd) => { try { return execSync(cmd, { encoding: 'utf8', stdio: ['pipe','pipe','pipe'] }).trim(); } catch { return null; } };
+
+  section('Runtime');
+  const nodeVer = shell('node --version');
+  nodeVer ? ok('node', nodeVer) : fail('node not found on PATH');
+  const gitUser  = shell('git config user.name');
+  const gitEmail = shell('git config user.email');
+  (gitUser && gitEmail) ? ok('git identity', gitUser + ' <' + gitEmail + '>') : warn('git user.name / user.email not configured — commits will be anonymous');
+  const ghOut = shell('gh auth status 2>&1');
+  (ghOut && /Logged in to/.test(ghOut)) ? ok('gh auth', 'authenticated') : warn('gh not authenticated — run `gh auth login` (needed for PR creation)');
+
+  section('Claude Code');
+  const claudeVer = shell('claude --version 2>/dev/null');
+  claudeVer ? ok('claude', claudeVer) : fail('`claude` not found — install from https://claude.ai/code');
+
+  section('Config');
+  if (!exists(cfgPath)) {
+    warn('no concertino.config.json — run `concertino init` to create one');
+  } else {
+    let cfg;
+    try { cfg = JSON.parse(read(cfgPath)); ok('config', 'found'); }
+    catch { fail('concertino.config.json is not valid JSON'); }
+    if (cfg) {
+      const harnesses = cfg.harnesses || [];
+      const tp = cfg.ticketProvider || {};
+      const ui = cfg.ui || {};
+
+      if (harnesses.includes('codex')) {
+        section('Codex CLI');
+        const codexVer = shell('codex --version 2>/dev/null');
+        codexVer ? ok('codex', codexVer) : fail('`codex` CLI not found — install the OpenAI Codex CLI');
+      }
+
+      if (tp.kind === 'linear') {
+        section('Linear MCP');
+        const mcpPath = path.join(out, '.mcp.json');
+        if (exists(mcpPath)) {
+          try {
+            const mcp = JSON.parse(read(mcpPath));
+            const has = mcp.mcpServers && mcp.mcpServers.linear;
+            has ? ok('.mcp.json', 'linear server present') : warn('.mcp.json found but no "linear" entry under mcpServers');
+          } catch { warn('.mcp.json is not valid JSON'); }
+        } else {
+          warn('no .mcp.json found — add the Linear MCP server for ticket access (see claude.ai/code docs)');
+        }
+      }
+
+      if (ui.enabled && ui.tool === 'playwright') {
+        section('Playwright');
+        const pwVer = shell('npx playwright --version 2>/dev/null');
+        pwVer ? ok('playwright', pwVer) : warn('playwright not found — run `npx playwright install` in the project');
+      }
+    }
+  }
+
+  const verdict = errs.length ? red('✗ action required') : green('✓ environment ready');
+  const counts = [];
+  if (errs.length)  counts.push(red(errs.length + ' error' + (errs.length !== 1 ? 's' : '')));
+  if (warns.length) counts.push(yellow(warns.length + ' warning' + (warns.length !== 1 ? 's' : '')));
+  if (!counts.length) counts.push(dim('all checks passed'));
+  console.log('\n  ' + verdict + '  ' + counts.join(dim('  ·  ')));
+  if (errs.length) process.exit(1);
+}
+
+function diffFile(dest, newContent) {
+  if (!exists(dest)) {
+    console.log('\n' + green('+++ ') + cyan(path.relative(process.cwd(), dest)) + dim(' (new file)'));
+    const lines = newContent.split('\n');
+    lines.slice(0, 8).forEach((l) => process.stdout.write(green('+' + l + '\n')));
+    if (lines.length > 8) console.log(dim('    ... (' + lines.length + ' lines total)'));
+    return 'new';
+  }
+  const existing = read(dest);
+  if (existing === newContent) {
+    console.log('  ' + dim('unchanged  ' + path.relative(process.cwd(), dest)));
+    return 'unchanged';
+  }
+  const tmp = path.join(os.tmpdir(), 'concertino-diff-' + process.pid);
+  fs.writeFileSync(tmp, newContent, 'utf8');
+  try {
+    execSync(`diff -u "${dest}" "${tmp}"`, { encoding: 'utf8' });
+    return 'unchanged';
+  } catch (e) {
+    const lines = (e.stdout || '').split('\n');
+    console.log('\n' + cyan(path.relative(process.cwd(), dest)));
+    for (const line of lines) {
+      if (line.startsWith('+++') || line.startsWith('---')) process.stdout.write(dim(line + '\n'));
+      else if (line.startsWith('+'))  process.stdout.write(green(line + '\n'));
+      else if (line.startsWith('-'))  process.stdout.write(red(line + '\n'));
+      else if (line.startsWith('@@')) process.stdout.write(cyan(line + '\n'));
+      else process.stdout.write(dim(line + '\n'));
+    }
+    return 'changed';
+  } finally {
+    try { fs.unlinkSync(tmp); } catch (_) {}
+  }
+}
+
+function cmdDiff(args) {
+  const out = path.resolve(args.out || '.');
+  const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
+  if (!exists(cfgPath)) { console.error(red('error: ') + 'no config at ' + cfgPath); process.exit(1); }
+  const c = withDefaults(JSON.parse(read(cfgPath)));
+  const harnesses = args.harness ? args.harness.split(',') : c.harnesses;
+  console.log('concertino diff → ' + out);
+
+  const counts = { changed: 0, new: 0, unchanged: 0 };
+  const diff = (dest, content) => { const r = diffFile(dest, content); counts[r]++; };
+
+  diff(path.join(out, 'scripts', 'concertino', '.concertino.env'), renderEnv(c));
+
+  if (harnesses.includes('claude-code')) {
+    const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
+    for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic']) {
+      const r = meta.roles[role];
+      let tools = r.baseTools.slice();
+      if (r.usesUi && c.ui.enabled && c.ui.tool === 'playwright') tools = tools.concat(meta.playwrightTools);
+      tools = tools.concat((r.mcpTools && r.mcpTools[c.ticketProvider.kind]) || []);
+      const body = renderBody(readRoleFile(role, out), c, 'claude-code');
+      const desc = r.description.split('{{project}}').join(c.project.name);
+      const model = (c.models && c.models[role]) || r.model;
+      const fm = ['---', '# concertino:sync v' + VERSION, 'name: concertino-' + role, 'description: >-', '  ' + desc, 'model: ' + model, 'color: ' + r.color, 'tools:', ...tools.map((t) => '  - ' + t), '---', ''].join('\n');
+      diff(path.join(out, '.claude', 'agents', 'concertino-' + role + '.md'), fm + body);
+    }
+    const cmd = read(path.join(ADAPTERS, 'claude-code', 'command.md'))
+      .split('{{project}}').join(c.project.name)
+      .split('{{idExample}}').join(c.ticketProvider.idExample);
+    diff(path.join(out, '.claude', 'commands', 'concertino-deliver.md'), cmd);
+  }
+
+  if (harnesses.includes('codex')) {
+    const tmpl = read(path.join(ADAPTERS, 'codex', 'agent.toml.tmpl'));
+    const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
+    for (const role of ['executor', 'evaluator']) {
+      const body = renderBody(readRoleFile(role, out), c, 'codex');
+      const desc = meta.roles[role].description.split('{{project}}').join(c.project.name);
+      const toml = '# concertino:sync v' + VERSION + '\n' + tmpl
+        .split('{{role}}').join(role)
+        .split('{{description}}').join(desc.replace(/"/g, '\\"'))
+        .split('{{model}}').join((c.models && c.models.codex) || CODEX_MODEL_FALLBACK)
+        .split('{{body}}').join(body);
+      diff(path.join(out, '.codex', 'agents', 'concertino-' + role + '.toml'), toml);
+    }
+  }
+
+  const summary = [
+    counts.changed   ? cyan(counts.changed + ' changed')     : dim('0 changed'),
+    counts.new       ? green(counts.new + ' new')            : dim('0 new'),
+    dim(counts.unchanged + ' unchanged'),
+  ].join(dim('  ·  '));
+  console.log('\n  ' + summary);
+  if (counts.changed || counts.new) console.log('  ' + dim('run `concertino sync` to apply'));
+}
+
+function cmdUpgrade(args) {
+  const out = path.resolve(args.out || '.');
+  console.log('concertino upgrade  ' + dim('(current: v' + VERSION + ')'));
+  const MARKER = /concertino:sync v([\d.]+)/;
+  const stale = [], fresh = [];
+
+  const check = (file) => {
+    if (!exists(file)) return;
+    const m = MARKER.exec(read(file).slice(0, 500));
+    if (!m) return;
+    (m[1] === VERSION ? fresh : stale).push({ file: path.relative(out, file), was: m[1] });
+  };
+
+  for (const dir of [path.join(out, '.claude', 'agents'), path.join(out, '.claude', 'commands'), path.join(out, '.codex', 'agents')]) {
+    if (!exists(dir)) continue;
+    for (const f of fs.readdirSync(dir)) check(path.join(dir, f));
+  }
+  check(path.join(out, 'scripts', 'concertino', '.concertino.env'));
+
+  section('Generated files');
+  if (!stale.length && !fresh.length) { console.log('  ' + dim('no concertino-generated files found')); return; }
+  for (const { file } of fresh) console.log('  ' + green('✓') + ' ' + dim(file));
+  for (const { file, was } of stale) console.log('  ' + yellow('!') + ' ' + cyan(file) + dim('  v' + was + ' → v' + VERSION));
+
+  if (!stale.length) console.log('\n  ' + green('✓ all files are up to date'));
+  else console.log('\n  ' + yellow(stale.length + ' file' + (stale.length !== 1 ? 's' : '') + ' out of date') + dim('  —  run `concertino sync` to update'));
+}
+
+function cmdGates(args) {
+  const out = path.resolve(args.out || '.');
+  const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
+  if (!exists(cfgPath)) { console.error(red('error: ') + 'no config at ' + cfgPath); process.exit(1); }
+  const cfg = JSON.parse(read(cfgPath));
+  const gates = cfg.gates || [];
+  const runName = args.run;
+
+  if (runName) {
+    const gate = gates.find((g) => g.name === runName);
+    if (!gate) {
+      console.error(red('error: ') + 'no gate named "' + runName + '".');
+      console.error('  known: ' + (gates.length ? gates.map((g) => g.name).join(', ') : '(none)'));
+      process.exit(1);
+    }
+    console.log('concertino gates --run ' + bold(gate.name));
+    console.log(dim('  when:    ') + gate.when);
+    console.log(dim('  command: ') + gate.command + '\n');
+    try {
+      execSync(gate.command, { stdio: 'inherit', cwd: out });
+      console.log('\n  ' + green('✓ ' + gate.name + ' passed'));
+    } catch (e) {
+      console.log('\n  ' + red('✗ ' + gate.name + ' failed') + dim(' (exit ' + (e.status || 1) + ')'));
+      process.exit(e.status || 1);
+    }
+    return;
+  }
+
+  console.log('concertino gates');
+  if (!gates.length) { console.log('\n  ' + dim('no gates configured')); return; }
+  console.log('');
+  for (const g of gates) {
+    const placeholder = /^echo "TODO/.test(g.command);
+    console.log('  ' + (placeholder ? yellow('!') : cyan('▸')) + ' ' + bold(g.name) + '  ' + dim('when: ' + g.when));
+    console.log('      ' + dim(g.command) + (placeholder ? '  ' + yellow('← placeholder') : ''));
+  }
+  console.log('\n  ' + dim('concertino gates --run <name>'));
+}
+
+function cmdCompletion(args) {
+  const shell = args._[1] || 'fish';
+  const CMDS = ['init', 'sync', 'update', 'validate', 'diff', 'doctor', 'upgrade', 'gates', 'completion', 'help'];
+  const DESC = { init:'Interactive setup', sync:'Render harness files', update:'Update config fields and re-sync', validate:'Check config for errors', diff:'Show sync diff vs disk', doctor:'Check environment health', upgrade:'Detect stale generated files', gates:'List or run a gate', completion:'Print shell completion script', help:'Show help' };
+
+  if (shell === 'fish') {
+    const lines = [
+      '# concertino fish completion — save to ~/.config/fish/completions/concertino.fish',
+      '# Or add to config.fish: concertino completion fish | source',
+      'set -l cmds ' + CMDS.join(' '),
+      'complete -c concertino -f',
+      ...CMDS.map((c) => `complete -c concertino -n "not __fish_seen_subcommand_from $cmds" -a ${c} -d "${DESC[c]}"`),
+      'complete -c concertino -l out    -r -d "Project root directory"',
+      'complete -c concertino -l config -r -d "Path to concertino.config.json"',
+      'complete -c concertino -n "__fish_seen_subcommand_from sync update" -l dry-run -d "Preview without writing"',
+      'complete -c concertino -n "__fish_seen_subcommand_from sync diff"   -l harness -r -d "claude-code,codex"',
+      'complete -c concertino -n "__fish_seen_subcommand_from init" -l example -r -d "helio or generic"',
+      'complete -c concertino -n "__fish_seen_subcommand_from init" -l yes -d "Non-interactive defaults"',
+      'complete -c concertino -n "__fish_seen_subcommand_from gates" -l run -r -d "Gate name"',
+      'complete -c concertino -n "__fish_seen_subcommand_from completion" -a "fish zsh bash" -d "Shell"',
+    ];
+    process.stdout.write(lines.join('\n') + '\n');
+
+  } else if (shell === 'zsh') {
+    const args_map = {
+      'sync|update': '"--dry-run[preview without writing]" "--out=[project root]:dir:_files -/" "--config=[config path]:file:_files" "--harness=[harnesses]:harness:(claude-code codex)"',
+      'diff':        '"--out=[project root]:dir:_files -/" "--config=[config path]:file:_files" "--harness=[harnesses]:harness:(claude-code codex)"',
+      'validate|doctor|upgrade': '"--out=[project root]:dir:_files -/" "--config=[config path]:file:_files"',
+      'init':        '"--out=[project root]:dir:_files -/" "--example=[profile]:ex:(helio generic)" "--yes[use defaults]"',
+      'gates':       '"--run=[gate name]:gate:" "--out=[project root]:dir:_files -/" "--config=[config path]:file:_files"',
+      'completion':  '":shell:(fish zsh bash)"',
+    };
+    const lines = [
+      '#compdef concertino',
+      '# concertino zsh completion — save to a $fpath dir, e.g. ~/.zsh/completions/_concertino',
+      '_concertino() {',
+      '  local -a cmds',
+      '  cmds=(' + CMDS.map((c) => c + ':"' + DESC[c] + '"').join(' ') + ')',
+      '  if (( CURRENT == 2 )); then _describe "commands" cmds',
+      '  else case $words[2] in',
+      ...Object.entries(args_map).map(([pat, flags]) => `    ${pat}) _arguments ${flags} ;;`),
+      '  esac; fi',
+      '}',
+      '_concertino "$@"',
+    ];
+    process.stdout.write(lines.join('\n') + '\n');
+
+  } else if (shell === 'bash') {
+    const lines = [
+      '# concertino bash completion — add to ~/.bashrc: source <(concertino completion bash)',
+      '_concertino_complete() {',
+      '  local cur="${COMP_WORDS[COMP_CWORD]}" prev="${COMP_WORDS[COMP_CWORD-1]}"',
+      '  if [[ $COMP_CWORD -eq 1 ]]; then',
+      '    COMPREPLY=($(compgen -W "' + CMDS.join(' ') + '" -- "$cur"))',
+      '  else case "$prev" in',
+      '    --out|--config) COMPREPLY=($(compgen -d -- "$cur")) ;;',
+      '    --harness)  COMPREPLY=($(compgen -W "claude-code codex" -- "$cur")) ;;',
+      '    --example)  COMPREPLY=($(compgen -W "helio generic" -- "$cur")) ;;',
+      '    --run)      COMPREPLY=() ;;',
+      '    completion) COMPREPLY=($(compgen -W "fish zsh bash" -- "$cur")) ;;',
+      '    *)          COMPREPLY=($(compgen -W "--out --config --dry-run --harness --run --yes --example" -- "$cur")) ;;',
+      '  esac; fi',
+      '}',
+      'complete -F _concertino_complete concertino',
+    ];
+    process.stdout.write(lines.join('\n') + '\n');
+
+  } else {
+    console.error(red('error: ') + 'unknown shell "' + shell + '" — supported: fish zsh bash');
+    process.exit(1);
+  }
+}
+
+function cmdValidate(args) {
+  const out = path.resolve(args.out || '.');
+  const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
+  console.log('concertino validate → ' + cfgPath);
+
+  const errs = [], warns = [];
+  const ok   = (label, val) => console.log(`  ${green('✓')} ${gray(String(label).padEnd(18))} ${val ?? ''}`);
+  const warn = (msg)        => { warns.push(msg); console.log(`  ${yellow('!')} ${msg}`); };
+  const fail = (msg)        => { errs.push(msg);  console.log(`  ${red('✗')} ${msg}`); };
+
+  // ── Structure ────────────────────────────────────────────────────────────
+  section('Structure');
+  if (!exists(cfgPath)) {
+    console.error(red('error: ') + 'no config at ' + cfgPath + ' — run `concertino init` first.');
+    process.exit(1);
+  }
+  let cfg;
+  try { cfg = JSON.parse(read(cfgPath)); ok('json', 'valid'); }
+  catch (e) { fail('invalid JSON: ' + e.message); process.exit(1); }
+
+  const REQUIRED = ['project', 'ticketProvider', 'specProvider', 'worktree', 'gates'];
+  const missing = REQUIRED.filter((k) => cfg[k] == null);
+  missing.length
+    ? missing.forEach((k) => fail(`missing required field: ${cyan(k)}`))
+    : ok('required fields', REQUIRED.join(', '));
+
+  // ── Project ──────────────────────────────────────────────────────────────
+  section('Project');
+  const p = cfg.project || {};
+  p.name ? ok('name', p.name) : fail('project.name is required');
+  ok('baseBranch', p.baseBranch || dim('(defaults to main)'));
+
+  // ── Integrations ─────────────────────────────────────────────────────────
+  section('Integrations');
+  const VALID_HARNESSES = ['claude-code', 'codex'];
+  const harnesses = Array.isArray(cfg.harnesses) ? cfg.harnesses : [];
+  const badHarnesses = harnesses.filter((h) => !VALID_HARNESSES.includes(h));
+  if (!harnesses.length) fail('harnesses must not be empty');
+  else if (badHarnesses.length) fail(`unknown harnesses: ${badHarnesses.join(', ')} (valid: ${VALID_HARNESSES.join(', ')})`);
+  else ok('harnesses', harnesses.join(', '));
+
+  const tp = cfg.ticketProvider || {};
+  ['linear', 'github', 'manual'].includes(tp.kind)
+    ? ok('ticketProvider', tp.kind + (tp.idExample ? dim('  e.g. ' + tp.idExample) : ''))
+    : fail(`ticketProvider.kind must be linear|github|manual (got: ${JSON.stringify(tp.kind)})`);
+
+  const sp = cfg.specProvider || {};
+  if (!['openspec', 'none'].includes(sp.kind)) {
+    fail(`specProvider.kind must be openspec|none (got: ${JSON.stringify(sp.kind)})`);
+  } else {
+    ok('specProvider', sp.kind);
+    if (sp.kind === 'openspec') {
+      for (const k of ['scaffoldCmd', 'applyCmd', 'validateCmd', 'archiveCmd']) {
+        if (!sp[k]) warn(`specProvider.${k} not set — agents will fall back to prose instructions`);
+      }
+    }
+  }
+
+  // ── Worktree ─────────────────────────────────────────────────────────────
+  section('Worktree');
+  const wt = cfg.worktree || {};
+  const ports = wt.ports || {};
+  (Number.isInteger(ports.frontendBase) && Number.isInteger(ports.backendBase))
+    ? ok('ports', `frontend ${ports.frontendBase}+N  ·  backend ${ports.backendBase}+N`)
+    : fail('worktree.ports.frontendBase and backendBase must be integers');
+  if (wt.envFiles && wt.envFiles.length) {
+    const notFound = wt.envFiles.filter((f) => !exists(path.join(out, f)));
+    notFound.length
+      ? warn(`envFiles not found: ${notFound.join(', ')} — worktree setup will warn at runtime`)
+      : ok('envFiles', wt.envFiles.join(', '));
+  }
+
+  // ── Gates ────────────────────────────────────────────────────────────────
+  section('Gates');
+  const gates = cfg.gates || [];
+  if (!gates.length) {
+    fail('no gates configured — executor will skip all verification');
+  } else {
+    ok('count', `${gates.length} gate${gates.length !== 1 ? 's' : ''}: ` + gates.map((g) => g.name).join(', '));
+    for (const g of gates) {
+      if (!g.name || !g.when || !g.command) fail(`gate missing name/when/command: ${JSON.stringify(g)}`);
+      else if (/^echo "TODO/.test(g.command)) warn(`gate ${cyan(g.name)}: placeholder — update gates in concertino.config.json`);
+    }
+  }
+
+  // ── Models ───────────────────────────────────────────────────────────────
+  section('Models');
+  const ALIASES = ['opus', 'sonnet', 'haiku'];
+  const modelDefaults = { orchestrator: 'sonnet', executor: 'sonnet', evaluator: 'sonnet', skeptic: 'sonnet', codex: CODEX_MODEL_FALLBACK };
+  const models = Object.assign({}, modelDefaults, cfg.models || {});
+  for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic']) {
+    const m = models[role];
+    (ALIASES.includes(m) || /^claude-/.test(m))
+      ? ok(role, m)
+      : warn(`models.${role}: unrecognized alias "${m}" — check Claude Code docs for valid model aliases`);
+  }
+  if ((cfg.harnesses || []).includes('codex')) {
+    ok('codex (openai)', models.codex);
+  }
+
+  // ── UI & dev servers ─────────────────────────────────────────────────────
+  section('UI & dev servers');
+  const ui = cfg.ui || {};
+  if (ui.enabled) {
+    ['playwright', 'none'].includes(ui.tool)
+      ? ok('ui.tool', ui.tool)
+      : fail(`ui.tool must be playwright|none (got: ${JSON.stringify(ui.tool)})`);
+    (ui.triggers && ui.triggers.length)
+      ? ok('ui.triggers', ui.triggers.join(', '))
+      : warn('ui.triggers is empty — UI review will never activate');
+    const hasDev = cfg.devServers && (cfg.devServers.backend || cfg.devServers.frontend);
+    if (!hasDev) warn('ui.enabled is true but no devServers configured — start-servers.sh will be a no-op');
+  } else {
+    ok('ui', dim('disabled') + '  (Phase 3 N/A for all tickets)');
+  }
+  const ds = cfg.devServers || {};
+  for (const side of ['backend', 'frontend']) {
+    const s = ds[side];
+    if (s) {
+      if (!s.start)  fail(`devServers.${side}.start is required`);
+      if (!s.health) fail(`devServers.${side}.health is required`);
+      if (s.start && s.health) ok(side, s.health);
+    }
+  }
+
+  // ── Canonical docs ───────────────────────────────────────────────────────
+  section('Canonical docs');
+  const docs = cfg.canonicalDocs || [];
+  if (!docs.length) {
+    ok('canonicalDocs', dim('none configured'));
+  } else {
+    for (const d of docs) {
+      if (!d.path || !d.bindTo || !d.bindTo.length) {
+        fail(`canonicalDoc missing path or bindTo: ${JSON.stringify(d)}`);
+      } else if (!exists(path.join(out, d.path))) {
+        warn(`canonicalDocs "${d.path}" not found in project root — agents will fail to read it`);
+      } else {
+        ok(d.path, dim('→') + ' ' + d.bindTo.join(', '));
+      }
+    }
+  }
+
+  // ── Summary ──────────────────────────────────────────────────────────────
+  const verdict = errs.length ? red('✗ invalid') : green('✓ valid');
+  const counts = [];
+  if (errs.length)  counts.push(red(errs.length + ' error' + (errs.length !== 1 ? 's' : '')));
+  if (warns.length) counts.push(yellow(warns.length + ' warning' + (warns.length !== 1 ? 's' : '')));
+  if (!counts.length) counts.push(dim('all checks passed'));
+  console.log('\n  ' + verdict + '  ' + counts.join(dim('  ·  ')));
+
+  if (errs.length) process.exit(1);
+}
+
 function loadConfig(args, out) {
   const p = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
-  if (!exists(p)) { console.error('No config at ' + p + ' — run `concertino init` first.'); process.exit(1); }
+  if (!exists(p)) {
+    console.error(red('error: ') + 'no config at ' + p + ' — run `concertino init` first.');
+    process.exit(1);
+  }
   return withDefaults(JSON.parse(read(p)));
 }
 
 function cmdSync(args) {
   const out = path.resolve(args.out || '.');
+  const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
+  // Run validate first (errors block sync; warnings are informational).
+  cmdValidate({ ...args, config: cfgPath, out });
+  console.log('');
   const c = loadConfig(args, out);
   const dry = !!args['dry-run'];
   const harnesses = args.harness ? args.harness.split(',') : c.harnesses;
-  console.log('concertino sync → ' + out + (dry ? '  (dry run)' : ''));
-  console.log('  harnesses: ' + harnesses.join(', '));
+  console.log('concertino sync → ' + out + (dry ? dim('  (dry run)') : ''));
+  console.log(dim('  harnesses: ') + harnesses.join(', '));
   copyAssets(out, dry, false);
   write(path.join(out, 'scripts', 'concertino', '.concertino.env'), renderEnv(c), dry);
   if (harnesses.includes('claude-code')) emitClaude(c, out, dry);
   if (harnesses.includes('codex')) emitCodex(c, out, dry);
-  console.log('done.');
+  console.log(green('done.'));
+}
+
+function cmdUpdate(args) {
+  const pairs = args._.slice(1);
+  if (!pairs.length) {
+    console.error(red('error: ') + 'usage: concertino update <key=value> [key=value ...]');
+    console.error('       example: concertino update models.skeptic=opus budgets.executionCycles=5');
+    process.exit(1);
+  }
+
+  const out = path.resolve(args.out || '.');
+  const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
+  if (!exists(cfgPath)) {
+    console.error(red('error: ') + 'no config at ' + cfgPath + ' — run `concertino init` first.');
+    process.exit(1);
+  }
+
+  const cfg = JSON.parse(read(cfgPath));
+  const updated = [];
+
+  for (const pair of pairs) {
+    const eq = pair.indexOf('=');
+    if (eq < 1) {
+      console.error(red('error: ') + 'expected key=value, got: ' + pair);
+      process.exit(1);
+    }
+    const key = pair.slice(0, eq);
+    const val = coerce(pair.slice(eq + 1));
+    deepSet(cfg, key, val);
+    updated.push({ key, val });
+  }
+
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+  console.log('concertino update → ' + cfgPath);
+  for (const { key, val } of updated) {
+    console.log(`  ${green('set')} ${cyan(key)} ${dim('=')} ${JSON.stringify(val)}`);
+  }
+  console.log('');
+
+  cmdSync(args);
 }
 
 function writeConfigFromExample(out, example, cfgPath) {
   copy(path.join(REPO, 'config', 'examples', example + '.json'), cfgPath, false);
-  const obj = JSON.parse(read(cfgPath)); delete obj['$schema']; // strip repo-relative pointer
+  const obj = JSON.parse(read(cfgPath)); delete obj['$schema'];
   fs.writeFileSync(cfgPath, JSON.stringify(obj, null, 2) + '\n');
   return obj;
 }
@@ -478,23 +1274,28 @@ async function cmdInit(args) {
     cfg = JSON.parse(read(cfgPath));
   } else if (args.example) {
     cfg = writeConfigFromExample(out, args.example, cfgPath);
-    console.log('  wrote ' + cfgPath + '  (from example: ' + args.example + ')');
+    console.log('  ' + green('wrote') + ' ' + cfgPath + dim('  (from example: ' + args.example + ')'));
   } else if (args.yes || !process.stdin.isTTY) {
     cfg = writeConfigFromExample(out, 'generic', cfgPath);
-    console.log('  wrote ' + cfgPath + '  (generic defaults — non-interactive)');
+    // Apply gate detection on top of the generic example.
+    const detection = detectGates(out);
+    cfg.gates = detection.gates;
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+    if (detection.detected) {
+      console.log('  ' + green('detected') + ' ' + detection.label + ' — configured gates: ' + detection.gates.map((g) => g.name).join(', '));
+    }
+    console.log('  ' + green('wrote') + ' ' + cfgPath + dim('  (generic defaults — non-interactive)'));
   } else {
     interactive = true;
-    cfg = await promptConfig();
+    cfg = await promptConfig(out);
     fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
-    console.log('\n  wrote ' + cfgPath);
+    console.log('  ' + green('✓') + ' wrote ' + cfgPath);
   }
 
   copyAssets(out, false, true);
   const full = withDefaults(JSON.parse(JSON.stringify(cfg)));
   write(path.join(out, 'scripts', 'concertino', '.concertino.env'), renderEnv(full), false);
 
-  // Provider scaffolding. Only auto-run for fresh interactive configs (or explicit
-  // --openspec-init) so wiring into an existing repo (--example) never re-inits it.
   if (!args['no-spec-setup']) {
     if (full.specProvider.kind === 'openspec' && (args['openspec-init'] || (interactive && await confirmOpenspecInit()))) {
       setupOpenspec(out);
@@ -503,49 +1304,105 @@ async function cmdInit(args) {
     }
   }
 
-  console.log('\n  Next:');
-  console.log('    1. review concertino.config.json  (field guide: docs/config-reference.md)');
-  console.log('    2. concertino sync');
-  console.log('    3. Claude Code: /concertino-deliver <TICKET_ID>');
+  // Auto-sync so agent files are ready immediately.
+  console.log('\n' + gray('  ─── Generating agent files ' + '─'.repeat(16)));
+  cmdSync({ _: ['sync'], config: cfgPath, out });
+
+  console.log('\n  ' + bold('Ready.') + ' Edit ' + cyan('concertino.config.json') + ' to tune gates/models/devServers, then ' + cyan('concertino sync') + ' to re-render.');
+  console.log('  Start a delivery: Claude Code → ' + cyan('/concertino-deliver <TICKET_ID>'));
 }
 
 async function confirmOpenspecInit() {
-  const { rl, ask } = makeAsk();
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = makeAsk(rl);
   try { return await askYN(ask, '\n  Install OpenSpec (npm i -D openspec) and run `openspec init` now?', true); }
   finally { rl.close(); }
 }
 
 function help() {
   console.log(banner());
-  console.log(`render the agent orchestra from core/ + your project config.
+  console.log(`render the agent orchestra from ${dim('core/')} + your project config.
 
-  concertino init [--out=DIR]
+  ${cyan('concertino init')} ${dim('[--out=DIR]')}
       Interactive setup (TUI): write concertino.config.json, copy scripts + laws,
-      and scaffold the spec provider (openspec init, or a spec/ dir for 'none').
+      scaffold the spec provider, then auto-sync agent files.
       Flags:
-        --example=helio|generic   skip prompts; start from an example profile
-        --yes                     skip prompts; use generic defaults
-        --openspec-init           force openspec install + init (non-interactive)
-        --no-spec-setup           don't touch the spec provider
+        ${dim('--example=helio|generic')}   skip prompts; start from an example profile
+        ${dim('--yes')}                     skip prompts; use generic defaults + gate detection
+        ${dim('--openspec-init')}           force openspec install + init (non-interactive)
+        ${dim('--no-spec-setup')}           don't touch the spec provider
 
-  concertino sync [--config=PATH] [--out=DIR] [--harness=claude-code,codex] [--dry-run]
+  ${cyan('concertino sync')} ${dim('[--config=PATH] [--out=DIR] [--harness=claude-code,codex] [--dry-run]')}
       Render the harness files (Claude agents/command, Codex AGENTS.md/.codex)
       and regenerate .concertino.env from the config. Re-run after every edit.
 
-  concertino help
+  ${cyan('concertino update')} ${dim('<key=value> [...] [--config=PATH] [--out=DIR] [--dry-run]')}
+      Update one or more config fields using dot-notation, then re-sync.
+      Examples:
+        ${dim('concertino update models.skeptic=opus models.evaluator=haiku')}
+        ${dim('concertino update project.name=myapp budgets.executionCycles=5')}
 
-Docs: docs/quickstart.md · docs/config-reference.md · docs/adapting-to-your-project.md`);
+  ${cyan('concertino validate')} ${dim('[--config=PATH] [--out=DIR]')}
+      Check concertino.config.json for errors and warnings before syncing.
+
+  ${cyan('concertino diff')} ${dim('[--config=PATH] [--out=DIR] [--harness=...]')}
+      Show a unified diff between what sync would write and what's on disk.
+      Runs the full template render; nothing is written.
+
+  ${cyan('concertino doctor')} ${dim('[--config=PATH] [--out=DIR]')}
+      Check the environment: node, git, gh auth, claude CLI, Codex CLI (if
+      harness includes codex), Linear MCP (if ticket provider is linear),
+      Playwright (if ui.enabled).
+
+  ${cyan('concertino upgrade')} ${dim('[--out=DIR]')}
+      Scan generated files for stale concertino version markers and report
+      which need a re-sync.
+
+  ${cyan('concertino gates')} ${dim('[--run=NAME] [--config=PATH] [--out=DIR]')}
+      Without --run: list all configured gates with their commands.
+      With --run: execute that gate's command against the project root.
+
+  ${cyan('concertino eject')} ${dim('--role=<role> [--harness=claude-code|codex] [--config=PATH] [--out=DIR]')}
+      Print the fully-rendered agent file for a role to stdout. Respects
+      local template overrides in .concertino/roles/. Useful for debugging
+      exactly what an agent is reading.
+      Example: ${dim('concertino eject --role=executor | less')}
+
+  ${cyan('concertino migrate')} ${dim('[--config=PATH] [--out=DIR] [--dry-run]')}
+      Add any config fields that are missing (new defaults from a newer
+      version of concertino). Never overwrites existing values.
+
+  ${cyan('concertino completion')} ${dim('[fish|zsh|bash]')}
+      Print a shell completion script. Defaults to fish.
+      Usage: ${dim('concertino completion fish | source  # fish')}
+             ${dim('source <(concertino completion bash)  # bash')}
+
+  ${cyan('concertino --version')}
+
+  ${cyan('concertino help')}
+
+Docs: ${dim('docs/quickstart.md · docs/config-reference.md · docs/adapting-to-your-project.md')}`);
 }
 
 const args = parseArgs(process.argv.slice(2));
 const cmd = args._[0] || 'help';
+if (args.version) { console.log('concertino v' + VERSION); process.exit(0); }
 (async () => {
   try {
-    if (cmd === 'init') await cmdInit(args);
-    else if (cmd === 'sync') cmdSync(args);
+    if (cmd === 'init')           await cmdInit(args);
+    else if (cmd === 'sync')      cmdSync(args);
+    else if (cmd === 'update')    cmdUpdate(args);
+    else if (cmd === 'validate')  cmdValidate(args);
+    else if (cmd === 'diff')      cmdDiff(args);
+    else if (cmd === 'doctor')    cmdDoctor(args);
+    else if (cmd === 'upgrade')   cmdUpgrade(args);
+    else if (cmd === 'gates')      cmdGates(args);
+    else if (cmd === 'completion') cmdCompletion(args);
+    else if (cmd === 'eject')      cmdEject(args);
+    else if (cmd === 'migrate')    cmdMigrate(args);
     else help();
   } catch (e) {
-    console.error('error: ' + e.message);
+    console.error(red('error: ') + e.message);
     process.exit(1);
   }
 })();

@@ -63,17 +63,62 @@ npm install -g concertino     # then `concertino ...`
 In your project repo:
 
 ```bash
-# 1. Interactive setup: writes concertino.config.json, copies scripts + laws,
-#    and scaffolds the spec provider (openspec init, or a spec/ dir).
+# Interactive setup: writes concertino.config.json, copies scripts + laws,
+# auto-detects gates from package.json/Cargo.toml/go.mod/etc., and renders
+# the harness agent files immediately.
 concertino init
-
-# 2. Render the harness files from core + your config (re-run after every edit)
-concertino sync
 ```
 
 Then in Claude Code: `/concertino-deliver <TICKET_ID>`.
 
-Prefer a starting profile over the prompts? `concertino init --example=helio` (or `--example=generic`, or `--yes` for defaults).
+Prefer a starting profile over the prompts? `concertino init --example=helio` (or `--example=generic`, or `--yes` for non-interactive defaults with gate auto-detection).
+
+After editing `concertino.config.json`, re-render with `concertino sync`.
+
+## CLI reference
+
+```
+concertino init       [--out=DIR] [--example=helio|generic] [--yes]
+                      Interactive setup: config → scripts → agent files (all in one).
+
+concertino sync       [--config=PATH] [--out=DIR] [--harness=claude-code,codex] [--dry-run]
+                      Render harness files from core + config. Re-run after every edit.
+
+concertino update     <key=value> [...] [--config=PATH] [--out=DIR] [--dry-run]
+                      Update one or more config fields via dot-notation, then re-sync.
+                      Example: concertino update models.skeptic=opus budgets.executionCycles=5
+
+concertino validate   [--config=PATH] [--out=DIR]
+                      Validate concertino.config.json — structure, gate commands, model
+                      aliases, devServer health URLs, canonicalDocs paths.
+
+concertino diff       [--config=PATH] [--out=DIR] [--harness=...]
+                      Show a unified diff between what sync would write and what's on disk.
+
+concertino doctor     [--config=PATH] [--out=DIR]
+                      Check the environment: node, git identity, gh auth, claude CLI,
+                      codex CLI (if configured), Linear MCP, Playwright.
+
+concertino upgrade    [--out=DIR]
+                      Scan generated files for stale version markers; report which need
+                      a re-sync.
+
+concertino gates      [--run=NAME] [--config=PATH] [--out=DIR]
+                      List all configured gates, or run one by name.
+
+concertino eject      --role=<role> [--harness=claude-code|codex] [--config=PATH] [--out=DIR]
+                      Print the fully-rendered agent file for a role to stdout.
+                      Respects local overrides in .concertino/roles/. Good for debugging.
+
+concertino migrate    [--config=PATH] [--out=DIR] [--dry-run]
+                      Back-fill any config fields added in a newer version of concertino.
+                      Never overwrites existing values.
+
+concertino completion [fish|zsh|bash]
+                      Print a shell completion script (defaults to fish).
+
+concertino --version
+```
 
 See [`docs/quickstart.md`](docs/quickstart.md) to get running, [`docs/config-reference.md`](docs/config-reference.md) for every config field, [`docs/adapting-to-your-project.md`](docs/adapting-to-your-project.md) for the full walkthrough, and [`docs/harness-capabilities.md`](docs/harness-capabilities.md) for what differs between Claude Code and Codex.
 

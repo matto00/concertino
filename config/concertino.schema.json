@@ -122,6 +122,18 @@
         "debugAttempts": { "type": "integer", "default": 2 }
       }
     },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Model overrides per role. Accepts Claude Code model aliases (opus, sonnet, haiku) or full model IDs. All roles default to sonnet.",
+      "properties": {
+        "orchestrator": { "type": "string", "description": "Claude Code model alias — e.g. sonnet" },
+        "executor":     { "type": "string", "description": "Claude Code model alias — e.g. sonnet" },
+        "evaluator":    { "type": "string", "description": "Claude Code model alias — e.g. haiku (re-runs gates mechanically, cheaper is fine)" },
+        "skeptic":      { "type": "string", "description": "Claude Code model alias — e.g. opus (subjective design judgment; benefits from a stronger model)" },
+        "codex":        { "type": "string", "description": "OpenAI model ID for the Codex harness — e.g. codex-mini-latest, o4-mini, gpt-4.1" }
+      }
+    },
     "commitTrailer": { "type": "string", "description": "Trailer appended to commits.", "default": "" }
   },
   "$defs": {

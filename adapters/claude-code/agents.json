@@ -23,10 +23,11 @@
       "model": "sonnet",
       "color": "green",
       "description": "Orchestrates the {{project}} ticket-delivery workflow end-to-end: fetches the ticket, creates the worktree, drives Planning -> Execution -> Evaluation, delivers, and cleans up. Spawns the executor/evaluator/skeptic sub-agents. Invoked by /concertino-deliver.",
-      "baseTools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Agent", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList"],
+      "baseTools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Agent", "SendMessage", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList"],
       "usesUi": false,
       "mcpTools": {
-        "linear": ["mcp__linear__get_issue", "mcp__linear__save_issue", "mcp__linear__save_comment", "mcp__linear__list_issue_statuses"]
+        "linear": ["mcp__linear__get_issue", "mcp__linear__save_issue", "mcp__linear__save_comment", "mcp__linear__list_issue_statuses"],
+        "github": ["mcp__github__get_issue", "mcp__github__create_issue_comment", "mcp__github__update_issue", "mcp__github__list_issues"]
       }
     },
     "executor": {
@@ -44,7 +45,8 @@
       "baseTools": ["Read", "Write", "Bash", "Grep", "Glob"],
       "usesUi": true,
       "mcpTools": {
-        "linear": ["mcp__linear__get_issue"]
+        "linear": ["mcp__linear__get_issue"],
+        "github": ["mcp__github__get_issue"]
       }
     },
     "skeptic": {
@@ -54,7 +56,8 @@
       "baseTools": ["Read", "Write", "Bash", "Grep", "Glob"],
       "usesUi": true,
       "mcpTools": {
-        "linear": ["mcp__linear__get_issue"]
+        "linear": ["mcp__linear__get_issue"],
+        "github": ["mcp__github__get_issue"]
       }
     }
   }
