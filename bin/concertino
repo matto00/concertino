@@ -364,6 +364,7 @@ function envValue(v) { return "'" + String(v).replace(/'/g, "'\\''") + "'"; }
 function renderEnv(c) {
   const L = [];
   L.push('# concertino:sync v' + VERSION + ' — do not edit by hand.');
+  L.push('CONCERTINO_BASE_BRANCH=' + envValue(c.project.baseBranch || 'main'));
   L.push('CONCERTINO_WORKTREE_BASE=' + envValue(c.worktree.base));
   L.push('CONCERTINO_FRONTEND_PORT_BASE=' + c.worktree.ports.frontendBase);
   L.push('CONCERTINO_BACKEND_PORT_BASE=' + c.worktree.ports.backendBase);

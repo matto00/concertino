@@ -39,6 +39,7 @@ Derived from the ticket number so parallel orchestrators never collide:
 changing `concertino.config.json`.
 
 ```
+CONCERTINO_BASE_BRANCH          # from project.baseBranch, e.g. main
 CONCERTINO_WORKTREE_BASE        # e.g. .concertino/worktrees
 CONCERTINO_FRONTEND_PORT_BASE   # e.g. 5173
 CONCERTINO_BACKEND_PORT_BASE    # e.g. 8080
@@ -56,6 +57,17 @@ CONCERTINO_FRONTEND_TIMEOUT     # seconds
 
 Leave a `*_START` empty to skip that server (e.g. a frontend-only or CLI project
 with no backend).
+
+`CONCERTINO_BASE_REMOTE` (default `origin`) is not written by `sync` — set it in
+the environment if your base branch lives on a differently-named remote.
+
+## Branching base
+
+`setup-worktree.sh` fetches `<remote>/<baseBranch>` and cuts **new** branches from
+it, so a burst of sequential tickets doesn't branch from a local base that has
+fallen behind the remote. The fetch is non-fatal: offline or remote-less runs fall
+back to the local base branch, then to `HEAD`, with a `note:` line. Attaching to an
+**existing** branch never re-bases — resuming a ticket must not move its branch.
 
 ## Not (yet) scripted
 
