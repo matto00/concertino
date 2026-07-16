@@ -1,0 +1,53 @@
+name: Publish to npm
+
+# Publishes on a v* tag. Auth is npm Trusted Publishing (OIDC) — no NPM_TOKEN
+# secret exists, and nothing here bypasses the account's auth-and-writes 2FA.
+# The trusted publisher is configured on npmjs.com and is pinned to this repo
+# and this workflow filename; renaming this file breaks publishing until the
+# npm-side config is updated to match.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # mint the OIDC token npm exchanges for publish rights
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Node 22 bundles npm 10, which predates trusted publishing (needs 11.5.1+).
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      # A tag that disagrees with package.json would publish a version nobody
+      # can trace back to a ref. Fail loudly instead.
+      - name: Tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v${tag} != package.json ${pkg}"
+            exit 1
+          fi
+          echo "publishing ${pkg}"
+
+      # Zero-dependency CLI: no install step, nothing to lock.
+      - name: Self-test
+        run: npm test
+
+      - name: Publish
+        run: npm publish
