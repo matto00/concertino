@@ -174,10 +174,14 @@ Update `workflow-state.md` (PHASE: Cleanup).
 After the human confirms merge:
 
 1. Stop servers and remove the worktree via the canonical script (reads
-   ports/path from `workflow-state.md` if not in memory):
+   ports/path from `workflow-state.md` if not in memory). `cleanup.sh` is a
+   **destructive Phase-4 teardown** — it removes the live worktree and kills the
+   dev servers, so it requires the explicit `--phase4` opt-in and refuses to run
+   without it. **ONLY the orchestrator runs `cleanup.sh`, and ONLY here in
+   Phase 4 (post-merge)** — never during proposal, implementation, or review:
 
    ```bash
-   scripts/concertino/cleanup.sh "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"
+   scripts/concertino/cleanup.sh --phase4 "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"
    scripts/concertino/assert-phase.sh cleanup "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"
    ```
 

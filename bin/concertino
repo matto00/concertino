@@ -1209,7 +1209,7 @@ function cmdSync(args) {
   const harnesses = args.harness ? args.harness.split(',') : c.harnesses;
   console.log('concertino sync → ' + out + (dry ? dim('  (dry run)') : ''));
   console.log(dim('  harnesses: ') + harnesses.join(', '));
-  copyAssets(out, dry, false);
+  copyAssets(out, dry, true);
   write(path.join(out, 'scripts', 'concertino', '.concertino.env'), renderEnv(c), dry);
   if (harnesses.includes('claude-code')) emitClaude(c, out, dry);
   if (harnesses.includes('codex')) emitCodex(c, out, dry);

@@ -158,3 +158,6 @@ Do not reproduce the report — the orchestrator reads it from file.
 - **REFUTE must be specific and actionable** — name the file:line / AC / screenshot
   and what's wrong, never "feels off".
 - `BLOCKER` is for environmental failures only — code/design issues are Change Requests.
+- **Never invoke `scripts/concertino/cleanup.sh`** (or any teardown of the worktree).
+  It is a Phase-4 orchestrator-only, post-merge teardown; running it mid-review
+  destroys the live worktree (git-admin metadata + checkout) you are reviewing.
