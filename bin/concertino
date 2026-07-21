@@ -180,6 +180,7 @@ function withDefaults(c) {
     ? 'openspec/changes/<CHANGE_NAME>' : 'spec/changes/<CHANGE_NAME>';
   c.worktree.base = c.worktree.base || '.concertino/worktrees';
   c.worktree.envFiles = c.worktree.envFiles || [];
+  c.worktree.linkModules = c.worktree.linkModules || [];
   c.worktree.hooks = c.worktree.hooks || [];
   c.canonicalDocs = c.canonicalDocs || [];
   c.ui = c.ui || { enabled: false, tool: 'none' };
@@ -369,6 +370,7 @@ function renderEnv(c) {
   L.push('CONCERTINO_FRONTEND_PORT_BASE=' + c.worktree.ports.frontendBase);
   L.push('CONCERTINO_BACKEND_PORT_BASE=' + c.worktree.ports.backendBase);
   L.push('CONCERTINO_ENV_FILES=' + envValue(c.worktree.envFiles.join(' ')));
+  L.push('CONCERTINO_LINK_MODULES=' + envValue((c.worktree.linkModules || []).join(' ')));
   L.push('CONCERTINO_WORKTREE_HOOKS=' + envValue(c.worktree.hooks.join(';')));
   const ds = c.devServers || {};
   for (const side of ['backend', 'frontend']) {
