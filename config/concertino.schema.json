@@ -60,6 +60,7 @@
           }
         },
         "envFiles": { "type": "array", "items": { "type": "string" }, "description": "Uncommitted files copied into each worktree (e.g. backend/.env).", "default": [] },
+        "linkModules": { "type": "array", "items": { "type": "string" }, "description": "Module directories (relative to repo root, e.g. frontend/node_modules) to populate in each worktree so pre-commit hooks that need installed deps can run without `git commit -n`. Rendered as CONCERTINO_LINK_MODULES. Each dir is hardlink-copied (cp -al) from the main checkout when the lockfile at dirname(dir)/package-lock.json matches, else `npm ci` is run in dirname(dir). The lockfile is assumed at dirname(dir)/package-lock.json.", "default": [] },
         "hooks": { "type": "array", "items": { "type": "string" }, "description": "Commands run inside the worktree after creation (e.g. npx husky install).", "default": [] }
       }
     },

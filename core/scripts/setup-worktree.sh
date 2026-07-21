@@ -17,6 +17,10 @@ set -euo pipefail
 #   CONCERTINO_BASE_BRANCH       branch new worktree branches are cut from
 #   CONCERTINO_FRONTEND_PORT_BASE / CONCERTINO_BACKEND_PORT_BASE   port bases
 #   CONCERTINO_ENV_FILES         space-separated files to copy into the worktree
+#   CONCERTINO_LINK_MODULES      space-separated module dirs (e.g.
+#                                frontend/node_modules) to populate in the
+#                                worktree so pre-commit hooks that need installed
+#                                deps can run without `git commit -n`
 #   CONCERTINO_WORKTREE_HOOKS    ;-separated commands to run inside the worktree
 #
 # CONCERTINO_BASE_REMOTE (default: origin) may be set in the environment.
@@ -93,6 +97,60 @@ for f in ${CONCERTINO_ENV_FILES:-}; do
     cp -n "${REPO_ROOT}/${f}" "${WORKTREE_PATH}/${f}" 2>/dev/null || true
   else
     echo "note: ${REPO_ROOT}/${f} not found — app may need env set another way" >&2
+  fi
+done
+
+# Populate configured module directories (e.g. frontend/node_modules) so the
+# worktree can run the full pre-commit hook chain — Husky's frontend lint/test
+# step needs installed deps, and without this every backend-only ticket resorts
+# to `git commit -n`. Runs BEFORE the hooks loop so `npx husky install` (and any
+# other hook) sees populated modules.
+#
+# Best-effort: this script runs under `set -euo pipefail`, so every fallible
+# command below (`cmp -s`, `cp -al`, `npm ci`) is guarded to degrade to a
+# `note:` and continue — setup MUST still reach the READY lines.
+#
+# Per module dir M (parent P = dirname M, lockfile P/package-lock.json): prefer a
+# HARDLINK COPY (`cp -al`) of the main checkout's modules — near-instant, shared
+# inodes, near-zero disk — but the worktree's copy is an independent directory
+# entry, so a later `npm ci`/`rm -rf` in the worktree cannot corrupt the main
+# checkout. A symlink into the main checkout is intentionally NOT used: `npm ci`
+# in the worktree would recurse the link and wipe the shared main modules. Fall
+# back to `npm ci` when the lockfile differs, the main modules are missing, or
+# the hardlink copy fails (e.g. EXDEV — worktree on a different filesystem).
+for M in ${CONCERTINO_LINK_MODULES:-}; do
+  [ -z "$M" ] && continue
+  P="$(dirname "$M")"
+  MAIN_M="${REPO_ROOT}/${M}"
+  WT_M="${WORKTREE_PATH}/${M}"
+  MAIN_LOCK="${REPO_ROOT}/${P}/package-lock.json"
+  WT_LOCK="${WORKTREE_PATH}/${P}/package-lock.json"
+
+  # Idempotent: skip if the worktree already has it (real dir or existing link).
+  if [ -e "$WT_M" ] || [ -L "$WT_M" ]; then
+    echo "note: ${M} already present in worktree — skipping populate" >&2
+    continue
+  fi
+
+  did_hardlink=0
+  if [ -d "$MAIN_M" ] && [ -f "$MAIN_LOCK" ] && [ -f "$WT_LOCK" ] && cmp -s "$MAIN_LOCK" "$WT_LOCK"; then
+    # Unchanged deps → hardlink copy of the main modules.
+    if cp -al "$MAIN_M" "$WT_M" 2>/dev/null; then
+      did_hardlink=1
+    else
+      echo "note: hardlink copy of ${M} failed (cross-filesystem?) — falling back to npm ci" >&2
+    fi
+  fi
+
+  if [ "$did_hardlink" -eq 0 ]; then
+    # Lockfile drift, missing/absent main modules, or a failed hardlink copy →
+    # real install so the worktree gets its own correct modules.
+    if [ -f "$WT_LOCK" ]; then
+      ( cd "${WORKTREE_PATH}/${P}" && npm ci >/dev/null 2>&1 ) \
+        || echo "note: 'npm ci' for ${M} failed — worktree may need a manual install" >&2
+    else
+      echo "note: no ${P}/package-lock.json and no reusable main ${M} — leaving ${M} unpopulated" >&2
+    fi
   fi
 done
 
