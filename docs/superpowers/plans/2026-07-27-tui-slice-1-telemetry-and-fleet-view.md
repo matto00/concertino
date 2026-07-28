@@ -881,6 +881,23 @@ test('a dead window with no run.end is failed, not running', () => {
   assert.equal(run.status, 'failed');
 });
 
+test('an escalation on a delivered run is stale, with no window at all', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+    { t: 2, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator', question: 'q' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'delivered' },
+  ]), [], NOW);
+  assert.equal(run.status, 'done');
+  assert.equal(run.escalationStale, true);
+});
+
+test('a run with no window and no run.end is unknown', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'phase.enter', ticket: 'HEL-1', role: 'orchestrator', phase: 'Planning' },
+  ]), [], NOW);
+  assert.equal(run.status, 'unknown');
+});
+
 test('a dead window holding an escalation marks it stale', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator', question: 'q' },
@@ -1129,8 +1146,15 @@ function reduce(eventsByTicket, windows, now) {
     if (run.branch) run.changeName = run.branch.split('/')[1] || null;
     run.telemetry = deriveTelemetry(run);
     run.status = deriveStatus(run);
-    run.escalationStale = !!(run.escalation && run.window && !run.window.alive);
-    run.elapsedMs = run.startedAt != null ? (run.endedAt || now) - run.startedAt : null;
+    // An escalation on a run that has reached a terminal state is stale: nobody
+    // is waiting on the answer. Window death is only one way to get there — a
+    // run that raised an escalation and then delivered has no window at all,
+    // and rendering its question as live would send a human to answer nothing.
+    run.escalationStale = !!run.escalation
+      && (run.endStatus != null || !!(run.window && !run.window.alive));
+    run.elapsedMs = run.startedAt != null
+      ? (run.endedAt != null ? run.endedAt : now) - run.startedAt
+      : null;
     runs.push(run);
   }
 
@@ -1146,7 +1170,7 @@ module.exports = { reduce, TIER2_KINDS, TIER3_KINDS };
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `node --test test/reducer.test.js`
-Expected: PASS — 16 tests.
+Expected: PASS — 18 tests.
 
 - [ ] **Step 5: Commit**
 
