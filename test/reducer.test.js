@@ -89,6 +89,23 @@ test('a dead window with no run.end is failed, not running', () => {
   assert.equal(run.status, 'failed');
 });
 
+test('an escalation on a delivered run is stale, with no window at all', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+    { t: 2, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator', question: 'q' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'delivered' },
+  ]), [], NOW);
+  assert.equal(run.status, 'done');
+  assert.equal(run.escalationStale, true);
+});
+
+test('a run with no window and no run.end is unknown', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'phase.enter', ticket: 'HEL-1', role: 'orchestrator', phase: 'Planning' },
+  ]), [], NOW);
+  assert.equal(run.status, 'unknown');
+});
+
 test('a dead window holding an escalation marks it stale', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator', question: 'q' },
