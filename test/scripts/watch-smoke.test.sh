@@ -36,7 +36,13 @@ printf '{"dashboard":{"tmuxSession":"%s","launchCommand":"sleep 60 # {{TICKET}}"
 cleanup() {
   tmux kill-session -t "$SESSION" 2>/dev/null
   tmux kill-session -t "$KR_SESSION" 2>/dev/null
-  rm -rf "$WORK" "$KR_WORK"
+  # Defined further down (nounset-safe): a timeout/interrupt hitting this trap
+  # before either block runs must still clean up $SESSION/$KR_SESSION above
+  # rather than aborting on an unset variable under `set -u`.
+  [ -n "${LP2_SESSION:-}" ] && tmux kill-session -t "$LP2_SESSION" 2>/dev/null
+  [ -n "${Q_SESSION:-}" ] && tmux kill-session -t "$Q_SESSION" 2>/dev/null
+  [ -n "${H_SESSION:-}" ] && tmux kill-session -t "$H_SESSION" 2>/dev/null
+  rm -rf "$WORK" "$KR_WORK" "${LP2_WORK:-}" "${Q_WORK:-}" "${H_WORK:-}"
 }
 trap cleanup EXIT
 
@@ -103,6 +109,68 @@ grep -q 'press r to fetch' "$OUT" \
   && ok "a cold cache renders 'press r to fetch' with no network and no prior fetch" \
   || bad "a cold cache renders 'press r to fetch' with no network and no prior fetch" "no 'press r to fetch' in output"
 rm -rf "$LP_WORK"
+
+# --- Critical-1 regression: the launch pad refuses to (re-)select a ticket
+# it already shows as "▲ running" ------------------------------------------
+# Reproduced by hand against real tmux before this fix: `tmux new-window -n
+# CON-9` when a window of that name already exists succeeds and creates a
+# SECOND window with the same name, after which `capture-pane`/`kill-window
+# -t sess:CON-9` both fail — "can't find window", ambiguous target. CON-9 is
+# "already running" via a real tmux window in a dedicated session; the
+# launch pad's own ticket cache is seeded directly (no network) with a
+# ticket sharing that identifier — exactly the reviewer's failure scenario
+# (a ticket started by hand, then reachable again from the launch pad).
+LP2_SESSION="concertino-smoke-$$-lp2"
+LP2_WORK="$(mktemp -d)"
+tmux new-session -d -s "$LP2_SESSION" -n CON-9 'sleep 300'
+mkdir -p "$LP2_WORK/.concertino/cache"
+printf '{"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-9","title":"already-running-ticket","epicId":"e1","epicName":"Epic","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e1","name":"Epic","openCount":1}]}' \
+  "$(($(date +%s) * 1000))" > "$LP2_WORK/.concertino/cache/linear.json"
+cat > "$LP2_WORK/concertino.config.json" <<EOF
+{"dashboard":{"tmuxSession":"$LP2_SESSION","launchPad":{"enabled":true}},"ticketProvider":{"kind":"linear","idExample":"CON-1"}}
+EOF
+# N (open) · Tab (switch to tickets pane) · space (attempt select CON-9) ·
+# a (attempt select-all) · esc (back to fleet) · q (quit).
+printf 'N\t a\x1bq' | LINEAR_API_KEY=dummy-not-a-real-key timeout 10 node "$ROOT/bin/concertino" watch --out="$LP2_WORK" > "$OUT" 2>&1
+STATUS=$?
+check "exits 0 after N + attempted select + select-all + esc + q" "$STATUS" "0"
+grep -q '▲ running' "$OUT" \
+  && ok "the already-running ticket shows ▲ running in the launch pad" \
+  || bad "the already-running ticket shows ▲ running in the launch pad" "no '▲ running' in output"
+grep -q '\[x\] CON-9' "$OUT" \
+  && bad "refuses to select a ticket already showing ▲ running" "CON-9 was selected ([x]) despite being live — see launchpad.js's isSelectable" \
+  || ok "refuses to select a ticket already showing ▲ running (space and 'a' both no-op)"
+tmux kill-session -t "$LP2_SESSION" 2>/dev/null
+rm -rf "$LP2_WORK"
+
+# --- Minor 1 regression: 'h' harness cycling is not advertised when a
+# launchCommand override pins the actual command regardless -----------------
+# Before this fix, `harnesses.length < 2` was the only gate, so with BOTH a
+# launchCommand override and 2+ harnesses configured, 'h' still changed the
+# displayed harness label while the real command stayed pinned — a footer
+# hint promising something the key did not actually do.
+H_SESSION="concertino-smoke-$$-harness"
+H_WORK="$(mktemp -d)"
+mkdir -p "$H_WORK/.concertino/cache"
+printf '{"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-31","title":"harness-check","epicId":"e3","epicName":"Epic3","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e3","name":"Epic3","openCount":1}]}' \
+  "$(($(date +%s) * 1000))" > "$H_WORK/.concertino/cache/linear.json"
+cat > "$H_WORK/concertino.config.json" <<EOF
+{"dashboard":{"tmuxSession":"$H_SESSION","launchPad":{"enabled":true},"launchCommand":"sleep 60 # {{TICKET}}"},"harnesses":["claude","codex"],"ticketProvider":{"kind":"linear","idExample":"CON-1"}}
+EOF
+# N (open) · Tab (tickets pane) · space (select CON-31) · L (open plan) ·
+# esc (cancel plan) · esc (back to fleet) · q (quit).
+printf 'N\t L\x1b\x1bq' | LINEAR_API_KEY=dummy-not-a-real-key timeout 10 node "$ROOT/bin/concertino" watch --out="$H_WORK" > "$OUT" 2>&1
+STATUS=$?
+check "exits 0 after N + select + L + esc + esc + q" "$STATUS" "0"
+grep -q 'LAUNCH PLAN' "$OUT" \
+  && ok "the launch plan opened" \
+  || bad "the launch plan opened" "no LAUNCH PLAN in output"
+grep -q 'h harness' "$OUT" \
+  && bad "'h harness' is not advertised when a launchCommand override pins the real command" \
+       "'h harness' hint shown despite dashboard.launchCommand being set — the label could cycle while the command stayed pinned" \
+  || ok "'h harness' is not advertised when a launchCommand override pins the real command"
+tmux kill-session -t "$H_SESSION" 2>/dev/null
+rm -rf "$H_WORK"
 
 # --- `n` starts a run -------------------------------------------------------
 # Piped stdin delivers the whole script as ONE chunk, so this also covers the

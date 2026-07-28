@@ -3,6 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   renderLaunchPad, handleKey, render, inlineStatus, ticketsForEpic, windowStart,
+  isSelectable, selectableIdentifiers,
 } = require('../lib/ui/screens/launchpad');
 
 // eslint-disable-next-line no-control-regex
@@ -120,6 +121,47 @@ test('all three states render inline in the tickets pane', () => {
   assert.match(out, /CON-1.*Todo/);
   assert.match(out, /CON-2.*In Progress/);
   assert.match(out, /CON-3.*▲ running/);
+});
+
+// --- a ticket already `▲ running` can never be (re-)selected ---------------
+// The reviewer reproduced the consequence by hand: `tmux new-window -n CON-9`
+// when a window of that name already exists succeeds and creates a SECOND
+// window with the same name, after which `capture-pane`/`kill-window -t
+// sess:CON-9` both fail — ambiguous target, total loss of addressability.
+// isSelectable/selectableIdentifiers are the launch pad's own refusal, first
+// of two independent layers (queue.tick is the second).
+
+test('isSelectable is false for a ticket already showing "▲ running"', () => {
+  const t = ticket({ identifier: 'CON-9' });
+  assert.equal(isSelectable(t, [{ ticket: 'CON-9', status: 'running' }]), false);
+});
+
+test('isSelectable is true for a ticket with no live run, regardless of its Linear state', () => {
+  const t = ticket({ identifier: 'CON-9', state: { name: 'In Progress', type: 'started' } });
+  assert.equal(isSelectable(t, []), true);
+  assert.equal(isSelectable(t, [{ ticket: 'CON-9', status: 'done' }]), true);
+  assert.equal(isSelectable(t, [{ ticket: 'CON-9', status: 'failed' }]), true);
+});
+
+test('selectableIdentifiers drops only the tickets that are live, keeping the rest', () => {
+  const tickets = [
+    ticket({ identifier: 'CON-1' }),
+    ticket({ identifier: 'CON-9' }),
+    ticket({ identifier: 'CON-2' }),
+  ];
+  const runs = [{ ticket: 'CON-9', status: 'running' }];
+  assert.deepEqual(selectableIdentifiers(tickets, runs), ['CON-1', 'CON-2']);
+});
+
+test('space does not select a ticket already running — toggle-select is refused at the launch pad, not just the queue', () => {
+  // toggle-select itself only describes the keypress (watch.js owns the
+  // mutation and consults isSelectable before touching lp.selected) — this
+  // pins the contract isSelectable exists to serve: the action fires either
+  // way, but watch.js must check isSelectable before acting on it.
+  const t = ticket({ identifier: 'CON-9' });
+  const runs = [{ ticket: 'CON-9', status: 'running' }];
+  assert.deepEqual(handleKey(' ', { lp: lp({ pane: 'tickets' }), runs }), { type: 'toggle-select' });
+  assert.equal(isSelectable(t, runs), false, 'watch.js must refuse to add CON-9 to lp.selected');
 });
 
 // --- epics pane, including the unassigned bucket ----------------------------
