@@ -24,6 +24,11 @@ file — so they stay generic and the config is the single source of truth.
   the exception and exits non-zero in two cases: the escalation timed out, or
   the initial `escalation.raised` write failed — either way there is no answer
   coming, so the caller must fall back to escalating in chat.
+- `persist-evidence.sh` copies an artifact into
+  `<main checkout>/.concertino/runs/<TICKET>/evidence/` — unlike
+  `emit-event.sh`, it can genuinely fail (missing source, unwritable
+  destination) and does not swallow that failure, because a caller must never
+  build an `evidence`/`verdict` ref from a copy that was never actually made.
 
 ## Scripts
 
@@ -34,6 +39,7 @@ file — so they stay generic and the config is the single source of truth.
 | `assert-phase.sh`   | Postcondition gate per phase                               | `<setup\|servers\|delivery\|cleanup> <WORKTREE_PATH> [...]` |
 | `cleanup.sh`        | Stop servers, remove worktree                              | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>`                 |
 | `emit-event.sh`     | Append a dashboard event; `--await` blocks for an answer   | `<kind> [--await] k=v ...`                                  |
+| `persist-evidence.sh` | Copy an artifact into the main checkout, print a durable ref | `<TICKET_ID> <SOURCE_PATH>`                               |
 
 ## Ports
 

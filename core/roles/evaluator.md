@@ -150,12 +150,28 @@ Report: WORKTREE_PATH/<change-dir>/evaluation-<CYCLE>.md
 
 Do not reproduce the report — orchestrator and executor read it from file.
 
-Immediately after writing your report, emit the verdict for the dashboard:
+Immediately after writing your report, persist it so `ref` survives
+`cleanup.sh --phase4` removing this worktree, then emit the verdict for the
+dashboard using that durable path — never the raw `WORKTREE_PATH`-relative
+report path:
 
 ```bash
+scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/evaluation-<CYCLE>.md"
+# READY ref=<durable path>
 scripts/concertino/emit-event.sh verdict \
-  ticket=$TICKET_ID role=evaluator verdict=<PASS|FAIL|BLOCKER> ref=<report path>
+  ticket=$TICKET_ID role=evaluator verdict=<PASS|FAIL|BLOCKER> ref=<durable path from READY ref=>
 ```
+
+If `persist-evidence.sh` prints `FAIL`, emit `verdict` with no `ref` field at
+all — never fall back to the raw `WORKTREE_PATH`-relative report path, which
+is exactly the dangling reference this durable-copy step exists to prevent.
+A verdict must always be emitted; it just carries no `ref` in this case (the
+drill-down already renders a `verdict` with no `ref` as an empty detail
+column, not an error). Do not also emit a separate `evidence` event for this report:
+`verdict.ref` already carries the reference the drill-down needs, and a
+second event pointing at the identical file would duplicate it for no
+reader benefit (see `add-evidence-event-emission`'s design.md for the full
+reasoning) — don't "fix" this into duplication.
 
 ### Cycle {{var:budgets.executionCycles}} behavior
 

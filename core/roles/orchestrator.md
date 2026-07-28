@@ -117,6 +117,27 @@ Execute directly (no subagent).
      round you believed you fixed, do not burn further rounds** — present that item
      to the human as an `ESCALATION` immediately. If still REFUTE at the last round,
      escalate.
+6. **Persist evidence for the planning artifacts.** For each artifact just
+   written (`proposal.md`, `design.md`, `tasks.md`, and any spec delta files
+   under `specs/`):
+
+   ```bash
+   scripts/concertino/persist-evidence.sh "$TICKET_ID" "<path to the artifact>"
+   ```
+
+   For each call that prints `READY ref=<path>`, emit:
+
+   ```bash
+   scripts/concertino/emit-event.sh evidence \
+     ticket=$TICKET_ID role=orchestrator ref=<persisted path> label=<artifact name>
+   ```
+
+   If a call prints `FAIL` instead (e.g. the artifact was never written
+   because Planning escalated first), skip that artifact's `evidence` event
+   and continue — never block the phase transition on a failed persist.
+   (Evaluator and skeptic reports are handled at their own emission point,
+   not here — see the "durable `verdict.ref`, no redundant `evidence` event"
+   note in `evaluator.md`/`skeptic.md`.)
 
 Update `workflow-state.md` (PHASE: Execution, CYCLE: 1).
 

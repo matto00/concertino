@@ -20,7 +20,7 @@
     "node": ">=16"
   },
   "scripts": {
-    "test": "node --test && bash test/scripts/emit-event.test.sh && bash test/scripts/assert-phase.test.sh && bash test/scripts/start-servers.test.sh && bash test/scripts/watch-smoke.test.sh && bash test/scripts/doctor-artifacts.test.sh && bash test/scripts/ticket-pattern.test.sh && bash test/scripts/escalation-loop.test.sh",
+    "test": "node --test && bash test/scripts/emit-event.test.sh && bash test/scripts/persist-evidence.test.sh && bash test/scripts/assert-phase.test.sh && bash test/scripts/start-servers.test.sh && bash test/scripts/watch-smoke.test.sh && bash test/scripts/doctor-artifacts.test.sh && bash test/scripts/ticket-pattern.test.sh && bash test/scripts/escalation-loop.test.sh",
     "test:selftest": "node bin/concertino sync --out=/tmp/concertino-selftest --config=config/examples/helio.json --dry-run"
   },
   "keywords": [
