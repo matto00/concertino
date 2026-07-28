@@ -13,6 +13,20 @@ scratch** (the diff, the files, the running app) and deliberately ignoring your 
 earlier narrative when you reach a gate. See `docs/harness-capabilities.md` for the
 fidelity differences vs. Claude Code.
 
+**A note on never ending your turn with a sub-agent outstanding.** Claude Code's
+orchestrator role must never return control while a spawned or resumed sub-agent
+is still outstanding — free at the top level, fatal if the orchestrator is itself
+a sub-agent, since a suspended sub-agent is never resumed by an external event
+and its own children die with it. That failure mode **does not apply to this
+default sequential flow**: there is no spawn/suspend boundary here at all — you,
+the single thread reading this file, play every role yourself in turn, so there is
+no child to orphan. The one place the identical risk still exists is the
+*optional* worker-dispatch path (`.codex/agents/*.toml` + `spawn_agents_on_csv`,
+described in `docs/harness-capabilities.md`): if you use it to dispatch the
+executor or evaluator as a worker, you must wait for it to call
+`report_agent_job_result` before your own turn ends — returning early leaves the
+dispatched worker orphaned exactly as an unresumed Claude Code sub-agent would be.
+
 ## Iron Laws (binding — re-read at the point of use)
 
 These govern every role. The full text is in `.concertino/laws/`:

@@ -72,3 +72,46 @@ differs.
 > inter-agent messaging, the Codex adapter can render the full topology too — the
 > neutral `core/roles/` specs already describe it; only the adapter's resume block
 > would change.
+
+## Harness-behavior fact: a suspended agent is never resumed by an external event
+
+This is a fact about how these harnesses behave, not a workflow preference, so
+it's recorded here rather than only as an instruction inside
+`core/roles/orchestrator.md`.
+
+On Claude Code, a spawned sub-agent that suspends without an active caller
+waiting on it (via `SendMessage`, or a re-spawned `RESUME — do not start over`
+prompt) is **not woken by any external event**. There is no notification queue
+that reaches back into a suspended turn later. Its own spawned children, in
+turn, do not survive its turn ending either — they are orphaned along with it.
+
+That has opposite consequences depending on where the orchestrator role is
+running:
+
+- **As the top-level `/concertino-deliver` session**, this is harmless: the
+  session is the thing waiting, so it simply receives the sub-agent's result
+  whenever the tool call returns. Waiting is free.
+- **As a sub-agent itself** (dispatched by a fleet driver, a queue runner, or
+  another orchestrator), returning control before a spawned/resumed child
+  reports back is fatal: the now-suspended orchestrator is never resumed by
+  the child's completion, so it never sees the result, and the child it
+  spawned dies with it. CON-10 hit this twice in one delivery — the
+  orchestrator said it would "pause and wait for a notification" and the run
+  went dead until a human noticed and re-prompted it.
+
+The mitigation (see `core/roles/orchestrator.md`'s "Harness resume model" and
+its point-of-use reminders at each spawn/resume instruction): drive every
+phase to completion within the same turn regardless of context, and if the
+harness genuinely cannot wait for a sub-agent inline, poll for the artefact
+the sub-agent was told to produce (its report path, or a new commit on the
+branch) instead of returning control speculatively, or escalate.
+
+**Codex finding (see above):** the default sequential single-thread flow has
+no spawn/suspend boundary at all — the one thread reading `AGENTS.md` plays
+every role itself, so there is no child to orphan and this failure mode
+cannot reproduce there. The identical risk reappears only if the *optional*
+worker-dispatch path (`.codex/agents/*.toml` + `spawn_agents_on_csv`, noted
+above) is used: a dispatching thread that returns before a dispatched worker
+calls `report_agent_job_result` orphans that worker exactly as an unresumed
+Claude Code sub-agent would be. `adapters/codex/header.md` documents this same
+caution so the two stay in agreement.
