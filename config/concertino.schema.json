@@ -119,6 +119,7 @@
       "additionalProperties": false,
       "properties": {
         "tmuxSession": { "type": "string", "description": "tmux session name holding one window per run.", "default": "concertino" },
+        "launchCommand": { "type": "string", "description": "Command `n` runs in a new tmux window. `{{TICKET}}` is substituted with the ticket id. Defaults from the configured harness: `claude \"/concertino-deliver {{TICKET}}\"`, or `codex \"...\"` for a codex-only project." },
         "maxConcurrent": { "type": "integer", "minimum": 1, "description": "Reserved for slice 2; not yet read by anything. Cap on simultaneously running orchestrators when the batch launcher lands.", "default": 2 },
         "escalationTimeoutMinutes": { "type": "integer", "minimum": 0, "description": "Reserved for slice 2; not yet read by anything. `emit-event.sh --await` currently takes its timeout from CONCERTINO_ESCALATION_TIMEOUT_MIN, and no role invokes --await in this slice.", "default": 60 },
         "launchPad": {

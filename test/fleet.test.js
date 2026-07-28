@@ -333,3 +333,49 @@ test('no rendered line exceeds the terminal width', () => {
     assert.ok(visible(line).length <= 60, `line too long (${visible(line).length}): ${line}`);
   }
 });
+
+// --- the new-run prompt ----------------------------------------------------
+// The screen holds no prompt state of its own: watch.js passes it through
+// opts, so these are still pure (runs, opts) -> string assertions.
+
+test('the prompt line renders what has been typed so far', () => {
+  const out = plain(renderFleet([run({})], { ...OPTS, prompt: { value: 'CON-1', error: null } }));
+  assert.match(out, /new run/);
+  assert.match(out, /CON-1/);
+});
+
+test('an empty prompt still renders, so `n` visibly did something', () => {
+  const out = plain(renderFleet([run({})], { ...OPTS, prompt: { value: '', error: null } }));
+  assert.match(out, /new run/);
+});
+
+test('a failed launch is shown on the prompt, not swallowed', () => {
+  const out = plain(renderFleet([run({})], {
+    ...OPTS, prompt: { value: 'CON-9', error: 'could not start CON-9: tmux exited 1' },
+  }));
+  assert.match(out, /could not start CON-9/);
+  assert.match(out, /tmux exited 1/);
+});
+
+test('the footer advertises n only in fleet mode', () => {
+  const fleet = plain(renderFleet([run({})], OPTS));
+  assert.match(fleet, /n new run/);
+  assert.match(fleet, /↵ attach/);
+
+  // While prompting, `n` types an "n" — advertising it as an action would be
+  // advertising a key that is not bound, which this project treats as a defect.
+  const prompting = plain(renderFleet([run({})], { ...OPTS, prompt: { value: '', error: null } }));
+  assert.doesNotMatch(prompting, /n new run/);
+  assert.doesNotMatch(prompting, /↵ attach/);
+  assert.match(prompting, /esc cancel/);
+});
+
+test('a long typed value and a long error stay inside the terminal width', () => {
+  const out = renderFleet([run({})], {
+    cols: 50, selected: 0,
+    prompt: { value: 'CON-' + '9'.repeat(80), error: 'could not start it: ' + 'x'.repeat(120) },
+  });
+  for (const line of out.split('\n')) {
+    assert.ok(plain(line).length <= 50, `line too long (${plain(line).length}): ${line}`);
+  }
+});

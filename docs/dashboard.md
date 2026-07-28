@@ -15,7 +15,16 @@ survive the dashboard crashing, an ssh drop, or a closed laptop.
 | --- | --- |
 | `↵` | Attach to the selected run. `Ctrl-b d` detaches back to the dashboard |
 | `j` / `k` | Move the selection |
+| `n` | Start a new run — type a ticket id, `↵` to launch, `esc` to cancel |
 | `q` | Quit the dashboard (runs keep going) |
+
+## Starting runs
+
+A run only appears here if it lives in the dashboard's tmux session. Launching
+`/concertino-deliver` in an ordinary terminal gives you a run the dashboard
+cannot see or attach to — so start runs with `n`, which opens the window inside
+the session for you. If the launch fails, the prompt says so and stays open
+rather than taking the dashboard down with it.
 
 ## What it knows, and how much to trust it
 
@@ -48,11 +57,16 @@ trimmed.
 ```json
 "dashboard": {
   "tmuxSession": "concertino",
+  "launchCommand": "claude \"/concertino-deliver {{TICKET}}\"",
   "maxConcurrent": 2,
   "escalationTimeoutMinutes": 60,
   "launchPad": { "enabled": false }
 }
 ```
+
+`launchCommand` is what `n` runs; `{{TICKET}}` is replaced with what you typed.
+It defaults from `harnesses` — `claude "/concertino-deliver {{TICKET}}"`, or the
+`codex` equivalent for a codex-only project — so most projects never set it.
 
 `dashboard` is distinct from `ui`, which describes whether the *project under
 test* has a user interface and how the evaluator reviews it.

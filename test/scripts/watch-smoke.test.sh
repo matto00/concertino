@@ -21,7 +21,9 @@ fi
 # this must never touch a real user's dashboard session.
 SESSION="concertino-smoke-$$"
 WORK="$(mktemp -d)"
-printf '{"dashboard":{"tmuxSession":"%s"}}' "$SESSION" > "$WORK/concertino.config.json"
+# launchCommand is inert on purpose: `n` must never start a real harness here.
+printf '{"dashboard":{"tmuxSession":"%s","launchCommand":"sleep 60 # {{TICKET}}"}}' "$SESSION" \
+  > "$WORK/concertino.config.json"
 cleanup() { tmux kill-session -t "$SESSION" 2>/dev/null; rm -rf "$WORK"; }
 trap cleanup EXIT
 
@@ -44,6 +46,36 @@ check "exits 0 on q (echo, trailing newline)" "$STATUS" "0"
 timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" < /dev/null > "$OUT" 2>&1
 STATUS=$?
 check "exits 0 on immediate EOF (< /dev/null)" "$STATUS" "0"
+
+# --- `n` starts a run -------------------------------------------------------
+# Piped stdin delivers the whole script as ONE chunk, so this also covers the
+# per-key split: without it "nCON-777\rq" matches no key at all and the prompt
+# is unreachable. The trailing q is what strips: the non-TTY path drops trailing
+# newlines, which would eat the \r that submits.
+printf 'nCON-777\rq' | timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" > "$OUT" 2>&1
+STATUS=$?
+check "exits 0 after n + ticket + enter" "$STATUS" "0"
+tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx 'CON-777' \
+  && ok "n spawned a tmux window named for the ticket" \
+  || bad "n spawned a tmux window named for the ticket" "no CON-777 window in $SESSION"
+
+# A launch that fails must land on the prompt, not take the dashboard down: one
+# mistyped ticket cannot be allowed to lose sight of every other run. The shim
+# is a real tmux for everything except new-window, which spawn() calls first.
+REAL_TMUX="$(command -v tmux)"
+mkdir -p "$WORK/bin"
+{ echo '#!/usr/bin/env bash'
+  echo 'for a in "$@"; do [ "$a" = "new-window" ] && { echo "tmux: refused by test shim" >&2; exit 1; }; done'
+  echo "exec $REAL_TMUX \"\$@\""
+} > "$WORK/bin/tmux"
+chmod +x "$WORK/bin/tmux"
+
+printf 'nCON-778\rq' | PATH="$WORK/bin:$PATH" timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" > "$OUT" 2>&1
+STATUS=$?
+check "survives a failed launch" "$STATUS" "0"
+grep -q 'could not start CON-778' "$OUT" \
+  && ok "reports the failed launch on the prompt" \
+  || bad "reports the failed launch on the prompt" "no 'could not start CON-778' in output"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
