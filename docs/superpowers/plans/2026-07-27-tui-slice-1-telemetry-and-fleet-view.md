@@ -434,6 +434,9 @@ with:
 # interleave, and a per-call-site check is a guarantee waiting to be forgotten.
 # LC_ALL=C makes ${#line} count bytes rather than characters, which is what
 # PIPE_BUF actually cares about.
+# Returns non-zero if the append failed. Callers decide what that means:
+# ordinary telemetry ignores it (a lost event must never fail a delivery run),
+# but --await must not wait on an escalation it could not record.
 write_line() {
   local kind="$1" line
   line="$(build_line "$kind")"
@@ -442,20 +445,28 @@ write_line() {
     FIELDS=",\"truncated\":true"
     line="$(build_line "$kind")"
   fi
-  printf '%s\n' "$line" >> "$LOG" 2>/dev/null || return 0
+  printf '%s\n' "$line" >> "$LOG" 2>/dev/null || return 1
+  return 0
 }
 
-if [ "$AWAIT" -eq 1 ]; then
-  # An escalation always lands in the log as `escalation.raised`, whatever kind
-  # the caller passed, so the reducer has one thing to look for. Relabelling
-  # before the write is deliberate: the longer kind string has to be inside the
-  # byte cap, not sneaked past it afterwards.
-  write_line escalation.raised
-else
-  write_line "$KIND"
+if [ "$AWAIT" -eq 0 ]; then
+  write_line "$KIND" || true      # a lost event never fails the run
+  exit 0
 fi
 
-[ "$AWAIT" -eq 0 ] && exit 0
+# An escalation always lands in the log as `escalation.raised`, whatever kind
+# the caller passed, so the reducer has one thing to look for. Relabelling
+# before the write is deliberate: the longer kind string has to be inside the
+# byte cap, not sneaked past it afterwards.
+#
+# If that write fails there is nothing for a human to answer — the dashboard
+# will never show the escalation, so polling for an answer would block for the
+# full timeout on a question nobody was asked. Bail immediately instead and let
+# the caller fall back to presenting the escalation in chat, exactly as it does
+# on timeout.
+if ! write_line escalation.raised; then
+  exit 1
+fi
 
 # --- blocking escalation ---------------------------------------------------
 # Poll for the answer file the dashboard writes. This is the whole control
@@ -491,9 +502,31 @@ done
 # own escalation path (printing the question to chat). The dashboard is an
 # accelerator for escalations — never a new way for a run to hang.
 FIELDS=""
-write_line escalation.timeout
+write_line escalation.timeout || true
 exit 1
 ```
+
+Add one more test, alongside the oversized-answer block, covering the new
+bail-out path — an unwritable log must fail fast rather than block:
+
+```bash
+# --- --await bails immediately if it cannot record the escalation -----------
+REPO="$(new_repo)"
+mkdir -p "$REPO/.concertino/runs/HEL-11"
+: > "$REPO/.concertino/runs/HEL-11/events.jsonl"
+chmod 400 "$REPO/.concertino/runs/HEL-11/events.jsonl"
+START=$(date +%s)
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-11 question=q ) >/dev/null 2>&1
+RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+chmod 600 "$REPO/.concertino/runs/HEL-11/events.jsonl"
+check "--await exit 1 when it cannot log" "$RC" "1"
+check "--await bailed fast, did not poll"  "$([ "$ELAPSED" -le 3 ] && echo yes || echo no)" "yes"
+rm -rf "$REPO"
+```
+
+Note: this test is skipped when running as root, since root ignores the mode
+bits. Guard it with `if [ "$(id -u)" -ne 0 ]; then ... fi`.
 
 Then add two tests to `test/scripts/emit-event.test.sh`, before the final
 `echo "  $PASS passed..."` line, covering the cap on the paths this task adds:
@@ -520,7 +553,7 @@ rm -rf "$REPO"
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `bash test/scripts/emit-event.test.sh`
-Expected: PASS — `27 passed, 0 failed`. The timeout case returns in well under a second because `CONCERTINO_ESCALATION_TIMEOUT_MIN=0` puts the deadline in the past.
+Expected: PASS — `29 passed, 0 failed` (27 when running as root, where the unwritable-log test is skipped). The timeout case returns in well under a second because `CONCERTINO_ESCALATION_TIMEOUT_MIN=0` puts the deadline in the past.
 
 - [ ] **Step 5: Commit**
 
