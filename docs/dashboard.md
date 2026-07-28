@@ -30,6 +30,19 @@ pretending:
 
 A run you cannot see into looks conspicuously uninstrumented, never healthy.
 
+`idle` is tmux's own last-activity time for the window, so it is true on the
+first frame and survives restarting the dashboard — `idle 11m` means the run has
+produced nothing for 11 minutes, not that you have been watching for 11.
+
+Runs are grouped by outcome. `FAILED` is separate from `DONE` and coloured red:
+a run that ended `escalated` (a circuit breaker giving up) or whose window died
+must never read like one that shipped. A dead window has no end event, so it
+shows `window exited` rather than an elapsed time that keeps growing.
+
+The finished sections show only the most recent few, with `… and N more` for the
+rest, and the whole view is capped to the terminal height. `NEEDS YOU` is never
+trimmed.
+
 ## Configuration
 
 ```json
@@ -51,10 +64,16 @@ test* has a user interface and how the evaluator reviews it.
   events.jsonl    append-only event log — survives cleanup
 ```
 
-`emit-event.sh --await` also polls for an `answer.json` beside that log, which
-is how a human decision reaches a blocked agent. Nothing writes it yet — the
-dashboard side of the control plane lands in slice 2, and until then an
-escalation still resolves the way it always has, in chat.
+An escalation appears on the dashboard as a `NEEDS YOU` row, but you **answer it
+in the agent's own chat**, not here. The agent emits `escalation.raised` and then
+presents its `ESCALATION` block as it always has; the dashboard row is a signal
+that one is waiting, nothing more.
+
+`emit-event.sh` has an `--await` mode that instead polls for an `answer.json`
+beside the log — the eventual control plane. Nothing writes that file and no
+role invokes `--await` in this slice, so it would only ever time out; both land
+together in slice 2, along with the `escalationTimeoutMinutes` setting that
+bounds it.
 
 The log lives in the main checkout, not the worktree, so a run's history
 survives `cleanup.sh --phase4` removing the worktree. Tail it directly:

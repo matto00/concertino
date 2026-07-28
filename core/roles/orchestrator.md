@@ -222,19 +222,20 @@ fails silently.
 
 ### How to raise one
 
-Raise every escalation through the canonical script. It records the escalation
-for the dashboard and blocks until the human answers, returning their decision
-on stdout:
+Two steps. First record it — fire and forget, never blocking, never able to fail
+the run. This is what lights up `NEEDS YOU` on the dashboard:
 
 ```bash
-scripts/concertino/emit-event.sh escalation --await \
+scripts/concertino/emit-event.sh escalation.raised \
   ticket=$TICKET_ID role=orchestrator \
   question="<one sentence, the decision you need>" \
-  options=approve,deny
+  options=approve,deny || true
 ```
 
-If it exits non-zero it timed out — fall back to presenting the `ESCALATION`
-block in chat and waiting there. Never treat a timeout as an approval.
+Then present the `ESCALATION` block in chat and wait there for the answer,
+exactly as always. Answering from the dashboard arrives in a later slice; until
+then the event is only a signal that a human is needed, and the chat block is
+how they respond. Never treat silence as an approval.
 
 ### Resolves in-loop (no human)
 
