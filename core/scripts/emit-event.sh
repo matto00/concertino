@@ -132,6 +132,10 @@ build_line() {
 # interleave, and a per-call-site check is a guarantee waiting to be forgotten.
 # LC_ALL=C makes ${#line} count bytes rather than characters, which is what
 # PIPE_BUF actually cares about.
+#
+# Returns non-zero if the append failed. Callers decide what that means:
+# ordinary telemetry ignores it (a lost event must never fail a delivery run),
+# but --await must not wait on an escalation it could not record.
 write_line() {
   local kind="$1" line
   line="$(build_line "$kind")"
@@ -140,20 +144,28 @@ write_line() {
     FIELDS=",\"truncated\":true"
     line="$(build_line "$kind")"
   fi
-  printf '%s\n' "$line" >> "$LOG" 2>/dev/null || return 0
+  printf '%s\n' "$line" >> "$LOG" 2>/dev/null || return 1
+  return 0
 }
 
-if [ "$AWAIT" -eq 1 ]; then
-  # An escalation always lands in the log as `escalation.raised`, whatever kind
-  # the caller passed, so the reducer has one thing to look for. Relabelling
-  # before the write is deliberate: the longer kind string has to be inside the
-  # byte cap, not sneaked past it afterwards.
-  write_line escalation.raised
-else
-  write_line "$KIND"
+if [ "$AWAIT" -eq 0 ]; then
+  write_line "$KIND" || true      # a lost event never fails the run
+  exit 0
 fi
 
-[ "$AWAIT" -eq 0 ] && exit 0
+# An escalation always lands in the log as `escalation.raised`, whatever kind
+# the caller passed, so the reducer has one thing to look for. Relabelling
+# before the write is deliberate: the longer kind string has to be inside the
+# byte cap, not sneaked past it afterwards.
+#
+# If that write fails there is nothing for a human to answer — the dashboard
+# will never show the escalation, so polling for an answer would block for the
+# full timeout on a question nobody was asked. Bail immediately instead and let
+# the caller fall back to presenting the escalation in chat, exactly as it does
+# on timeout.
+if ! write_line escalation.raised; then
+  exit 1
+fi
 
 # --- blocking escalation ---------------------------------------------------
 # Poll for the answer file the dashboard writes. This is the whole control
@@ -189,5 +201,5 @@ done
 # own escalation path (printing the question to chat). The dashboard is an
 # accelerator for escalations — never a new way for a run to hang.
 FIELDS=""
-write_line escalation.timeout
+write_line escalation.timeout || true
 exit 1

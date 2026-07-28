@@ -144,5 +144,21 @@ check "answered line <= 4000 bytes" "$([ "$(printf '%s' "$ANSLINE" | wc -c)" -le
 check "answered line is valid JSON" "$(printf '%s' "$ANSLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{JSON.parse(s);console.log("yes")}catch{console.log("no")}})')" "yes"
 rm -rf "$REPO"
 
+# --- --await bails immediately if it cannot record the escalation -----------
+if [ "$(id -u)" -ne 0 ]; then
+REPO="$(new_repo)"
+mkdir -p "$REPO/.concertino/runs/HEL-11"
+: > "$REPO/.concertino/runs/HEL-11/events.jsonl"
+chmod 400 "$REPO/.concertino/runs/HEL-11/events.jsonl"
+START=$(date +%s)
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-11 question=q ) >/dev/null 2>&1
+RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+chmod 600 "$REPO/.concertino/runs/HEL-11/events.jsonl"
+check "--await exit 1 when it cannot log" "$RC" "1"
+check "--await bailed fast, did not poll"  "$([ "$ELAPSED" -le 3 ] && echo yes || echo no)" "yes"
+rm -rf "$REPO"
+fi
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
