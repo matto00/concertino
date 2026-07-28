@@ -1,0 +1,6 @@
+# Files Modified
+
+- `core/scripts/start-servers.sh` — moved `local T="${WORKTREE_PATH##*/}"` to the top of `start_one()` so it's in scope at both emit sites; added a `gate.result status=fail` emission (with `duration_ms` measured from `start_ts` and `first_error` describing the health URL/timeout) immediately before the existing `exit 1` on the health-wait timeout path, guarded with `|| true` and gated by the same inline ticket-name regex the pass-path emission already uses.
+- `scripts/concertino/start-servers.sh` — re-rendered via the worktree's own `bin/concertino sync` (must invoke the worktree's local binary directly, not the globally-symlinked `concertino` on `PATH`, which resolves to the main checkout's `core/` and would render stale content) so it stays byte-identical to `core/scripts/start-servers.sh`.
+- `test/scripts/start-servers.test.sh` — added a new case (`HEL-3`) exercising a server that never becomes healthy: asserts exit code `1`, an unchanged `FAIL backend did not become healthy at <url> within 1s (log: ...)` stderr line, a `gate.result` event with `status=fail`, a numeric non-negative `duration_ms`, and a non-empty `first_error` that includes the health URL.
+- `openspec/changes/emit-gate-result-on-fail/tasks.md` — checked off all completed tasks (sections 1-5).
