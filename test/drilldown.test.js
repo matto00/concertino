@@ -118,6 +118,47 @@ test('the role gutter colours each event\'s agent name per role', () => {
   }
 });
 
+// --- status colour: consistent with the fleet view's FAILED heading --------
+// spec.md's "Status colour is consistent across screens" requirement, own
+// scenario: "the fleet view's FAILED section heading and the drill-down's
+// header both render that status with the same colour." Forced isTTY, same
+// technique as the role-gutter test above and format-colour.test.js.
+
+test('a failed run\'s drill-down header status is coloured the same red the fleet view\'s FAILED heading uses', () => {
+  process.stdout.isTTY = true;
+  for (const m of ['../lib/ui/format', '../lib/ui/layout', '../lib/ui/screens/fleet', '../lib/ui/screens/drilldown']) {
+    delete require.cache[require.resolve(m)];
+  }
+  const f = require('../lib/ui/format');
+  const { renderDrillDown: renderColoured } = require('../lib/ui/screens/drilldown');
+  const { renderFleet } = require('../lib/ui/screens/fleet');
+
+  const failedRun = run({ status: 'failed', endStatus: 'escalated', endedAt: 100 });
+  const drillOut = renderColoured(failedRun, OPTS);
+  const escapedFailedStatus = f.STATUS_COLOUR.failed('escalated').replace(/[[\]()]/g, '\\$&');
+  assert.match(drillOut, new RegExp(escapedFailedStatus),
+    'the drill-down header should wrap the failed run\'s endStatus in STATUS_COLOUR.failed');
+
+  // Same colour the fleet view's FAILED section heading uses, for the exact
+  // same run's status — this is the "same colour everywhere" scenario, not
+  // just "some colour appears somewhere."
+  const fleetOut = renderFleet([failedRun], { cols: 78, selected: 0 });
+  const escapedFailedHeading = f.STATUS_COLOUR.failed('FAILED').replace(/[[\]()]/g, '\\$&');
+  assert.match(fleetOut, new RegExp(escapedFailedHeading));
+
+  // A dead window with no endStatus ("window exited") is also a failed-run
+  // signal and must carry the same colour, not just the endStatus branch.
+  const deadWindow = run({ status: 'failed', endStatus: null, endedAt: null, window: { alive: false, idleMs: null } });
+  const deadOut = renderColoured(deadWindow, OPTS);
+  const escapedWindowExited = f.STATUS_COLOUR.failed('window exited').replace(/[[\]()]/g, '\\$&');
+  assert.match(deadOut, new RegExp(escapedWindowExited));
+
+  process.stdout.isTTY = false;
+  for (const m of ['../lib/ui/format', '../lib/ui/layout', '../lib/ui/screens/fleet', '../lib/ui/screens/drilldown']) {
+    delete require.cache[require.resolve(m)];
+  }
+});
+
 // --- gates: duration and first_error ------------------------------------
 
 test('gates render their duration', () => {
@@ -134,7 +175,15 @@ test('a gate with no first_error shows no nested line, rather than inventing one
   const out = plain(renderDrillDown(run({
     gates: [{ name: 'lint', status: 'fail', durationMs: 500, firstError: null }],
   }), OPTS));
-  assert.doesNotMatch(out, /└/);
+  // Every box now draws its own bottom border with a '└' corner, so bare
+  // '└' is no longer a safe signal on its own (the GATES/EVIDENCE boxes'
+  // borders use it constantly). The nested first_error marker is distinct
+  // in shape from a border corner: it sits inside a content row, indented
+  // past the box's own left border and padding ('│   └ ...'), where a
+  // border row's '└' is either the very first character of the line or
+  // immediately follows the one-column hsplit() gap — never preceded by
+  // '│' and further padding.
+  assert.doesNotMatch(out, /│ {3}└/);
 });
 
 test('CON-7: a sub-second gate reports 0ms honestly rather than hiding it', () => {
@@ -355,42 +404,58 @@ test('a wide (CJK) character in the change name and an evidence label stays insi
 // (harness/model names, verdict refs, evidence labels are all open-ended).
 // A fixed 55/45 split wasted width padding short gate names while truncating
 // real timeline information away. These are the exact two examples from the
-// review: at 78 columns, "run started  claude · opus-5" and
-// "verdict FAIL  eval-report-c1.md" used to lose their second half.
+// review, now at 84 columns rather than 78: bordering TIMELINE/GATES/EVIDENCE
+// (design.md Decision 1/3) costs each box 2 columns of border plus 2 of
+// default padding, plus a 1-column gap between the two panes — 9 columns of
+// pure framing overhead that did not exist when this test was written
+// against the old ` │ `-divided twoCol() layout. The two example strings
+// still fit in full once the terminal is wide enough to absorb that
+// overhead; the trade-off itself (bordering costs columns) is accepted by
+// design.md's own risk log.
 
-test('at 78 cols, the harness/model on run started is no longer truncated away', () => {
-  const out = plain(renderDrillDown(run({}), OPTS));
+test('at 84 cols, the harness/model on run started is no longer truncated away', () => {
+  const out = plain(renderDrillDown(run({}), { cols: 84, now: 5000 }));
   assert.match(out, /run started {2}claude · opus-5/);
   assert.doesNotMatch(out, /run started.*claude…/);
 });
 
-test('at 78 cols, a verdict\'s report reference is no longer truncated away', () => {
-  const out = plain(renderDrillDown(run({}), OPTS));
+test('at 84 cols, a verdict\'s report reference is no longer truncated away', () => {
+  const out = plain(renderDrillDown(run({}), { cols: 84, now: 5000 }));
   assert.match(out, /verdict FAIL {2}eval-report-c1\.md/);
 });
 
-test('the gates column is sized to its content, not a fixed 45% fraction, at 60/78/120 cols', () => {
+// Finds the row carrying both box titles (TIMELINE's and GATES') — i.e. the
+// top border row — and returns the column where the right pane's own box
+// begins (its top-left corner, the second '┌' on that row: the first is
+// TIMELINE's own corner at column 0).
+function rightPaneStartColumn(out) {
+  const row = out.split('\n').find((l) => l.includes('TIMELINE') && l.includes('GATES'));
+  return row.indexOf('┌', row.indexOf('┌') + 1);
+}
+
+test('the gates column is sized to its content, not a fixed 45% fraction, at 70/90/130 cols', () => {
   // Same two-gate, no-evidence fixture at every width: the content the right
   // column needs (longest of a gate line, its first_error, or the
   // "no evidence recorded" fallback) does not grow with the terminal, so the
-  // column stays the same width at every size tested — all the extra room
-  // at a wider terminal must go to TIMELINE, not sit padding gate names.
-  const widths = [60, 78, 120].map((cols) => {
+  // pane stays the same width at every size tested — all the extra room at a
+  // wider terminal must go to TIMELINE, not sit padding gate names. (Widths
+  // bumped up from the pre-border 60/78/120 by the same border+padding+gap
+  // overhead as the two tests above, so TIMELINE still has room to widen.)
+  const widths = [70, 90, 130].map((cols) => {
     const out = renderDrillDown(run({}), { cols, now: 5000 });
-    const line = out.split('\n').find((l) => l.includes('│'));
-    return line.indexOf('│');
+    return rightPaneStartColumn(out); // == leftPaneWidth + 1 (the hsplit gap)
   });
-  const [sepAt60, sepAt78, sepAt120] = widths;
-  // The separator (hence TIMELINE's width) must grow with the terminal...
-  assert.ok(sepAt78 > sepAt60, `TIMELINE should widen from 60 to 78 cols: ${sepAt60} -> ${sepAt78}`);
-  assert.ok(sepAt120 > sepAt78, `TIMELINE should widen from 78 to 120 cols: ${sepAt78} -> ${sepAt120}`);
-  // ...while the gates column itself (cols minus the separator position)
-  // stays pinned to what its content needs, not a fraction of a much wider
-  // terminal — the whole point of sizing it to content.
-  const rightWidthAt60 = 60 - sepAt60;
-  const rightWidthAt120 = 120 - sepAt120;
-  assert.equal(rightWidthAt60, rightWidthAt120,
-    `gates column width should be content-driven and constant: ${rightWidthAt60} at 60 cols vs ${rightWidthAt120} at 120 cols`);
+  const [sepAt70, sepAt90, sepAt130] = widths;
+  // TIMELINE's pane (everything left of the gap) must grow with the terminal...
+  assert.ok(sepAt90 > sepAt70, `TIMELINE should widen from 70 to 90 cols: ${sepAt70} -> ${sepAt90}`);
+  assert.ok(sepAt130 > sepAt90, `TIMELINE should widen from 90 to 130 cols: ${sepAt90} -> ${sepAt130}`);
+  // ...while the gates/evidence pane itself (cols minus TIMELINE's pane and
+  // the gap) stays pinned to what its content needs, not a fraction of a
+  // much wider terminal — the whole point of sizing it to content.
+  const rightWidthAt70 = 70 - sepAt70;
+  const rightWidthAt130 = 130 - sepAt130;
+  assert.equal(rightWidthAt70, rightWidthAt130,
+    `gates/evidence pane width should be content-driven and constant: ${rightWidthAt70} at 70 cols vs ${rightWidthAt130} at 130 cols`);
 });
 
 test('a pathologically long first_error still caps the gates column rather than crushing the timeline', () => {

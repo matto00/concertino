@@ -174,7 +174,11 @@ test('space does not select a ticket already running — toggle-select is refuse
 test('a ticket title carrying an OSC (window-title) sequence is neutralised in the tickets pane', () => {
   const hostile = [ticket({ identifier: 'CON-1', title: 'innocuous' + '\x1b]0;pwned\x07' + '-title' })];
   const state = lp({ cache: cacheWith(hostile, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]) });
-  const out = renderLaunchPad(state, [], OPTS);
+  // Wider than OPTS.cols: bordering the tickets pane (design.md Decision 1)
+  // costs it border+padding columns that did not exist before this change,
+  // so the full title needs a little more room to stay untruncated — the
+  // assertion itself (the title survives whole) is unchanged.
+  const out = renderLaunchPad(state, [], { cols: 90, now: NOW });
   assert.doesNotMatch(out, /\x1b\]/);
   assert.match(plain(out), /innocuous-title/);
 });
@@ -293,6 +297,145 @@ test('windowStart clamps at the top', () => {
 
 test('windowStart clamps at the bottom', () => {
   assert.equal(windowStart(19, 20, 5), 15);
+});
+
+// --- focus vs. selection: the only screen with a real pane-switch key ------
+// design.md Decision 2 / spec.md's "Focus is visually unambiguous on multi-
+// pane screens": the launch pad is the ONLY screen where a keypress (Tab,
+// left/right arrow) routes to one of two panes, so it is the only screen
+// where the heavier/focused border set is ever drawn at all.
+
+test('the tickets pane is drawn with the heavier border set when it has focus', () => {
+  const out = renderLaunchPad(lp({ pane: 'tickets' }), [], OPTS);
+  assert.match(out, /┏/);
+  assert.match(out, /┓/);
+  assert.match(out, /┃/);
+});
+
+test('the epics pane is drawn with the heavier border set when it has focus, tickets plain', () => {
+  const out = renderLaunchPad(lp({ pane: 'epics' }), [], OPTS);
+  const lines = out.split('\n');
+  const topBorderRow = lines.find((l) => l.includes('EPICS'));
+  assert.match(topBorderRow, /^┏/, 'epics (focused) should use the heavy border');
+  assert.match(topBorderRow, /┌/, 'tickets (unfocused) should still use the plain border');
+});
+
+test('focus distinction survives a colourless terminal — different characters, not just colour', () => {
+  assert.ok(!process.stdout.isTTY, 'this test relies on running under node --test, where isTTY is false');
+  const ticketsFocused = renderLaunchPad(lp({ pane: 'tickets' }), [], OPTS);
+  const epicsFocused = renderLaunchPad(lp({ pane: 'epics' }), [], OPTS);
+  assert.notEqual(ticketsFocused, epicsFocused);
+  assert.match(ticketsFocused, /┃/);
+  assert.match(epicsFocused, /┏/);
+});
+
+// --- selected row recedes (dims) in the unfocused pane, never disappears ---
+
+// bold/dim are no-ops under `!isTTY` (see format.js's `wrap`), so these three
+// force isTTY the same way format-colour.test.js/drilldown.test.js's "role
+// gutter" test do: set it true, clear the require cache, require fresh,
+// reset it afterwards so nothing else in this file is affected.
+
+function withColour(fn) {
+  process.stdout.isTTY = true;
+  for (const m of ['../lib/ui/format', '../lib/ui/layout', '../lib/ui/screens/launchpad']) {
+    delete require.cache[require.resolve(m)];
+  }
+  const launchpad = require('../lib/ui/screens/launchpad');
+  try {
+    fn(launchpad);
+  } finally {
+    process.stdout.isTTY = false;
+    for (const m of ['../lib/ui/format', '../lib/ui/layout', '../lib/ui/screens/launchpad']) {
+      delete require.cache[require.resolve(m)];
+    }
+  }
+}
+
+test('the epic selection marker survives when focus moves to tickets, but recedes (dim, not bold)', () => {
+  withColour(({ renderLaunchPad: renderColoured }) => {
+    const tickets = [ticket({ identifier: 'CON-1' }), ticket({ identifier: 'CON-2' })];
+    const state = lp({
+      pane: 'tickets',
+      cache: cacheWith(tickets, [
+        { id: 'p1', name: 'Pipeline v2', openCount: 2 },
+        { id: 'p2', name: 'Second epic', openCount: 0 },
+      ]),
+      epicIndex: 0,
+    });
+    const out = renderColoured(state, [], OPTS);
+    const plainOut = plain(out);
+    // The marker for the current epic (index 0) is still present...
+    assert.match(plainOut, /▸ Pipeline v2/);
+    // ...but dimmed (2), never bold (1), since the epics pane does not have
+    // keyboard focus right now.
+    // The line also carries the focused (tickets) box's own bold+cyan
+    // BORDER colour, so the assertion below is scoped to the epic row's own
+    // wrapping, not "no bold escape anywhere on this joined hsplit() line".
+    const markerLine = out.split('\n').find((l) => plain(l).includes('▸ Pipeline v2'));
+    assert.match(markerLine, /\x1b\[2m ▸ Pipeline v2/, 'unfocused selection should be dim');
+    assert.doesNotMatch(markerLine, /\x1b\[1m ▸ Pipeline v2/, 'unfocused selection should not be bold');
+  });
+});
+
+test('the ticket selection marker survives when focus moves to epics, rather than disappearing outright', () => {
+  withColour(({ renderLaunchPad: renderColoured }) => {
+    const tickets = [ticket({ identifier: 'CON-1' }), ticket({ identifier: 'CON-2' })];
+    const state = lp({
+      pane: 'epics',
+      cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 2 }]),
+      ticketIndex: 1,
+    });
+    const out = renderColoured(state, [], OPTS);
+    // Before this change, the ticket row's marker itself was gated on
+    // `lp.pane === 'tickets'` — moving focus to epics made the current
+    // ticket selection vanish outright rather than recede (dim). It must
+    // still show.
+    const markerLine = out.split('\n').find((l) => plain(l).includes('CON-2'));
+    assert.match(plain(markerLine), /▸/, 'the ticket marker must survive, not disappear, when tickets loses focus');
+    assert.match(markerLine, /\x1b\[2m/, 'unfocused ticket selection should be dim');
+  });
+});
+
+test('the focused pane\'s own selection is bold, not dim', () => {
+  withColour(({ renderLaunchPad: renderColoured }) => {
+    const state = lp({ pane: 'tickets', ticketIndex: 0 });
+    const out = renderColoured(state, [], OPTS);
+    const markerLine = out.split('\n').find((l) => plain(l).includes('CON-1'));
+    assert.match(markerLine, /\x1b\[1m/, 'the focused pane\'s selection should be bold');
+  });
+});
+
+// --- snapshot widths, wide characters, borders + colour together (task 6.2) -
+// Same treatment as fleet.test.js's identical test: isTTY forced so both
+// panes' border colouring (the focused pane's bold+cyan) and the coloured
+// "▲ running" status are actually exercised, across several widths, with a
+// wide (CJK) epic/ticket title.
+
+test('at 60/80/100/120 cols, a bordered, coloured, wide-character (CJK) launch-pad render stays in budget', () => {
+  withColour(({ renderLaunchPad: renderColoured }) => {
+    const f = require('../lib/ui/format');
+    const tickets = [
+      ticket({
+        identifier: 'CON-1', title: '日本語のとても長いチケットタイトルのテストです',
+        epicId: 'p1', epicName: '日本語のエピック名',
+        state: { name: 'Todo', type: 'unstarted' },
+      }),
+      ticket({ identifier: 'CON-2', title: 'second-ticket', epicId: 'p1' }),
+    ];
+    const state = lp({
+      pane: 'tickets',
+      cache: cacheWith(tickets, [{ id: 'p1', name: '日本語のエピック名のテスト', openCount: 2 }]),
+    });
+    for (const cols of [60, 80, 100, 120]) {
+      const out = renderColoured(state, [{ ticket: 'CON-2', status: 'running' }], { cols, now: NOW });
+      assert.match(out, /\x1b\[/, `cols:${cols} should still be emitting colour under isTTY`);
+      for (const line of out.split('\n')) {
+        assert.ok(f.visibleLength(line) <= cols,
+          `cols:${cols} line is ${f.visibleLength(line)} wide: ${JSON.stringify(line)}`);
+      }
+    }
+  });
 });
 
 // --- router seam --------------------------------------------------------------
