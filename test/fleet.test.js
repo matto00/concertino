@@ -71,6 +71,11 @@ test('malformed events are surfaced in the footer', () => {
   assert.match(out, /2 malformed events/);
 });
 
+test('a queued-launch failure is surfaced in the footer — otherwise invisible, since nothing else watches the launch-pad queue', () => {
+  const out = renderFleet([run({})], { ...OPTS, queueNotice: 'could not start CON-9: tmux exited 1' });
+  assert.match(out, /could not start CON-9/);
+});
+
 test('an empty fleet renders a hint rather than a blank screen', () => {
   const out = renderFleet([], OPTS);
   assert.match(out, /no active runs/i);
@@ -368,15 +373,17 @@ test('a value that does not look like a ticket id is shown on the prompt as a va
   assert.match(out, /\$\(touch \/tmp\/x\)/);
 });
 
-test('the footer advertises n only in fleet mode', () => {
+test('the footer advertises n and N only in fleet mode', () => {
   const fleet = plain(renderFleet([run({})], OPTS));
   assert.match(fleet, /n new run/);
+  assert.match(fleet, /N launch pad/);
   assert.match(fleet, /↵ attach/);
 
   // While prompting, `n` types an "n" — advertising it as an action would be
   // advertising a key that is not bound, which this project treats as a defect.
   const prompting = plain(renderFleet([run({})], { ...OPTS, prompt: { value: '', error: null } }));
   assert.doesNotMatch(prompting, /n new run/);
+  assert.doesNotMatch(prompting, /N launch pad/);
   assert.doesNotMatch(prompting, /↵ attach/);
   assert.match(prompting, /esc cancel/);
 });
@@ -413,6 +420,18 @@ test('q and Ctrl-C quit', () => {
 
 test('n opens the prompt', () => {
   assert.deepEqual(handleKey('n', state({})), { type: 'open-prompt' });
+});
+
+// Capital N — the launch pad's sole entry point (see the comment on this
+// binding in fleet.js). Always bound, even when the launch pad's own feature
+// gate is off, so watch.js can route to a screen that explains why rather
+// than the key doing nothing at all.
+test('N opens the launch pad', () => {
+  assert.deepEqual(handleKey('N', state({})), { type: 'open-launchpad' });
+});
+
+test('while prompting, N types an "N" rather than opening the launch pad', () => {
+  assert.deepEqual(handleKey('N', promptState({ value: '', error: null })), { type: 'prompt-type', char: 'N' });
 });
 
 test('enter on a plain run attaches', () => {
