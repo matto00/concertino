@@ -2,6 +2,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { renderFleet } = require('../lib/ui/screens/fleet');
+const { reduce } = require('../lib/ui/reducer');
+
+// eslint-disable-next-line no-control-regex
+const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
 function run(over) {
   return Object.assign({
@@ -146,6 +150,158 @@ test('a tiny terminal still keeps every NEEDS YOU run', () => {
   assert.match(out, /HEL-1/);
   assert.match(out, /HEL-2/);
   assert.ok(out.split('\n').length <= 14);
+});
+
+// Two populated sections were never enough to catch this: a section trimmed to
+// zero used to still cost a title, a "… and N more" line and a trailing blank,
+// so every section had a floor of 3 rows the trim loop could not get below.
+// With all four sections populated that floor exceeded a short terminal and the
+// cap silently stopped capping — at rows:14 the screen rendered 16 lines and
+// scrolled the header and NEEDS YOU off the TOP.
+test('the total-height cap holds with all four sections populated', () => {
+  const runs = [
+    run({ ticket: 'HEL-338', status: 'needs-you',
+          escalation: { question: 'add zod@3?', options: ['approve', 'deny'], raisedAt: 1 } }),
+    run({ ticket: 'HEL-401', status: 'running' }),
+    run({ ticket: 'HEL-402', status: 'running' }),
+    run({ ticket: 'HEL-403', status: 'running' }),
+  ].concat(manyFinished(8, 'failed'))
+   .concat(manyFinished(8, 'done'));
+
+  for (const rows of [10, 12, 14, 16, 20, 24]) {
+    const out = renderFleet(runs, { cols: 78, rows, selected: 0 });
+    const lines = out.split('\n');
+    assert.ok(lines.length <= rows,
+      `rows:${rows} rendered ${lines.length} lines`);
+    assert.match(out, /NEEDS YOU/,
+      `rows:${rows} lost the NEEDS YOU heading`);
+    assert.match(out, /HEL-338/,
+      `rows:${rows} lost the escalation itself`);
+  }
+});
+
+// The one deliberate exception, kept explicit so nobody "fixes" it: NEEDS YOU
+// is pinned and never trimmed, so a fleet whose escalations alone overflow the
+// terminal overflows. Losing the header is the right thing to lose; silently
+// hiding a question somebody is blocked on is not.
+test('NEEDS YOU is never trimmed even when it alone overflows', () => {
+  const runs = Array.from({ length: 6 }, (_, i) =>
+    run({ ticket: 'HEL-' + (200 + i), status: 'needs-you',
+          escalation: { question: 'q' + i, options: [], raisedAt: 1 } }))
+    .concat(manyFinished(8, 'done'));
+
+  const out = renderFleet(runs, { cols: 78, rows: 10, selected: 0 });
+  for (let i = 0; i < 6; i++) assert.match(out, new RegExp('HEL-' + (200 + i)));
+});
+
+// --- reducer -> fleet, end to end -------------------------------------------
+// Every other test in this file hand-builds Run objects, so a field rename in
+// reducer.js would leave the whole suite green while the real screen rendered
+// blanks. These two drive the actual reducer output into the actual screen.
+
+function ev(t, kind, ticket, over) {
+  return Object.assign({ t, kind, ticket, project: 'helio', role: 'orchestrator' }, over);
+}
+
+// A fleet spanning every status the reducer can derive.
+function realisticLog() {
+  return new Map([
+    ['HEL-500', { malformed: 0, events: [
+      ev(1000, 'run.start', 'HEL-500', { branch: 'matt/add-zod' }),
+      ev(1100, 'phase.enter', 'HEL-500', { phase: 'Planning' }),
+      ev(1200, 'escalation.raised', 'HEL-500', { question: 'add zod@3?', options: 'approve,deny' }),
+    ] }],
+    ['HEL-505', { malformed: 2, events: [
+      ev(1050, 'run.start', 'HEL-505', { branch: 'matt/second-question' }),
+      ev(1150, 'escalation.raised', 'HEL-505', { question: 'drop the legacy column?', options: '' }),
+    ] }],
+    ['HEL-501', { malformed: 0, events: [
+      ev(900, 'run.start', 'HEL-501', { branch: 'matt/live-one' }),
+      ev(950, 'phase.enter', 'HEL-501', { phase: 'Execution', cycle: 1 }),
+      ev(960, 'gate.result', 'HEL-501', { gate: 'lint', status: 'pass' }),
+      ev(970, 'gate.result', 'HEL-501', { gate: 'test', status: 'fail' }),
+    ] }],
+    ['HEL-506', { malformed: 0, events: [
+      ev(880, 'run.start', 'HEL-506', { branch: 'matt/live-two' }),
+      ev(890, 'phase.enter', 'HEL-506', { phase: 'Evaluation', cycle: 2 }),
+    ] }],
+    // No window and no run.end: the reducer cannot tell what this is doing.
+    ['HEL-507', { malformed: 0, events: [
+      ev(870, 'run.start', 'HEL-507', { branch: 'matt/no-window' }),
+    ] }],
+    ['HEL-502', { malformed: 0, events: [
+      ev(800, 'run.start', 'HEL-502', { branch: 'matt/broke' }),
+      ev(850, 'run.end', 'HEL-502', { status: 'failed' }),
+    ] }],
+    ['HEL-503', { malformed: 0, events: [
+      ev(700, 'run.start', 'HEL-503', { branch: 'matt/shipped' }),
+      ev(750, 'run.end', 'HEL-503', { status: 'delivered' }),
+    ] }],
+    ['HEL-508', { malformed: 0, events: [
+      ev(600, 'run.start', 'HEL-508', { branch: 'matt/shipped-earlier' }),
+      ev(650, 'run.end', 'HEL-508', { status: 'delivered' }),
+    ] }],
+  ]);
+}
+
+const REAL_WINDOWS = [
+  { ticket: 'HEL-500', alive: true, idleMs: 0 },
+  { ticket: 'HEL-505', alive: true, idleMs: 0 },
+  { ticket: 'HEL-501', alive: true, idleMs: 0 },
+  { ticket: 'HEL-506', alive: true, idleMs: 120000 },
+];
+
+test('a real event log reduces and renders end to end', () => {
+  const runs = reduce(realisticLog(), REAL_WINDOWS, 2000);
+  const out = plain(renderFleet(runs, { cols: 100, selected: 0 }));
+
+  // The project comes off the events, not off a hand-built object.
+  assert.match(out, /helio/);
+
+  // changeName is derived in the reducer by splitting the branch — the single
+  // most likely thing to silently break, and invisible to hand-built fixtures.
+  assert.match(out, /add-zod/, 'branch-derived change name is missing');
+  assert.match(out, /live-one/);
+  assert.match(out, /shipped/);
+
+  // Every section actually appeared.
+  assert.match(out, /NEEDS YOU/);
+  assert.match(out, /RUNNING/);
+  assert.match(out, /FAILED/);
+  assert.match(out, /DONE/);
+
+  // Escalation text survives the trip from the log to the screen.
+  assert.match(out, /add zod@3\?/);
+  assert.match(out, /approve \/ deny/);
+
+  // Phase, cycle and gate tallies come from the fold, not from a fixture.
+  assert.match(out, /Execution/);
+  assert.match(out, /cycle 1/);
+  assert.match(out, /gates 1\/2/, 'gate pass/total tally is wrong');
+
+  // A run nobody can see into must not read as healthy.
+  assert.match(out, /phase unknown|no telemetry/);
+
+  // Malformed lines are surfaced, not swallowed.
+  assert.match(out, /2 malformed events/);
+});
+
+// watch.js attaches to runs[selected], where `selected` indexes fleet.js's flat
+// walk over its sections. Those two orderings agree only because the reducer's
+// sort happens to match the section composition — nothing enforces it, so
+// reordering sections would silently attach you to the wrong agent. This pins
+// the correspondence for every index, not just the first.
+test('the selection marker points at reduce()\'s run for every index', () => {
+  const runs = reduce(realisticLog(), REAL_WINDOWS, 2000);
+  assert.ok(runs.length >= 8, `expected the full fleet, got ${runs.length}`);
+
+  for (let n = 0; n < runs.length; n++) {
+    const out = plain(renderFleet(runs, { cols: 100, selected: n }));
+    const marked = out.split('\n').filter((l) => l.trimStart().startsWith('▸'));
+    assert.equal(marked.length, 1, `selected:${n} produced ${marked.length} markers`);
+    assert.ok(marked[0].includes(runs[n].ticket),
+      `selected:${n} should mark ${runs[n].ticket}, marked line was: ${marked[0]}`);
+  }
 });
 
 // --- only bound keys are advertised ----------------------------------------
