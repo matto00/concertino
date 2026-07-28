@@ -1358,8 +1358,17 @@ function createSession(name) {
       // respawn with the real one. Measured 0 losses in 200 trials, against ~1-13%
       // for the racy ordering.
       tmux(['new-window', '-d', '-t', name, '-n', ticket, 'while :; do sleep 3600; done']);
-      try { tmux(['set-window-option', '-t', target(ticket), 'remain-on-exit', 'on']); } catch (e) {}
-      tmux(['respawn-window', '-k', '-t', target(ticket), cmd]);
+      try {
+        tmux(['set-window-option', '-t', target(ticket), 'remain-on-exit', 'on']);
+        tmux(['respawn-window', '-k', '-t', target(ticket), cmd]);
+      } catch (e) {
+        // Never leave the holder running under this ticket's name. It would
+        // outlive the dashboard, and because tmux allows duplicate window names
+        // a retried spawn() would make target(ticket) ambiguous — capture, kill
+        // and attach could all land on the stale holder instead of the real run.
+        try { tmux(['kill-window', '-t', target(ticket)]); } catch (e2) {}
+        throw e;
+      }
     },
 
     kill(ticket) {
