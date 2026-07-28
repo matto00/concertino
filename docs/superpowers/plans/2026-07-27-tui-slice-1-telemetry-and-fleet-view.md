@@ -1195,9 +1195,11 @@ git commit -m "feat(dashboard): add pure reducer folding events and tmux state i
   - `Session`: `{ name, ensure(), listWindows() → [{ticket, alive}], capture(ticket) → string, spawn(ticket, cmd), kill(ticket), attach(ticket) }`
 
 The session keeps a placeholder window named `__concertino__` so it survives when
-every run has finished, and sets `remain-on-exit on` so a finished run's window
-stays visible as a dead pane rather than vanishing — that is what lets the
-reducer distinguish "died without `run.end`" from "never existed".
+every run has finished, and sets `remain-on-exit on` **per window in `spawn()`**
+so a finished run's window stays visible as a dead pane rather than vanishing —
+that is what lets the reducer distinguish "died without `run.end`" from "never
+existed". `remain-on-exit` is a window option; setting it on the session applies
+only to the window active at that moment, not to windows created later.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1315,9 +1317,6 @@ function createSession(name) {
         tmux(['new-session', '-d', '-s', name, '-n', PLACEHOLDER,
           'sh', '-c', 'while true; do sleep 3600; done']);
       }
-      // Without remain-on-exit a finished run's window disappears, and we lose
-      // the ability to tell "exited without run.end" from "never started".
-      try { tmux(['set-option', '-t', name, 'remain-on-exit', 'on']); } catch (e) {}
     },
 
     listWindows() {
@@ -1348,6 +1347,12 @@ function createSession(name) {
     spawn(ticket, cmd) {
       this.ensure();
       tmux(['new-window', '-d', '-t', name, '-n', ticket, cmd]);
+      // remain-on-exit is a WINDOW option, not a session one — setting it on the
+      // session only affects whichever window happens to be active at that
+      // instant, so it must be applied per window, here. Without it a finished
+      // run's window disappears entirely and we lose the ability to tell
+      // "exited without run.end" from "never started".
+      try { tmux(['set-window-option', '-t', target(ticket), 'remain-on-exit', 'on']); } catch (e) {}
     },
 
     kill(ticket) {
