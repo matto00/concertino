@@ -174,6 +174,18 @@ test('epics are derived from the fetched tickets with open counts', () => {
   ]);
 });
 
+test('a team with no projects yields a single unassigned bucket', () => {
+  // The real Concertino team fetch returns exactly this: no ticket carries a
+  // Linear project, so `epics` is one bucket with a null id and null name and
+  // the UI renders it as `─ unassigned ─`. A null name is the model's business;
+  // naming it here would leak presentation into the data layer.
+  const { epics } = linear.normalise('CON', [
+    issueNode({ id: 'a', identifier: 'CON-2', project: null }),
+    issueNode({ id: 'b', identifier: 'CON-3', project: null }),
+  ]);
+  assert.deepEqual(epics, [{ id: null, name: null, openCount: 2 }]);
+});
+
 test('project-less tickets collect into an unassigned bucket that sorts last', () => {
   const { epics } = linear.normalise('CON', [
     issueNode({ id: 'a', identifier: 'CON-1', project: null }),
