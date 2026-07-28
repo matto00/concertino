@@ -84,14 +84,18 @@ esac
 
 # The ticket id is not an argument here, so derive it from the worktree path —
 # worktrees are created at <base>/<branch> and branches end in /<TICKET-ID>.
+# A branch that doesn't follow that convention (`chore/cleanup-old-logs`) would
+# otherwise write this run's events into a different ticket's log, silently
+# splitting one run's history in two. Emitting nothing is the safe failure.
 GATE_TICKET="${WORKTREE_PATH##*/}"
+looks_like_ticket() { [[ "$1" =~ ^[A-Za-z#][A-Za-z0-9._-]*[0-9]$ ]]; }
 
 if [ "$FAILED" -ne 0 ]; then
-  CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
+  looks_like_ticket "$GATE_TICKET" && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
     "ticket=${GATE_TICKET}" "gate=phase:${PHASE}" "status=fail" || true
   exit 1
 fi
 
-CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
+looks_like_ticket "$GATE_TICKET" && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
   "ticket=${GATE_TICKET}" "gate=phase:${PHASE}" "status=pass" || true
 echo "PASS $PHASE"

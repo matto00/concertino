@@ -51,7 +51,8 @@ fi
 git -C "$REPO_ROOT" worktree prune
 
 # Phase-4 cleanup only runs post-merge, so reaching here means the run shipped.
-CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.end \
-  "ticket=${WORKTREE_PATH##*/}" "status=delivered" || true
+T="${WORKTREE_PATH##*/}"
+[[ "$T" =~ ^[A-Za-z#][A-Za-z0-9._-]*[0-9]$ ]] && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.end \
+  "ticket=${T}" "status=delivered" || true
 
 echo "READY cleaned worktree=${WORKTREE_PATH}"
