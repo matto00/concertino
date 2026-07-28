@@ -49,8 +49,12 @@ test* has a user interface and how the evaluator reviews it.
 ```
 .concertino/runs/<TICKET>/
   events.jsonl    append-only event log — survives cleanup
-  answer.json     written by the dashboard to answer an escalation
 ```
+
+`emit-event.sh --await` also polls for an `answer.json` beside that log, which
+is how a human decision reaches a blocked agent. Nothing writes it yet — the
+dashboard side of the control plane lands in slice 2, and until then an
+escalation still resolves the way it always has, in chat.
 
 The log lives in the main checkout, not the worktree, so a run's history
 survives `cleanup.sh --phase4` removing the worktree. Tail it directly:
