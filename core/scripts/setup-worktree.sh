@@ -164,6 +164,16 @@ if [ -n "${CONCERTINO_WORKTREE_HOOKS:-}" ]; then
   done
 fi
 
+# Tier-2 telemetry: the dashboard's run header, emitted by the script rather
+# than the agent so a run can never appear without a truthful identity.
+CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.start \
+  "ticket=${TICKET_ID}" \
+  "branch=${BRANCH}" \
+  "worktree=${WORKTREE_PATH}" \
+  "dev_port=${DEV_PORT}" \
+  "backend_port=${BACKEND_PORT}" \
+  "harness=${CONCERTINO_HARNESS:-unknown}" || true
+
 echo "READY worktree=${WORKTREE_PATH}"
 echo "READY branch=${BRANCH}"
 echo "READY dev_port=${DEV_PORT}"

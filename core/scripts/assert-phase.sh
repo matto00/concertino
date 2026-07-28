@@ -82,7 +82,16 @@ case "$PHASE" in
     ;;
 esac
 
+# The ticket id is not an argument here, so derive it from the worktree path —
+# worktrees are created at <base>/<branch> and branches end in /<TICKET-ID>.
+GATE_TICKET="${WORKTREE_PATH##*/}"
+
 if [ "$FAILED" -ne 0 ]; then
+  CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
+    "ticket=${GATE_TICKET}" "gate=phase:${PHASE}" "status=fail" || true
   exit 1
 fi
+
+CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
+  "ticket=${GATE_TICKET}" "gate=phase:${PHASE}" "status=pass" || true
 echo "PASS $PHASE"

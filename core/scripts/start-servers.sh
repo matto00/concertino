@@ -60,6 +60,8 @@ start_one() {
       exit 1
     fi
   fi
+  CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
+    "ticket=${WORKTREE_PATH##*/}" "gate=server:${label}" "status=pass" || true
   echo "READY ${label}=${url}"
 }
 

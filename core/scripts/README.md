@@ -17,6 +17,10 @@ file — so they stay generic and the config is the single source of truth.
 - Failure prints `FAIL <reason>` on stderr and exits non-zero.
 - `assert-phase.sh` prints `PASS <phase>` / `FAIL <reason>` — it is the
   postcondition gate the orchestrator runs before leaving a phase.
+- `emit-event.sh` appends one JSON line to
+  `<main checkout>/.concertino/runs/<TICKET>/events.jsonl`. It always exits 0
+  (except on `--await` timeout) so telemetry can never fail a run. Other scripts
+  call it with `|| true` for the same reason.
 
 ## Scripts
 
@@ -26,6 +30,7 @@ file — so they stay generic and the config is the single source of truth.
 | `start-servers.sh`  | Start backend/frontend dev servers, health-wait            | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>`                 |
 | `assert-phase.sh`   | Postcondition gate per phase                               | `<setup\|servers\|delivery\|cleanup> <WORKTREE_PATH> [...]` |
 | `cleanup.sh`        | Stop servers, remove worktree                              | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>`                 |
+| `emit-event.sh`     | Append a dashboard event; `--await` blocks for an answer   | `<kind> [--await] k=v ...`                                  |
 
 ## Ports
 
