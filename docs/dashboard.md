@@ -95,3 +95,96 @@ survives `cleanup.sh --phase4` removing the worktree. Tail it directly:
 ```bash
 tail -f .concertino/runs/HEL-334/events.jsonl | jq .
 ```
+
+## The ticket cache — built, not yet wired to any screen
+
+**Nothing in `concertino watch` reads this yet.** The launch pad's data layer —
+a read-only Linear client and an on-disk ticket cache — is in place, but no
+screen consumes it and no key opens it. Enabling `dashboard.launchPad.enabled`
+today changes nothing visible. This section documents the layer so the eventual
+screen has a contract to build against, and so the cache file is not a mystery
+if you find one on disk.
+
+```
+.concertino/cache/
+  linear.json     { fetchedAt, tickets: [...], epics: [...] }
+```
+
+### Why a cache at all
+
+The launch pad fetches **once, in bulk** — every open ticket with its full
+description and comment thread — rather than querying per keystroke. In order of
+importance:
+
+- **It makes a ticket viewer possible.** With descriptions and comments already
+  local, opening a ticket to read it is instant. Reading the ticket properly is
+  exactly what you want to do before handing it to an autonomous agent, and
+  fetching that lazily would make the browser feel like a web page instead of a
+  file.
+- **Instant, offline browsing.** Filtering and navigation are local reads.
+- **One visible staleness point.** The header shows `fetched 12m ago` and `r`
+  refetches. No background polling quietly burning API quota.
+
+The cache is **never** the source of truth for whether a ticket is already being
+worked on. That comes from the live event log and tmux, which is why a status
+column can say `▲ running` against a cache fetched an hour ago.
+
+### Sensitivity
+
+`.concertino/cache/` holds full ticket descriptions and comment threads —
+frequently more sensitive than anything else in the repo. It **must** be
+gitignored. Concertino's own `.gitignore` covers it via the `.concertino/` entry;
+if you narrow that entry in your project, add `.concertino/cache/` explicitly.
+
+### A cold cache is not an error
+
+Missing file, malformed JSON, a write truncated by a crash — all read as
+`{ fetchedAt: null, tickets: [], epics: [] }`. There is no error channel, because
+every caller would handle the error by showing the empty state. That is exactly
+how `lib/ui/store.js` treats a malformed event log. Writes go through a temp file
+and a rename, so a crash mid-write leaves the previous cache intact rather than a
+half one.
+
+### What "open" means
+
+Linear state types are `backlog`, `unstarted`, `started`, `completed` and
+`canceled`. The launch pad's `OPEN_STATE_TYPES` is the first three.
+
+`started` is the load-bearing inclusion. The launch pad shows an inline status
+column precisely so a ticket already *In Progress* in Linear is visible at
+selection time rather than only on the confirm screen — and you cannot warn about
+a ticket you never fetched. `completed` and `canceled` are excluded because there
+is nothing left to deliver.
+
+### Comments are capped
+
+A description is written once; a comment thread grows without limit. Comments are
+the only unbounded axis in the payload, so the fetch takes the first
+`COMMENT_LIMIT` (50) per ticket and records `commentCount` and
+`commentsTruncated`. A viewer must say "showing 50 of 214" — a silently short
+thread reads as a complete one.
+
+For scale: the `Concertino` team's six open tickets carry ~1.5–3.5 KB of
+description each and **zero** comments, so its cache is around 10 KB. A busy team
+is the case the cap exists for.
+
+### Configuration
+
+The launch pad is gated on **all three** of `dashboard.launchPad.enabled`,
+`ticketProvider.kind === "linear"`, and a non-empty `LINEAR_API_KEY`. The gate
+reports *which* condition failed, so the UI can explain itself rather than
+silently hiding.
+
+Which team to fetch comes from `ticketProvider.teamKey`:
+
+```json
+"ticketProvider": { "kind": "linear", "teamKey": "CON", "idExample": "CON-1" }
+```
+
+`LINEAR_TEAM_KEY` overrides it. If neither is set the key is guessed from the
+`idExample` prefix, which is a **guess** and labelled as one — `idExample` is a
+sample id for agent prose and is often a placeholder, and a wrong team key
+fetches cleanly and returns nothing.
+
+Read-only throughout. Concertino never writes ticket state from the dashboard;
+the orchestrator already owns that transition.

@@ -28,7 +28,8 @@
       "additionalProperties": false,
       "properties": {
         "kind": { "enum": ["linear", "github", "manual"] },
-        "idExample": { "type": "string", "description": "Sample ticket id, e.g. HEL-26, used in rendered examples." }
+        "idExample": { "type": "string", "description": "Sample ticket id, e.g. HEL-26, used in rendered examples." },
+        "teamKey": { "type": "string", "description": "Linear team key the launch pad fetches tickets for, e.g. CON. Distinct from idExample, which is only a sample id for agent prose and is often a placeholder. Falls back to the idExample prefix when unset; LINEAR_TEAM_KEY overrides both." }
       }
     },
     "specProvider": {
@@ -126,7 +127,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "enabled": { "type": "boolean", "description": "Reserved for slice 2; not yet read by anything. Will enable the ticket-provider launch pad, which also requires ticketProvider.kind=linear and LINEAR_API_KEY.", "default": false }
+            "enabled": { "type": "boolean", "description": "Enables the ticket-provider launch pad. Read by lib/ui/linear.js launchPadStatus(), which additionally requires ticketProvider.kind=linear and a non-empty LINEAR_API_KEY. The data layer (Linear client + ticket cache) is built; no screen consumes it yet, so turning this on changes nothing visible today.", "default": false }
           }
         }
       }

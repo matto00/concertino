@@ -356,19 +356,29 @@ test('an absent config does not throw', () => {
 
 // --- team key --------------------------------------------------------------
 
-test('the team key comes from the ticket id example', () => {
-  assert.equal(linear.teamKeyFromConfig({ ticketProvider: { idExample: 'HEL-334' } }, {}), 'HEL');
-  assert.equal(linear.teamKeyFromConfig({ ticketProvider: { idExample: 'con-1' } }, {}), 'CON');
+test('an explicit ticketProvider.teamKey wins over the id example', () => {
+  const r = linear.teamKeyFromConfig({ ticketProvider: { teamKey: 'con', idExample: 'ABC-123' } }, {});
+  assert.deepEqual(r, { key: 'CON', source: 'config' });
 });
 
-test('LINEAR_TEAM_KEY overrides the id example', () => {
-  assert.equal(
-    linear.teamKeyFromConfig({ ticketProvider: { idExample: 'HEL-334' } }, { LINEAR_TEAM_KEY: 'CON' }),
-    'CON',
-  );
+test('LINEAR_TEAM_KEY overrides the config', () => {
+  const r = linear.teamKeyFromConfig({ ticketProvider: { teamKey: 'HEL' } }, { LINEAR_TEAM_KEY: 'con' });
+  assert.deepEqual(r, { key: 'CON', source: 'env' });
 });
 
-test('an unparseable id example yields null rather than a bad key', () => {
-  assert.equal(linear.teamKeyFromConfig({ ticketProvider: { idExample: 'nonsense' } }, {}), null);
-  assert.equal(linear.teamKeyFromConfig({}, {}), null);
+test('the id example is a last-resort guess and is labelled as one', () => {
+  // Concertino's own config ships idExample "ABC-123" against a real CON team,
+  // so a key derived from it must never be presented as authoritative — it
+  // would fetch cleanly and return an empty launch pad with nothing to explain
+  // it.
+  const r = linear.teamKeyFromConfig({ ticketProvider: { idExample: 'ABC-123' } }, {});
+  assert.deepEqual(r, { key: 'ABC', source: 'idExample' });
+});
+
+test('an unparseable id example yields no key rather than a bad one', () => {
+  assert.deepEqual(linear.teamKeyFromConfig({ ticketProvider: { idExample: 'nonsense' } }, {}), {
+    key: null,
+    source: null,
+  });
+  assert.deepEqual(linear.teamKeyFromConfig({}, {}), { key: null, source: null });
 });

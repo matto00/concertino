@@ -1,4 +1,6 @@
-# Concertino working state (generated per-project, never committed to the plugin repo)
+# Concertino working state (generated per-project, never committed to the plugin repo).
+# This must keep covering .concertino/cache/, which holds full Linear ticket
+# descriptions and comment threads — frequently more sensitive than the code.
 .concertino/
 scripts/concertino/.concertino.env
 
