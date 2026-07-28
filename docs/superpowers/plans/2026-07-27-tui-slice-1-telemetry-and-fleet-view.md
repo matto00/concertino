@@ -1421,7 +1421,7 @@ Create `test/format.test.js`:
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { dur, truncate, padTo, bar } = require('../lib/ui/format');
+const { dur, truncate, padTo, bar, visibleLength } = require('../lib/ui/format');
 
 test('dur renders seconds, minutes, and hours', () => {
   assert.equal(dur(0), '0s');
@@ -1435,6 +1435,22 @@ test('truncate uses an ellipsis and never exceeds the width', () => {
   assert.equal(truncate('short', 10), 'short');
   assert.equal(truncate('panel-resize-handles', 10), 'panel-res…');
   assert.equal(truncate('panel-resize-handles', 10).length, 10);
+});
+
+test('truncate counts visible columns, not escape bytes', () => {
+  const coloured = '\x1b[33m' + 'x'.repeat(70) + '\x1b[0m';
+  const out = truncate(coloured, 60);
+  // Exactly the budget — the old raw-length version lost 5 columns to the
+  // escape bytes it was wrongly counting.
+  assert.equal(visibleLength(out), 60);
+});
+
+test('truncate never leaves an unterminated colour', () => {
+  const coloured = '\x1b[33m' + 'x'.repeat(70) + '\x1b[0m';
+  assert.ok(truncate(coloured, 60).endsWith('\x1b[0m'));
+  // ...and does not add a redundant reset when the cut lands after one.
+  const already = '\x1b[33mab\x1b[0m' + 'y'.repeat(70);
+  assert.equal(visibleLength(truncate(already, 10)), 10);
 });
 
 test('padTo pads and truncates to an exact width', () => {
@@ -1574,9 +1590,11 @@ const ROLE_COLOUR = {
   human: green,
 };
 
+// eslint-disable-next-line no-control-regex
+const ANSI = /\x1b\[[0-9;]*m/g;
+
 function visibleLength(s) {
-  // eslint-disable-next-line no-control-regex
-  return String(s).replace(/\x1b\[[0-9;]*m/g, '').length;
+  return String(s).replace(ANSI, '').length;
 }
 
 function dur(ms) {
@@ -1589,11 +1607,37 @@ function dur(ms) {
   return hours + 'h' + String(mins % 60).padStart(2, '0') + 'm';
 }
 
+// Truncates to n VISIBLE columns. Escape sequences are copied through with zero
+// width, so a coloured line is never sliced mid-escape — doing that both loses
+// content (raw length overcounts) and strips the reset, bleeding colour into the
+// rest of the terminal. Not observable under `node --test`, where isTTY is false
+// and no colour is emitted, so it has to be got right by construction.
 function truncate(s, n) {
   const str = String(s == null ? '' : s);
   if (n <= 0) return '';
-  if (str.length <= n) return str;
-  return str.slice(0, n - 1) + '…';
+  if (visibleLength(str) <= n) return str;
+
+  const budget = n - 1;          // leave a column for the ellipsis
+  let out = '';
+  let visible = 0;
+  let open = false;
+  let i = 0;
+
+  while (i < str.length && visible < budget) {
+    ANSI.lastIndex = i;
+    const m = ANSI.exec(str);
+    if (m && m.index === i) {    // an escape starts here: zero width
+      out += m[0];
+      open = m[0] !== '\x1b[0m';
+      i += m[0].length;
+      continue;
+    }
+    out += str[i];
+    visible++;
+    i++;
+  }
+
+  return out + '…' + (open ? '\x1b[0m' : '');
 }
 
 function padTo(s, n) {
@@ -1727,7 +1771,7 @@ module.exports = { renderFleet, phaseFraction };
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `node --test test/format.test.js test/fleet.test.js`
-Expected: PASS — 4 + 9 tests.
+Expected: PASS — 6 + 9 tests.
 
 - [ ] **Step 6: Commit**
 
