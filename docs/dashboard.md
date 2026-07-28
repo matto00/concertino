@@ -13,10 +13,16 @@ survive the dashboard crashing, an ssh drop, or a closed laptop.
 
 | Key | Action |
 | --- | --- |
-| `↵` | Attach to the selected run. `Ctrl-b d` detaches back to the dashboard |
+| `↵` | Attach to the selected run — or, on a row with a live escalation, open the escalation screen. `Ctrl-b d` detaches back to the dashboard |
 | `j` / `k` | Move the selection |
 | `n` | Start a new run — type a ticket id, `↵` to launch, `esc` to cancel |
 | `q` | Quit the dashboard (runs keep going) |
+
+On the escalation screen: a letter key per option (`a` approve, `d` deny, ...,
+derived from each option's first letter), `t` to type a free-text reply, `↵` to
+attach instead, `esc` to go back to the fleet. A **stale** escalation — the run
+that raised it has already ended or its window died — shows no answer keys at
+all; nobody is waiting on it.
 
 ## Starting runs
 
@@ -59,7 +65,7 @@ trimmed.
   "tmuxSession": "concertino",
   "launchCommand": "claude \"/concertino-deliver {{TICKET}}\"",
   "maxConcurrent": 2,
-  "escalationTimeoutMinutes": 60,
+  "escalationTimeoutMinutes": 8,
   "launchPad": { "enabled": false }
 }
 ```
@@ -67,6 +73,16 @@ trimmed.
 `launchCommand` is what `n` runs; `{{TICKET}}` is replaced with what you typed.
 It defaults from `harnesses` — `claude "/concertino-deliver {{TICKET}}"`, or the
 `codex` equivalent for a codex-only project — so most projects never set it.
+
+`escalationTimeoutMinutes` bounds how long `emit-event.sh --await` blocks before
+giving up and letting the orchestrator fall back to presenting the escalation in
+chat. `concertino sync` renders it into `CONCERTINO_ESCALATION_TIMEOUT_MIN` in
+`.concertino.env`. The default is deliberately short (**8 minutes**, not the
+hour it might sound like it should be): `--await` runs inside a single harness
+command call, and Claude Code caps a Bash call at roughly 10 minutes — a longer
+timeout risks the harness killing the wait before `--await` gets to log
+`escalation.timeout` and return control cleanly. Lower it further for a fleet
+you expect to check in on constantly; there is little reason to raise it.
 
 `dashboard` is distinct from `ui`, which describes whether the *project under
 test* has a user interface and how the evaluator reviews it.
@@ -78,16 +94,26 @@ test* has a user interface and how the evaluator reviews it.
   events.jsonl    append-only event log — survives cleanup
 ```
 
-An escalation appears on the dashboard as a `NEEDS YOU` row, but you **answer it
-in the agent's own chat**, not here. The agent emits `escalation.raised` and then
-presents its `ESCALATION` block as it always has; the dashboard row is a signal
-that one is waiting, nothing more.
+An escalation appears on the dashboard as a `NEEDS YOU` row, and you can now
+**answer it from here**: `↵` on the row opens the escalation screen, which
+renders the question, its options and who raised it. The orchestrator raises
+escalations with `emit-event.sh escalation --await`, which blocks — the agent
+is genuinely waiting on this bash call — until the dashboard writes
+`.concertino/runs/<TICKET>/answer.json`, at which point `--await` returns the
+decision, logs `escalation.answered` itself, and the row clears on the next
+poll. Two dashboards can safely race to answer the same escalation: the write
+uses `O_EXCL`, so the first one wins and the second is told "already answered"
+rather than silently overwriting it.
 
-`emit-event.sh` has an `--await` mode that instead polls for an `answer.json`
-beside the log — the eventual control plane. Nothing writes that file and no
-role invokes `--await` in this slice, so it would only ever time out; both land
-together in slice 2, along with the `escalationTimeoutMinutes` setting that
-bounds it.
+If `--await` times out (`escalationTimeoutMinutes`, see below) before anyone
+answers, it logs `escalation.timeout` and exits non-zero — which clears the row
+the same way an answer would, since the dashboard is no longer what the agent
+is waiting on. **A timeout is never an approval**: the orchestrator falls back
+to presenting the `ESCALATION` block in chat exactly as it always did, and
+records `escalation.answered` itself once that exchange settles it. (A
+different case, `escalationStale`, covers a run that ended or whose window died
+while still holding an un-timed-out escalation — that row shows `[stale]` and
+offers no answer keys, because nobody is waiting on it either.)
 
 The log lives in the main checkout, not the worktree, so a run's history
 survives `cleanup.sh --phase4` removing the worktree. Tail it directly:

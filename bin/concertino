@@ -21,6 +21,13 @@ const REPO = path.resolve(__dirname, '..');
 const CORE = path.join(REPO, 'core');
 const ADAPTERS = path.join(REPO, 'adapters');
 const CODEX_MODEL_FALLBACK = 'codex-mini-latest'; // used only if config has no models.codex
+// `emit-event.sh --await` blocks inside a single harness command call, which
+// has its own outer timeout (Claude Code caps a Bash call at ~10 minutes).
+// This has to stay comfortably under that or the harness kills the process
+// before --await's own timeout fires, and the run never gets a clean
+// `escalation.timeout` event or a chance to fall back to chat. Keep in sync
+// with the default in config/concertino.schema.json.
+const DEFAULT_ESCALATION_TIMEOUT_MIN = 8;
 let VERSION = '0.0.0';
 try { VERSION = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version; } catch (_) {}
 
@@ -372,6 +379,10 @@ function renderEnv(c) {
   L.push('CONCERTINO_ENV_FILES=' + envValue(c.worktree.envFiles.join(' ')));
   L.push('CONCERTINO_LINK_MODULES=' + envValue((c.worktree.linkModules || []).join(' ')));
   L.push('CONCERTINO_WORKTREE_HOOKS=' + envValue(c.worktree.hooks.join(';')));
+  const dash = c.dashboard || {};
+  const escalationTimeout = dash.escalationTimeoutMinutes != null
+    ? dash.escalationTimeoutMinutes : DEFAULT_ESCALATION_TIMEOUT_MIN;
+  L.push('CONCERTINO_ESCALATION_TIMEOUT_MIN=' + escalationTimeout);
   const ds = c.devServers || {};
   for (const side of ['backend', 'frontend']) {
     const s = ds[side];

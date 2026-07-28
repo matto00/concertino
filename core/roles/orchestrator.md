@@ -222,30 +222,37 @@ fails silently.
 
 ### How to raise one
 
-Two steps. First record it — fire and forget, never blocking, never able to fail
-the run. This is what lights up `NEEDS YOU` on the dashboard:
+Raise it as a single **blocking** call. This both lights up `NEEDS YOU` on the
+dashboard and waits for the human's decision — the dashboard's escalation
+screen writes the answer, and this call returns it directly:
 
 ```bash
-scripts/concertino/emit-event.sh escalation.raised \
+scripts/concertino/emit-event.sh escalation --await \
   ticket=$TICKET_ID role=orchestrator \
   question="<one sentence, the decision you need>" \
-  options=approve,deny || true
+  options=approve,deny
 ```
 
-Then present the `ESCALATION` block in chat and wait there for the answer,
-exactly as always. Answering from the dashboard arrives in a later slice; until
-then the event is only a signal that a human is needed, and the chat block is
-how they respond. Never treat silence as an approval.
+If your tool lets you set a per-call timeout, set it to the longest it allows —
+`--await`'s own timeout (`CONCERTINO_ESCALATION_TIMEOUT_MIN`, a few minutes by
+default — see `dashboard.escalationTimeoutMinutes`) is deliberately shorter than
+any reasonable harness command limit, so the wait itself is what ends this call,
+not an external cutoff killing it mid-poll.
 
-Once the human has answered, record that too — otherwise the row stays lit on
-the dashboard for the rest of the run, and a question that was settled hours ago
-still reads as one somebody is blocked on:
+- **Exit 0:** the human answered from the dashboard. The decision is on
+  stdout — use it and continue. The script has already recorded
+  `escalation.answered`; **do not emit it again**, or the log carries it twice.
+- **Non-zero exit: it timed out.** `--await` has already recorded
+  `escalation.timeout`. Fall back to chat exactly as before — present the
+  `ESCALATION` block and wait there for the human's reply. **A timeout is
+  never an approval — never treat it, or silence, as one.** Once you have the
+  answer from chat, record it yourself, since nothing else will:
 
-```bash
-scripts/concertino/emit-event.sh escalation.answered \
-  ticket=$TICKET_ID role=orchestrator \
-  answer="<their decision, one line>" || true
-```
+  ```bash
+  scripts/concertino/emit-event.sh escalation.answered \
+    ticket=$TICKET_ID role=orchestrator \
+    answer="<their decision, one line>" || true
+  ```
 
 ### Resolves in-loop (no human)
 
