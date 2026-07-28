@@ -25,11 +25,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 [ -f "${SCRIPT_DIR}/.concertino.env" ] && source "${SCRIPT_DIR}/.concertino.env"
 
-fail() { echo "FAIL $*" >&2; FAILED=1; }
+fail() {
+  local msg="$*"
+  echo "FAIL $msg" >&2
+  FAILED=1
+  # Record only the first failure message, trimmed at the source so an
+  # oversized reason can't blow emit-event.sh's whole-line byte cap and drop
+  # every other field on the gate.result line. fail() is always called as the
+  # RHS of a `check || fail ...`, so under `set -e` its own return status must
+  # stay 0 on every branch — otherwise a second-or-later call (where the `&&`
+  # short-circuits because FIRST_ERROR is already set) would be the last
+  # command in that AND-OR list and would kill the script right there.
+  if [ -z "$FIRST_ERROR" ]; then
+    FIRST_ERROR="${msg:0:200}"
+  fi
+  return 0
+}
 FAILED=0
+FIRST_ERROR=""
 
 # Resolve a health URL template ($DEV_PORT / $BACKEND_PORT in scope).
 resolve_url() { eval "echo \"$1\""; }
+
+START_TS="$(date +%s)"
 
 case "$PHASE" in
   setup)
@@ -90,12 +108,14 @@ esac
 GATE_TICKET="${WORKTREE_PATH##*/}"
 looks_like_ticket() { [[ "$1" =~ ^[A-Za-z#][A-Za-z0-9._-]*[0-9]$ ]]; }
 
+DURATION_MS=$(( ($(date +%s) - START_TS) * 1000 ))
+
 if [ "$FAILED" -ne 0 ]; then
   looks_like_ticket "$GATE_TICKET" && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
-    "ticket=${GATE_TICKET}" "gate=phase:${PHASE}" "status=fail" || true
+    "ticket=${GATE_TICKET}" "gate=phase:${PHASE}" "status=fail" "duration_ms=${DURATION_MS}" "first_error=${FIRST_ERROR}" || true
   exit 1
 fi
 
 looks_like_ticket "$GATE_TICKET" && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
-  "ticket=${GATE_TICKET}" "gate=phase:${PHASE}" "status=pass" || true
+  "ticket=${GATE_TICKET}" "gate=phase:${PHASE}" "status=pass" "duration_ms=${DURATION_MS}" || true
 echo "PASS $PHASE"
