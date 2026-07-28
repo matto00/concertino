@@ -461,7 +461,7 @@ exit 1
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `bash test/scripts/emit-event.test.sh`
-Expected: PASS — `24 passed, 0 failed`. The timeout case returns in well under a second because `CONCERTINO_ESCALATION_TIMEOUT_MIN=0` puts the deadline in the past.
+Expected: PASS — `25 passed, 0 failed`. The timeout case returns in well under a second because `CONCERTINO_ESCALATION_TIMEOUT_MIN=0` puts the deadline in the past.
 
 - [ ] **Step 5: Commit**
 
