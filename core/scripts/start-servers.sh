@@ -49,6 +49,7 @@ done
 start_one() {
   local label="$1" cwd="$2" cmd="$3" health="$4" timeout="$5" log="$6"
   [ -z "$cmd" ] && return 0
+  local start_ts; start_ts="$(date +%s)"
   local url; url="$(eval "echo \"$health\"")"
   if curl -sf "$url" >/dev/null 2>&1; then
     echo "note: ${label} already healthy at ${url}, reusing" >&2
@@ -60,9 +61,10 @@ start_one() {
       exit 1
     fi
   fi
+  local duration_ms=$(( ($(date +%s) - start_ts) * 1000 ))
   local T="${WORKTREE_PATH##*/}"
   [[ "$T" =~ ^[A-Za-z#][A-Za-z0-9_-]*[0-9]$ ]] && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
-    "ticket=${T}" "gate=server:${label}" "status=pass" || true
+    "ticket=${T}" "gate=server:${label}" "status=pass" "duration_ms=${duration_ms}" || true
   echo "READY ${label}=${url}"
 }
 
