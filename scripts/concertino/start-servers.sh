@@ -60,6 +60,9 @@ start_one() {
       exit 1
     fi
   fi
+  local T="${WORKTREE_PATH##*/}"
+  [[ "$T" =~ ^[A-Za-z#][A-Za-z0-9._-]*[0-9]$ ]] && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
+    "ticket=${T}" "gate=server:${label}" "status=pass" || true
   echo "READY ${label}=${url}"
 }
 

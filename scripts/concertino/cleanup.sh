@@ -36,6 +36,8 @@ WORKTREE_PATH="${1:?usage: cleanup.sh --phase4 <WORKTREE_PATH> <DEV_PORT> <BACKE
 DEV_PORT="${2:-}"
 BACKEND_PORT="${3:-}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 # Stop dev servers on this ticket's ports (no-op if already down).
@@ -47,5 +49,10 @@ if [ -d "$WORKTREE_PATH" ]; then
   git -C "$REPO_ROOT" worktree remove "$WORKTREE_PATH" --force
 fi
 git -C "$REPO_ROOT" worktree prune
+
+# Phase-4 cleanup only runs post-merge, so reaching here means the run shipped.
+T="${WORKTREE_PATH##*/}"
+[[ "$T" =~ ^[A-Za-z#][A-Za-z0-9._-]*[0-9]$ ]] && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.end \
+  "ticket=${T}" "status=delivered" || true
 
 echo "READY cleaned worktree=${WORKTREE_PATH}"
