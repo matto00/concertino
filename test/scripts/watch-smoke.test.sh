@@ -73,6 +73,37 @@ grep -q 'no telemetry' "$OUT" && ok "the drill-down reports the uninstrumented r
 grep -q 'SMOKE-1' "$OUT" && ok "esc returns to the fleet (SMOKE-1 renders again)" \
   || bad "esc returns to the fleet (SMOKE-1 renders again)" "no SMOKE-1 in output after esc"
 
+# --- N opens the launch pad against a cold cache, no network, no key -------
+# The launch pad's feature gate needs all three of dashboard.launchPad.enabled,
+# ticketProvider.kind=linear, and LINEAR_API_KEY. This config sets the first
+# two so the gate fails on the third, deterministically, without ever
+# touching the network — `env -u` strips LINEAR_API_KEY even if the invoking
+# shell happens to have one exported, so this assertion cannot flake against
+# a developer's own login environment. Per linear.js's launchPadStatus, the
+# failure must EXPLAIN itself rather than render nothing.
+LP_WORK="$(mktemp -d)"
+cat > "$LP_WORK/concertino.config.json" <<EOF
+{"dashboard":{"tmuxSession":"$SESSION","launchPad":{"enabled":true}},"ticketProvider":{"kind":"linear","idExample":"CON-1"}}
+EOF
+printf 'N\x1bq' | env -u LINEAR_API_KEY timeout 10 node "$ROOT/bin/concertino" watch --out="$LP_WORK" > "$OUT" 2>&1
+STATUS=$?
+check "exits 0 after N + esc + q (no key)" "$STATUS" "0"
+grep -q 'LINEAR_API_KEY' "$OUT" \
+  && ok "the gate failure explains itself (LINEAR_API_KEY) rather than showing nothing" \
+  || bad "the gate failure explains itself (LINEAR_API_KEY) rather than showing nothing" "no 'LINEAR_API_KEY' in output"
+
+# Now with a (dummy, never used for a real request since 'r' is never
+# pressed) key present, the gate passes and a cold cache — no
+# .concertino/cache/linear.json at all — renders the "press r to fetch" hint
+# rather than an empty list or a crash. Still no network call is made.
+printf 'N\x1bq' | LINEAR_API_KEY=dummy-not-a-real-key timeout 10 node "$ROOT/bin/concertino" watch --out="$LP_WORK" > "$OUT" 2>&1
+STATUS=$?
+check "exits 0 after N + esc + q (cold cache, key present)" "$STATUS" "0"
+grep -q 'press r to fetch' "$OUT" \
+  && ok "a cold cache renders 'press r to fetch' with no network and no prior fetch" \
+  || bad "a cold cache renders 'press r to fetch' with no network and no prior fetch" "no 'press r to fetch' in output"
+rm -rf "$LP_WORK"
+
 # --- `n` starts a run -------------------------------------------------------
 # Piped stdin delivers the whole script as ONE chunk, so this also covers the
 # per-key split: without it "nCON-777\rq" matches no key at all and the prompt
