@@ -1,0 +1,57 @@
+{
+  "harnesses": [
+    "claude-code"
+  ],
+  "project": {
+    "name": "concertino",
+    "baseBranch": "main"
+  },
+  "ticketProvider": {
+    "kind": "linear",
+    "idExample": "ABC-123"
+  },
+  "specProvider": {
+    "kind": "openspec",
+    "changeDir": "openspec/changes/<CHANGE_NAME>",
+    "scaffoldCmd": "openspec new change \"<CHANGE_NAME>\"",
+    "applyCmd": "openspec instructions apply --change \"<CHANGE_NAME>\" --json",
+    "validateCmd": "openspec validate --change \"<CHANGE_NAME>\"",
+    "archiveCmd": "openspec archive \"<CHANGE_NAME>\" --yes"
+  },
+  "worktree": {
+    "base": ".concertino/worktrees",
+    "ports": {
+      "frontendBase": 5173,
+      "backendBase": 8080
+    },
+    "envFiles": [],
+    "hooks": [],
+    "linkModules": []
+  },
+  "gates": [
+    {
+      "name": "test",
+      "when": "always",
+      "command": "npm test"
+    }
+  ],
+  "canonicalDocs": [],
+  "models": {
+    "orchestrator": "sonnet",
+    "executor": "sonnet",
+    "evaluator": "sonnet",
+    "skeptic": "sonnet",
+    "codex": "codex-mini-latest"
+  },
+  "ui": {
+    "enabled": false,
+    "tool": "none"
+  },
+  "budgets": {
+    "executionCycles": 3,
+    "skepticDesignRounds": 3,
+    "skepticFinalRounds": 2,
+    "debugAttempts": 2
+  },
+  "commitTrailer": "Co-Authored-By: Claude <noreply@anthropic.com>"
+}
