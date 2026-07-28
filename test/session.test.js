@@ -48,6 +48,10 @@ test('kill removes the window', skip, () => {
   assert.equal(s.listWindows().find((x) => x.ticket === 'HEL-4'), undefined);
 });
 
+test('kill of an absent window does not throw', skip, () => {
+  assert.doesNotThrow(() => s.kill('NOPE'));
+});
+
 test('capture of an unknown window is empty, not an error', skip, () => {
   assert.equal(s.capture('NOPE'), '');
 });
