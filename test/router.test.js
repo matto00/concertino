@@ -34,6 +34,18 @@ test('the escalation screen renders through the router', () => {
   assert.match(out, /\[a\]pprove/);
 });
 
+test('the drill-down screen renders through the router', () => {
+  const state = { mode: 'drilldown', runs: [fleetRun({ ticket: 'HEL-334', phase: 'Evaluation' })], drillTicket: 'HEL-334' };
+  const out = plain(router.render(state, { cols: 78, now: 5000 }));
+  assert.match(out, /HEL-334/);
+  assert.match(out, /Evaluation/);
+});
+
+test('handleKey dispatches to the drill-down screen', () => {
+  const state = { mode: 'drilldown', runs: [fleetRun({ ticket: 'HEL-334', status: 'running' })], drillTicket: 'HEL-334' };
+  assert.deepEqual(router.handleKey('k', state), { type: 'confirm-action', action: 'kill' });
+});
+
 test('an unknown mode degrades safely instead of throwing or rendering the fleet', () => {
   const state = { mode: 'launch-pad-not-built-yet', runs: [fleetRun({})] };
   assert.doesNotThrow(() => router.render(state, { cols: 78 }));
