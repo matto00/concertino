@@ -126,6 +126,30 @@ check "not inside the worktree" \
   "$([ -f "$REPO/wt/.concertino/runs/HEL-5/events.jsonl" ] && echo yes || echo no)" "no"
 rm -rf "$REPO"
 
+# --- identity fields stay strings even when they look numeric ---------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" note ticket=42 role=7 msg=hi ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/42/events.jsonl"
+check "numeric ticket stays a string" "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).ticket)' "$LOG")" "string"
+check "numeric role stays a string"   "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).role)' "$LOG")" "string"
+rm -rf "$REPO"
+
+# --- zero-padded numbers stay strings rather than emitting invalid JSON -----
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" note ticket=HEL-8 code=007 ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/HEL-8/events.jsonl"
+check "zero-padded value is valid JSON" "$(node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8").trim());console.log("yes")' "$LOG" 2>/dev/null || echo no)" "yes"
+check "zero-padded value is a string"   "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).code)' "$LOG")" "007"
+rm -rf "$REPO"
+
+# --- plain integers are still emitted unquoted ------------------------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" note ticket=HEL-9 cycle=0 n=-12 ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/HEL-9/events.jsonl"
+check "zero is a number"     "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).cycle)' "$LOG")" "number"
+check "negative is a number" "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).n)' "$LOG")" "-12"
+rm -rf "$REPO"
+
 # --- missing ticket is a no-op, never a failure -----------------------------
 REPO="$(new_repo)"
 ( cd "$REPO" && "$SCRIPT" note msg=orphan ) >/dev/null 2>&1
@@ -220,13 +244,23 @@ json_escape() {
   printf '%s' "$s" | tr -d '\000-\010\013\014\016-\037'
 }
 
+# Auto-unquote only well-formed JSON numbers. Leading zeros are excluded
+# deliberately: bare 007 is a JSON syntax error, and a reader would count the
+# whole event as malformed and drop it.
 json_value() {
   local v="$1"
-  if [[ "$v" =~ ^-?[0-9]+$ ]] || [ "$v" = "true" ] || [ "$v" = "false" ]; then
+  if [[ "$v" =~ ^-?(0|[1-9][0-9]*)$ ]] || [ "$v" = "true" ] || [ "$v" = "false" ]; then
     printf '%s' "$v"
   else
     printf '"%s"' "$(json_escape "$v")"
   fi
+}
+
+# The identity fields are string-typed by contract regardless of what they look
+# like — a ticket of "42" must stay "42", never become a JSON number, or every
+# consumer that treats ticket as a key breaks.
+json_string() {
+  printf '"%s"' "$(json_escape "$1")"
 }
 
 ROOT="$(main_checkout)" || exit 0
@@ -257,10 +291,10 @@ LOG="${RUN_DIR}/events.jsonl"
 build_line() {
   printf '{"t":%s,"kind":%s,"project":%s,"ticket":%s,"role":%s%s}' \
     "$(now_ms)" \
-    "$(json_value "$1")" \
-    "$(json_value "$PROJECT")" \
-    "$(json_value "$TICKET")" \
-    "$(json_value "$ROLE")" \
+    "$(json_string "$1")" \
+    "$(json_string "$PROJECT")" \
+    "$(json_string "$TICKET")" \
+    "$(json_string "$ROLE")" \
     "$FIELDS"
 }
 
@@ -303,7 +337,7 @@ create a placeholder test to work around this.
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `bash test/scripts/emit-event.test.sh`
-Expected: PASS — `14 passed, 0 failed`.
+Expected: PASS — `20 passed, 0 failed`.
 
 Run: `npm test`
 Expected: PASS.
@@ -427,7 +461,7 @@ exit 1
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `bash test/scripts/emit-event.test.sh`
-Expected: PASS — `18 passed, 0 failed`. The timeout case returns in well under a second because `CONCERTINO_ESCALATION_TIMEOUT_MIN=0` puts the deadline in the past.
+Expected: PASS — `24 passed, 0 failed`. The timeout case returns in well under a second because `CONCERTINO_ESCALATION_TIMEOUT_MIN=0` puts the deadline in the past.
 
 - [ ] **Step 5: Commit**
 
