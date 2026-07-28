@@ -1888,7 +1888,14 @@ async function watch(opts) {
   stdin.setEncoding('utf8');
 
   await new Promise((resolve) => {
-    stdin.on('data', (key) => {
+    stdin.on('data', (raw) => {
+      // In raw mode each keypress arrives as its own chunk, so an exact compare
+      // is right. Piped stdin is different — `echo q` delivers "q\n" — and an
+      // unmatched chunk would leave the process polling forever. Strip the
+      // trailing newline when we are not a TTY so the non-interactive smoke
+      // test cannot hang.
+      const key = stdin.isTTY ? raw : raw.replace(/[\r\n]+$/, '');
+
       if (key === 'q' || key === '\u0003') {          // q / Ctrl-C
         clearInterval(timer);
         if (stdin.isTTY) stdin.setRawMode(false);
@@ -2010,11 +2017,16 @@ required:
 ```bash
 tmux kill-session -t concertino 2>/dev/null
 tmux new-session -d -s concertino -n HEL-999 'sleep 300'
-echo q | node bin/concertino watch > /tmp/watch-smoke.txt 2>&1
+printf q | timeout 10 node bin/concertino watch > /tmp/watch-smoke.txt 2>&1
 echo "exit=$?"
 cat /tmp/watch-smoke.txt
 tmux kill-session -t concertino
 ```
+
+`printf` rather than `echo`, with `timeout` as a backstop: `echo` appends a
+newline, and an unrecognised chunk used to leave the loop polling forever. The
+key handler now strips a trailing newline on non-TTY stdin so either form works,
+but the smoke test should not rely on that to terminate.
 
 Expected: `exit=0`, and the captured output contains `HEL-999` and
 `no telemetry` — a live window with no event log is exactly the tier-1-only
