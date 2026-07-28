@@ -65,7 +65,24 @@ sync` after every config edit** — it's the single build step.
 | -------- | ------------------------------------- |
 | `concertino.config.json` | `.claude/agents/concertino-*.md`, `/concertino-deliver` |
 | your canonical docs (CONTRIBUTING.md, DESIGN.md, …) | the `AGENTS.md` Concertino block, `.codex/*` |
-| (advanced) the templates in the Concertino repo's `core/` | `scripts/concertino/.concertino.env` |
+| (advanced) the templates in the Concertino repo's `core/` | `scripts/concertino/*.sh`, `scripts/concertino/.concertino.env` |
 
-The procedure scripts in `scripts/concertino/*.sh` are copied once by `init` and
-are safe to read; they read their parameters from the generated `.concertino.env`.
+**`scripts/concertino/*.sh` are generated, not scaffolded.** `init` copies them
+from `core/scripts/` and every `concertino sync` re-copies them, overwriting
+whatever is on disk — so a hand-edit made after `init` survives only until the
+next `sync`. They're safe to *read* (they read their parameters from the
+generated `.concertino.env`), but if you need different behavior, don't edit
+them directly. Instead:
+
+- change verification/build behavior via `concertino.config.json`'s `gates`,
+  `devServers`, and `worktree.ports`,
+- run extra setup inside a fresh worktree via `worktree.hooks`
+  (`concertino.config.json`) — rendered into `.concertino.env` as
+  `CONCERTINO_WORKTREE_HOOKS`,
+- or, for changes that should apply to every project using Concertino, edit
+  the templates in this repo's `core/scripts/` and re-render.
+
+If `concertino doctor` warns that a script has drifted from `core`, that's
+this exact situation: something (usually a hand-edit) diverged from the
+generated copy. `concertino sync` will overwrite it back to the generated
+version — intentionally, and without asking.

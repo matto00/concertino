@@ -46,10 +46,23 @@ for f in ${CONCERTINO_ENV_FILES:-}; do
   fi
 done
 
+# Millisecond epoch. GNU date supports %3N; BSD/macOS date does not, so fall
+# back to node (already a hard requirement for Concertino). Duplicated from
+# emit-event.sh's now_ms() rather than sourced — these procedure scripts stay
+# standalone.
+now_ms() {
+  local d
+  d="$(date +%s%3N 2>/dev/null)"
+  case "$d" in
+    *N*|'') node -e 'process.stdout.write(String(Date.now()))' ;;
+    *) printf '%s' "$d" ;;
+  esac
+}
+
 start_one() {
   local label="$1" cwd="$2" cmd="$3" health="$4" timeout="$5" log="$6"
   [ -z "$cmd" ] && return 0
-  local start_ts; start_ts="$(date +%s)"
+  local start_ts; start_ts="$(now_ms)"
   local T="${WORKTREE_PATH##*/}"
   local url; url="$(eval "echo \"$health\"")"
   if curl -sf "$url" >/dev/null 2>&1; then
@@ -59,15 +72,15 @@ start_one() {
     if ! timeout "$timeout" bash -c \
         "until curl -sf '$url' >/dev/null 2>&1; do sleep 3; done"; then
       echo "FAIL ${label} did not become healthy at ${url} within ${timeout}s (log: ${log})" >&2
-      local fail_duration_ms=$(( ($(date +%s) - start_ts) * 1000 ))
-      [[ "$T" =~ ^[A-Za-z#][A-Za-z0-9._-]*[0-9]$ ]] && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
+      local fail_duration_ms=$(( $(now_ms) - start_ts ))
+      [[ "$T" =~ ^[A-Za-z#][A-Za-z0-9_-]*[0-9]$ ]] && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
         "ticket=${T}" "gate=server:${label}" "status=fail" "duration_ms=${fail_duration_ms}" \
         "first_error=${label} did not become healthy at ${url} within ${timeout}s" || true
       exit 1
     fi
   fi
-  local duration_ms=$(( ($(date +%s) - start_ts) * 1000 ))
-  [[ "$T" =~ ^[A-Za-z#][A-Za-z0-9._-]*[0-9]$ ]] && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
+  local duration_ms=$(( $(now_ms) - start_ts ))
+  [[ "$T" =~ ^[A-Za-z#][A-Za-z0-9_-]*[0-9]$ ]] && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
     "ticket=${T}" "gate=server:${label}" "status=pass" "duration_ms=${duration_ms}" || true
   echo "READY ${label}=${url}"
 }

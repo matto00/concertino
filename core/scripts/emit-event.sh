@@ -175,11 +175,47 @@ if ! write_line escalation.raised; then
   exit 1
 fi
 
+# A harness-imposed call timeout (Claude Code's Bash tool defaults to 120000ms
+# — well inside this script's own default wait) kills the process with SIGTERM
+# (Ctrl-C sends SIGINT), not by letting this script's own deadline elapse. With
+# no trap, that kill reaches no code below: the log is left holding
+# `escalation.raised` forever, with nothing to tell the dashboard the wait
+# ended. Record the truth — this wait ended without an answer — before dying.
+#
+# Exit directly rather than clearing the trap and re-raising the signal: a
+# script that reaches this point is, by construction, running as the
+# backgrounded half of `--await` (the caller invoked it as a blocking foreground
+# call, but under job-control-off — the normal case for a non-interactive
+# script — bash auto-ignores INT/QUIT for async jobs at spawn). `trap - INT`
+# would revert to exactly that inherited SIG_IGN, so a self-sent `kill -s INT
+# "$$"` silently no-ops and the process sails on to its 60-minute default
+# deadline instead of dying — the trap would then have recorded
+# escalation.timeout while the process itself kept running, which is worse
+# than doing nothing. A plain `exit` has no such failure mode.
+on_kill() {
+  FIELDS=""
+  write_line escalation.timeout || true
+  exit 1
+}
+trap on_kill TERM INT
+
 # --- blocking escalation ---------------------------------------------------
 # Poll for the answer file the dashboard writes. This is the whole control
 # plane: no keystroke injection, no detecting when a harness is at a prompt,
 # and identical on Codex or a local-model harness.
 ANSWER_FILE="${RUN_DIR}/answer.json"
+if [ -e "$ANSWER_FILE" ]; then
+  # A previous --await was killed after a human answered but before this
+  # script consumed it (exactly the scenario `on_kill` above now closes off).
+  # That answer may belong to a different, earlier escalation — acting on it
+  # here would apply a stale approval to a question nobody meant to answer,
+  # which is worse than discarding it. So: never consume it, but never vanish
+  # it silently either — record that it existed and was thrown away, so the
+  # dashboard and `tail -f` both show it rather than a human's decision
+  # disappearing with no trace.
+  FIELDS=""
+  write_line escalation.answer_discarded || true
+fi
 rm -f "$ANSWER_FILE" 2>/dev/null || true
 
 TIMEOUT_MIN="${CONCERTINO_ESCALATION_TIMEOUT_MIN:-60}"
@@ -194,6 +230,10 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
       } catch { process.stdout.write(""); }
     ' "$ANSWER_FILE" 2>/dev/null)"
     if [ -n "$ANSWER" ]; then
+      # Disarm before the final write: from here on we are exiting 0 with a
+      # real answer, so a signal landing in this last stretch must not
+      # overwrite that outcome with a spurious escalation.timeout.
+      trap - TERM INT
       # $ANSWER is free text a human typed at the escalation screen — unbounded
       # by construction, so this write needs the cap as much as any other.
       FIELDS=",\"answer\":$(json_value "$ANSWER")"
@@ -208,6 +248,9 @@ done
 # Timed out: tell the log, and exit non-zero so the caller falls back to its
 # own escalation path (printing the question to chat). The dashboard is an
 # accelerator for escalations — never a new way for a run to hang.
+# Disarm first: this is already writing escalation.timeout, so a signal
+# arriving in this last stretch must not race on_kill into writing it twice.
+trap - TERM INT
 FIELDS=""
 write_line escalation.timeout || true
 exit 1

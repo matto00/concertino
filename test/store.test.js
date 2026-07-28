@@ -74,3 +74,53 @@ test('readAll returns a map keyed by ticket', () => {
   assert.equal(all.size, 2);
   assert.equal(all.get('HEL-1').events.length, 1);
 });
+
+// --- writeAnswer: the control-plane write -----------------------------------
+// O_EXCL is the whole safety property here: two dashboards racing to answer
+// the same escalation must not both believe they succeeded.
+
+test('writes the decision as { answer: <value> }', () => {
+  const root = tmpRoot({ 'HEL-20': '' });
+  const result = store.writeAnswer(root, 'HEL-20', 'approve');
+  assert.equal(result.ok, true);
+  const written = JSON.parse(fs.readFileSync(store.answerPath(root, 'HEL-20'), 'utf8'));
+  assert.deepEqual(written, { answer: 'approve' });
+});
+
+test('creates the run directory if it does not already exist', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-store-'));
+  const result = store.writeAnswer(root, 'HEL-21', 'deny');
+  assert.equal(result.ok, true);
+  assert.equal(fs.existsSync(store.answerPath(root, 'HEL-21')), true);
+});
+
+test('a second write to an already-answered escalation is refused, not raced', () => {
+  const root = tmpRoot({ 'HEL-22': '' });
+  const first = store.writeAnswer(root, 'HEL-22', 'approve');
+  assert.equal(first.ok, true);
+
+  const second = store.writeAnswer(root, 'HEL-22', 'deny');
+  assert.equal(second.ok, false);
+  assert.equal(second.reason, 'answered');
+  assert.match(second.error, /already answered/);
+
+  // The first writer's decision survives — the second write must never have
+  // touched the file's contents.
+  const written = JSON.parse(fs.readFileSync(store.answerPath(root, 'HEL-22'), 'utf8'));
+  assert.deepEqual(written, { answer: 'approve' });
+});
+
+test('a write failure is reported, not thrown', () => {
+  if (process.getuid && process.getuid() === 0) return;  // root bypasses permission bits
+  const root = tmpRoot({ 'HEL-23': '' });
+  const dir = store.runDir(root, 'HEL-23');
+  fs.chmodSync(dir, 0o500);   // read + execute, no write
+  try {
+    const result = store.writeAnswer(root, 'HEL-23', 'approve');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'error');
+    assert.ok(result.error, 'expected a reported error message');
+  } finally {
+    fs.chmodSync(dir, 0o700);   // let the temp-dir cleanup remove it
+  }
+});

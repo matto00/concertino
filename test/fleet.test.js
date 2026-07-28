@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { renderFleet } = require('../lib/ui/screens/fleet');
+const { renderFleet, handleKey } = require('../lib/ui/screens/fleet');
 const { reduce } = require('../lib/ui/reducer');
 
 // eslint-disable-next-line no-control-regex
@@ -69,6 +69,72 @@ test('a stale escalation on a dead run is labelled stale', () => {
 test('malformed events are surfaced in the footer', () => {
   const out = renderFleet([run({ malformed: 2 })], OPTS);
   assert.match(out, /2 malformed events/);
+});
+
+test('a queued-launch failure is surfaced in the footer — otherwise invisible, since nothing else watches the launch-pad queue', () => {
+  const out = renderFleet([run({})], { ...OPTS, queueNotice: 'could not start CON-9: tmux exited 1' });
+  assert.match(out, /could not start CON-9/);
+});
+
+// --- an active queue is persistently visible, not just its failures --------
+// Before this fix, only queueNotice (a FAILURE string) ever reached the
+// footer — launching a five-ticket sequential batch and returning to the
+// fleet view showed one RUNNING row and nothing indicating four more were
+// queued.
+
+test('an active queue is shown persistently in the footer, not only on a failure', () => {
+  const queueState = { pending: ['CON-2', 'CON-3', 'CON-4'], inFlight: new Set(['CON-1']) };
+  const out = renderFleet([run({})], { ...OPTS, queueState });
+  assert.match(out, /1 running/);
+  assert.match(out, /3 queued/);
+});
+
+test('an idle/empty queue (nothing pending, nothing in flight) shows no queue line', () => {
+  const queueState = { pending: [], inFlight: new Set() };
+  const out = renderFleet([run({})], { ...OPTS, queueState });
+  assert.doesNotMatch(out, /queued/);
+});
+
+test('no queueState at all renders exactly as before', () => {
+  const out = renderFleet([run({})], OPTS);
+  assert.doesNotMatch(out, /queued/);
+});
+
+// --- quitting with a queue still active warns instead of discarding it -----
+
+test('q with tickets still queued asks for confirmation via handleKey, not an immediate quit', () => {
+  const s = state({ queueState: { pending: ['CON-2'], inFlight: new Set(['CON-1']) } });
+  assert.deepEqual(handleKey('q', s), { type: 'request-quit' });
+});
+
+test('q with an empty/idle queue still quits immediately — nothing would be lost', () => {
+  const s = state({ queueState: { pending: [], inFlight: new Set() } });
+  assert.deepEqual(handleKey('q', s), { type: 'quit' });
+});
+
+test('q with no queue at all quits immediately, unchanged from before this fix', () => {
+  assert.deepEqual(handleKey('q', state({})), { type: 'quit' });
+});
+
+test('the quit-confirmation warning renders the remaining count and the two ways out', () => {
+  const queueState = { pending: ['CON-2', 'CON-3'], inFlight: new Set(['CON-1']) };
+  const out = plain(renderFleet([run({})], { ...OPTS, queueState, quitConfirm: true }));
+  assert.match(out, /quit with 3 ticket/);
+  assert.match(out, /q confirm quit/);
+  assert.match(out, /any other key.*cancel/);
+});
+
+test('while the quit-confirmation is up, a repeated q actually quits', () => {
+  const s = state({ quitConfirm: true, queueState: { pending: [], inFlight: new Set() } });
+  assert.deepEqual(handleKey('q', s), { type: 'quit' });
+  assert.deepEqual(handleKey('\u0003', s), { type: 'quit' });
+});
+
+test('while the quit-confirmation is up, any other key cancels rather than acting normally', () => {
+  const s = state({ quitConfirm: true, queueState: { pending: ['CON-2'], inFlight: new Set() } });
+  assert.deepEqual(handleKey('j', s), { type: 'cancel-quit' });
+  assert.deepEqual(handleKey('\r', s), { type: 'cancel-quit' });
+  assert.deepEqual(handleKey('\x1b', s), { type: 'cancel-quit' });
 });
 
 test('an empty fleet renders a hint rather than a blank screen', () => {
@@ -332,4 +398,191 @@ test('no rendered line exceeds the terminal width', () => {
   for (const line of out.split('\n')) {
     assert.ok(visible(line).length <= 60, `line too long (${visible(line).length}): ${line}`);
   }
+});
+
+// --- the new-run prompt ----------------------------------------------------
+// The screen holds no prompt state of its own: watch.js passes it through
+// opts, so these are still pure (runs, opts) -> string assertions.
+
+test('the prompt line renders what has been typed so far', () => {
+  const out = plain(renderFleet([run({})], { ...OPTS, prompt: { value: 'CON-1', error: null } }));
+  assert.match(out, /new run/);
+  assert.match(out, /CON-1/);
+});
+
+test('an empty prompt still renders, so `n` visibly did something', () => {
+  const out = plain(renderFleet([run({})], { ...OPTS, prompt: { value: '', error: null } }));
+  assert.match(out, /new run/);
+});
+
+test('a failed launch is shown on the prompt, not swallowed', () => {
+  const out = plain(renderFleet([run({})], {
+    ...OPTS, prompt: { value: 'CON-9', error: 'could not start CON-9: tmux exited 1' },
+  }));
+  assert.match(out, /could not start CON-9/);
+  assert.match(out, /tmux exited 1/);
+});
+
+// A ticket that fails shape validation (see lib/ui/ticket.js) is reported
+// through the same error path as a failed launch — no separate mechanism —
+// and the typed value stays on the line so the user can fix it in place.
+test('a value that does not look like a ticket id is shown on the prompt as a validation error', () => {
+  const out = plain(renderFleet([run({})], {
+    ...OPTS, prompt: { value: '$(touch /tmp/x)', error: 'not a ticket id' },
+  }));
+  assert.match(out, /not a ticket id/);
+  assert.match(out, /\$\(touch \/tmp\/x\)/);
+});
+
+test('the footer advertises n and N only in fleet mode', () => {
+  const fleet = plain(renderFleet([run({})], OPTS));
+  assert.match(fleet, /n new run/);
+  assert.match(fleet, /N launch pad/);
+  assert.match(fleet, /↵ attach/);
+
+  // While prompting, `n` types an "n" — advertising it as an action would be
+  // advertising a key that is not bound, which this project treats as a defect.
+  const prompting = plain(renderFleet([run({})], { ...OPTS, prompt: { value: '', error: null } }));
+  assert.doesNotMatch(prompting, /n new run/);
+  assert.doesNotMatch(prompting, /N launch pad/);
+  assert.doesNotMatch(prompting, /↵ attach/);
+  assert.match(prompting, /esc cancel/);
+});
+
+test('a long typed value and a long error stay inside the terminal width', () => {
+  const out = renderFleet([run({})], {
+    cols: 50, selected: 0,
+    prompt: { value: 'CON-' + '9'.repeat(80), error: 'could not start it: ' + 'x'.repeat(120) },
+  });
+  for (const line of out.split('\n')) {
+    assert.ok(plain(line).length <= 50, `line too long (${plain(line).length}): ${line}`);
+  }
+});
+
+// --- handleKey: pure (key, state) -> action, the router seam ---------------
+// watch.js owns selected/prompt/mode; this function only describes what a
+// keypress means, so it can be tested without a tty or a mock session.
+
+function state(over) {
+  return Object.assign({ runs: [run({})], selected: 0, prompt: null }, over);
+}
+
+test('j/k move the selection without touching state directly', () => {
+  assert.deepEqual(handleKey('j', state({})), { type: 'move', delta: 1 });
+  assert.deepEqual(handleKey('k', state({})), { type: 'move', delta: -1 });
+  assert.deepEqual(handleKey('\x1b[B', state({})), { type: 'move', delta: 1 });
+  assert.deepEqual(handleKey('\x1b[A', state({})), { type: 'move', delta: -1 });
+});
+
+test('q and Ctrl-C quit', () => {
+  assert.deepEqual(handleKey('q', state({})), { type: 'quit' });
+  assert.deepEqual(handleKey('\u0003', state({})), { type: 'quit' });
+});
+
+test('n opens the prompt', () => {
+  assert.deepEqual(handleKey('n', state({})), { type: 'open-prompt' });
+});
+
+// Capital N — the launch pad's sole entry point (see the comment on this
+// binding in fleet.js). Always bound, even when the launch pad's own feature
+// gate is off, so watch.js can route to a screen that explains why rather
+// than the key doing nothing at all.
+test('N opens the launch pad', () => {
+  assert.deepEqual(handleKey('N', state({})), { type: 'open-launchpad' });
+});
+
+test('while prompting, N types an "N" rather than opening the launch pad', () => {
+  assert.deepEqual(handleKey('N', promptState({ value: '', error: null })), { type: 'prompt-type', char: 'N' });
+});
+
+test('enter on a plain run attaches', () => {
+  assert.deepEqual(handleKey('\r', state({})), { type: 'attach', ticket: 'HEL-1' });
+});
+
+test('enter on a run with a live escalation opens the escalation screen instead of attaching', () => {
+  const escalated = run({
+    ticket: 'HEL-338', status: 'needs-you', escalationStale: false,
+    escalation: { question: 'q', options: ['approve', 'deny'], raisedAt: 1 },
+  });
+  assert.deepEqual(
+    handleKey('\r', state({ runs: [escalated] })),
+    { type: 'open-escalation', ticket: 'HEL-338' },
+  );
+});
+
+test('enter on a run with a STALE escalation attaches, not opens the screen — nobody is waiting on it', () => {
+  const stale = run({
+    ticket: 'HEL-338', status: 'failed', escalationStale: true,
+    escalation: { question: 'q', options: ['approve', 'deny'], raisedAt: 1 },
+  });
+  assert.deepEqual(
+    handleKey('\r', state({ runs: [stale] })),
+    { type: 'attach', ticket: 'HEL-338' },
+  );
+});
+
+test('enter with no runs is a no-op', () => {
+  assert.equal(handleKey('\r', state({ runs: [] })), null);
+});
+
+test('an unbound key is a no-op', () => {
+  assert.equal(handleKey('z', state({})), null);
+});
+
+test('l opens the drill-down on the selected run', () => {
+  assert.deepEqual(handleKey('l', state({})), { type: 'open-drilldown', ticket: 'HEL-1' });
+  assert.deepEqual(handleKey('\x1b[C', state({})), { type: 'open-drilldown', ticket: 'HEL-1' });
+});
+
+test('l with no runs is a no-op', () => {
+  assert.equal(handleKey('l', state({ runs: [] })), null);
+});
+
+test('k still means move-up, not kill — the fleet footer must never claim otherwise', () => {
+  assert.deepEqual(handleKey('k', state({})), { type: 'move', delta: -1 });
+  const out = plain(renderFleet([run({})], OPTS));
+  assert.doesNotMatch(out, /k kill/);
+});
+
+// --- handleKey while the `n` prompt is open ---------------------------------
+
+function promptState(prompt) {
+  return state({ prompt });
+}
+
+test('typing appends to the prompt value', () => {
+  assert.deepEqual(handleKey('C', promptState({ value: 'CON', error: 'stale error' })),
+    { type: 'prompt-type', char: 'C' });
+});
+
+test('backspace removes a character', () => {
+  assert.deepEqual(handleKey('\x7f', promptState({ value: 'CON-1', error: null })),
+    { type: 'prompt-backspace' });
+});
+
+test('escape cancels the prompt', () => {
+  assert.deepEqual(handleKey('\x1b', promptState({ value: 'CON-1', error: null })),
+    { type: 'cancel-prompt' });
+});
+
+test('enter on a non-empty value submits it, trimmed', () => {
+  assert.deepEqual(handleKey('\r', promptState({ value: '  CON-1  ', error: null })),
+    { type: 'submit-prompt', value: 'CON-1' });
+});
+
+test('enter on an empty (or whitespace-only) value cancels rather than submits blank', () => {
+  assert.deepEqual(handleKey('\r', promptState({ value: '', error: null })), { type: 'cancel-prompt' });
+  assert.deepEqual(handleKey('\r', promptState({ value: '   ', error: null })), { type: 'cancel-prompt' });
+});
+
+test('while prompting, n types an "n" rather than being treated as the open-prompt key', () => {
+  assert.deepEqual(handleKey('n', promptState({ value: '', error: null })), { type: 'prompt-type', char: 'n' });
+});
+
+test('while prompting, q types a "q" rather than quitting', () => {
+  assert.deepEqual(handleKey('q', promptState({ value: '', error: null })), { type: 'prompt-type', char: 'q' });
+});
+
+test('an arrow key while prompting is ignored, not typed literally', () => {
+  assert.equal(handleKey('\x1b[A', promptState({ value: 'x', error: null })), null);
 });

@@ -21,6 +21,13 @@ const REPO = path.resolve(__dirname, '..');
 const CORE = path.join(REPO, 'core');
 const ADAPTERS = path.join(REPO, 'adapters');
 const CODEX_MODEL_FALLBACK = 'codex-mini-latest'; // used only if config has no models.codex
+// `emit-event.sh --await` blocks inside a single harness command call, which
+// has its own outer timeout (Claude Code caps a Bash call at ~10 minutes).
+// This has to stay comfortably under that or the harness kills the process
+// before --await's own timeout fires, and the run never gets a clean
+// `escalation.timeout` event or a chance to fall back to chat. Keep in sync
+// with the default in config/concertino.schema.json.
+const DEFAULT_ESCALATION_TIMEOUT_MIN = 8;
 let VERSION = '0.0.0';
 try { VERSION = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version; } catch (_) {}
 
@@ -372,6 +379,10 @@ function renderEnv(c) {
   L.push('CONCERTINO_ENV_FILES=' + envValue(c.worktree.envFiles.join(' ')));
   L.push('CONCERTINO_LINK_MODULES=' + envValue((c.worktree.linkModules || []).join(' ')));
   L.push('CONCERTINO_WORKTREE_HOOKS=' + envValue(c.worktree.hooks.join(';')));
+  const dash = c.dashboard || {};
+  const escalationTimeout = dash.escalationTimeoutMinutes != null
+    ? dash.escalationTimeoutMinutes : DEFAULT_ESCALATION_TIMEOUT_MIN;
+  L.push('CONCERTINO_ESCALATION_TIMEOUT_MIN=' + escalationTimeout);
   const ds = c.devServers || {};
   for (const side of ['backend', 'frontend']) {
     const s = ds[side];
@@ -736,6 +747,61 @@ function cmdMigrate(args) {
   }
 }
 
+// ---------- rendered-artifact drift (doctor) ------------------------------
+// The silent failure this exists to catch: `scripts/concertino/*.sh` reverted
+// by a local edit or a stale merge, and `.claude/agents/concertino-*.md` older
+// than the core it was rendered from — the agent files are gitignored, so they
+// never travel through git and a fresh clone has none at all. Neither says
+// anything. The agents simply stop emitting, and the dashboard shows an empty
+// screen for a run that is actually in flight.
+//
+// BYTES, not mtimes. copyAssets() copies these verbatim, so a byte difference
+// is exact evidence of drift with no false positives, whereas mtime says
+// nothing useful about an npm-installed package where install time is arbitrary.
+function checkArtifacts(out, harnesses, r) {
+  section('Rendered artifacts');
+
+  const missing = [], differs = [];
+  let checked = 0;
+  const compare = (src, dest) => {
+    checked++;
+    const rel = path.relative(out, dest);
+    if (!exists(dest)) { missing.push(rel); return; }
+    if (!fs.readFileSync(src).equals(fs.readFileSync(dest))) differs.push(rel);
+  };
+
+  for (const f of fs.readdirSync(path.join(CORE, 'scripts')))
+    compare(path.join(CORE, 'scripts', f), path.join(out, 'scripts', 'concertino', f));
+  for (const f of fs.readdirSync(path.join(CORE, 'laws')))
+    compare(path.join(CORE, 'laws', f), path.join(out, '.concertino', 'laws', f));
+  compare(path.join(CORE, 'workflow-state.template.md'),
+    path.join(out, '.concertino', 'workflow-state.template.md'));
+
+  // Missing and differing are different user problems: one file never arrived,
+  // the other arrived and was then changed underneath them.
+  if (missing.length) r.warn('missing: ' + missing.join(', ') + ' — run `concertino sync`');
+  if (differs.length) r.warn('differs from core: ' + differs.join(', ') + ' — run `concertino sync`');
+  if (!missing.length && !differs.length) r.ok('copied assets', checked + ' files match core');
+
+  // The agent files are rendered from templates + config, so there is no
+  // byte-identical source to compare them against. Existence is the honest
+  // check; claiming more than that would be worse than checking less.
+  const absent = [];
+  if (harnesses.includes('claude-code')) {
+    for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic']) {
+      const p = path.join(out, '.claude', 'agents', 'concertino-' + role + '.md');
+      if (!exists(p)) absent.push(path.relative(out, p));
+    }
+    const cmdPath = path.join(out, '.claude', 'commands', 'concertino-deliver.md');
+    if (!exists(cmdPath)) absent.push(path.relative(out, cmdPath));
+  }
+  if (harnesses.includes('codex') && !exists(path.join(out, 'AGENTS.md'))) absent.push('AGENTS.md');
+
+  absent.length
+    ? r.warn('not rendered: ' + absent.join(', ') + ' — run `concertino sync`')
+    : r.ok('agent files', 'present for ' + harnesses.join(', '));
+}
+
 function cmdDoctor(args) {
   const out = path.resolve(args.out || '.');
   const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
@@ -800,6 +866,8 @@ function cmdDoctor(args) {
         const pwVer = shell('npx playwright --version 2>/dev/null');
         pwVer ? ok('playwright', pwVer) : warn('playwright not found — run `npx playwright install` in the project');
       }
+
+      checkArtifacts(out, harnesses, { ok, warn });
     }
   }
 
@@ -1370,11 +1438,12 @@ function help() {
   ${cyan('concertino doctor')} ${dim('[--config=PATH] [--out=DIR]')}
       Check the environment: node, git, gh auth, claude CLI, Codex CLI (if
       harness includes codex), Linear MCP (if ticket provider is linear),
-      Playwright (if ui.enabled).
+      Playwright (if ui.enabled). Also byte-compares the rendered artifacts
+      against core and warns when they have drifted.
 
   ${cyan('concertino watch')} ${dim('[--config=PATH] [--out=DIR]')}
       Live fleet dashboard: every active run, its phase, gates,
-      and escalations. ↵ attaches to a run, q quits. Needs tmux.
+      and escalations. ↵ attaches, n starts a run, q quits. Needs tmux.
 
   ${cyan('concertino upgrade')} ${dim('[--out=DIR]')}
       Scan generated files for stale concertino version markers and report

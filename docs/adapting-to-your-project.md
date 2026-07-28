@@ -92,7 +92,19 @@ then curate. Binding the reviewer to read it is the lever.
 ## What stays editable vs generated
 
 - **Edit:** `concertino.config.json`, your canonical docs, and (to change agent
-  behavior for *everyone*) the templates in this repo's `core/roles/` and `core/laws/`.
+  behavior for *everyone*) the templates in this repo's `core/roles/`, `core/laws/`
+  and `core/scripts/`.
 - **Generated — don't hand-edit:** `.claude/agents/concertino-*.md`,
-  the `AGENTS.md` Concertino block, `.codex/`, and `scripts/concertino/.concertino.env`.
-  Re-run `sync` instead.
+  the `AGENTS.md` Concertino block, `.codex/`, `scripts/concertino/*.sh` and
+  `scripts/concertino/.concertino.env`. `sync` overwrites all of these on every
+  run, silently — a hand-edit here is discarded, not merged. Re-run `sync` instead.
+
+`scripts/concertino/*.sh` in particular looks editable (they're plain, readable
+shell), but `init` only *copies* them from `core/scripts/`; `sync` re-copies them
+every time. If you need different behavior from a procedure script, prefer the
+seams it already reads: `gates` / `devServers` / `worktree.ports` in
+`concertino.config.json`, `worktree.hooks` (rendered into `.concertino.env` as
+`CONCERTINO_WORKTREE_HOOKS`), or — for a change that should apply to every
+project — edit the template in this repo's `core/scripts/`. `concertino doctor`'s
+"Rendered artifacts" check exists to catch exactly this drift and points you at
+`sync`, which will overwrite a fork without asking.

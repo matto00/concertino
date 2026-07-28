@@ -422,6 +422,22 @@ The cache is **never** the source of truth for whether a ticket is already being
 worked on — that comes from the live event log and tmux, which is why the inline
 status column can say `▲ running` even against a cache fetched an hour ago.
 
+### What actually drives the cache's size
+
+Measured against real data during the slice-3 build, because the original
+assumption was wrong. Concertino's own team: 7 tickets, 15.5 KB. Helio Platform:
+267 tickets, 740 KB — of which **descriptions are 79%** and **comments are 0.6%**.
+Not one of the 267 tickets came near a 50-comment cap; the busiest thread in the
+whole backlog has one comment.
+
+So a per-ticket comment cap bounds nothing. The quantity that grows is **ticket
+count**, and 266 of those 267 were `backlog` — the cache carries an entire backlog
+to serve a screen on which you pick one or two tickets to run.
+
+Descriptions cannot be the thing that gets trimmed: the cache exists so the ticket
+viewer can show a full ticket with no round-trip, and reading the ticket properly
+is the whole reason to have it. See CON-9.
+
 Two constraints:
 
 - **`.concertino/cache/` must be gitignored.** It contains full ticket

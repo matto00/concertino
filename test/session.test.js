@@ -71,3 +71,26 @@ test('capture of an unknown window is empty, not an error', skip, () => {
 test('listWindows on a nonexistent session is empty', skip, () => {
   assert.deepEqual(createSession('concertino-does-not-exist-' + process.pid).listWindows(), []);
 });
+
+// Defence in depth: even if an unvalidated ticket somehow reaches
+// session.spawn (looksLikeTicket() is the primary gate, enforced one layer
+// up in prompt.js), tmux target syntax treats `.` as the window/pane
+// separator (`session:window.pane`), so a dotted ticket like `a.b_c-9` makes
+// `sessionName:ticket` ambiguous. Before this guard, spawn() would create the
+// placeholder window with `new-window -n ticket` (a literal argv element, not
+// a target — that step succeeds), then fail to address it with
+// `respawn-window -t <target>`, then fail again cleaning up with the same
+// broken target — leaving an orphaned window running forever. The guard must
+// reject BEFORE new-window ever runs, so the real assertion here is that no
+// window gets left behind at all.
+test('spawn refuses a dotted ticket before any window is created', skip, () => {
+  const before = s.listWindows().map((w) => w.ticket).sort();
+  assert.throws(() => s.spawn('a.b_c-9', 'sleep 300'), /unsafe ticket/);
+  const after = s.listWindows().map((w) => w.ticket).sort();
+  assert.deepEqual(after, before, 'spawn must leave no window behind for a rejected ticket');
+});
+
+test('capture, kill and attach also refuse a ticket containing `:` or `.`', skip, () => {
+  assert.equal(s.capture('a.b'), '', 'capture of an unaddressable ticket is empty, not a throw');
+  assert.doesNotThrow(() => s.kill('a.b'), 'kill of an unaddressable ticket is a silent no-op');
+});
