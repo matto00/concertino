@@ -99,6 +99,10 @@ concertino doctor     [--config=PATH] [--out=DIR]
                       Check the environment: node, git identity, gh auth, claude CLI,
                       codex CLI (if configured), Linear MCP, Playwright.
 
+concertino watch      [--config=PATH] [--out=DIR]
+                      Live fleet dashboard — every active run, its phase, gates,
+                      and escalations. Needs tmux. See docs/dashboard.md.
+
 concertino upgrade    [--out=DIR]
                       Scan generated files for stale version markers; report which need
                       a re-sync.

@@ -150,6 +150,13 @@ Report: WORKTREE_PATH/<change-dir>/evaluation-<CYCLE>.md
 
 Do not reproduce the report — orchestrator and executor read it from file.
 
+Immediately after writing your report, emit the verdict for the dashboard:
+
+```bash
+scripts/concertino/emit-event.sh verdict \
+  ticket=$TICKET_ID role=evaluator verdict=<PASS|FAIL|BLOCKER> ref=<report path>
+```
+
 ### Cycle {{var:budgets.executionCycles}} behavior
 
 If `CYCLE = {{var:budgets.executionCycles}}` and Overall = FAIL, append a

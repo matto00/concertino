@@ -136,6 +136,13 @@ Write to `WORKTREE_PATH/<change-dir>/skeptic-<GATE>-<N>.md`:
 If an environmental failure blocks verification, write `BLOCKER` with the diagnosis
 instead of guessing a verdict.
 
+Immediately after writing your report, emit the verdict for the dashboard:
+
+```bash
+scripts/concertino/emit-event.sh verdict \
+  ticket=$TICKET_ID role=skeptic verdict=<CONFIRM|REFUTE|BLOCKER> ref=<report path>
+```
+
 ### Step 2: Return
 
 ```

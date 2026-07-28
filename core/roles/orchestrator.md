@@ -39,6 +39,28 @@ transition. (The skeptic is spawned fresh each time — no persistent ID to trac
 
 ---
 
+## Dashboard telemetry
+
+Every time you write `workflow-state.md`, also emit one event. This is what
+makes `concertino watch` able to show the run; it costs one bash call at points
+you are already stopping at.
+
+```bash
+scripts/concertino/emit-event.sh phase.enter \
+  ticket=$TICKET_ID role=orchestrator phase=<Phase> cycle=<n>
+```
+
+Also emit:
+
+- `agent.spawn role=orchestrator agent=<executor|evaluator|skeptic>` when you spawn one,
+- `agent.resume role=orchestrator agent=<executor|evaluator> cycle=<n>` when you resume one,
+- `run.end ticket=$TICKET_ID role=orchestrator status=escalated` when a circuit
+  breaker sends the run to the human instead of to delivery.
+
+Never let telemetry block delivery: if a call fails, continue.
+
+---
+
 ## Setup
 
 1. **Fetch the ticket** (title + description + acceptance criteria) and set its
@@ -197,6 +219,22 @@ The single source of truth for **what resolves in-loop vs. what reaches the
 human** — what makes it safe to run many orchestrators unattended: every loop is
 bounded, every bound has a defined escalation. Nothing thrashes forever, nothing
 fails silently.
+
+### How to raise one
+
+Raise every escalation through the canonical script. It records the escalation
+for the dashboard and blocks until the human answers, returning their decision
+on stdout:
+
+```bash
+scripts/concertino/emit-event.sh escalation --await \
+  ticket=$TICKET_ID role=orchestrator \
+  question="<one sentence, the decision you need>" \
+  options=approve,deny
+```
+
+If it exits non-zero it timed out — fall back to presenting the `ESCALATION`
+block in chat and waiting there. Never treat a timeout as an approval.
 
 ### Resolves in-loop (no human)
 
