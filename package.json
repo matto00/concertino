@@ -19,7 +19,7 @@
     "node": ">=16"
   },
   "scripts": {
-    "test": "bash test/scripts/emit-event.test.sh",
+    "test": "node --test test/*.test.js && bash test/scripts/emit-event.test.sh",
     "test:selftest": "node bin/concertino sync --out=/tmp/concertino-selftest --config=config/examples/helio.json --dry-run"
   },
   "keywords": [
