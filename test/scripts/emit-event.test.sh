@@ -2,6 +2,13 @@
 # Shell tests for core/scripts/emit-event.sh. Run: bash test/scripts/emit-event.test.sh
 set -uo pipefail
 
+# Some shells export FORCE_COLOR, which makes node's console.log wrap bare
+# numbers in ANSI codes even when stdout isn't a TTY (e.g. command
+# substitution). That's terminal decoration, not part of the JSON under test
+# — disable it so numeric assertions compare raw values.
+export NO_COLOR=1
+unset FORCE_COLOR
+
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/emit-event.sh"
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok   $1"; }
@@ -65,6 +72,30 @@ check "writes to main checkout" \
   "$([ -f "$REPO/.concertino/runs/HEL-5/events.jsonl" ] && echo yes || echo no)" "yes"
 check "not inside the worktree" \
   "$([ -f "$REPO/wt/.concertino/runs/HEL-5/events.jsonl" ] && echo yes || echo no)" "no"
+rm -rf "$REPO"
+
+# --- identity fields stay strings even when they look numeric ---------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" note ticket=42 role=7 msg=hi ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/42/events.jsonl"
+check "numeric ticket stays a string" "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).ticket)' "$LOG")" "string"
+check "numeric role stays a string"   "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).role)' "$LOG")" "string"
+rm -rf "$REPO"
+
+# --- zero-padded numbers stay strings rather than emitting invalid JSON -----
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" note ticket=HEL-8 code=007 ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/HEL-8/events.jsonl"
+check "zero-padded value is valid JSON" "$(node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8").trim());console.log("yes")' "$LOG" 2>/dev/null || echo no)" "yes"
+check "zero-padded value is a string"   "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).code)' "$LOG")" "007"
+rm -rf "$REPO"
+
+# --- plain integers are still emitted unquoted ------------------------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" note ticket=HEL-9 cycle=0 n=-12 ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/HEL-9/events.jsonl"
+check "zero is a number"     "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).cycle)' "$LOG")" "number"
+check "negative is a number" "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).n)' "$LOG")" "-12"
 rm -rf "$REPO"
 
 # --- missing ticket is a no-op, never a failure -----------------------------

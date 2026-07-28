@@ -72,13 +72,23 @@ json_escape() {
   printf '%s' "$s" | tr -d '\000-\010\013\014\016-\037'
 }
 
+# Auto-unquote only well-formed JSON numbers. Leading zeros are excluded
+# deliberately: bare 007 is a JSON syntax error, and a reader would count the
+# whole event as malformed and drop it.
 json_value() {
   local v="$1"
-  if [[ "$v" =~ ^-?[0-9]+$ ]] || [ "$v" = "true" ] || [ "$v" = "false" ]; then
+  if [[ "$v" =~ ^-?(0|[1-9][0-9]*)$ ]] || [ "$v" = "true" ] || [ "$v" = "false" ]; then
     printf '%s' "$v"
   else
     printf '"%s"' "$(json_escape "$v")"
   fi
+}
+
+# The identity fields are string-typed by contract regardless of what they look
+# like — a ticket of "42" must stay "42", never become a JSON number, or every
+# consumer that treats ticket as a key breaks.
+json_string() {
+  printf '"%s"' "$(json_escape "$1")"
 }
 
 ROOT="$(main_checkout)" || exit 0
@@ -109,10 +119,10 @@ LOG="${RUN_DIR}/events.jsonl"
 build_line() {
   printf '{"t":%s,"kind":%s,"project":%s,"ticket":%s,"role":%s%s}' \
     "$(now_ms)" \
-    "$(json_value "$1")" \
-    "$(json_value "$PROJECT")" \
-    "$(json_value "$TICKET")" \
-    "$(json_value "$ROLE")" \
+    "$(json_string "$1")" \
+    "$(json_string "$PROJECT")" \
+    "$(json_string "$TICKET")" \
+    "$(json_string "$ROLE")" \
     "$FIELDS"
 }
 
