@@ -233,18 +233,28 @@ scripts/concertino/emit-event.sh escalation --await \
   options=approve,deny
 ```
 
-If your tool lets you set a per-call timeout, set it to the longest it allows —
+**This call must set an explicit per-call timeout, or the harness will kill it
+long before `--await` ever times out on its own.** Claude Code's Bash tool
+defaults to a 120000 ms (two minute) timeout — nowhere near `--await`'s own
+wait — and only honors a longer one if you ask for it. So the Bash tool call
+that runs this command must pass `timeout: 600000` (600000 ms — ten minutes,
+its maximum) explicitly. On another harness, find and set the equivalent
+per-call timeout parameter to its longest allowed value. With that in place,
 `--await`'s own timeout (`CONCERTINO_ESCALATION_TIMEOUT_MIN`, a few minutes by
-default — see `dashboard.escalationTimeoutMinutes`) is deliberately shorter than
-any reasonable harness command limit, so the wait itself is what ends this call,
-not an external cutoff killing it mid-poll.
+default — see `dashboard.escalationTimeoutMinutes`) is deliberately shorter
+than the call timeout, so the wait itself is what ends this call, not an
+external cutoff killing it mid-poll. Even if a harness kills it anyway
+(wrong timeout, a restart, anything), `--await` traps `TERM`/`INT` and
+records `escalation.timeout` before it dies, so the log stays accurate
+regardless of which side ended the wait.
 
 - **Exit 0:** the human answered from the dashboard. The decision is on
   stdout — use it and continue. The script has already recorded
   `escalation.answered`; **do not emit it again**, or the log carries it twice.
-- **Non-zero exit: it timed out.** `--await` has already recorded
-  `escalation.timeout`. Fall back to chat exactly as before — present the
-  `ESCALATION` block and wait there for the human's reply. **A timeout is
+- **Non-zero exit: it timed out, or the wait was killed.** Either way
+  `--await` has already recorded `escalation.timeout` (its own deadline, or
+  its `TERM`/`INT` trap firing). Fall back to chat exactly as before — present
+  the `ESCALATION` block and wait there for the human's reply. **A timeout is
   never an approval — never treat it, or silence, as one.** Once you have the
   answer from chat, record it yourself, since nothing else will:
 

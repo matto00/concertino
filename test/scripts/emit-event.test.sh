@@ -2,6 +2,15 @@
 # Shell tests for core/scripts/emit-event.sh. Run: bash test/scripts/emit-event.test.sh
 set -uo pipefail
 
+# Job control on: with it off (the default for a non-interactive script), bash
+# auto-ignores SIGINT/SIGQUIT for any `&` child THIS script backgrounds — a
+# shell-level quirk of *this test's* harness, unrelated to whether
+# emit-event.sh's own INT trap works. A real caller (a harness's process
+# supervisor spawning bash directly, not another non-interactive script
+# backgrounding it with `&`) never sets that ignore in the first place, so
+# without `-m` here the INT-kill test below would hang on a false negative.
+set -m
+
 # Some shells export FORCE_COLOR, which makes node's console.log wrap bare
 # numbers in ANSI codes even when stdout isn't a TTY (e.g. command
 # substitution). That's terminal decoration, not part of the JSON under test
@@ -176,6 +185,43 @@ check "--await exit 1 when it cannot log" "$RC" "1"
 check "--await bailed fast, did not poll"  "$([ "$ELAPSED" -le 3 ] && echo yes || echo no)" "yes"
 rm -rf "$REPO"
 fi
+
+# --- a harness-style TERM still records escalation.timeout before dying -----
+# This is the slice-2a Critical: a harness kills the Bash call around --await
+# with SIGTERM long before its own deadline. Without a trap, the kill reaches
+# no code and the log is left holding only escalation.raised forever.
+REPO="$(new_repo)"
+LOG="$REPO/.concertino/runs/HEL-12/events.jsonl"
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-12 question=q ) >/dev/null 2>&1 &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+kill -TERM "$AWAIT_PID"
+wait "$AWAIT_PID" 2>/dev/null
+RC=$?
+check "killed --await exits non-zero" "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
+check "killed --await still logged escalation.timeout" \
+  "$(grep -c escalation.timeout "$LOG")" "1"
+rm -rf "$REPO"
+
+# --- same, but via SIGINT (Ctrl-C) ------------------------------------------
+REPO="$(new_repo)"
+LOG="$REPO/.concertino/runs/HEL-13/events.jsonl"
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-13 question=q ) >/dev/null 2>&1 &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+kill -INT "$AWAIT_PID"
+wait "$AWAIT_PID" 2>/dev/null
+RC=$?
+check "INT-killed --await exits non-zero" "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
+check "INT-killed --await still logged escalation.timeout" \
+  "$(grep -c escalation.timeout "$LOG")" "1"
+rm -rf "$REPO"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

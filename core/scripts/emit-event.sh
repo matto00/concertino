@@ -175,6 +175,30 @@ if ! write_line escalation.raised; then
   exit 1
 fi
 
+# A harness-imposed call timeout (Claude Code's Bash tool defaults to 120000ms
+# — well inside this script's own default wait) kills the process with SIGTERM
+# (Ctrl-C sends SIGINT), not by letting this script's own deadline elapse. With
+# no trap, that kill reaches no code below: the log is left holding
+# `escalation.raised` forever, with nothing to tell the dashboard the wait
+# ended. Record the truth — this wait ended without an answer — before dying.
+#
+# Exit directly rather than clearing the trap and re-raising the signal: a
+# script that reaches this point is, by construction, running as the
+# backgrounded half of `--await` (the caller invoked it as a blocking foreground
+# call, but under job-control-off — the normal case for a non-interactive
+# script — bash auto-ignores INT/QUIT for async jobs at spawn). `trap - INT`
+# would revert to exactly that inherited SIG_IGN, so a self-sent `kill -s INT
+# "$$"` silently no-ops and the process sails on to its 60-minute default
+# deadline instead of dying — the trap would then have recorded
+# escalation.timeout while the process itself kept running, which is worse
+# than doing nothing. A plain `exit` has no such failure mode.
+on_kill() {
+  FIELDS=""
+  write_line escalation.timeout || true
+  exit 1
+}
+trap on_kill TERM INT
+
 # --- blocking escalation ---------------------------------------------------
 # Poll for the answer file the dashboard writes. This is the whole control
 # plane: no keystroke injection, no detecting when a harness is at a prompt,
@@ -194,6 +218,10 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
       } catch { process.stdout.write(""); }
     ' "$ANSWER_FILE" 2>/dev/null)"
     if [ -n "$ANSWER" ]; then
+      # Disarm before the final write: from here on we are exiting 0 with a
+      # real answer, so a signal landing in this last stretch must not
+      # overwrite that outcome with a spurious escalation.timeout.
+      trap - TERM INT
       # $ANSWER is free text a human typed at the escalation screen — unbounded
       # by construction, so this write needs the cap as much as any other.
       FIELDS=",\"answer\":$(json_value "$ANSWER")"
@@ -208,6 +236,9 @@ done
 # Timed out: tell the log, and exit non-zero so the caller falls back to its
 # own escalation path (printing the question to chat). The dashboard is an
 # accelerator for escalations — never a new way for a run to hang.
+# Disarm first: this is already writing escalation.timeout, so a signal
+# arriving in this last stretch must not race on_kill into writing it twice.
+trap - TERM INT
 FIELDS=""
 write_line escalation.timeout || true
 exit 1
