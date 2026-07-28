@@ -97,7 +97,10 @@ concertino diff       [--config=PATH] [--out=DIR] [--harness=...]
 
 concertino doctor     [--config=PATH] [--out=DIR]
                       Check the environment: node, git identity, gh auth, claude CLI,
-                      codex CLI (if configured), Linear MCP, Playwright.
+                      codex CLI (if configured), Linear MCP, Playwright. Also byte-compares
+                      the rendered artifacts (scripts/concertino/, .concertino/, the agent
+                      files) against core and warns on drift — a stale copy stops emitting
+                      telemetry silently.
 
 concertino watch      [--config=PATH] [--out=DIR]
                       Live fleet dashboard — every active run, its phase, gates,
