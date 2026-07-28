@@ -50,6 +50,13 @@ scripts/concertino/emit-event.sh phase.enter \
   ticket=$TICKET_ID role=orchestrator phase=<Phase> cycle=<n>
 ```
 
+`<Phase>` must be exactly one of: `Setup | Planning | Execution | Evaluation |
+Delivery | Cleanup` (the same enum as `workflow-state.template.md`'s `PHASE:`
+line, enforced by `PHASE_ORDER` in `lib/ui/reducer.js`). A section heading
+like "Phase 2: Execution" is not a phase value — emit `phase=Execution`, never
+`phase=Phase 2`; an unrecognised value is rejected by the dashboard rather than
+silently applied.
+
 Also emit:
 
 - `agent.spawn role=orchestrator agent=<executor|evaluator|skeptic>` when you spawn one,

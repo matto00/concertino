@@ -8,6 +8,7 @@ CHANGE_NAME: <name>
 WORKTREE_PATH: <abs path>
 BRANCH: <branch>
 PHASE: Setup | Planning | Execution | Evaluation | Delivery | Cleanup
+# Enforced by PHASE_ORDER in lib/ui/reducer.js — keep both lists in sync.
 CYCLE: <n>
 DEV_PORT: <port>
 BACKEND_PORT: <port>

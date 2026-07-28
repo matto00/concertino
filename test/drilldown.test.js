@@ -68,10 +68,13 @@ test('renders TIMELINE, GATES and EVIDENCE section headers', () => {
 });
 
 // --- slice-2b Important 3: this run's own malformed events must be visible ---
-// reducer.js already counts malformed lines per run; fleet.js sums it
-// fleet-wide with no per-run attribution, and until now the drill-down never
-// read it at all — a run with corrupted lines in its own log rendered as a
-// clean, merely-short history with nothing saying part of it is missing.
+// reducer.js already counts, per run, a `malformed` total covering both a
+// dropped/corrupted event-log line and an event that WAS recorded but had a
+// field the reducer rejected (e.g. an unrecognised `phase.enter` value —
+// see CON-3); fleet.js sums it fleet-wide with no per-run attribution, and
+// until now the drill-down never read it at all — a run with corrupted or
+// rejected-field events in its own log rendered as a clean, merely-short
+// history with nothing saying part of it is missing.
 
 test('a run with malformed events surfaces its own count near the timeline', () => {
   const out = plain(renderDrillDown(run({ malformed: 3 }), OPTS));
