@@ -315,7 +315,7 @@ test('no rendered line exceeds opts.cols, including the coloured role gutter', (
       { t: 2000, kind: 'evidence', role: 'evaluator', label: 'a-very-long-evidence-filename-that-should-be-truncated-too.md' },
     ],
   });
-  for (const cols of [50, 60, 78, 100]) {
+  for (const cols of [50, 60, 78, 100, 120]) {
     const out = renderColoured(wide, { cols, now: 5000 });
     for (const line of out.split('\n')) {
       assert.ok(f.visibleLength(line) <= cols,
@@ -338,11 +338,67 @@ test('a wide (CJK) character in the change name and an evidence label stays insi
     ],
   });
   const { visibleLength } = require('../lib/ui/format');
-  for (const cols of [50, 60, 78]) {
+  for (const cols of [50, 60, 78, 120]) {
     const out = renderDrillDown(wide, { cols, now: 5000 });
     for (const line of out.split('\n')) {
       assert.ok(visibleLength(line) <= cols,
         `cols:${cols} line is ${visibleLength(line)} wide: ${JSON.stringify(line)}`);
     }
+  }
+});
+
+// --- slice-2b Important 4: size the gates column to its content -------------
+// Gate names are short and known at render time; TIMELINE's content is not
+// (harness/model names, verdict refs, evidence labels are all open-ended).
+// A fixed 55/45 split wasted width padding short gate names while truncating
+// real timeline information away. These are the exact two examples from the
+// review: at 78 columns, "run started  claude · opus-5" and
+// "verdict FAIL  eval-report-c1.md" used to lose their second half.
+
+test('at 78 cols, the harness/model on run started is no longer truncated away', () => {
+  const out = plain(renderDrillDown(run({}), OPTS));
+  assert.match(out, /run started {2}claude · opus-5/);
+  assert.doesNotMatch(out, /run started.*claude…/);
+});
+
+test('at 78 cols, a verdict\'s report reference is no longer truncated away', () => {
+  const out = plain(renderDrillDown(run({}), OPTS));
+  assert.match(out, /verdict FAIL {2}eval-report-c1\.md/);
+});
+
+test('the gates column is sized to its content, not a fixed 45% fraction, at 60/78/120 cols', () => {
+  // Same two-gate, no-evidence fixture at every width: the content the right
+  // column needs (longest of a gate line, its first_error, or the
+  // "no evidence recorded" fallback) does not grow with the terminal, so the
+  // column stays the same width at every size tested — all the extra room
+  // at a wider terminal must go to TIMELINE, not sit padding gate names.
+  const widths = [60, 78, 120].map((cols) => {
+    const out = renderDrillDown(run({}), { cols, now: 5000 });
+    const line = out.split('\n').find((l) => l.includes('│'));
+    return line.indexOf('│');
+  });
+  const [sepAt60, sepAt78, sepAt120] = widths;
+  // The separator (hence TIMELINE's width) must grow with the terminal...
+  assert.ok(sepAt78 > sepAt60, `TIMELINE should widen from 60 to 78 cols: ${sepAt60} -> ${sepAt78}`);
+  assert.ok(sepAt120 > sepAt78, `TIMELINE should widen from 78 to 120 cols: ${sepAt78} -> ${sepAt120}`);
+  // ...while the gates column itself (cols minus the separator position)
+  // stays pinned to what its content needs, not a fraction of a much wider
+  // terminal — the whole point of sizing it to content.
+  const rightWidthAt60 = 60 - sepAt60;
+  const rightWidthAt120 = 120 - sepAt120;
+  assert.equal(rightWidthAt60, rightWidthAt120,
+    `gates column width should be content-driven and constant: ${rightWidthAt60} at 60 cols vs ${rightWidthAt120} at 120 cols`);
+});
+
+test('a pathologically long first_error still caps the gates column rather than crushing the timeline', () => {
+  const { visibleLength } = require('../lib/ui/format');
+  const out = plain(renderDrillDown(run({
+    gates: [{
+      name: 'lint', status: 'fail', durationMs: 500,
+      firstError: 'a'.repeat(200),
+    }],
+  }), OPTS));
+  for (const line of out.split('\n')) {
+    assert.ok(visibleLength(line) <= 78, `line exceeds cols: ${JSON.stringify(line)}`);
   }
 });
