@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { renderFleet } = require('../lib/ui/screens/fleet');
+const { renderFleet, handleKey } = require('../lib/ui/screens/fleet');
 const { reduce } = require('../lib/ui/reducer');
 
 // eslint-disable-next-line no-control-regex
@@ -389,4 +389,105 @@ test('a long typed value and a long error stay inside the terminal width', () =>
   for (const line of out.split('\n')) {
     assert.ok(plain(line).length <= 50, `line too long (${plain(line).length}): ${line}`);
   }
+});
+
+// --- handleKey: pure (key, state) -> action, the router seam ---------------
+// watch.js owns selected/prompt/mode; this function only describes what a
+// keypress means, so it can be tested without a tty or a mock session.
+
+function state(over) {
+  return Object.assign({ runs: [run({})], selected: 0, prompt: null }, over);
+}
+
+test('j/k move the selection without touching state directly', () => {
+  assert.deepEqual(handleKey('j', state({})), { type: 'move', delta: 1 });
+  assert.deepEqual(handleKey('k', state({})), { type: 'move', delta: -1 });
+  assert.deepEqual(handleKey('\x1b[B', state({})), { type: 'move', delta: 1 });
+  assert.deepEqual(handleKey('\x1b[A', state({})), { type: 'move', delta: -1 });
+});
+
+test('q and Ctrl-C quit', () => {
+  assert.deepEqual(handleKey('q', state({})), { type: 'quit' });
+  assert.deepEqual(handleKey('\u0003', state({})), { type: 'quit' });
+});
+
+test('n opens the prompt', () => {
+  assert.deepEqual(handleKey('n', state({})), { type: 'open-prompt' });
+});
+
+test('enter on a plain run attaches', () => {
+  assert.deepEqual(handleKey('\r', state({})), { type: 'attach', ticket: 'HEL-1' });
+});
+
+test('enter on a run with a live escalation opens the escalation screen instead of attaching', () => {
+  const escalated = run({
+    ticket: 'HEL-338', status: 'needs-you', escalationStale: false,
+    escalation: { question: 'q', options: ['approve', 'deny'], raisedAt: 1 },
+  });
+  assert.deepEqual(
+    handleKey('\r', state({ runs: [escalated] })),
+    { type: 'open-escalation', ticket: 'HEL-338' },
+  );
+});
+
+test('enter on a run with a STALE escalation attaches, not opens the screen — nobody is waiting on it', () => {
+  const stale = run({
+    ticket: 'HEL-338', status: 'failed', escalationStale: true,
+    escalation: { question: 'q', options: ['approve', 'deny'], raisedAt: 1 },
+  });
+  assert.deepEqual(
+    handleKey('\r', state({ runs: [stale] })),
+    { type: 'attach', ticket: 'HEL-338' },
+  );
+});
+
+test('enter with no runs is a no-op', () => {
+  assert.equal(handleKey('\r', state({ runs: [] })), null);
+});
+
+test('an unbound key is a no-op', () => {
+  assert.equal(handleKey('z', state({})), null);
+});
+
+// --- handleKey while the `n` prompt is open ---------------------------------
+
+function promptState(prompt) {
+  return state({ prompt });
+}
+
+test('typing appends to the prompt value', () => {
+  assert.deepEqual(handleKey('C', promptState({ value: 'CON', error: 'stale error' })),
+    { type: 'prompt-type', char: 'C' });
+});
+
+test('backspace removes a character', () => {
+  assert.deepEqual(handleKey('\x7f', promptState({ value: 'CON-1', error: null })),
+    { type: 'prompt-backspace' });
+});
+
+test('escape cancels the prompt', () => {
+  assert.deepEqual(handleKey('\x1b', promptState({ value: 'CON-1', error: null })),
+    { type: 'cancel-prompt' });
+});
+
+test('enter on a non-empty value submits it, trimmed', () => {
+  assert.deepEqual(handleKey('\r', promptState({ value: '  CON-1  ', error: null })),
+    { type: 'submit-prompt', value: 'CON-1' });
+});
+
+test('enter on an empty (or whitespace-only) value cancels rather than submits blank', () => {
+  assert.deepEqual(handleKey('\r', promptState({ value: '', error: null })), { type: 'cancel-prompt' });
+  assert.deepEqual(handleKey('\r', promptState({ value: '   ', error: null })), { type: 'cancel-prompt' });
+});
+
+test('while prompting, n types an "n" rather than being treated as the open-prompt key', () => {
+  assert.deepEqual(handleKey('n', promptState({ value: '', error: null })), { type: 'prompt-type', char: 'n' });
+});
+
+test('while prompting, q types a "q" rather than quitting', () => {
+  assert.deepEqual(handleKey('q', promptState({ value: '', error: null })), { type: 'prompt-type', char: 'q' });
+});
+
+test('an arrow key while prompting is ignored, not typed literally', () => {
+  assert.equal(handleKey('\x1b[A', promptState({ value: 'x', error: null })), null);
 });
