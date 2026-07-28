@@ -223,5 +223,21 @@ check "INT-killed --await still logged escalation.timeout" \
   "$(grep -c escalation.timeout "$LOG")" "1"
 rm -rf "$REPO"
 
+# --- a stale answer file present at wait-start is discarded, not consumed ---
+# If a previous --await was killed after a human answered but before it was
+# read, a naive retry silently deletes that decision. It must instead be
+# recorded and left unconsumed — it may belong to a different escalation.
+REPO="$(new_repo)"
+mkdir -p "$REPO/.concertino/runs/HEL-14"
+printf '{"answer":"stale-approve"}' > "$REPO/.concertino/runs/HEL-14/answer.json"
+LOG="$REPO/.concertino/runs/HEL-14/events.jsonl"
+( cd "$REPO" && CONCERTINO_ESCALATION_TIMEOUT_MIN=0 "$SCRIPT" escalation --await ticket=HEL-14 question=q ) > "$REPO/out.txt" 2>/dev/null
+RC=$?
+check "stale-answer run still times out (answer not consumed)" "$RC" "1"
+check "stale answer was not printed"        "$(cat "$REPO/out.txt")" ""
+check "discard was recorded in the log"     "$(grep -c escalation.answer_discarded "$LOG")" "1"
+check "timeout was also recorded"           "$(grep -c escalation.timeout "$LOG")" "1"
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

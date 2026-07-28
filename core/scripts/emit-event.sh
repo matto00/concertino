@@ -204,6 +204,18 @@ trap on_kill TERM INT
 # plane: no keystroke injection, no detecting when a harness is at a prompt,
 # and identical on Codex or a local-model harness.
 ANSWER_FILE="${RUN_DIR}/answer.json"
+if [ -e "$ANSWER_FILE" ]; then
+  # A previous --await was killed after a human answered but before this
+  # script consumed it (exactly the scenario `on_kill` above now closes off).
+  # That answer may belong to a different, earlier escalation — acting on it
+  # here would apply a stale approval to a question nobody meant to answer,
+  # which is worse than discarding it. So: never consume it, but never vanish
+  # it silently either — record that it existed and was thrown away, so the
+  # dashboard and `tail -f` both show it rather than a human's decision
+  # disappearing with no trace.
+  FIELDS=""
+  write_line escalation.answer_discarded || true
+fi
 rm -f "$ANSWER_FILE" 2>/dev/null || true
 
 TIMEOUT_MIN="${CONCERTINO_ESCALATION_TIMEOUT_MIN:-60}"
