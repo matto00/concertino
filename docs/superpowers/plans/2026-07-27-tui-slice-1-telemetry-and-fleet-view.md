@@ -2103,15 +2103,19 @@ with:
 ```bash
 # The ticket id is not an argument here, so derive it from the worktree path —
 # worktrees are created at <base>/<branch> and branches end in /<TICKET-ID>.
+# A branch that doesn't follow that convention (`chore/cleanup-old-logs`) would
+# otherwise write this run's events into a different ticket's log, silently
+# splitting one run's history in two. Emitting nothing is the safe failure.
 GATE_TICKET="${WORKTREE_PATH##*/}"
+looks_like_ticket() { [[ "$1" =~ ^[A-Za-z#][A-Za-z0-9._-]*[0-9]$ ]]; }
 
 if [ "$FAILED" -ne 0 ]; then
-  CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
+  looks_like_ticket "$GATE_TICKET" && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
     "ticket=${GATE_TICKET}" "gate=phase:${PHASE}" "status=fail" || true
   exit 1
 fi
 
-CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
+looks_like_ticket "$GATE_TICKET" && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
   "ticket=${GATE_TICKET}" "gate=phase:${PHASE}" "status=pass" || true
 echo "PASS $PHASE"
 ```
@@ -2122,8 +2126,9 @@ In `core/scripts/start-servers.sh`, inside `start_one`, replace the final line
 `echo "READY ${label}=${url}"` with:
 
 ```bash
-  CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
-    "ticket=${WORKTREE_PATH##*/}" "gate=server:${label}" "status=pass" || true
+  T="${WORKTREE_PATH##*/}"
+  [[ "$T" =~ ^[A-Za-z#][A-Za-z0-9._-]*[0-9]$ ]] && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
+    "ticket=${T}" "gate=server:${label}" "status=pass" || true
   echo "READY ${label}=${url}"
 ```
 
@@ -2140,8 +2145,9 @@ Then replace the final line `echo "READY cleaned worktree=${WORKTREE_PATH}"` wit
 
 ```bash
 # Phase-4 cleanup only runs post-merge, so reaching here means the run shipped.
-CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.end \
-  "ticket=${WORKTREE_PATH##*/}" "status=delivered" || true
+T="${WORKTREE_PATH##*/}"
+[[ "$T" =~ ^[A-Za-z#][A-Za-z0-9._-]*[0-9]$ ]] && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.end \
+  "ticket=${T}" "status=delivered" || true
 
 echo "READY cleaned worktree=${WORKTREE_PATH}"
 ```
