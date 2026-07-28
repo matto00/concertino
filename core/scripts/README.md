@@ -18,9 +18,12 @@ file — so they stay generic and the config is the single source of truth.
 - `assert-phase.sh` prints `PASS <phase>` / `FAIL <reason>` — it is the
   postcondition gate the orchestrator runs before leaving a phase.
 - `emit-event.sh` appends one JSON line to
-  `<main checkout>/.concertino/runs/<TICKET>/events.jsonl`. It always exits 0
-  (except on `--await` timeout) so telemetry can never fail a run. Other scripts
-  call it with `|| true` for the same reason.
+  `<main checkout>/.concertino/runs/<TICKET>/events.jsonl`. In normal mode it
+  always exits 0, including on internal error, so telemetry can never fail a
+  run. Other scripts call it with `|| true` for the same reason. `--await` is
+  the exception and exits non-zero in two cases: the escalation timed out, or
+  the initial `escalation.raised` write failed — either way there is no answer
+  coming, so the caller must fall back to escalating in chat.
 
 ## Scripts
 

@@ -119,13 +119,13 @@
       "additionalProperties": false,
       "properties": {
         "tmuxSession": { "type": "string", "description": "tmux session name holding one window per run.", "default": "concertino" },
-        "maxConcurrent": { "type": "integer", "minimum": 1, "description": "Cap on simultaneously running orchestrators when launching a batch.", "default": 2 },
-        "escalationTimeoutMinutes": { "type": "integer", "minimum": 0, "description": "How long `emit-event.sh --await` blocks before giving up and letting the agent escalate to chat.", "default": 60 },
+        "maxConcurrent": { "type": "integer", "minimum": 1, "description": "Reserved for slice 2; not yet read by anything. Cap on simultaneously running orchestrators when the batch launcher lands.", "default": 2 },
+        "escalationTimeoutMinutes": { "type": "integer", "minimum": 0, "description": "Reserved for slice 2; not yet read by anything. `emit-event.sh --await` currently takes its timeout from CONCERTINO_ESCALATION_TIMEOUT_MIN, and no role invokes --await in this slice.", "default": 60 },
         "launchPad": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "enabled": { "type": "boolean", "description": "Enable the ticket-provider launch pad. Also requires ticketProvider.kind=linear and LINEAR_API_KEY.", "default": false }
+            "enabled": { "type": "boolean", "description": "Reserved for slice 2; not yet read by anything. Will enable the ticket-provider launch pad, which also requires ticketProvider.kind=linear and LINEAR_API_KEY.", "default": false }
           }
         }
       }

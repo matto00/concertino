@@ -982,8 +982,8 @@ function cmdGates(args) {
 
 function cmdCompletion(args) {
   const shell = args._[1] || 'fish';
-  const CMDS = ['init', 'sync', 'update', 'validate', 'diff', 'doctor', 'upgrade', 'gates', 'completion', 'help'];
-  const DESC = { init:'Interactive setup', sync:'Render harness files', update:'Update config fields and re-sync', validate:'Check config for errors', diff:'Show sync diff vs disk', doctor:'Check environment health', upgrade:'Detect stale generated files', gates:'List or run a gate', completion:'Print shell completion script', help:'Show help' };
+  const CMDS = ['init', 'sync', 'update', 'validate', 'diff', 'doctor', 'upgrade', 'gates', 'watch', 'completion', 'help'];
+  const DESC = { init:'Interactive setup', sync:'Render harness files', update:'Update config fields and re-sync', validate:'Check config for errors', diff:'Show sync diff vs disk', doctor:'Check environment health', upgrade:'Detect stale generated files', gates:'List or run a gate', watch:'Live fleet dashboard', completion:'Print shell completion script', help:'Show help' };
 
   if (shell === 'fish') {
     const lines = [
