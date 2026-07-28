@@ -67,6 +67,22 @@ test('renders TIMELINE, GATES and EVIDENCE section headers', () => {
   assert.match(out, /EVIDENCE/);
 });
 
+// --- slice-2b Important 3: this run's own malformed events must be visible ---
+// reducer.js already counts malformed lines per run; fleet.js sums it
+// fleet-wide with no per-run attribution, and until now the drill-down never
+// read it at all — a run with corrupted lines in its own log rendered as a
+// clean, merely-short history with nothing saying part of it is missing.
+
+test('a run with malformed events surfaces its own count near the timeline', () => {
+  const out = plain(renderDrillDown(run({ malformed: 3 }), OPTS));
+  assert.match(out, /TIMELINE.*▲ 3 malformed/);
+});
+
+test('a run with no malformed events shows no malformed marker at all', () => {
+  const out = plain(renderDrillDown(run({ malformed: 0 }), OPTS));
+  assert.doesNotMatch(out, /malformed/);
+});
+
 // --- role gutter ---------------------------------------------------------
 // Forced isTTY, same technique as format-colour.test.js: colour is decided
 // once at require time based on isTTY, so it must be true before requiring.
