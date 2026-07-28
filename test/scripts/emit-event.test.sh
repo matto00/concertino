@@ -82,6 +82,23 @@ check "numeric ticket stays a string" "$(node -e 'const l=require("fs").readFile
 check "numeric role stays a string"   "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).role)' "$LOG")" "string"
 rm -rf "$REPO"
 
+# --- `t` and `kind` cannot be shadowed by a caller --------------------------
+# A duplicate key parses to the LAST occurrence, so a stray `t=` reorders the
+# whole log (the reducer sorts by t) and a stray `kind=` rewrites the event's
+# meaning. The emitter is called from role prose by a language model, so a
+# plausible-looking `t=` is a question of when, not if.
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" phase.enter ticket=HEL-20 t=999 kind=SHADOW phase=Execution ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/HEL-20/events.jsonl"
+check "shadowed line is valid JSON"  "$(node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8").trim());console.log("yes")' "$LOG" 2>/dev/null || echo no)" "yes"
+check "t is not overridden"          "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).t === 999 ? "clobbered" : "intact")' "$LOG")" "intact"
+check "t is still a real timestamp"  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).t > 1600000000000 ? "yes" : "no")' "$LOG")" "yes"
+check "kind is not overridden"       "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).kind)' "$LOG")" "phase.enter"
+check "no duplicate t key"           "$(grep -c '"t":' "$LOG")" "1"
+check "no duplicate kind key"        "$(grep -c '"kind":' "$LOG")" "1"
+check "legitimate fields still pass" "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).phase)' "$LOG")" "Execution"
+rm -rf "$REPO"
+
 # --- zero-padded numbers stay strings rather than emitting invalid JSON -----
 REPO="$(new_repo)"
 ( cd "$REPO" && "$SCRIPT" note ticket=HEL-8 code=007 ) >/dev/null 2>&1

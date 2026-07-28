@@ -106,6 +106,14 @@ for kv in ${ARGS+"${ARGS[@]}"}; do
     ticket)  TICKET="$val" ;;
     role)    ROLE="$val" ;;
     project) PROJECT="$val" ;;
+    # `t` and `kind` are written by build_line and are structural, not payload.
+    # Letting a caller pass them through emits the key twice; JSON.parse keeps
+    # the LAST, so a stray `t=` silently reorders the whole log (the reducer
+    # sorts by t) and a stray `kind=` rewrites what the event means. Drop them.
+    # No current call site does this, but the emitter is called from role prose
+    # by a language model, which is exactly where a plausible-looking `t=` comes
+    # from.
+    t|kind)  ;;
     *)       FIELDS="${FIELDS},\"$(json_escape "$key")\":$(json_value "$val")" ;;
   esac
 done
