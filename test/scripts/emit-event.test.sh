@@ -127,5 +127,22 @@ check "--await exit 1 on timeout" "$?" "1"
 check "--await logged a timeout"  "$(grep -c 'escalation.timeout' "$REPO/.concertino/runs/HEL-7/events.jsonl")" "1"
 rm -rf "$REPO"
 
+# --- an oversized typed answer is capped, not written whole ------------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-10 question=q ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$REPO/.concertino/runs/HEL-10/events.jsonl" ] && break
+  sleep 0.1
+done
+BIGANS="$(head -c 9000 /dev/zero | tr '\0' 'y')"
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({answer: process.argv[2]}))' \
+  "$REPO/.concertino/runs/HEL-10/answer.json" "$BIGANS"
+wait "$AWAIT_PID" || true
+ANSLINE="$(grep 'escalation.answered' "$REPO/.concertino/runs/HEL-10/events.jsonl" | head -1)"
+check "answered line <= 4000 bytes" "$([ "$(printf '%s' "$ANSLINE" | wc -c)" -le 4000 ] && echo yes || echo no)" "yes"
+check "answered line is valid JSON" "$(printf '%s' "$ANSLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{JSON.parse(s);console.log("yes")}catch{console.log("no")}})')" "yes"
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

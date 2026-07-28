@@ -126,25 +126,32 @@ build_line() {
     "$FIELDS"
 }
 
-LINE="$(build_line "$KIND")"
-
-# Keep the line under PIPE_BUF so concurrent O_APPEND writes from the
-# orchestrator and a sub-agent can never interleave. If a caller passed a huge
-# value, drop the extra fields rather than emit a torn or invalid line.
-# LC_ALL=C makes ${#LINE} count bytes rather than characters, which is what
+# Build the line for KIND, enforce the byte cap, append it. Every event written
+# by this script goes through here — the cap keeps each line under PIPE_BUF so
+# concurrent O_APPEND writes from the orchestrator and a sub-agent can never
+# interleave, and a per-call-site check is a guarantee waiting to be forgotten.
+# LC_ALL=C makes ${#line} count bytes rather than characters, which is what
 # PIPE_BUF actually cares about.
-if [ "$(LC_ALL=C; echo ${#LINE})" -gt "$MAX_LINE" ]; then
-  FIELDS=",\"truncated\":true"
-  LINE="$(build_line "$KIND")"
-fi
+write_line() {
+  local kind="$1" line
+  line="$(build_line "$kind")"
+  if [ "$(LC_ALL=C; echo ${#line})" -gt "$MAX_LINE" ]; then
+    # Drop the caller's fields rather than emit a torn or invalid line.
+    FIELDS=",\"truncated\":true"
+    line="$(build_line "$kind")"
+  fi
+  printf '%s\n' "$line" >> "$LOG" 2>/dev/null || return 0
+}
 
 if [ "$AWAIT" -eq 1 ]; then
-  # An escalation always lands in the log as `escalation.raised`, whatever
-  # kind the caller passed, so the reducer has one thing to look for.
-  LINE="$(build_line escalation.raised)"
+  # An escalation always lands in the log as `escalation.raised`, whatever kind
+  # the caller passed, so the reducer has one thing to look for. Relabelling
+  # before the write is deliberate: the longer kind string has to be inside the
+  # byte cap, not sneaked past it afterwards.
+  write_line escalation.raised
+else
+  write_line "$KIND"
 fi
-
-printf '%s\n' "$LINE" >> "$LOG" 2>/dev/null || exit 0
 
 [ "$AWAIT" -eq 0 ] && exit 0
 
@@ -167,8 +174,10 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
       } catch { process.stdout.write(""); }
     ' "$ANSWER_FILE" 2>/dev/null)"
     if [ -n "$ANSWER" ]; then
+      # $ANSWER is free text a human typed at the escalation screen — unbounded
+      # by construction, so this write needs the cap as much as any other.
       FIELDS=",\"answer\":$(json_value "$ANSWER")"
-      printf '%s\n' "$(build_line escalation.answered)" >> "$LOG" 2>/dev/null || true
+      write_line escalation.answered
       printf '%s\n' "$ANSWER"
       exit 0
     fi
@@ -180,5 +189,5 @@ done
 # own escalation path (printing the question to chat). The dashboard is an
 # accelerator for escalations — never a new way for a run to hang.
 FIELDS=""
-printf '%s\n' "$(build_line escalation.timeout)" >> "$LOG" 2>/dev/null || true
+write_line escalation.timeout
 exit 1
