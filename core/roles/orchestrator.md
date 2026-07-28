@@ -295,15 +295,38 @@ fails silently.
 
 ### How to raise one
 
-Raise it as a single **blocking** call. This both lights up `NEEDS YOU` on the
-dashboard and waits for the human's decision — the dashboard's escalation
-screen writes the answer, and this call returns it directly:
+First, gather context — the escalation screen renders it above the question's
+options so the human can decide without attaching to this session. If the
+escalation is one of `gather-escalation-context.sh`'s five kinds (a new
+external dependency, a breaking API change, budget exhausted, an
+environmental BLOCKER, or a contradiction between requirements), run it for
+that kind and capture its output:
 
 ```bash
-scripts/concertino/emit-event.sh escalation --await \
-  ticket=$TICKET_ID role=orchestrator \
+CONTEXT="$(scripts/concertino/gather-escalation-context.sh <kind> k=v ...)" || CONTEXT=""
+```
+
+This identifies which of the escalation kinds already below applies — it is
+not a new decision, just naming the grounds for the one you're already making.
+Not every escalation fits one of the five kinds cleanly (e.g. a major
+architectural change or scope drift raised as a Planning ESCALATION); when it
+doesn't, or the script fails for any reason, `CONTEXT` is simply empty — raise
+the escalation anyway, without `context=`, rather than let a malformed
+context call block it.
+
+Then raise it as a single **blocking** call. This both lights up `NEEDS YOU`
+on the dashboard and waits for the human's decision — the dashboard's
+escalation screen writes the answer, and this call returns it directly. Only
+include `context=` when `CONTEXT` is non-empty — an event with `context=""`
+is not the same as one with no `context` field at all, and the screen's
+"no context" rendering depends on the key being genuinely absent:
+
+```bash
+ARGS=(ticket=$TICKET_ID role=orchestrator \
   question="<one sentence, the decision you need>" \
-  options=approve,deny
+  options=approve,deny)
+[ -n "$CONTEXT" ] && ARGS+=(context="$CONTEXT")
+scripts/concertino/emit-event.sh escalation --await "${ARGS[@]}"
 ```
 
 **This call must set an explicit per-call timeout, or the harness will kill it

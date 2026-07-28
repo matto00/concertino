@@ -239,5 +239,109 @@ check "discard was recorded in the log"     "$(grep -c escalation.answer_discard
 check "timeout was also recorded"           "$(grep -c escalation.timeout "$LOG")" "1"
 rm -rf "$REPO"
 
+# --- a small context= rides inline unchanged, no truncation flags ----------
+REPO="$(new_repo)"
+LOG="$REPO/.concertino/runs/HEL-15/events.jsonl"
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-15 question=q options=a,b \
+    context="package zod@3.23.0, imported by lib/ui/ticket.js" ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+printf '{"answer":"approve"}' > "$REPO/.concertino/runs/HEL-15/answer.json"
+wait "$AWAIT_PID" 2>/dev/null
+check "small context: exit 0" "$?" "0"
+check "small context: rides inline unchanged" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").split("\n").find(x=>x.includes("escalation.raised"));console.log(JSON.parse(l).context)' "$LOG")" \
+  "package zod@3.23.0, imported by lib/ui/ticket.js"
+check "small context: no context_truncated key" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").split("\n").find(x=>x.includes("escalation.raised"));console.log("context_truncated" in JSON.parse(l))' "$LOG")" \
+  "false"
+check "small context: no context_ref key" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").split("\n").find(x=>x.includes("escalation.raised"));console.log("context_ref" in JSON.parse(l))' "$LOG")" \
+  "false"
+rm -rf "$REPO"
+
+# --- an oversized context= is truncated visibly with a resolvable ref ------
+REPO="$(new_repo)"
+LOG="$REPO/.concertino/runs/HEL-16/events.jsonl"
+BIGCTX="$(head -c 6000 /dev/zero | tr '\0' 'x')"
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-16 question=q options=a,b \
+    context="$BIGCTX" ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+printf '{"answer":"approve"}' > "$REPO/.concertino/runs/HEL-16/answer.json"
+wait "$AWAIT_PID" 2>/dev/null
+RAISEDLINE="$(grep escalation.raised "$LOG" | head -1)"
+check "oversized context: raised line <= 4000 bytes" \
+  "$([ "$(printf '%s' "$RAISEDLINE" | wc -c)" -le 4000 ] && echo yes || echo no)" "yes"
+check "oversized context: still valid JSON" \
+  "$(printf '%s' "$RAISEDLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{JSON.parse(s);console.log("yes")}catch{console.log("no")}})')" \
+  "yes"
+check "oversized context: context_truncated is true" \
+  "$(printf '%s' "$RAISEDLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log(JSON.parse(s).context_truncated)})')" \
+  "true"
+check "oversized context: inline context is shorter than the input" \
+  "$(printf '%s' "$RAISEDLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log(JSON.parse(s).context.length < 6000 ? "shorter" : "not-shorter")})')" \
+  "shorter"
+REF="$(printf '%s' "$RAISEDLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log(JSON.parse(s).context_ref||"")})')"
+check "oversized context: context_ref file exists" "$([ -n "$REF" ] && [ -f "$REF" ] && echo yes || echo no)" "yes"
+check "oversized context: ref content is the full untruncated context" \
+  "$(wc -c < "$REF" | tr -d ' ')" "6000"
+check "oversized context: question is unaffected" \
+  "$(printf '%s' "$RAISEDLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log(JSON.parse(s).question)})')" \
+  "q"
+check "oversized context: options are unaffected" \
+  "$(printf '%s' "$RAISEDLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log(JSON.parse(s).options)})')" \
+  "a,b"
+rm -rf "$REPO"
+
+# --- a failed persist yields truncated context with no context_ref ---------
+if [ "$(id -u)" -ne 0 ]; then
+REPO="$(new_repo)"
+LOG="$REPO/.concertino/runs/HEL-17/events.jsonl"
+mkdir -p "$REPO/.concertino/runs/HEL-17/evidence"
+chmod 500 "$REPO/.concertino/runs/HEL-17/evidence"
+BIGCTX="$(head -c 6000 /dev/zero | tr '\0' 'x')"
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-17 question=q options=a,b \
+    context="$BIGCTX" ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+printf '{"answer":"approve"}' > "$REPO/.concertino/runs/HEL-17/answer.json"
+wait "$AWAIT_PID" 2>/dev/null
+chmod 700 "$REPO/.concertino/runs/HEL-17/evidence"
+RAISEDLINE="$(grep escalation.raised "$LOG" | head -1)"
+check "failed persist: context_truncated is still true" \
+  "$(printf '%s' "$RAISEDLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log(JSON.parse(s).context_truncated)})')" \
+  "true"
+check "failed persist: no context_ref key" \
+  "$(printf '%s' "$RAISEDLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log("context_ref" in JSON.parse(s))})')" \
+  "false"
+rm -rf "$REPO"
+fi
+
+# --- an escalation raised without context= is byte-for-byte unaffected -----
+REPO="$(new_repo)"
+LOG="$REPO/.concertino/runs/HEL-18/events.jsonl"
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-18 question=q options=a,b ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+printf '{"answer":"approve"}' > "$REPO/.concertino/runs/HEL-18/answer.json"
+wait "$AWAIT_PID" 2>/dev/null
+check "no context=: no context key at all" \
+  "$(grep escalation.raised "$LOG" | head -1 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log("context" in JSON.parse(s))})')" \
+  "false"
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
