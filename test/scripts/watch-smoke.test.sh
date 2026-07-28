@@ -96,5 +96,44 @@ grep -q 'not a ticket id' "$OUT" \
   && ok "reports the validation error on the prompt" \
   || bad "reports the validation error on the prompt" "no 'not a ticket id' in output"
 
+# --- a typed reply survives a transient (non-"already answered") write failure
+# slice-2a Important 2: answerEscalation used to clear escalationReply on ANY
+# failed write, including an IO error that has nothing to do with what the
+# human typed. Make the run directory read-only so store.writeAnswer's
+# writeFileSync fails with EACCES (reason: 'error'), not EEXIST
+# (reason: 'answered'), and confirm the typed text is still on screen after
+# the failed submit rather than silently lost.
+if [ "$(id -u)" -ne 0 ]; then
+ESC_TICKET="ESC-1"
+mkdir -p "$WORK/.concertino/runs/$ESC_TICKET"
+printf '{"t":1,"kind":"escalation.raised","project":"p","ticket":"%s","role":"orchestrator","question":"proceed?","options":"approve,deny"}\n' \
+  "$ESC_TICKET" > "$WORK/.concertino/runs/$ESC_TICKET/events.jsonl"
+tmux new-window -t "$SESSION" -n "$ESC_TICKET" 'sleep 300'
+chmod 555 "$WORK/.concertino/runs/$ESC_TICKET"
+
+# ESC-1 is the only run with a live escalation (needs-you sorts first), so
+# Enter with nothing else pressed yet opens it. 't' opens the reply box, the
+# text follows, then Enter submits — which must fail here since the run
+# directory cannot be written to. A trailing Escape (not '\r'/'\n', so it
+# survives the piped-stdin trailing-newline strip) cancels the now-failed
+# reply so the dashboard falls through to quitting cleanly on EOF.
+printf '\rtkeep-this-text\r\x1b' | timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" > "$OUT" 2>&1
+STATUS=$?
+chmod 755 "$WORK/.concertino/runs/$ESC_TICKET"
+
+check "dashboard exits 0 after the failed submit" "$STATUS" "0"
+grep -q 'keep-this-text' "$OUT" \
+  && ok "typed reply text survives a failed (non-answered) write" \
+  || bad "typed reply text survives a failed (non-answered) write" "'keep-this-text' missing from output"
+grep -qi 'could not write answer' "$OUT" \
+  && ok "the write error is surfaced on screen" \
+  || bad "the write error is surfaced on screen" "no 'could not write answer' in output"
+check "no escalation.answered was logged (write never succeeded)" \
+  "$(grep -c escalation.answered "$WORK/.concertino/runs/$ESC_TICKET/events.jsonl")" "0"
+
+tmux kill-window -t "$SESSION:$ESC_TICKET" 2>/dev/null
+rm -rf "$WORK/.concertino/runs/$ESC_TICKET"
+fi
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
