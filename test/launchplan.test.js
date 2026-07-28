@@ -79,7 +79,9 @@ test('sequential (concurrency 1): only the first ticket starts now, the rest are
   // Anchored so this only picks up ticket ROWS, not the header line — the
   // header also contains "CON-338" (as "HEL-338 +2"-style summary text) and
   // an unanchored /CON-3/ matched that first, which was this test's own bug.
-  const lines = out.split('\n').filter((l) => /^\s+\d+\s+CON-3/.test(l));
+  // The ticket list now sits inside a box (design.md Decision 1), so a row
+  // starts with the box's own left border character, not raw whitespace.
+  const lines = out.split('\n').filter((l) => /^[│┃]\s+\d+\s+CON-3/.test(l));
   assert.match(lines[0], /start now/);
   assert.match(lines[1], /queued/);
   assert.match(lines[2], /queued/);
@@ -90,7 +92,9 @@ test('parallel with cap 2: the first two start now, the third is queued — the 
   // Anchored so this only picks up ticket ROWS, not the header line — the
   // header also contains "CON-338" (as "HEL-338 +2"-style summary text) and
   // an unanchored /CON-3/ matched that first, which was this test's own bug.
-  const lines = out.split('\n').filter((l) => /^\s+\d+\s+CON-3/.test(l));
+  // The ticket list now sits inside a box (design.md Decision 1), so a row
+  // starts with the box's own left border character, not raw whitespace.
+  const lines = out.split('\n').filter((l) => /^[│┃]\s+\d+\s+CON-3/.test(l));
   assert.match(lines[0], /start now/);
   assert.match(lines[1], /start now/);
   assert.match(lines[2], /queued/);

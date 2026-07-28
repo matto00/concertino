@@ -9,6 +9,64 @@ concertino watch
 Requires **tmux**. Runs live in a tmux session (one window per ticket), so they
 survive the dashboard crashing, an ssh drop, or a closed laptop.
 
+## What it looks like
+
+Every screen draws its panels through one shared layout module
+(`lib/ui/layout.js`): bordered boxes, a title woven into the top border, and
+one column of horizontal padding. The fleet view — four bordered sections,
+`NEEDS YOU` always kept, never trimmed even when the terminal is short:
+
+```
+concertino · helio  4 runs · 1 needs you
+
+┌ NEEDS YOU ───────────────────────────────────────────────────────────────────────────────────────┐
+│   ▸ HEL-338   spec-delta-validation                                                              │
+│       add zod@3.23 as a runtime dependency?   approve / deny                                     │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ RUNNING ─────────────────────────────────────────────────────────────────────────────────────────┐
+│     HEL-501   live-one                                                                           │
+│       ▪▪▪▪▪▪▪▪▪▪░░░░░░░░░░  Execution     cycle 1   gates 1/2   23m                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ FAILED ──────────────────────────────────────────────────────────────────────────────────────────┐
+│     HEL-502   broke                                                                              │
+│       ░░░░░░░░░░░░░░░░░░░░  phase unknown   escalated   1m                                       │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ DONE ────────────────────────────────────────────────────────────────────────────────────────────┐
+│     HEL-503   shipped                                                                            │
+│       ░░░░░░░░░░░░░░░░░░░░  phase unknown   delivered   1m                                       │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+  ↵ attach   l details   j/k move   n new run   N launch pad   q quit
+```
+
+The launch pad is the one screen with a real pane-switch key (`Tab` or the
+left/right arrows) — the pane currently receiving keystrokes gets a visibly
+heavier border (`┏━┓┃┗━┛`, bold/cyan on a colour terminal), not just a colour
+difference, so focus still reads with colour turned off. `TICKETS` has focus
+below; `EPICS` is plain:
+
+```
+NEW RUN · helio                                                 5 open · fetched 12m ago · r refresh
+
+┌ EPICS ─────────────────────────┐ ┏ Pipeline v2 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+│  ▸ Pipeline v2       8 open    │ ┃  ▸ [x] HEL-338   spec-delta-validation            Todo        ┃
+│    Panel system      5 open    │ ┃    [x] HEL-341   csv-connector-retry              Todo        ┃
+│    Auth hardening    3 open    │ ┃    [ ] HEL-347   sql-source-introspect            Todo        ┃
+│    Connector SDK     12 open   │ ┃    [x] HEL-349   pipeline-shape-presets           Todo        ┃
+│    ─ unassigned ─    6 open    │ ┃    [ ] HEL-352   scaffold-step-registry           ▲ running   ┃
+└────────────────────────────────┘ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+  3 selected · parallel ×2
+  space select   ↵ read   a all   s sequential   p parallel   L launch   esc back
+```
+
+The fleet view's four sections and the drill-down's timeline/gates/evidence
+panels all use the plain border — neither screen has a keypress that routes
+to one section instead of another, so there is nothing for a "focused" style
+to be distinguished from. A selected row inside the launch pad's unfocused
+pane (e.g. `Pipeline v2` above) stays visible but recedes — dimmed, never
+bold — so the two panes' selections read as clearly different states, not as
+"both panes are somehow active."
+
 ## Keys
 
 | Key | Action |

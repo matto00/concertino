@@ -387,7 +387,12 @@ test('the selection marker points at reduce()\'s run for every index', () => {
 
   for (let n = 0; n < runs.length; n++) {
     const out = plain(renderFleet(runs, { cols: 100, selected: n }));
-    const marked = out.split('\n').filter((l) => l.trimStart().startsWith('▸'));
+    // Each section is now its own bordered box (`│ … │`), so the marker no
+    // longer sits at column 0 of its line — it can appear anywhere after the
+    // left border and padding. '▸' is unique to this selection marker, so
+    // matching its presence anywhere on the line still pins one-marker-per-
+    // render without depending on the border's own column offset.
+    const marked = out.split('\n').filter((l) => l.includes('▸'));
     assert.equal(marked.length, 1, `selected:${n} produced ${marked.length} markers`);
     assert.ok(marked[0].includes(runs[n].ticket),
       `selected:${n} should mark ${runs[n].ticket}, marked line was: ${marked[0]}`);
@@ -422,6 +427,91 @@ test('no rendered line exceeds the terminal width', () => {
   for (const line of out.split('\n')) {
     assert.ok(visible(line).length <= 60, `line too long (${visible(line).length}): ${line}`);
   }
+});
+
+// --- snapshot widths, wide characters, borders + colour together (task 6.2) -
+// isTTY forced (format-colour.test.js's pattern) so both the section boxes'
+// border colour AND STATUS_COLOUR are actually exercised, not just their
+// plain-text fallback — every width below must still hold the visible-
+// column budget with a bordered, coloured, wide-character render.
+
+test('at 60/80/100/120 cols, a bordered, coloured, wide-character (CJK) fleet render stays in budget', () => {
+  process.stdout.isTTY = true;
+  for (const m of ['../lib/ui/format', '../lib/ui/layout', '../lib/ui/screens/fleet']) {
+    delete require.cache[require.resolve(m)];
+  }
+  const f = require('../lib/ui/format');
+  const { renderFleet: renderColoured } = require('../lib/ui/screens/fleet');
+
+  const wideRuns = [
+    run({
+      ticket: 'HEL-9001', status: 'needs-you',
+      changeName: '日本語のとても長いブランチ名前のテストです',
+      escalation: { question: 'これは非常に長いエスカレーションの質問文です。承認しますか？', options: ['approve', 'deny'], raisedAt: 1 },
+    }),
+    run({ ticket: 'HEL-9002', status: 'running', phase: 'Execution', cycle: 3 }),
+    run({ ticket: 'HEL-9003', status: 'failed', endStatus: 'escalated', endedAt: 100 }),
+    run({ ticket: 'HEL-9004', status: 'done', endStatus: 'delivered', endedAt: 100 }),
+  ];
+
+  for (const cols of [60, 80, 100, 120]) {
+    const out = renderColoured(wideRuns, { cols, selected: 0 });
+    assert.match(out, /\x1b\[/, `cols:${cols} should still be emitting colour under isTTY`);
+    for (const line of out.split('\n')) {
+      assert.ok(f.visibleLength(line) <= cols,
+        `cols:${cols} line is ${f.visibleLength(line)} wide: ${JSON.stringify(line)}`);
+    }
+  }
+
+  process.stdout.isTTY = false;
+  for (const m of ['../lib/ui/format', '../lib/ui/layout', '../lib/ui/screens/fleet']) {
+    delete require.cache[require.resolve(m)];
+  }
+});
+
+// --- borderless fallback path, exercised end to end ------------------------
+// layout.degrade()'s own threshold is unreachable through this screen's real
+// render() at any width/height this codebase actually wires up (`cols` is
+// floored at 40, `MIN_BOX_WIDTH` is 8 — see design.md Decision 3's own
+// discussion of why that is fine). That leaves the fallback branch inside
+// renderFleet covered only by layout.test.js's unit-level test of
+// layout.degrade() itself, not by anything that runs fleet.js's OWN "skip
+// the frame" code. Stubbing layout.degrade() to force `true` and re-requiring
+// fleet.js against that stub exercises the real conditional inside
+// renderFleet, not a copy of it — this is the cheapest way to pin that wiring
+// without lowering any screen's width floor just to make a threshold
+// reachable, which would be a regression in its own right.
+test('when layout.degrade() reports true, fleet sections render without any frame at all', () => {
+  const layoutPath = require.resolve('../lib/ui/layout');
+  const fleetPath = require.resolve('../lib/ui/screens/fleet');
+  const realLayout = require('../lib/ui/layout');
+
+  delete require.cache[fleetPath];
+  require.cache[layoutPath] = {
+    id: layoutPath, filename: layoutPath, loaded: true,
+    exports: Object.assign({}, realLayout, { degrade: () => true }),
+  };
+  const { renderFleet: renderDegraded } = require('../lib/ui/screens/fleet');
+
+  const out = renderDegraded([
+    run({ ticket: 'HEL-338', status: 'needs-you',
+          escalation: { question: 'add zod@3?', options: ['approve', 'deny'], raisedAt: 1 } }),
+    run({ ticket: 'HEL-501', status: 'running' }),
+  ], { cols: 78, selected: 0 });
+
+  // No box-drawing character anywhere — neither border set was drawn.
+  assert.doesNotMatch(out, /[┌┐└┘│┏┓┗┛┃]/,
+    'layout.degrade() reporting true should suppress every box-drawing character');
+  // The content this run's fallback path (title line + rows) is responsible
+  // for is still there — degrading drops the frame, never the information.
+  assert.match(out, /NEEDS YOU/);
+  assert.match(out, /HEL-338/);
+  assert.match(out, /add zod@3\?/);
+  assert.match(out, /RUNNING/);
+  assert.match(out, /HEL-501/);
+
+  delete require.cache[fleetPath];
+  delete require.cache[layoutPath];
 });
 
 // --- the new-run prompt ----------------------------------------------------
