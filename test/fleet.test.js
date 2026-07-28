@@ -357,6 +357,17 @@ test('a failed launch is shown on the prompt, not swallowed', () => {
   assert.match(out, /tmux exited 1/);
 });
 
+// A ticket that fails shape validation (see lib/ui/ticket.js) is reported
+// through the same error path as a failed launch — no separate mechanism —
+// and the typed value stays on the line so the user can fix it in place.
+test('a value that does not look like a ticket id is shown on the prompt as a validation error', () => {
+  const out = plain(renderFleet([run({})], {
+    ...OPTS, prompt: { value: '$(touch /tmp/x)', error: 'not a ticket id' },
+  }));
+  assert.match(out, /not a ticket id/);
+  assert.match(out, /\$\(touch \/tmp\/x\)/);
+});
+
 test('the footer advertises n only in fleet mode', () => {
   const fleet = plain(renderFleet([run({})], OPTS));
   assert.match(fleet, /n new run/);

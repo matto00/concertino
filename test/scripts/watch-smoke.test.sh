@@ -77,5 +77,24 @@ grep -q 'could not start CON-778' "$OUT" \
   && ok "reports the failed launch on the prompt" \
   || bad "reports the failed launch on the prompt" "no 'could not start CON-778' in output"
 
+# --- shell-injection regression ---------------------------------------------
+# The exact payload confirmed to inject: launchCommand puts the ticket inside
+# double quotes (`claude "/concertino-deliver {{TICKET}}"`), and a ticket of
+# `$(touch <path>)` ran during shell expansion — before `claude` even started
+# — the moment `session.spawn` handed the built string to `tmux
+# respawn-window`. This drives the real prompt -> session.spawn -> tmux path
+# (not a mock) with that payload and asserts the marker file never appears.
+MARK="$WORK/injection-mark"
+rm -f "$MARK"
+printf 'n$(touch %s)\rq' "$MARK" | timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" > "$OUT" 2>&1
+STATUS=$?
+check "exits 0 after a shell-injection payload as the ticket" "$STATUS" "0"
+[ -e "$MARK" ] \
+  && bad "rejects the \$(touch ...) payload without executing it" "marker file was created: $MARK" \
+  || ok "rejects the \$(touch ...) payload without executing it"
+grep -q 'not a ticket id' "$OUT" \
+  && ok "reports the validation error on the prompt" \
+  || bad "reports the validation error on the prompt" "no 'not a ticket id' in output"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
