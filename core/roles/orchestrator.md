@@ -12,6 +12,26 @@ Planning → Execution → Evaluation in sequence, deliver, and clean up.
 
 ## Harness resume model
 
+**Never end your turn while a sub-agent you spawned or resumed is still
+outstanding.** As the top-level `/concertino-deliver` session, waiting costs
+nothing: your session persists and will receive the sub-agent's result
+whenever it arrives, however long that takes. But if this orchestrator role
+is itself running as a **sub-agent** — a fleet driver, a queue runner, or
+another orchestrator dispatched you — returning control before that child
+reports back is fatal, not merely slow: a suspended sub-agent is not resumed
+by any external event, so you will never see the child's result, and the
+child itself, now orphaned, does not survive your turn ending either. This is
+exactly what happened to CON-10 twice: the orchestrator said it would "pause
+and wait for a notification" and simply stopped, and the run sat dead until a
+human noticed. So drive every phase — Planning, Execution, Evaluation,
+Delivery — to completion **within your own turn**, no matter which context
+you are running in. If your harness genuinely cannot wait for a sub-agent
+inline, do not return control speculatively: poll for the artefact the
+sub-agent was told to produce (its report path, or a new commit on the
+branch), or escalate. The spawn/resume instructions below each restate this
+at the point you need it, so the rule survives even if you only ever see one
+of them in isolation.
+
 {{block:harnessResume}}
 
 ---
@@ -109,6 +129,11 @@ Execute directly (no subagent).
    significantly beyond the ticket. Self-approve everything else.
 5. **Design-soundness gate (Skeptic).** Spawn the skeptic **fresh** (cold — never
    resumed) with `GATE=design`, `WORKTREE_PATH`, `CHANGE_NAME`, `TICKET_ID`.
+   **Wait for its verdict inside this turn before proceeding** — free if you're
+   the top-level session, fatal if you're a sub-agent (you'd never see the
+   verdict, and the skeptic you just spawned is orphaned). If the harness
+   can't wait inline, poll for the skeptic's report file instead of returning
+   control, or escalate.
    - **CONFIRM** → proceed.
    - **REFUTE** → read the report and treat each numbered required revision as a
      **checklist**: revise the artifacts so every item is addressed, then re-run the
@@ -153,6 +178,12 @@ Track cycle count (persisted in `workflow-state.md`). Maximum
 Read `DEV_PORT`/`BACKEND_PORT` from `workflow-state.md` (they were derived by
 `setup-worktree.sh`; if the file was lost, re-run it — idempotent, same ports).
 
+**Wait for each spawn below to return within this same turn before moving on**
+— harmless if you're the top-level session, fatal if you're a sub-agent
+(a suspended you would never see the result, and the child you spawned dies
+with you). If the harness can't wait inline, poll for the executor's commit
+or the evaluator's report path instead of returning control, or escalate.
+
 1. Spawn the **executor**: `CHANGE_NAME`, `WORKTREE_PATH`, `TICKET_ID`. First run —
    implement the change.
 2. After it returns, spawn the **evaluator**: `WORKTREE_PATH`, `CHANGE_NAME`,
@@ -162,10 +193,16 @@ Record agent IDs in `workflow-state.md` for resume.
 
 ### Cycles 2+ — resume (do NOT spawn fresh)
 
-Re-use the same ports. Resume the **executor**: *Cycle N. Address change requests
-in `EVALUATION_REPORT_PATH=<path>`, then re-run gates and commit.* After it returns,
-resume the **evaluator**: *Cycle N. Re-evaluate — the executor addressed cycle
-(N-1)'s change requests.*
+Re-use the same ports. **The same turn-boundary rule applies to a resume as to
+a fresh spawn:** wait for the resumed agent to return within this turn before
+proceeding. As a sub-agent, ending your turn on a resume is exactly as fatal
+as on a spawn — you receive no notification when suspended, and the resumed
+agent does not survive you either. Resume the **executor**: *Cycle N. Address
+change requests in `EVALUATION_REPORT_PATH=<path>`, then re-run gates and
+commit.* After it returns, resume the **evaluator**: *Cycle N. Re-evaluate —
+the executor addressed cycle (N-1)'s change requests.* If the harness can't
+wait inline on a resume, poll for the new commit or the evaluator's report
+instead of returning control, or escalate.
 
 ### Verdict handling
 
@@ -184,13 +221,21 @@ The evaluator returns only `Overall: PASS | FAIL | BLOCKER` and a report path.
 On evaluator **PASS**, spawn the skeptic **fresh** (cold — never resumed; a cold
 reviewer can't inherit the loop's blind spots): `GATE=final`, `WORKTREE_PATH`,
 `CHANGE_NAME`, `TICKET_ID`, `DEV_PORT`, `BACKEND_PORT`, `N=<skeptic_cycle>`.
+**Wait for its verdict within this turn** — free at the top level, fatal as a
+sub-agent (a suspended you gets no notification, and the skeptic you spawned
+is orphaned). If you can't wait inline, poll for the skeptic's report file, or
+escalate.
 
 - **CONFIRM** → proceed to Delivery.
 - **REFUTE** → read the report; **resume the executor** with its change requests
-  (pass the skeptic report path as `EVALUATION_REPORT_PATH`). After it returns,
-  **re-run the skeptic fresh** — no evaluator re-check needed (the final gate
-  re-runs the gates itself). Increment `SKEPTIC_CYCLE`. Budget:
+  (pass the skeptic report path as `EVALUATION_REPORT_PATH`). **Wait for the
+  executor's return within this same turn, then wait the same way for the
+  re-spawned skeptic's verdict** — no evaluator re-check needed (the final
+  gate re-runs the gates itself). Increment `SKEPTIC_CYCLE`. Budget:
   **{{var:budgets.skepticFinalRounds}} REFUTE rounds**; if still REFUTE, escalate.
+  If the harness can't wait inline on either the executor resume or the
+  skeptic re-spawn, poll for the executor's new commit / the skeptic's report
+  file instead of returning control, or escalate.
 - **BLOCKER** → environmental; surface to human, wait for direction.
 
 ---
