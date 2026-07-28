@@ -26,6 +26,11 @@ set -uo pipefail
 
 MAX_LINE=4000
 
+# Needed to invoke persist-evidence.sh as a sibling script (same pattern
+# start-servers.sh already uses to invoke emit-event.sh) when an oversized
+# `context=` field on an escalation has to be persisted rather than inlined.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Millisecond epoch. GNU date supports %3N; BSD/macOS date does not, so fall
 # back to node (already a hard requirement for Concertino).
 now_ms() {
@@ -97,6 +102,12 @@ TICKET=""
 ROLE="${CONCERTINO_ROLE:-script}"
 PROJECT="${CONCERTINO_PROJECT:-$(basename "$ROOT")}"
 FIELDS=""
+# `context` (escalation-only) is captured separately from every other field so
+# the --await path can truncate/persist it on its own if the line doesn't
+# fit — see write_escalation_raised() below. OTHER_FIELDS mirrors FIELDS but
+# never includes context, so that function can rebuild the line without it.
+CONTEXT=""
+OTHER_FIELDS=""
 
 for kv in ${ARGS+"${ARGS[@]}"}; do
   key="${kv%%=*}"
@@ -114,7 +125,18 @@ for kv in ${ARGS+"${ARGS[@]}"}; do
     # by a language model, which is exactly where a plausible-looking `t=` comes
     # from.
     t|kind)  ;;
-    *)       FIELDS="${FIELDS},\"$(json_escape "$key")\":$(json_value "$val")" ;;
+    context)
+      # Still folded into FIELDS like any other caller field, so the first
+      # (untruncated) candidate line is byte-for-byte what it would have been
+      # without this special case — a context that fits behaves identically
+      # to any other field. CONTEXT is the extra copy write_escalation_raised
+      # needs if that candidate line turns out to be too long.
+      CONTEXT="$val"
+      FIELDS="${FIELDS},\"context\":$(json_value "$val")"
+      ;;
+    *)       FIELDS="${FIELDS},\"$(json_escape "$key")\":$(json_value "$val")"
+             OTHER_FIELDS="${OTHER_FIELDS},\"$(json_escape "$key")\":$(json_value "$val")"
+             ;;
   esac
 done
 
@@ -161,6 +183,96 @@ if [ "$AWAIT" -eq 0 ]; then
   exit 0
 fi
 
+# escalation.raised's `context` field (if any) gets its own write path: an
+# oversized context is what pays down the byte budget — truncated visibly and
+# persisted via persist-evidence.sh — never `question`/`options`, and never
+# silently. See design.md Decision 3 for the full sequence this implements.
+write_escalation_raised() {
+  local line
+  line="$(build_line escalation.raised)"
+  if [ "$(LC_ALL=C; echo ${#line})" -le "$MAX_LINE" ]; then
+    printf '%s\n' "$line" >> "$LOG" 2>/dev/null || return 1
+    return 0
+  fi
+
+  # Too long, and there's no context to blame — this is the pre-existing
+  # question/options-too-big case. Fall through to the same last-resort every
+  # other event kind already uses.
+  if [ -z "$CONTEXT" ]; then
+    write_line escalation.raised
+    return $?
+  fi
+
+  # Persist the full context BEFORE touching FIELDS, so a failed persist can't
+  # leave FIELDS half-mutated. Named by raise time (not by kind/question) so
+  # concurrent or successive escalations on the same ticket never collide or
+  # overwrite each other's persisted context.
+  local epoch tmp_dir src ref="" persist_out
+  epoch="$(now_ms)"
+  tmp_dir="$(mktemp -d 2>/dev/null)" || tmp_dir=""
+  if [ -n "$tmp_dir" ]; then
+    src="${tmp_dir}/escalation-context-${epoch}.txt"
+    printf '%s' "$CONTEXT" > "$src" 2>/dev/null
+    if persist_out="$("${SCRIPT_DIR}/persist-evidence.sh" "$TICKET" "$src" 2>/dev/null)"; then
+      ref="${persist_out#READY ref=}"
+    fi
+    # Clean up the temp file regardless of outcome — the durable copy (if any)
+    # is what matters now; leaving this behind would leak into /tmp on every
+    # oversized escalation.
+    rm -rf "$tmp_dir" 2>/dev/null || true
+  fi
+
+  local total
+  total="$(printf '%s' "$CONTEXT" | LC_ALL=C wc -c | tr -d ' ')"
+
+  # Binary search the largest byte-prefix of CONTEXT whose truncated line
+  # (prefix + visible marker + context_truncated/[context_ref]) still fits.
+  # Build-then-measure, per design.md's stated mitigation — JSON escaping and
+  # the marker's own digit count make the exact budget non-obvious to compute
+  # analytically, so evaluate the real candidate line instead of estimating.
+  local lo=0 hi="$total" mid best_fields="" best_line=""
+  while [ "$lo" -le "$hi" ]; do
+    mid=$(( (lo + hi) / 2 ))
+    local prefix marker candidate fields_try line_try
+    if [ "$mid" -gt 0 ]; then
+      prefix="$(printf '%s' "$CONTEXT" | LC_ALL=C cut -b "1-${mid}")"
+    else
+      prefix=""
+    fi
+    if [ -n "$ref" ]; then
+      marker=" … [truncated, ${mid} of ${total} bytes shown — full context: ${ref}]"
+    else
+      marker=" … [truncated, ${mid} of ${total} bytes shown]"
+    fi
+    candidate="${prefix}${marker}"
+    fields_try="${OTHER_FIELDS},\"context\":$(json_value "$candidate"),\"context_truncated\":true"
+    [ -n "$ref" ] && fields_try="${fields_try},\"context_ref\":$(json_string "$ref")"
+    FIELDS="$fields_try"
+    line_try="$(build_line escalation.raised)"
+    if [ "$(LC_ALL=C; echo ${#line_try})" -le "$MAX_LINE" ]; then
+      best_fields="$fields_try"
+      best_line="$line_try"
+      lo=$((mid + 1))
+    else
+      hi=$((mid - 1))
+    fi
+  done
+
+  if [ -n "$best_line" ]; then
+    FIELDS="$best_fields"
+    printf '%s\n' "$best_line" >> "$LOG" 2>/dev/null || return 1
+    return 0
+  fi
+
+  # Even an empty context (plus its own bookkeeping keys) doesn't fit — some
+  # OTHER field (question/options) is itself pathologically large. This is
+  # not expected to trigger for realistic escalations; fall through to the
+  # same last-resort every other event kind already uses.
+  FIELDS="$OTHER_FIELDS"
+  write_line escalation.raised
+  return $?
+}
+
 # An escalation always lands in the log as `escalation.raised`, whatever kind
 # the caller passed, so the reducer has one thing to look for. Relabelling
 # before the write is deliberate: the longer kind string has to be inside the
@@ -171,7 +283,7 @@ fi
 # full timeout on a question nobody was asked. Bail immediately instead and let
 # the caller fall back to presenting the escalation in chat, exactly as it does
 # on timeout.
-if ! write_line escalation.raised; then
+if ! write_escalation_raised; then
   exit 1
 fi
 

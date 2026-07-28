@@ -66,6 +66,39 @@ test('a pending escalation makes the run need you', () => {
   assert.deepEqual(run.escalation.options, ['approve', 'deny']);
 });
 
+test('an escalation.raised with context populates run.escalation.context', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator',
+      question: 'add zod?', options: 'approve,deny',
+      context: 'package zod@3.23.0, imported by lib/ui/ticket.js' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.equal(run.escalation.context, 'package zod@3.23.0, imported by lib/ui/ticket.js');
+  assert.equal(run.escalation.contextTruncated, false);
+  assert.equal(run.escalation.contextRef, null);
+});
+
+test('an escalation.raised with truncated context carries the ref', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator',
+      question: 'q', options: 'approve,deny',
+      context: 'truncated text… [truncated, 40 of 6000 bytes shown — full context: /r/evidence/escalation-context-1.txt]',
+      context_truncated: true,
+      context_ref: '/r/evidence/escalation-context-1.txt' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.equal(run.escalation.contextTruncated, true);
+  assert.equal(run.escalation.contextRef, '/r/evidence/escalation-context-1.txt');
+});
+
+test('an escalation.raised with no context yields context: null and no truncation flag', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator',
+      question: 'q', options: 'approve,deny' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.equal(run.escalation.context, null);
+  assert.equal(run.escalation.contextTruncated, false);
+  assert.equal(run.escalation.contextRef, null);
+});
+
 test('an answered escalation clears it', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator', question: 'q' },

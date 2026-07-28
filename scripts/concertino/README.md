@@ -29,6 +29,12 @@ file — so they stay generic and the config is the single source of truth.
   `emit-event.sh`, it can genuinely fail (missing source, unwritable
   destination) and does not swallow that failure, because a caller must never
   build an `evidence`/`verdict` ref from a copy that was never actually made.
+- `gather-escalation-context.sh` is a pure formatter: it prints a structured
+  context block for one of five escalation kinds to stdout, or `FAIL`s on a
+  missing required field or an unrecognized kind. It does not know about
+  `emit-event.sh`'s byte cap and does not persist anything itself — pass its
+  output as `context=` on the `emit-event.sh escalation --await` call, which
+  owns truncation/persistence for an oversized value.
 
 ## Scripts
 
@@ -40,6 +46,7 @@ file — so they stay generic and the config is the single source of truth.
 | `cleanup.sh`        | Stop servers, remove worktree                              | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>`                 |
 | `emit-event.sh`     | Append a dashboard event; `--await` blocks for an answer   | `<kind> [--await] k=v ...`                                  |
 | `persist-evidence.sh` | Copy an artifact into the main checkout, print a durable ref | `<TICKET_ID> <SOURCE_PATH>`                               |
+| `gather-escalation-context.sh` | Format a structured context block for an escalation kind | `<dependency\|api-change\|budget\|blocker\|contradiction> k=v ...` |
 
 ## Ports
 
