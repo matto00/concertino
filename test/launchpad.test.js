@@ -164,6 +164,21 @@ test('space does not select a ticket already running — toggle-select is refuse
   assert.equal(isSelectable(t, runs), false, 'watch.js must refuse to add CON-9 to lp.selected');
 });
 
+// --- hostile Linear free text: OSC/CSI/control bytes never reach the render -
+// launchpad.js renders every visible ticket TITLE straight from Linear —
+// editable by anyone with tracker write access. See lib/ui/format.js's
+// stripUnsafeControls, the single choke point every screen's render already
+// funnels through (ticketRow's line is truncated both directly and again in
+// renderLaunchPad's final map).
+
+test('a ticket title carrying an OSC (window-title) sequence is neutralised in the tickets pane', () => {
+  const hostile = [ticket({ identifier: 'CON-1', title: 'innocuous' + '\x1b]0;pwned\x07' + '-title' })];
+  const state = lp({ cache: cacheWith(hostile, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]) });
+  const out = renderLaunchPad(state, [], OPTS);
+  assert.doesNotMatch(out, /\x1b\]/);
+  assert.match(plain(out), /innocuous-title/);
+});
+
 // --- epics pane, including the unassigned bucket ----------------------------
 
 test('the unassigned epic bucket renders distinctly, not as "null"', () => {

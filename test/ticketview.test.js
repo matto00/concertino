@@ -85,6 +85,39 @@ test('an untruncated thread shows no "showing N of M" hint', () => {
   assert.doesNotMatch(out, /showing/);
 });
 
+// --- hostile Linear free text: OSC/CSI/control bytes never reach the render -
+// The description and every comment are authored in Linear by anyone with
+// tracker write access, not just the orchestrator writing escalation
+// questions — a title or comment carrying an OSC sequence could otherwise
+// set the window title, clear the screen, or move the cursor in this
+// full-screen TUI. See lib/ui/format.js's stripUnsafeControls, the single
+// choke point this relies on (both title and description/comments pass
+// through f.truncate at some point in renderTicketView).
+
+test('a ticket title carrying an OSC (window-title) sequence is neutralised, not passed through', () => {
+  const hostile = ticket({ title: 'innocuous' + '\x1b]0;pwned\x07' + '-title' });
+  const out = renderTicketView(hostile, OPTS);
+  assert.doesNotMatch(out, /\x1b\]/);
+  assert.match(out, /innocuous-title/);
+});
+
+test('a ticket description carrying a cursor-movement CSI is neutralised', () => {
+  const hostile = ticket({ description: 'before' + '\x1b[2J\x1b[H' + 'after' });
+  const out = renderTicketView(hostile, OPTS);
+  assert.doesNotMatch(out, /\x1b\[2J/);
+  assert.match(out, /beforeafter|before after/);
+});
+
+test('a comment body carrying a hostile escape is neutralised', () => {
+  const hostile = ticket({
+    comments: [{ author: 'attacker', body: 'hi' + '\x1b]0;pwned\x07' + 'there', createdAt: 1000 }],
+    commentCount: 1,
+  });
+  const out = renderTicketView(hostile, OPTS);
+  assert.doesNotMatch(out, /\x1b\]/);
+  assert.match(out, /hithere|hi there/);
+});
+
 // --- missing ticket ------------------------------------------------------------
 
 test('a missing ticket renders safely rather than throwing', () => {
