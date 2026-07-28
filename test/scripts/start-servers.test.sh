@@ -77,6 +77,33 @@ check "exit 0 with nothing configured" "$RC" "0"
 check "no stdout when nothing configured" "$(cat "$REPO/out.txt")" ""
 rm -rf "$REPO"
 
+
+# --- a server that never becomes healthy emits a failing gate.result -------
+UNHEALTHY_URL="http://127.0.0.1:1/"
+REPO="$(new_repo)"
+WT="$REPO/HEL-3"
+mkdir -p "$WT"
+(
+  cd "$REPO" && \
+  CONCERTINO_BACKEND_CWD="." \
+  CONCERTINO_BACKEND_START="true" \
+  CONCERTINO_BACKEND_HEALTH="$UNHEALTHY_URL" \
+  CONCERTINO_BACKEND_TIMEOUT="1" \
+  "$SCRIPT" "$WT" 0 0
+) > "$REPO/out.txt" 2>"$REPO/err.txt"
+RC=$?
+LOG="$REPO/.concertino/runs/HEL-3/events.jsonl"
+check "exit 1 on health timeout"   "$RC" "1"
+check "stderr FAIL line unchanged" "$(cat "$REPO/err.txt" | grep -c "^FAIL backend did not become healthy at ${UNHEALTHY_URL} within 1s (log: ")" "1"
+check "emits gate.result on fail"  "$([ -f "$LOG" ] && echo yes || echo no)" "yes"
+check "kind is gate.result"        "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).kind)' "$LOG")" "gate.result"
+check "gate is server:backend"     "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).gate)' "$LOG")" "server:backend"
+check "status fail"                "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).status)' "$LOG")" "fail"
+check "duration_ms is numeric"     "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).duration_ms)' "$LOG")" "number"
+check "duration_ms non-negative"   "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).duration_ms >= 0)' "$LOG")" "true"
+check "first_error non-empty"      "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log((JSON.parse(l).first_error||"").length > 0)' "$LOG")" "true"
+check "first_error mentions health URL" "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).first_error.includes(process.argv[2]))' "$LOG" "$UNHEALTHY_URL")" "true"
+
 # --- sub-second server gate reports true millisecond resolution ------------
 # Same rationale as assert-phase.test.sh's analogous check: a single run of
 # the near-instant "already healthy, reusing" branch could legitimately land
@@ -106,6 +133,7 @@ for _ in $(seq 1 20); do
 done
 check "sub-second server-start run reports true ms resolution (non-1000-multiple duration_ms) within 20 tries" \
   "$SAW_NON_MULTIPLE" "yes"
+
 rm -rf "$REPO"
 
 echo "  $PASS passed, $FAIL failed"

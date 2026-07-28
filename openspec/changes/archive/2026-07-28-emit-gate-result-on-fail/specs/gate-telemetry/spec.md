@@ -1,10 +1,7 @@
-# gate-telemetry Specification
+## MODIFIED Requirements
 
-## Purpose
-Defines the `gate.result` telemetry event contract emitted by `assert-phase.sh` and `start-servers.sh` — the `duration_ms` and `first_error` fields the dashboard's gate panel depends on, and the guarantee that adding them never changes existing stdout output or lets telemetry fail a delivery run.
-## Requirements
 ### Requirement: gate.result events carry a duration
-Every `gate.result` event emitted by `core/scripts/assert-phase.sh` or `core/scripts/start-servers.sh` SHALL include a `duration_ms` field: an integer count of milliseconds, measured with millisecond-resolution timestamps (not derived from whole-second deltas), around the work that specific gate performed (the phase's checks in `assert-phase.sh`; the reuse-check-or-start-and-health-wait sequence for one server in `start-servers.sh`, whether it ends in success or failure).
+Every `gate.result` event emitted by `core/scripts/assert-phase.sh` or `core/scripts/start-servers.sh` SHALL include a `duration_ms` field: an integer count of milliseconds measured around the work that specific gate performed (the phase's checks in `assert-phase.sh`; the reuse-check-or-start-and-health-wait sequence for one server in `start-servers.sh`, whether it ends in success or failure).
 
 #### Scenario: Passing phase gate reports its duration
 - **WHEN** `assert-phase.sh` runs a phase whose checks all succeed
@@ -27,12 +24,6 @@ Every `gate.result` event emitted by `core/scripts/assert-phase.sh` or `core/scr
   becomes healthy within its configured timeout
 - **THEN** the emitted `gate.result` event for that server has `status`
   `"fail"` and a `duration_ms` field whose value is a non-negative integer
-
-#### Scenario: Sub-second gate reports true millisecond resolution
-- **WHEN** a gate's checks complete in under one second
-- **THEN** the emitted `gate.result` event's `duration_ms` field reflects the
-  true elapsed milliseconds rather than always being `0` or another multiple
-  of `1000`
 
 ### Requirement: Failing gate.result events carry the first error line
 When `assert-phase.sh` or `start-servers.sh` emits a `gate.result` event with `status` `"fail"`, the event SHALL include a `first_error` field containing the first failure message recorded for that gate, trimmed at the source to a bounded length so the event stays well under the 4000-byte per-line cap enforced by `emit-event.sh`.
@@ -87,4 +78,3 @@ Adding `duration_ms` and `first_error` SHALL NOT change any byte of `assert-phas
 - **THEN** `assert-phase.sh` and `start-servers.sh` continue to their normal
   exit path (`|| true` on every emit call) rather than failing due to the
   telemetry call
-
