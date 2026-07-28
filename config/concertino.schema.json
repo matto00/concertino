@@ -113,6 +113,23 @@
         "breakpoints": { "type": "array", "items": { "type": "integer" } }
       }
     },
+    "dashboard": {
+      "type": "object",
+      "description": "Settings for `concertino watch`, the fleet dashboard. Distinct from `ui`, which describes whether the project under test has a user interface.",
+      "additionalProperties": false,
+      "properties": {
+        "tmuxSession": { "type": "string", "description": "tmux session name holding one window per run.", "default": "concertino" },
+        "maxConcurrent": { "type": "integer", "minimum": 1, "description": "Cap on simultaneously running orchestrators when launching a batch.", "default": 2 },
+        "escalationTimeoutMinutes": { "type": "integer", "minimum": 0, "description": "How long `emit-event.sh --await` blocks before giving up and letting the agent escalate to chat.", "default": 60 },
+        "launchPad": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "description": "Enable the ticket-provider launch pad. Also requires ticketProvider.kind=linear and LINEAR_API_KEY.", "default": false }
+          }
+        }
+      }
+    },
     "budgets": {
       "type": "object",
       "additionalProperties": false,

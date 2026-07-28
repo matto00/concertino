@@ -759,6 +759,10 @@ function cmdDoctor(args) {
   const claudeVer = shell('claude --version 2>/dev/null');
   claudeVer ? ok('claude', claudeVer) : fail('`claude` not found — install from https://claude.ai/code');
 
+  section('Dashboard');
+  const tmuxVer = shell('tmux -V 2>/dev/null');
+  tmuxVer ? ok('tmux', tmuxVer) : warn('tmux not found — `concertino watch` needs it');
+
   section('Config');
   if (!exists(cfgPath)) {
     warn('no concertino.config.json — run `concertino init` to create one');
@@ -806,6 +810,17 @@ function cmdDoctor(args) {
   if (!counts.length) counts.push(dim('all checks passed'));
   console.log('\n  ' + verdict + '  ' + counts.join(dim('  ·  ')));
   if (errs.length) process.exit(1);
+}
+
+function cmdWatch(args) {
+  const out = path.resolve(args.out || '.');
+  const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
+  let config = {};
+  if (exists(cfgPath)) {
+    try { config = JSON.parse(read(cfgPath)); } catch (e) { /* watch works without config */ }
+  }
+  const { watch } = require(path.join(REPO, 'lib', 'ui', 'watch'));
+  return watch({ root: out, config });
 }
 
 function diffFile(dest, newContent) {
@@ -1357,6 +1372,10 @@ function help() {
       harness includes codex), Linear MCP (if ticket provider is linear),
       Playwright (if ui.enabled).
 
+  ${cyan('concertino watch')} ${dim('[--config=PATH] [--out=DIR]')}
+      Live fleet dashboard: every active run, its phase, gates,
+      and escalations. ↵ attaches to a run, q quits. Needs tmux.
+
   ${cyan('concertino upgrade')} ${dim('[--out=DIR]')}
       Scan generated files for stale concertino version markers and report
       which need a re-sync.
@@ -1398,6 +1417,7 @@ if (args.version) { console.log('concertino v' + VERSION); process.exit(0); }
     else if (cmd === 'validate')  cmdValidate(args);
     else if (cmd === 'diff')      cmdDiff(args);
     else if (cmd === 'doctor')    cmdDoctor(args);
+    else if (cmd === 'watch')     await cmdWatch(args);
     else if (cmd === 'upgrade')   cmdUpgrade(args);
     else if (cmd === 'gates')      cmdGates(args);
     else if (cmd === 'completion') cmdCompletion(args);
