@@ -27,6 +27,18 @@ test('spawn creates a live window named for the ticket', skip, () => {
   assert.equal(w.alive, true);
 });
 
+test('listWindows reports tmux\'s own last-activity timestamp', skip, () => {
+  s.spawn('HEL-5', 'sleep 300');
+  const w = s.listWindows().find((x) => x.ticket === 'HEL-5');
+  assert.ok(w, 'window should exist');
+  // Epoch SECONDS, and plausibly now. This is what lets idle time be true on
+  // the dashboard's first frame instead of starting from zero.
+  const nowSecs = Math.floor(Date.now() / 1000);
+  assert.equal(typeof w.activity, 'number');
+  assert.ok(w.activity > 1600000000, `activity looks wrong: ${w.activity}`);
+  assert.ok(Math.abs(w.activity - nowSecs) < 120, `activity is not near now: ${w.activity} vs ${nowSecs}`);
+});
+
 test('capture returns the pane contents', skip, () => {
   s.spawn('HEL-2', 'echo concertino-marker; sleep 300');
   // Give the shell a moment to produce output.
