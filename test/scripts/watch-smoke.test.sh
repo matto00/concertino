@@ -39,5 +39,11 @@ echo q | timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" > "$OUT" 2>&
 STATUS=$?
 check "exits 0 on q (echo, trailing newline)" "$STATUS" "0"
 
+# Immediate EOF: 'data' never fires at all, so a quit path that lives only in
+# the keypress handler leaves the poll loop spinning until the timeout kills it.
+timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" < /dev/null > "$OUT" 2>&1
+STATUS=$?
+check "exits 0 on immediate EOF (< /dev/null)" "$STATUS" "0"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
