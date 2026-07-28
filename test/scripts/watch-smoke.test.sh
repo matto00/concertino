@@ -47,6 +47,19 @@ timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" < /dev/null > "$OUT" 
 STATUS=$?
 check "exits 0 on immediate EOF (< /dev/null)" "$STATUS" "0"
 
+# --- l drills into the run, esc backs out to the fleet ---------------------
+# `l` (not enter — enter is already claimed by attach) opens the drill-down on
+# the selected run; SMOKE-1 has no event log at all, so this also exercises
+# the "no telemetry at all" degradation path end to end, not just a fixture.
+printf 'l\x1bq' | timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" > "$OUT" 2>&1
+STATUS=$?
+check "exits 0 after l + esc + q" "$STATUS" "0"
+grep -q 'TIMELINE' "$OUT" && ok "l opens the drill-down" || bad "l opens the drill-down" "no TIMELINE panel in output"
+grep -q 'no telemetry' "$OUT" && ok "the drill-down reports the uninstrumented run honestly" \
+  || bad "the drill-down reports the uninstrumented run honestly" "no 'no telemetry' in output"
+grep -q 'SMOKE-1' "$OUT" && ok "esc returns to the fleet (SMOKE-1 renders again)" \
+  || bad "esc returns to the fleet (SMOKE-1 renders again)" "no SMOKE-1 in output after esc"
+
 # --- `n` starts a run -------------------------------------------------------
 # Piped stdin delivers the whole script as ONE chunk, so this also covers the
 # per-key split: without it "nCON-777\rq" matches no key at all and the prompt
