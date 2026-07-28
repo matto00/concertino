@@ -24,7 +24,20 @@ WORK="$(mktemp -d)"
 # launchCommand is inert on purpose: `n` must never start a real harness here.
 printf '{"dashboard":{"tmuxSession":"%s","launchCommand":"sleep 60 # {{TICKET}}"}}' "$SESSION" \
   > "$WORK/concertino.config.json"
-cleanup() { tmux kill-session -t "$SESSION" 2>/dev/null; rm -rf "$WORK"; }
+# A second, throwaway session for the k/r/y checks below: killing the last
+# window in a tmux session destroys the session itself, and those checks
+# each deliberately kill the only window present — isolating them means the
+# main $SESSION (and its window-count assumptions elsewhere in this file)
+# is never at risk of the same fate.
+KR_SESSION="concertino-smoke-$$-kr"
+KR_WORK="$(mktemp -d)"
+printf '{"dashboard":{"tmuxSession":"%s","launchCommand":"sleep 60 # {{TICKET}}"}}' "$KR_SESSION" \
+  > "$KR_WORK/concertino.config.json"
+cleanup() {
+  tmux kill-session -t "$SESSION" 2>/dev/null
+  tmux kill-session -t "$KR_SESSION" 2>/dev/null
+  rm -rf "$WORK" "$KR_WORK"
+}
 trap cleanup EXIT
 
 tmux new-session -d -s "$SESSION" -n SMOKE-1 'sleep 300'
@@ -108,6 +121,42 @@ check "exits 0 after a shell-injection payload as the ticket" "$STATUS" "0"
 grep -q 'not a ticket id' "$OUT" \
   && ok "reports the validation error on the prompt" \
   || bad "reports the validation error on the prompt" "no 'not a ticket id' in output"
+
+# --- k/r/y from the drill-down (slice-2b Important 1 & 2 regressions) ------
+# The unit tests (test/control.test.js) already drive this against a fake
+# session; this is the same seam end to end against a real tmux, so the
+# window really dies (or really survives), not just a mock's call log. Each
+# check runs against a single-window session so `l` (open the drill-down on
+# the selected run, index 0) reliably targets it with no other windows to
+# out-sort it.
+
+# `k` then `y` on a live window really kills it.
+tmux new-session -d -s "$KR_SESSION" -n KILL-9 'sleep 300'
+printf 'lkyq' | timeout 10 node "$ROOT/bin/concertino" watch --out="$KR_WORK" > "$OUT" 2>&1
+STATUS=$?
+check "exits 0 after l+k+y+q (confirmed kill)" "$STATUS" "0"
+tmux list-windows -t "$KR_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx 'KILL-9' \
+  && bad "k+y kills the confirmed window" "KILL-9 still present after k+y" \
+  || ok "k+y kills the confirmed window"
+tmux kill-session -t "$KR_SESSION" 2>/dev/null
+
+# `r` then `y` on a window the dashboard never spawned (fails TICKET_RE — no
+# trailing digit) is refused outright, and — this is the Important-1
+# regression itself — the window survives rather than being destroyed ahead
+# of a spawn that was always going to be refused. Fresh session: killing the
+# lone window above ended the previous one.
+tmux new-session -d -s "$KR_SESSION" -n adopted-window 'sleep 300'
+printf 'lryq' | timeout 10 node "$ROOT/bin/concertino" watch --out="$KR_WORK" > "$OUT" 2>&1
+STATUS=$?
+check "exits 0 after l+r+y+q (refused restart)" "$STATUS" "0"
+tmux list-windows -t "$KR_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx 'adopted-window' \
+  && ok "restart on a non-ticket-shaped window leaves it alive rather than destroying it" \
+  || bad "restart on a non-ticket-shaped window leaves it alive rather than destroying it" \
+       "adopted-window is gone — it was killed before validation refused the spawn"
+grep -q 'not a ticket id' "$OUT" \
+  && ok "the refusal is reported on screen, not swallowed" \
+  || bad "the refusal is reported on screen, not swallowed" "no 'not a ticket id' in output"
+tmux kill-session -t "$KR_SESSION" 2>/dev/null
 
 # --- a typed reply survives a transient (non-"already answered") write failure
 # slice-2a Important 2: answerEscalation used to clear escalationReply on ANY

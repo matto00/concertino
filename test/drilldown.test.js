@@ -231,6 +231,20 @@ test('any other key cancels a pending confirmation, including esc', () => {
   assert.deepEqual(handleKey('\x1b', { run: run({}), confirm: 'kill' }), { type: 'cancel-confirm' });
 });
 
+// slice-2b Important 2: the confirm banner can sit on screen across many
+// one-second poll cycles while a human reads the warning. `run` here is
+// always the freshest one routeHandleKey could find (never a snapshot from
+// when the confirmation opened), so 'y' must re-check liveness at the
+// moment it fires, not just trust that it was live when 'k'/'r' was first
+// pressed — otherwise it silently relaunches an already-delivered ticket, or
+// kills a run that already finished.
+test('y on a confirmation whose run has since finished is refused — treated like any other key', () => {
+  assert.deepEqual(handleKey('y', { run: run({ status: 'done', endStatus: 'delivered' }), confirm: 'kill' }),
+    { type: 'cancel-confirm' });
+  assert.deepEqual(handleKey('y', { run: run({ status: 'failed' }), confirm: 'restart' }),
+    { type: 'cancel-confirm' });
+});
+
 test('a pending confirmation is rendered with its warning', () => {
   const out = plain(renderDrillDown(run({}), Object.assign({}, OPTS, { confirm: 'kill' })));
   assert.match(out, /kill HEL-334\?/i);
