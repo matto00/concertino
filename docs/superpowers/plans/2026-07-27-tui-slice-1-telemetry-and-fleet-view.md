@@ -1458,6 +1458,12 @@ test('padTo pads and truncates to an exact width', () => {
   assert.equal(padTo('abcdefgh', 5).length, 5);
 });
 
+test('padTo pads coloured strings to their visible width', () => {
+  // Raw length counts the escape bytes as content, so a short coloured string
+  // got no padding at all and every column after it shifted left.
+  assert.equal(visibleLength(padTo('\x1b[33mab\x1b[0m', 9)), 9);
+});
+
 test('bar renders a proportional progress bar', () => {
   assert.equal(bar(0, 4), '░░░░');
   assert.equal(bar(1, 4), '▪▪▪▪');
@@ -1640,9 +1646,13 @@ function truncate(s, n) {
   return out + '…' + (open ? '\x1b[0m' : '');
 }
 
+// Pads to n VISIBLE columns, for the same reason truncate counts them: a
+// coloured string's escape bytes are not content, and padding by raw length
+// adds nothing at all for a short coloured string, silently breaking column
+// alignment. `truncate` has already capped the visible width to n.
 function padTo(s, n) {
   const t = truncate(s, n);
-  return t + ' '.repeat(Math.max(0, n - t.length));
+  return t + ' '.repeat(Math.max(0, n - visibleLength(t)));
 }
 
 function bar(frac, width) {
@@ -1771,7 +1781,7 @@ module.exports = { renderFleet, phaseFraction };
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `node --test test/format.test.js test/fleet.test.js`
-Expected: PASS — 6 + 9 tests.
+Expected: PASS — 7 + 9 tests.
 
 - [ ] **Step 6: Commit**
 
