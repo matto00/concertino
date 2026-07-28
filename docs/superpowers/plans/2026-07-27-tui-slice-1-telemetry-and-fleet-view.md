@@ -330,9 +330,9 @@ In `package.json`, replace the `test` script:
 }
 ```
 
-`node --test test/` is deliberately **not** added yet — it errors when `test/`
-contains no JS test files, and Task 3 adds it along with the first one. Do not
-create a placeholder test to work around this.
+`node --test` is deliberately **not** added yet — it exits non-zero when it finds
+no JS test files, and Task 3 adds it along with the first one. Do not create a
+placeholder test to work around this.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -569,7 +569,7 @@ git commit -m "feat(telemetry): add blocking --await mode for escalations"
 **Files:**
 - Create: `lib/ui/store.js`
 - Create: `test/store.test.js`
-- Modify: `package.json` (add `node --test test/` now that a JS suite exists)
+- Modify: `package.json` (add `node --test` now that a JS suite exists)
 
 **Interfaces:**
 - Consumes: the on-disk layout written by Task 1.
@@ -756,7 +756,7 @@ Expected: PASS — 8 tests.
 Now that `test/` holds a real JS suite, update the `test` script in `package.json`:
 
 ```json
-"test": "node --test test/ && bash test/scripts/emit-event.test.sh"
+"test": "node --test && bash test/scripts/emit-event.test.sh"
 ```
 
 Run: `npm test`
