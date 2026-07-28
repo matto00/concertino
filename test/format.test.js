@@ -38,6 +38,12 @@ test('padTo pads and truncates to an exact width', () => {
   assert.equal(padTo('abcdefgh', 5).length, 5);
 });
 
+test('padTo pads coloured strings to their visible width', () => {
+  // Raw length counts the escape bytes as content, so a short coloured string
+  // got no padding at all and every column after it shifted left.
+  assert.equal(visibleLength(padTo('\x1b[33mab\x1b[0m', 9)), 9);
+});
+
 test('bar renders a proportional progress bar', () => {
   assert.equal(bar(0, 4), '░░░░');
   assert.equal(bar(1, 4), '▪▪▪▪');
