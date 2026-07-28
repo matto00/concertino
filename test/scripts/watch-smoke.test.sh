@@ -143,6 +143,38 @@ grep -q '\[x\] CON-9' "$OUT" \
 tmux kill-session -t "$LP2_SESSION" 2>/dev/null
 rm -rf "$LP2_WORK"
 
+# --- Critical-2 regression: an active queue is visible, and quitting with
+# tickets still queued warns instead of silently discarding them -----------
+# Before this fix, only queueNotice (a FAILURE string) ever reached the
+# footer, and `q` quit unconditionally regardless of what was still queued.
+Q_SESSION="concertino-smoke-$$-queue"
+Q_WORK="$(mktemp -d)"
+mkdir -p "$Q_WORK/.concertino/cache"
+printf '{"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-21","title":"batch-one","epicId":"e2","epicName":"Batch","state":{"name":"Todo","type":"unstarted"}},{"identifier":"CON-22","title":"batch-two","epicId":"e2","epicName":"Batch","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e2","name":"Batch","openCount":2}]}' \
+  "$(($(date +%s) * 1000))" > "$Q_WORK/.concertino/cache/linear.json"
+cat > "$Q_WORK/concertino.config.json" <<EOF
+{"dashboard":{"tmuxSession":"$Q_SESSION","launchPad":{"enabled":true},"launchCommand":"sleep 60 # {{TICKET}}"},"ticketProvider":{"kind":"linear","idExample":"CON-1"}}
+EOF
+# N (open) · Tab (tickets pane) · space (select CON-21) · j (move) ·
+# space (select CON-22) · s (sequential) · L (open plan) · enter (confirm —
+# launches CON-21, queues CON-22) · j (harmless move, snapshot the footer) ·
+# q (queued+running > 0: must ASK, not quit) · j (any other key: cancel) ·
+# q (ask again) · q (repeated q: confirmed quit).
+printf 'N\t j sL\rjqjqq' | LINEAR_API_KEY=dummy-not-a-real-key timeout 10 node "$ROOT/bin/concertino" watch --out="$Q_WORK" > "$OUT" 2>&1
+STATUS=$?
+check "exits 0 after launching a 2-ticket sequential batch and confirming quit" "$STATUS" "0"
+grep -q '1 running' "$OUT" && grep -q '1 queued' "$OUT" \
+  && ok "the active queue is shown persistently in the fleet footer (1 running, 1 queued)" \
+  || bad "the active queue is shown persistently in the fleet footer" "no '1 running'/'1 queued' queue line in output"
+grep -q 'quit with 2 ticket' "$OUT" \
+  && ok "q with a live queue warns before quitting, rather than discarding it silently" \
+  || bad "q with a live queue warns before quitting" "no 'quit with 2 ticket' warning in output"
+grep -q 'quitting with 2 queued ticket' "$OUT" \
+  && ok "the confirmed quit still reports what was abandoned, not silent" \
+  || bad "the confirmed quit still reports what was abandoned" "no 'quitting with 2 queued ticket' notice in output"
+tmux kill-session -t "$Q_SESSION" 2>/dev/null
+rm -rf "$Q_WORK"
+
 # --- Minor 1 regression: 'h' harness cycling is not advertised when a
 # launchCommand override pins the actual command regardless -----------------
 # Before this fix, `harnesses.length < 2` was the only gate, so with BOTH a

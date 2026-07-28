@@ -76,6 +76,67 @@ test('a queued-launch failure is surfaced in the footer — otherwise invisible,
   assert.match(out, /could not start CON-9/);
 });
 
+// --- an active queue is persistently visible, not just its failures --------
+// Before this fix, only queueNotice (a FAILURE string) ever reached the
+// footer — launching a five-ticket sequential batch and returning to the
+// fleet view showed one RUNNING row and nothing indicating four more were
+// queued.
+
+test('an active queue is shown persistently in the footer, not only on a failure', () => {
+  const queueState = { pending: ['CON-2', 'CON-3', 'CON-4'], inFlight: new Set(['CON-1']) };
+  const out = renderFleet([run({})], { ...OPTS, queueState });
+  assert.match(out, /1 running/);
+  assert.match(out, /3 queued/);
+});
+
+test('an idle/empty queue (nothing pending, nothing in flight) shows no queue line', () => {
+  const queueState = { pending: [], inFlight: new Set() };
+  const out = renderFleet([run({})], { ...OPTS, queueState });
+  assert.doesNotMatch(out, /queued/);
+});
+
+test('no queueState at all renders exactly as before', () => {
+  const out = renderFleet([run({})], OPTS);
+  assert.doesNotMatch(out, /queued/);
+});
+
+// --- quitting with a queue still active warns instead of discarding it -----
+
+test('q with tickets still queued asks for confirmation via handleKey, not an immediate quit', () => {
+  const s = state({ queueState: { pending: ['CON-2'], inFlight: new Set(['CON-1']) } });
+  assert.deepEqual(handleKey('q', s), { type: 'request-quit' });
+});
+
+test('q with an empty/idle queue still quits immediately — nothing would be lost', () => {
+  const s = state({ queueState: { pending: [], inFlight: new Set() } });
+  assert.deepEqual(handleKey('q', s), { type: 'quit' });
+});
+
+test('q with no queue at all quits immediately, unchanged from before this fix', () => {
+  assert.deepEqual(handleKey('q', state({})), { type: 'quit' });
+});
+
+test('the quit-confirmation warning renders the remaining count and the two ways out', () => {
+  const queueState = { pending: ['CON-2', 'CON-3'], inFlight: new Set(['CON-1']) };
+  const out = plain(renderFleet([run({})], { ...OPTS, queueState, quitConfirm: true }));
+  assert.match(out, /quit with 3 ticket/);
+  assert.match(out, /q confirm quit/);
+  assert.match(out, /any other key.*cancel/);
+});
+
+test('while the quit-confirmation is up, a repeated q actually quits', () => {
+  const s = state({ quitConfirm: true, queueState: { pending: [], inFlight: new Set() } });
+  assert.deepEqual(handleKey('q', s), { type: 'quit' });
+  assert.deepEqual(handleKey('\u0003', s), { type: 'quit' });
+});
+
+test('while the quit-confirmation is up, any other key cancels rather than acting normally', () => {
+  const s = state({ quitConfirm: true, queueState: { pending: ['CON-2'], inFlight: new Set() } });
+  assert.deepEqual(handleKey('j', s), { type: 'cancel-quit' });
+  assert.deepEqual(handleKey('\r', s), { type: 'cancel-quit' });
+  assert.deepEqual(handleKey('\x1b', s), { type: 'cancel-quit' });
+});
+
 test('an empty fleet renders a hint rather than a blank screen', () => {
   const out = renderFleet([], OPTS);
   assert.match(out, /no active runs/i);
