@@ -16,6 +16,7 @@ survive the dashboard crashing, an ssh drop, or a closed laptop.
 | `↵` | Attach to the selected run — or, on a row with a live escalation, open the escalation screen. `Ctrl-b d` detaches back to the dashboard |
 | `j` / `k` | Move the selection |
 | `n` | Start a new run — type a ticket id, `↵` to launch, `esc` to cancel |
+| `N` | Open the launch pad — browse epics/tickets, pick a batch, launch it. Always bound; if the feature gate is off it explains why rather than doing nothing (see below) |
 | `q` | Quit the dashboard (runs keep going) |
 
 On the escalation screen: a letter key per option (`a` approve, `d` deny, ...,
@@ -122,14 +123,30 @@ survives `cleanup.sh --phase4` removing the worktree. Tail it directly:
 tail -f .concertino/runs/HEL-334/events.jsonl | jq .
 ```
 
-## The ticket cache — built, not yet wired to any screen
+## The launch pad — epic browser, ticket viewer, launch plan, queue
 
-**Nothing in `concertino watch` reads this yet.** The launch pad's data layer —
-a read-only Linear client and an on-disk ticket cache — is in place, but no
-screen consumes it and no key opens it. Enabling `dashboard.launchPad.enabled`
-today changes nothing visible. This section documents the layer so the eventual
-screen has a contract to build against, and so the cache file is not a mystery
-if you find one on disk.
+`N` from the fleet view opens the launch pad: epics on the left, that epic's
+open tickets on the right with an inline status column (`Todo` / `In Progress`
+/ `▲ running` — the last one backed by the live fleet, not Linear, so it is
+accurate even against an hour-old cache). `space` toggles a ticket into the
+batch, `↵` opens it for reading (full description and comments, already
+local), `s`/`p` pick sequential or parallel, and `L` opens the **launch
+plan** — the confirm gate — once at least one ticket is selected.
+
+The launch plan shows every ticket's pre-flight ports (derived from the
+ticket number, the same arithmetic `setup-worktree.sh` uses, so no run has to
+start first), the concurrency cap (`c` cycles it — bounded, never "parallel =
+all of them"), and an already-active warning counted across the **whole
+fleet**, not just this batch. `↵` confirms and hands the batch to the queue
+runner, which holds `dashboard.maxConcurrent` and starts the next ticket the
+moment a run ends or its window dies. Sequential is `maxConcurrent: 1` — the
+same code path, not a second one. The queue lives in the dashboard's own
+memory, not on disk: a restart mid-batch forgets anything still queued, but
+every ticket already launched is unaffected (tmux + the event log already
+make that durable, exactly as for a ticket started with `n`).
+
+This section documents the on-disk cache underneath all of that, so the cache
+file is not a mystery if you find one on disk.
 
 ```
 .concertino/cache/

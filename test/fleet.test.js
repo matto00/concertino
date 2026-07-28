@@ -71,6 +71,72 @@ test('malformed events are surfaced in the footer', () => {
   assert.match(out, /2 malformed events/);
 });
 
+test('a queued-launch failure is surfaced in the footer — otherwise invisible, since nothing else watches the launch-pad queue', () => {
+  const out = renderFleet([run({})], { ...OPTS, queueNotice: 'could not start CON-9: tmux exited 1' });
+  assert.match(out, /could not start CON-9/);
+});
+
+// --- an active queue is persistently visible, not just its failures --------
+// Before this fix, only queueNotice (a FAILURE string) ever reached the
+// footer — launching a five-ticket sequential batch and returning to the
+// fleet view showed one RUNNING row and nothing indicating four more were
+// queued.
+
+test('an active queue is shown persistently in the footer, not only on a failure', () => {
+  const queueState = { pending: ['CON-2', 'CON-3', 'CON-4'], inFlight: new Set(['CON-1']) };
+  const out = renderFleet([run({})], { ...OPTS, queueState });
+  assert.match(out, /1 running/);
+  assert.match(out, /3 queued/);
+});
+
+test('an idle/empty queue (nothing pending, nothing in flight) shows no queue line', () => {
+  const queueState = { pending: [], inFlight: new Set() };
+  const out = renderFleet([run({})], { ...OPTS, queueState });
+  assert.doesNotMatch(out, /queued/);
+});
+
+test('no queueState at all renders exactly as before', () => {
+  const out = renderFleet([run({})], OPTS);
+  assert.doesNotMatch(out, /queued/);
+});
+
+// --- quitting with a queue still active warns instead of discarding it -----
+
+test('q with tickets still queued asks for confirmation via handleKey, not an immediate quit', () => {
+  const s = state({ queueState: { pending: ['CON-2'], inFlight: new Set(['CON-1']) } });
+  assert.deepEqual(handleKey('q', s), { type: 'request-quit' });
+});
+
+test('q with an empty/idle queue still quits immediately — nothing would be lost', () => {
+  const s = state({ queueState: { pending: [], inFlight: new Set() } });
+  assert.deepEqual(handleKey('q', s), { type: 'quit' });
+});
+
+test('q with no queue at all quits immediately, unchanged from before this fix', () => {
+  assert.deepEqual(handleKey('q', state({})), { type: 'quit' });
+});
+
+test('the quit-confirmation warning renders the remaining count and the two ways out', () => {
+  const queueState = { pending: ['CON-2', 'CON-3'], inFlight: new Set(['CON-1']) };
+  const out = plain(renderFleet([run({})], { ...OPTS, queueState, quitConfirm: true }));
+  assert.match(out, /quit with 3 ticket/);
+  assert.match(out, /q confirm quit/);
+  assert.match(out, /any other key.*cancel/);
+});
+
+test('while the quit-confirmation is up, a repeated q actually quits', () => {
+  const s = state({ quitConfirm: true, queueState: { pending: [], inFlight: new Set() } });
+  assert.deepEqual(handleKey('q', s), { type: 'quit' });
+  assert.deepEqual(handleKey('\u0003', s), { type: 'quit' });
+});
+
+test('while the quit-confirmation is up, any other key cancels rather than acting normally', () => {
+  const s = state({ quitConfirm: true, queueState: { pending: ['CON-2'], inFlight: new Set() } });
+  assert.deepEqual(handleKey('j', s), { type: 'cancel-quit' });
+  assert.deepEqual(handleKey('\r', s), { type: 'cancel-quit' });
+  assert.deepEqual(handleKey('\x1b', s), { type: 'cancel-quit' });
+});
+
 test('an empty fleet renders a hint rather than a blank screen', () => {
   const out = renderFleet([], OPTS);
   assert.match(out, /no active runs/i);
@@ -368,15 +434,17 @@ test('a value that does not look like a ticket id is shown on the prompt as a va
   assert.match(out, /\$\(touch \/tmp\/x\)/);
 });
 
-test('the footer advertises n only in fleet mode', () => {
+test('the footer advertises n and N only in fleet mode', () => {
   const fleet = plain(renderFleet([run({})], OPTS));
   assert.match(fleet, /n new run/);
+  assert.match(fleet, /N launch pad/);
   assert.match(fleet, /↵ attach/);
 
   // While prompting, `n` types an "n" — advertising it as an action would be
   // advertising a key that is not bound, which this project treats as a defect.
   const prompting = plain(renderFleet([run({})], { ...OPTS, prompt: { value: '', error: null } }));
   assert.doesNotMatch(prompting, /n new run/);
+  assert.doesNotMatch(prompting, /N launch pad/);
   assert.doesNotMatch(prompting, /↵ attach/);
   assert.match(prompting, /esc cancel/);
 });
@@ -413,6 +481,18 @@ test('q and Ctrl-C quit', () => {
 
 test('n opens the prompt', () => {
   assert.deepEqual(handleKey('n', state({})), { type: 'open-prompt' });
+});
+
+// Capital N — the launch pad's sole entry point (see the comment on this
+// binding in fleet.js). Always bound, even when the launch pad's own feature
+// gate is off, so watch.js can route to a screen that explains why rather
+// than the key doing nothing at all.
+test('N opens the launch pad', () => {
+  assert.deepEqual(handleKey('N', state({})), { type: 'open-launchpad' });
+});
+
+test('while prompting, N types an "N" rather than opening the launch pad', () => {
+  assert.deepEqual(handleKey('N', promptState({ value: '', error: null })), { type: 'prompt-type', char: 'N' });
 });
 
 test('enter on a plain run attaches', () => {
