@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Shell tests for core/scripts/emit-event.sh. Run: bash test/scripts/emit-event.test.sh
+set -uo pipefail
+
+SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/emit-event.sh"
+PASS=0; FAIL=0
+ok()   { PASS=$((PASS+1)); echo "  ok   $1"; }
+bad()  { FAIL=$((FAIL+1)); echo "  FAIL $1"; echo "       $2"; }
+check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$3] got [$2]"; fi; }
+
+# Each test runs in a throwaway git repo so the script's main-checkout
+# resolution is exercised for real.
+new_repo() {
+  local d; d="$(mktemp -d)"
+  git -C "$d" init -q
+  git -C "$d" commit -q --allow-empty -m init
+  printf '%s' "$d"
+}
+
+echo "emit-event.sh"
+
+# --- writes a well-formed line to the right place --------------------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" phase.enter ticket=HEL-1 phase=Execution cycle=2 ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/HEL-1/events.jsonl"
+check "creates events.jsonl" "$([ -f "$LOG" ] && echo yes || echo no)" "yes"
+check "one line"             "$(wc -l < "$LOG" | tr -d ' ')" "1"
+check "kind"                 "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).kind)' "$LOG")" "phase.enter"
+check "ticket"               "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).ticket)' "$LOG")" "HEL-1"
+check "numeric cycle"        "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).cycle)' "$LOG")" "number"
+check "t is a number"        "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).t)' "$LOG")" "number"
+check "default role"         "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).role)' "$LOG")" "script"
+rm -rf "$REPO"
+
+# --- appends rather than truncates -----------------------------------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" note ticket=HEL-2 msg=one ) >/dev/null 2>&1
+( cd "$REPO" && "$SCRIPT" note ticket=HEL-2 msg=two ) >/dev/null 2>&1
+check "appends" "$(wc -l < "$REPO/.concertino/runs/HEL-2/events.jsonl" | tr -d ' ')" "2"
+rm -rf "$REPO"
+
+# --- quotes and newlines survive as valid JSON ------------------------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" note ticket=HEL-3 msg='he said "hi"
+and left	now' ) >/dev/null 2>&1
+check "escapes to valid JSON" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).msg.includes(String.fromCharCode(10))?"multiline":"flat")' "$REPO/.concertino/runs/HEL-3/events.jsonl")" \
+  "multiline"
+rm -rf "$REPO"
+
+# --- long values are truncated so the line stays atomic ---------------------
+REPO="$(new_repo)"
+BIG="$(head -c 9000 /dev/zero | tr '\0' 'x')"
+( cd "$REPO" && "$SCRIPT" note ticket=HEL-4 msg="$BIG" ) >/dev/null 2>&1
+LINELEN="$(head -1 "$REPO/.concertino/runs/HEL-4/events.jsonl" | wc -c | tr -d ' ')"
+check "line <= 4000 bytes" "$([ "$LINELEN" -le 4000 ] && echo yes || echo no)" "yes"
+check "still valid JSON"   "$(node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8").trim());console.log("yes")' "$REPO/.concertino/runs/HEL-4/events.jsonl")" "yes"
+rm -rf "$REPO"
+
+# --- works from inside a worktree, writing to the MAIN checkout -------------
+REPO="$(new_repo)"
+git -C "$REPO" worktree add -q "$REPO/wt" -b feat 2>/dev/null
+( cd "$REPO/wt" && "$SCRIPT" note ticket=HEL-5 msg=from-worktree ) >/dev/null 2>&1
+check "writes to main checkout" \
+  "$([ -f "$REPO/.concertino/runs/HEL-5/events.jsonl" ] && echo yes || echo no)" "yes"
+check "not inside the worktree" \
+  "$([ -f "$REPO/wt/.concertino/runs/HEL-5/events.jsonl" ] && echo yes || echo no)" "no"
+rm -rf "$REPO"
+
+# --- missing ticket is a no-op, never a failure -----------------------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" note msg=orphan ) >/dev/null 2>&1
+check "exit 0 without ticket" "$?" "0"
+rm -rf "$REPO"
+
+echo "  $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]
