@@ -317,6 +317,30 @@ const REAL_WINDOWS = [
   { ticket: 'HEL-506', alive: true, idleMs: 120000 },
 ];
 
+// CON-3: an unrecognised phase.enter value must never reach the screen as a
+// phantom phase label with an empty bar — reduce() rejects it before fleet.js
+// ever sees run.phase, so this proves the reducer's validation, not just the
+// screen's existing null-phase fallback (already covered at line 49-53 above).
+test('an unrecognised phase.enter value renders as phase unknown with zero progress, not a phantom label', () => {
+  const events = new Map([
+    ['HEL-9', { malformed: 0, events: [
+      ev(1000, 'run.start', 'HEL-9', { branch: 'matt/bad-phase' }),
+      ev(1100, 'phase.enter', 'HEL-9', { phase: 'Phase 2' }),
+    ] }],
+  ]);
+  const windows = [{ ticket: 'HEL-9', alive: true, idleMs: 0 }];
+  const runs = reduce(events, windows, 2000);
+  const out = plain(renderFleet(runs, { cols: 100, selected: 0 }));
+
+  assert.match(out, /phase unknown/);
+  assert.doesNotMatch(out, /Phase 2/);
+  assert.match(out, /1 malformed events/);
+  // The progress bar renders zero fill — the same all-dim bar rendered for a
+  // run with no phase at all, never a partially-filled one for the rejected
+  // value.
+  assert.equal(runs[0].phase, null);
+});
+
 test('a real event log reduces and renders end to end', () => {
   const runs = reduce(realisticLog(), REAL_WINDOWS, 2000);
   const out = plain(renderFleet(runs, { cols: 100, selected: 0 }));

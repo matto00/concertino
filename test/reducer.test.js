@@ -153,6 +153,34 @@ test('malformed count is carried through to the run', () => {
   assert.equal(run.malformed, 3);
 });
 
+// --- CON-3: an unrecognised phase.enter value is rejected, not applied ------
+
+test('an unrecognised phase value does not set run.phase and increments run.malformed', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'phase.enter', ticket: 'HEL-1', role: 'orchestrator', phase: 'Phase 2', cycle: 1 },
+  ]), [], NOW);
+  assert.equal(run.phase, null);
+  assert.equal(run.malformed, 1);
+});
+
+test('a valid phase.enter following an unrecognised one still applies correctly', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'phase.enter', ticket: 'HEL-1', role: 'orchestrator', phase: 'Phase 2', cycle: 1 },
+    { t: 2, kind: 'phase.enter', ticket: 'HEL-1', role: 'orchestrator', phase: 'Execution', cycle: 1 },
+  ]), [], NOW);
+  assert.equal(run.phase, 'Execution');
+  assert.equal(run.malformed, 1);
+});
+
+test('a dropped envelope-malformed line and a rejected-phase event both count toward malformed, but only the phase.enter event appears in run.events', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'phase.enter', ticket: 'HEL-1', role: 'orchestrator', phase: 'Phase 2' },
+  ], 1), [], NOW);
+  assert.equal(run.malformed, 2);
+  assert.equal(run.events.length, 1);
+  assert.equal(run.events[0].kind, 'phase.enter');
+});
+
 test('runs sort attention-first', () => {
   const events = new Map([
     ['HEL-DONE', { events: [{ t: 1, kind: 'run.end', ticket: 'HEL-DONE', role: 'orchestrator', status: 'delivered' }], malformed: 0 }],
