@@ -8,7 +8,8 @@
   },
   "ticketProvider": {
     "kind": "linear",
-    "idExample": "ABC-123"
+    "idExample": "CON-1",
+    "teamKey": "CON"
   },
   "specProvider": {
     "kind": "openspec",
@@ -53,5 +54,10 @@
     "skepticFinalRounds": 2,
     "debugAttempts": 2
   },
-  "commitTrailer": "Co-Authored-By: Claude <noreply@anthropic.com>"
+  "commitTrailer": "Co-Authored-By: Claude <noreply@anthropic.com>",
+  "dashboard": {
+    "launchPad": {
+      "enabled": true
+    }
+  }
 }
