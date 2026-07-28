@@ -401,9 +401,25 @@ Expected: FAIL on the four new checks — `--await` is currently parsed but igno
 
 - [ ] **Step 3: Write the implementation**
 
-In `core/scripts/emit-event.sh`, replace the final two lines:
+This task adds two more places that write an event line, so first extract the
+build-cap-append sequence into one helper. Every write goes through it, which is
+the only way the `PIPE_BUF` invariant survives a call site being added later.
+
+In `core/scripts/emit-event.sh`, replace this block:
 
 ```bash
+LINE="$(build_line "$KIND")"
+
+# Keep the line under PIPE_BUF so concurrent O_APPEND writes from the
+# orchestrator and a sub-agent can never interleave. If a caller passed a huge
+# value, drop the extra fields rather than emit a torn or invalid line.
+# LC_ALL=C makes ${#LINE} count bytes rather than characters, which is what
+# PIPE_BUF actually cares about.
+if [ "$(LC_ALL=C; echo ${#LINE})" -gt "$MAX_LINE" ]; then
+  FIELDS=",\"truncated\":true"
+  LINE="$(build_line "$KIND")"
+fi
+
 printf '%s\n' "$LINE" >> "$LOG" 2>/dev/null || exit 0
 
 exit 0
@@ -412,13 +428,32 @@ exit 0
 with:
 
 ```bash
-if [ "$AWAIT" -eq 1 ]; then
-  # An escalation always lands in the log as `escalation.raised`, whatever
-  # kind the caller passed, so the reducer has one thing to look for.
-  LINE="$(build_line escalation.raised)"
-fi
+# Build the line for KIND, enforce the byte cap, append it. Every event written
+# by this script goes through here — the cap keeps each line under PIPE_BUF so
+# concurrent O_APPEND writes from the orchestrator and a sub-agent can never
+# interleave, and a per-call-site check is a guarantee waiting to be forgotten.
+# LC_ALL=C makes ${#line} count bytes rather than characters, which is what
+# PIPE_BUF actually cares about.
+write_line() {
+  local kind="$1" line
+  line="$(build_line "$kind")"
+  if [ "$(LC_ALL=C; echo ${#line})" -gt "$MAX_LINE" ]; then
+    # Drop the caller's fields rather than emit a torn or invalid line.
+    FIELDS=",\"truncated\":true"
+    line="$(build_line "$kind")"
+  fi
+  printf '%s\n' "$line" >> "$LOG" 2>/dev/null || return 0
+}
 
-printf '%s\n' "$LINE" >> "$LOG" 2>/dev/null || exit 0
+if [ "$AWAIT" -eq 1 ]; then
+  # An escalation always lands in the log as `escalation.raised`, whatever kind
+  # the caller passed, so the reducer has one thing to look for. Relabelling
+  # before the write is deliberate: the longer kind string has to be inside the
+  # byte cap, not sneaked past it afterwards.
+  write_line escalation.raised
+else
+  write_line "$KIND"
+fi
 
 [ "$AWAIT" -eq 0 ] && exit 0
 
@@ -441,8 +476,10 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
       } catch { process.stdout.write(""); }
     ' "$ANSWER_FILE" 2>/dev/null)"
     if [ -n "$ANSWER" ]; then
+      # $ANSWER is free text a human typed at the escalation screen — unbounded
+      # by construction, so this write needs the cap as much as any other.
       FIELDS=",\"answer\":$(json_value "$ANSWER")"
-      printf '%s\n' "$(build_line escalation.answered)" >> "$LOG" 2>/dev/null || true
+      write_line escalation.answered
       printf '%s\n' "$ANSWER"
       exit 0
     fi
@@ -454,14 +491,36 @@ done
 # own escalation path (printing the question to chat). The dashboard is an
 # accelerator for escalations — never a new way for a run to hang.
 FIELDS=""
-printf '%s\n' "$(build_line escalation.timeout)" >> "$LOG" 2>/dev/null || true
+write_line escalation.timeout
 exit 1
+```
+
+Then add two tests to `test/scripts/emit-event.test.sh`, before the final
+`echo "  $PASS passed..."` line, covering the cap on the paths this task adds:
+
+```bash
+# --- an oversized typed answer is capped, not written whole ------------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-10 question=q ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$REPO/.concertino/runs/HEL-10/events.jsonl" ] && break
+  sleep 0.1
+done
+BIGANS="$(head -c 9000 /dev/zero | tr '\0' 'y')"
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({answer: process.argv[2]}))' \
+  "$REPO/.concertino/runs/HEL-10/answer.json" "$BIGANS"
+wait "$AWAIT_PID" || true
+ANSLINE="$(grep 'escalation.answered' "$REPO/.concertino/runs/HEL-10/events.jsonl" | head -1)"
+check "answered line <= 4000 bytes" "$([ "$(printf '%s' "$ANSLINE" | wc -c)" -le 4000 ] && echo yes || echo no)" "yes"
+check "answered line is valid JSON" "$(printf '%s' "$ANSLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{JSON.parse(s);console.log("yes")}catch{console.log("no")}})')" "yes"
+rm -rf "$REPO"
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `bash test/scripts/emit-event.test.sh`
-Expected: PASS — `25 passed, 0 failed`. The timeout case returns in well under a second because `CONCERTINO_ESCALATION_TIMEOUT_MIN=0` puts the deadline in the past.
+Expected: PASS — `27 passed, 0 failed`. The timeout case returns in well under a second because `CONCERTINO_ESCALATION_TIMEOUT_MIN=0` puts the deadline in the past.
 
 - [ ] **Step 5: Commit**
 
