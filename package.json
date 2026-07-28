@@ -44,5 +44,8 @@
   },
   "bugs": {
     "url": "https://github.com/matto00/concertino/issues"
+  },
+  "devDependencies": {
+    "openspec": "^0.0.0"
   }
 }
