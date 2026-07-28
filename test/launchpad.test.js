@@ -1,0 +1,263 @@
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert');
+const {
+  renderLaunchPad, handleKey, render, inlineStatus, ticketsForEpic, windowStart,
+} = require('../lib/ui/screens/launchpad');
+
+// eslint-disable-next-line no-control-regex
+const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+
+function ticket(over) {
+  return Object.assign({
+    identifier: 'CON-1', title: 'spec-delta-validation', epicId: 'p1', epicName: 'Pipeline v2',
+    state: { name: 'Todo', type: 'unstarted' },
+  }, over);
+}
+
+const NOW = Date.now();
+
+function cacheWith(tickets, epics) {
+  return { fetchedAt: NOW - 12 * 60000, tickets, epics };
+}
+
+function lp(over) {
+  return Object.assign({
+    status: { enabled: true, reason: null, message: null },
+    cache: cacheWith(
+      [ticket({})],
+      [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }],
+    ),
+    pane: 'tickets',
+    epicIndex: 0,
+    ticketIndex: 0,
+    selected: new Set(),
+    mode: 'parallel',
+    refreshing: false,
+    error: null,
+    project: 'concertino',
+    defaultConcurrency: 2,
+  }, over);
+}
+
+const OPTS = { cols: 78, now: NOW };
+
+// --- gate failure: visible-but-explaining, per screen -----------------------
+
+test('a disabled gate shows the reason, not an empty screen', () => {
+  const out = plain(renderLaunchPad(lp({ status: { enabled: false, reason: 'no-key', message: 'launch pad needs LINEAR_API_KEY in the environment' } }), [], OPTS));
+  assert.match(out, /LINEAR_API_KEY/);
+  assert.match(out, /esc back/);
+});
+
+test('each gate-failure reason renders its own distinct message', () => {
+  const disabled = plain(renderLaunchPad(lp({ status: { enabled: false, reason: 'disabled', message: 'launch pad is off — set dashboard.launchPad.enabled to true in concertino.config.json' } }), [], OPTS));
+  assert.match(disabled, /dashboard\.launchPad\.enabled/);
+
+  const provider = plain(renderLaunchPad(lp({ status: { enabled: false, reason: 'provider', message: 'launch pad needs ticketProvider.kind "linear" — this project uses "github"' } }), [], OPTS));
+  assert.match(provider, /ticketProvider\.kind "linear"/);
+
+  const noKey = plain(renderLaunchPad(lp({ status: { enabled: false, reason: 'no-key', message: 'launch pad needs LINEAR_API_KEY in the environment' } }), [], OPTS));
+  assert.match(noKey, /LINEAR_API_KEY in the environment/);
+});
+
+test('no key bound while the gate is off, other than esc', () => {
+  const state = { lp: lp({ status: { enabled: false, reason: 'no-key', message: 'x' } }), runs: [] };
+  assert.equal(handleKey('r', state), null);
+  assert.equal(handleKey('N', state), null);
+  assert.deepEqual(handleKey('\x1b', state), { type: 'back' });
+});
+
+// --- cold cache --------------------------------------------------------------
+
+test('a cold cache renders "press r to fetch" rather than an empty list', () => {
+  const out = plain(renderLaunchPad(lp({ cache: { fetchedAt: null, tickets: [], epics: [] } }), [], OPTS));
+  assert.match(out, /press r to fetch/);
+});
+
+test('r is the only bound key against a cold cache', () => {
+  const state = { lp: lp({ cache: { fetchedAt: null, tickets: [], epics: [] } }), runs: [] };
+  assert.deepEqual(handleKey('r', state), { type: 'refresh-launchpad' });
+  assert.equal(handleKey('space', state), null);
+  assert.equal(handleKey('L', state), null);
+});
+
+// --- inline status column: all three states ---------------------------------
+
+test('a ticket unstarted in Linear with no live run reads its Linear state name', () => {
+  const t = ticket({ state: { name: 'Todo', type: 'unstarted' } });
+  assert.equal(inlineStatus(t, []), 'Todo');
+});
+
+test('a ticket already started in Linear reads "In Progress"', () => {
+  const t = ticket({ state: { name: 'In Progress', type: 'started' } });
+  assert.equal(inlineStatus(t, []), 'In Progress');
+});
+
+test('a ticket backed by a live run reads "▲ running", overriding Linear\'s own state', () => {
+  const t = ticket({ identifier: 'CON-9', state: { name: 'Todo', type: 'unstarted' } });
+  const runs = [{ ticket: 'CON-9', status: 'running' }];
+  assert.equal(inlineStatus(t, runs), '▲ running');
+});
+
+test('a finished run (done/failed) does not shadow the ticket\'s Linear state', () => {
+  const t = ticket({ identifier: 'CON-9', state: { name: 'Todo', type: 'unstarted' } });
+  assert.equal(inlineStatus(t, [{ ticket: 'CON-9', status: 'done' }]), 'Todo');
+  assert.equal(inlineStatus(t, [{ ticket: 'CON-9', status: 'failed' }]), 'Todo');
+});
+
+test('all three states render inline in the tickets pane', () => {
+  const tickets = [
+    ticket({ identifier: 'CON-1', title: 'todo-ticket', state: { name: 'Todo', type: 'unstarted' } }),
+    ticket({ identifier: 'CON-2', title: 'in-progress-ticket', state: { name: 'In Progress', type: 'started' } }),
+    ticket({ identifier: 'CON-3', title: 'running-ticket', state: { name: 'Todo', type: 'unstarted' } }),
+  ];
+  const state = lp({
+    cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 3 }]),
+  });
+  const runs = [{ ticket: 'CON-3', status: 'running' }];
+  const out = plain(renderLaunchPad(state, runs, OPTS));
+  assert.match(out, /CON-1.*Todo/);
+  assert.match(out, /CON-2.*In Progress/);
+  assert.match(out, /CON-3.*▲ running/);
+});
+
+// --- epics pane, including the unassigned bucket ----------------------------
+
+test('the unassigned epic bucket renders distinctly, not as "null"', () => {
+  const state = lp({
+    cache: cacheWith(
+      [ticket({ epicId: null, epicName: null })],
+      [{ id: null, name: null, openCount: 1 }],
+    ),
+  });
+  const out = plain(renderLaunchPad(state, [], OPTS));
+  assert.match(out, /─ unassigned ─/);
+  assert.doesNotMatch(out, /\bnull\b/);
+});
+
+test('ticketsForEpic filters to the epic at epicIndex, including the unassigned bucket', () => {
+  const tickets = [
+    ticket({ identifier: 'CON-1', epicId: 'p1' }),
+    ticket({ identifier: 'CON-2', epicId: null }),
+  ];
+  const state = lp({
+    cache: cacheWith(tickets, [
+      { id: 'p1', name: 'Pipeline v2', openCount: 1 },
+      { id: null, name: null, openCount: 1 },
+    ]),
+    epicIndex: 1,
+  });
+  assert.deepEqual(ticketsForEpic(state).map((t) => t.identifier), ['CON-2']);
+});
+
+// --- selection and header ----------------------------------------------------
+
+test('the header shows total open count and cache age', () => {
+  const out = plain(renderLaunchPad(lp({}), [], OPTS));
+  assert.match(out, /1 open/);
+  assert.match(out, /fetched 12m ago/);
+});
+
+test('a checked ticket renders [x], an unchecked one [ ]', () => {
+  const selected = new Set(['CON-1']);
+  const out = plain(renderLaunchPad(lp({ selected }), [], OPTS));
+  assert.match(out, /\[x\] CON-1/);
+});
+
+test('the footer omits "L launch" until something is selected', () => {
+  const none = plain(renderLaunchPad(lp({ selected: new Set() }), [], OPTS));
+  assert.doesNotMatch(none, /L launch/);
+  const some = plain(renderLaunchPad(lp({ selected: new Set(['CON-1']) }), [], OPTS));
+  assert.match(some, /L launch/);
+});
+
+test('L does nothing (and is not advertised) with nothing selected', () => {
+  const state = { lp: lp({ selected: new Set() }), runs: [] };
+  assert.equal(handleKey('L', state), null);
+});
+
+test('L opens the launch plan once something is selected', () => {
+  const state = { lp: lp({ selected: new Set(['CON-1']) }), runs: [] };
+  assert.deepEqual(handleKey('L', state), { type: 'open-launchplan' });
+});
+
+// --- key handling -------------------------------------------------------------
+
+test('space toggles selection only in the tickets pane', () => {
+  assert.deepEqual(handleKey(' ', { lp: lp({ pane: 'tickets' }), runs: [] }), { type: 'toggle-select' });
+  assert.equal(handleKey(' ', { lp: lp({ pane: 'epics' }), runs: [] }), null);
+});
+
+test('enter opens the ticket viewer only in the tickets pane', () => {
+  assert.deepEqual(handleKey('\r', { lp: lp({ pane: 'tickets' }), runs: [] }), { type: 'open-ticketview' });
+  assert.equal(handleKey('\r', { lp: lp({ pane: 'epics' }), runs: [] }), null);
+});
+
+test('s and p set the mode', () => {
+  assert.deepEqual(handleKey('s', { lp: lp({}), runs: [] }), { type: 'set-mode', mode: 'sequential' });
+  assert.deepEqual(handleKey('p', { lp: lp({}), runs: [] }), { type: 'set-mode', mode: 'parallel' });
+});
+
+test('j/k move within the focused pane', () => {
+  assert.deepEqual(handleKey('j', { lp: lp({}), runs: [] }), { type: 'move-launchpad', delta: 1 });
+  assert.deepEqual(handleKey('k', { lp: lp({}), runs: [] }), { type: 'move-launchpad', delta: -1 });
+});
+
+test('left/right arrows switch panes', () => {
+  assert.deepEqual(handleKey('\x1b[D', { lp: lp({}), runs: [] }), { type: 'switch-pane', pane: 'epics' });
+  assert.deepEqual(handleKey('\x1b[C', { lp: lp({}), runs: [] }), { type: 'switch-pane', pane: 'tickets' });
+});
+
+test('esc backs out to the fleet', () => {
+  assert.deepEqual(handleKey('\x1b', { lp: lp({}), runs: [] }), { type: 'back' });
+});
+
+test('an unbound key is a no-op', () => {
+  assert.equal(handleKey('z', { lp: lp({}), runs: [] }), null);
+});
+
+test('refreshing ignores further keys except the escape hatch', () => {
+  const state = { lp: lp({ refreshing: true }), runs: [] };
+  assert.equal(handleKey('r', state), null);
+  assert.equal(handleKey('j', state), null);
+  assert.deepEqual(handleKey('\x1b', state), { type: 'back' });
+});
+
+// --- windowStart: scroll centring, clamped at the ends ----------------------
+
+test('windowStart does not scroll when everything already fits', () => {
+  assert.equal(windowStart(0, 5, 10), 0);
+});
+
+test('windowStart clamps at the top', () => {
+  assert.equal(windowStart(0, 20, 5), 0);
+});
+
+test('windowStart clamps at the bottom', () => {
+  assert.equal(windowStart(19, 20, 5), 15);
+});
+
+// --- router seam --------------------------------------------------------------
+
+test('render(state, opts) reads launchPad off the full state object', () => {
+  const state = { launchPad: lp({}), runs: [] };
+  const out = plain(render(state, OPTS));
+  assert.match(out, /NEW RUN/);
+});
+
+// --- width discipline ----------------------------------------------------------
+
+test('no rendered line exceeds opts.cols', () => {
+  const tickets = [
+    ticket({ identifier: 'CON-1', title: 'an-extremely-long-ticket-title-that-will-not-fit-anywhere-at-all-in-a-narrow-terminal' }),
+  ];
+  const state = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'a-very-long-epic-name-indeed-that-keeps-going', openCount: 1 }]) });
+  for (const cols of [50, 60, 78, 100, 120]) {
+    const out = renderLaunchPad(state, [], { cols, now: Date.now() });
+    for (const line of out.split('\n')) {
+      const { visibleLength } = require('../lib/ui/format');
+      assert.ok(visibleLength(line) <= cols, `cols:${cols} line is ${visibleLength(line)} wide: ${JSON.stringify(line)}`);
+    }
+  }
+});

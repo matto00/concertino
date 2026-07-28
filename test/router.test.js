@@ -64,6 +64,58 @@ test('handleKey on an unknown mode is a no-op, not a throw', () => {
   assert.equal(router.handleKey('j', state), null);
 });
 
+// --- launch pad / ticket viewer / launch plan --------------------------------
+
+test('the launch pad renders through the router', () => {
+  const lp = {
+    status: { enabled: true, reason: null, message: null },
+    cache: { fetchedAt: 1000, tickets: [{ identifier: 'CON-1', title: 'x', epicId: 'p1', epicName: 'Pipeline v2', state: { name: 'Todo', type: 'unstarted' } }], epics: [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }] },
+    pane: 'tickets', epicIndex: 0, ticketIndex: 0, selected: new Set(), mode: 'parallel',
+    refreshing: false, error: null, project: 'concertino', defaultConcurrency: 2,
+  };
+  const state = { mode: 'launchpad', runs: [], launchPad: lp };
+  const out = router.render(state, { cols: 78, now: 2000 });
+  assert.match(out, /NEW RUN/);
+  assert.match(out, /Pipeline v2/);
+});
+
+test('handleKey dispatches to the launch pad screen', () => {
+  const lp = {
+    status: { enabled: true, reason: null, message: null },
+    cache: { fetchedAt: 1000, tickets: [], epics: [] },
+    pane: 'tickets', epicIndex: 0, ticketIndex: 0, selected: new Set(), mode: 'parallel',
+    refreshing: false, error: null, project: '', defaultConcurrency: 2,
+  };
+  const state = { mode: 'launchpad', runs: [], launchPad: lp };
+  assert.deepEqual(router.handleKey('\x1b', state), { type: 'back' });
+});
+
+test('the ticket viewer renders through the router', () => {
+  const state = {
+    mode: 'ticketview',
+    launchPad: { viewingTicket: 'CON-1', cache: { tickets: [{ identifier: 'CON-1', title: 'a ticket', description: 'body text', comments: [] }] } },
+  };
+  const out = router.render(state, { cols: 78 });
+  assert.match(out, /CON-1/);
+  assert.match(out, /body text/);
+});
+
+test('the launch plan renders through the router', () => {
+  const state = {
+    mode: 'launchplan',
+    runs: [],
+    launchPlan: {
+      tickets: [{ identifier: 'CON-338', title: 'x' }], mode: 'parallel', concurrency: 2,
+      harness: 'claude', harnesses: ['claude'], baseBranch: 'main', commitSha: null,
+      worktreeBase: '.concertino/worktrees', launchCommand: 'claude "/concertino-deliver {{TICKET}}"',
+      portsCfg: {},
+    },
+  };
+  const out = router.render(state, { cols: 78 });
+  assert.match(out, /LAUNCH PLAN/);
+  assert.match(out, /CON-338/);
+});
+
 test('a run whose escalation cleared still renders through the escalation screen honestly', () => {
   // The router does not know the escalation cleared — that transition is
   // watch.js's job (see draw() falling back to 'fleet'). Rendering the
