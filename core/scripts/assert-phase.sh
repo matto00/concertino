@@ -44,10 +44,23 @@ fail() {
 FAILED=0
 FIRST_ERROR=""
 
+# Millisecond epoch. GNU date supports %3N; BSD/macOS date does not, so fall
+# back to node (already a hard requirement for Concertino). Duplicated from
+# emit-event.sh's now_ms() rather than sourced — these procedure scripts stay
+# standalone.
+now_ms() {
+  local d
+  d="$(date +%s%3N 2>/dev/null)"
+  case "$d" in
+    *N*|'') node -e 'process.stdout.write(String(Date.now()))' ;;
+    *) printf '%s' "$d" ;;
+  esac
+}
+
 # Resolve a health URL template ($DEV_PORT / $BACKEND_PORT in scope).
 resolve_url() { eval "echo \"$1\""; }
 
-START_TS="$(date +%s)"
+START_TS="$(now_ms)"
 
 case "$PHASE" in
   setup)
@@ -108,7 +121,7 @@ esac
 GATE_TICKET="${WORKTREE_PATH##*/}"
 looks_like_ticket() { [[ "$1" =~ ^[A-Za-z#][A-Za-z0-9_-]*[0-9]$ ]]; }
 
-DURATION_MS=$(( ($(date +%s) - START_TS) * 1000 ))
+DURATION_MS=$(( $(now_ms) - START_TS ))
 
 if [ "$FAILED" -ne 0 ]; then
   looks_like_ticket "$GATE_TICKET" && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
