@@ -449,6 +449,21 @@ test('an unbound key is a no-op', () => {
   assert.equal(handleKey('z', state({})), null);
 });
 
+test('l opens the drill-down on the selected run', () => {
+  assert.deepEqual(handleKey('l', state({})), { type: 'open-drilldown', ticket: 'HEL-1' });
+  assert.deepEqual(handleKey('\x1b[C', state({})), { type: 'open-drilldown', ticket: 'HEL-1' });
+});
+
+test('l with no runs is a no-op', () => {
+  assert.equal(handleKey('l', state({ runs: [] })), null);
+});
+
+test('k still means move-up, not kill — the fleet footer must never claim otherwise', () => {
+  assert.deepEqual(handleKey('k', state({})), { type: 'move', delta: -1 });
+  const out = plain(renderFleet([run({})], OPTS));
+  assert.doesNotMatch(out, /k kill/);
+});
+
 // --- handleKey while the `n` prompt is open ---------------------------------
 
 function promptState(prompt) {
