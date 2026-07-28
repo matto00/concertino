@@ -104,5 +104,28 @@ REPO="$(new_repo)"
 check "exit 0 without ticket" "$?" "0"
 rm -rf "$REPO"
 
+# --- --await returns the answer written by the dashboard --------------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-6 question="add zod?" options=approve,deny ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+# Wait for the raised event, then answer it the way the TUI would.
+for _ in $(seq 1 50); do
+  [ -f "$REPO/.concertino/runs/HEL-6/events.jsonl" ] && break
+  sleep 0.1
+done
+printf '{"answer":"approve"}' > "$REPO/.concertino/runs/HEL-6/answer.json"
+wait "$AWAIT_PID"; AWAIT_RC=$?
+check "--await exit 0 when answered" "$AWAIT_RC" "0"
+check "--await prints the answer"    "$(tr -d '\n' < "$REPO/out.txt")" "approve"
+check "--await raised an event"      "$(grep -c 'escalation.raised' "$REPO/.concertino/runs/HEL-6/events.jsonl")" "1"
+rm -rf "$REPO"
+
+# --- --await times out rather than hanging forever --------------------------
+REPO="$(new_repo)"
+( cd "$REPO" && CONCERTINO_ESCALATION_TIMEOUT_MIN=0 "$SCRIPT" escalation --await ticket=HEL-7 question=q ) >/dev/null 2>&1
+check "--await exit 1 on timeout" "$?" "1"
+check "--await logged a timeout"  "$(grep -c 'escalation.timeout' "$REPO/.concertino/runs/HEL-7/events.jsonl")" "1"
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

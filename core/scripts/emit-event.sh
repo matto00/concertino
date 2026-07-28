@@ -138,6 +138,47 @@ if [ "$(LC_ALL=C; echo ${#LINE})" -gt "$MAX_LINE" ]; then
   LINE="$(build_line "$KIND")"
 fi
 
+if [ "$AWAIT" -eq 1 ]; then
+  # An escalation always lands in the log as `escalation.raised`, whatever
+  # kind the caller passed, so the reducer has one thing to look for.
+  LINE="$(build_line escalation.raised)"
+fi
+
 printf '%s\n' "$LINE" >> "$LOG" 2>/dev/null || exit 0
 
-exit 0
+[ "$AWAIT" -eq 0 ] && exit 0
+
+# --- blocking escalation ---------------------------------------------------
+# Poll for the answer file the dashboard writes. This is the whole control
+# plane: no keystroke injection, no detecting when a harness is at a prompt,
+# and identical on Codex or a local-model harness.
+ANSWER_FILE="${RUN_DIR}/answer.json"
+rm -f "$ANSWER_FILE" 2>/dev/null || true
+
+TIMEOUT_MIN="${CONCERTINO_ESCALATION_TIMEOUT_MIN:-60}"
+DEADLINE=$(( $(date +%s) + TIMEOUT_MIN * 60 ))
+
+while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+  if [ -f "$ANSWER_FILE" ]; then
+    ANSWER="$(node -e '
+      try {
+        const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+        process.stdout.write(String(a.answer == null ? "" : a.answer));
+      } catch { process.stdout.write(""); }
+    ' "$ANSWER_FILE" 2>/dev/null)"
+    if [ -n "$ANSWER" ]; then
+      FIELDS=",\"answer\":$(json_value "$ANSWER")"
+      printf '%s\n' "$(build_line escalation.answered)" >> "$LOG" 2>/dev/null || true
+      printf '%s\n' "$ANSWER"
+      exit 0
+    fi
+  fi
+  sleep 1
+done
+
+# Timed out: tell the log, and exit non-zero so the caller falls back to its
+# own escalation path (printing the question to chat). The dashboard is an
+# accelerator for escalations — never a new way for a run to hang.
+FIELDS=""
+printf '%s\n' "$(build_line escalation.timeout)" >> "$LOG" 2>/dev/null || true
+exit 1
