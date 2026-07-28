@@ -81,5 +81,30 @@ check "first_error is a prefix of the untrimmed message" \
   "${EXPECTED_MSG:0:200}"
 rm -rf "$REPO"
 
+# --- sub-second gate reports true millisecond resolution --------------------
+# A single run of a near-instant `setup` phase (filesystem stats only) could
+# legitimately land exactly on a millisecond tick (duration_ms == 0, itself a
+# multiple of 1000) without any bug present — that's a real near-zero
+# duration, not a regression. So this samples several runs and only requires
+# that NOT ALL of them collapse onto a multiple of 1000: the old
+# `date +%s` * 1000 measurement guaranteed a multiple of 1000 on every single
+# run, so seeing even one non-multiple proves true ms resolution is in use.
+REPO="$(new_repo)"
+WT="$REPO/worktrees/HEL-4"
+mkdir -p "$WT/.git"
+SAW_NON_MULTIPLE=no
+for _ in $(seq 1 20); do
+  (cd "$REPO" && "$SCRIPT" setup "$WT") >/dev/null
+  LOG="$REPO/.concertino/runs/HEL-4/events.jsonl"
+  D="$(node -e 'const lines=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n");console.log(JSON.parse(lines[lines.length-1]).duration_ms)' "$LOG")"
+  if [ "$((D % 1000))" -ne 0 ]; then
+    SAW_NON_MULTIPLE=yes
+    break
+  fi
+done
+check "sub-second setup run reports true ms resolution (non-1000-multiple duration_ms) within 20 tries" \
+  "$SAW_NON_MULTIPLE" "yes"
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
