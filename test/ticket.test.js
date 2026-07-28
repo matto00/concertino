@@ -4,8 +4,18 @@ const assert = require('node:assert');
 const { looksLikeTicket } = require('../lib/ui/ticket');
 
 test('accepts ordinary ticket shapes', () => {
-  for (const t of ['CON-777', 'HEL-1', '#42', 'a.b_c-9', 'ABC123']) {
+  for (const t of ['CON-777', 'HEL-1', '#42', 'a_b_c-9', 'ABC123']) {
     assert.ok(looksLikeTicket(t), `expected ${JSON.stringify(t)} to look like a ticket`);
+  }
+});
+
+// `.` used to be accepted here, but tmux treats `.` as the window/pane
+// separator inside a target (`session:window.pane`), so a dotted ticket
+// breaks session.js's addressing and orphans a window (see session.test.js).
+// No real ticket provider uses dots in ticket ids.
+test('rejects dotted values, which break tmux target addressing', () => {
+  for (const t of ['a.b_c-9', 'CON-1.2', '.CON-1', 'CON-1.']) {
+    assert.ok(!looksLikeTicket(t), `expected ${JSON.stringify(t)} to be rejected`);
   }
 });
 

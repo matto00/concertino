@@ -88,7 +88,7 @@ esac
 # otherwise write this run's events into a different ticket's log, silently
 # splitting one run's history in two. Emitting nothing is the safe failure.
 GATE_TICKET="${WORKTREE_PATH##*/}"
-looks_like_ticket() { [[ "$1" =~ ^[A-Za-z#][A-Za-z0-9._-]*[0-9]$ ]]; }
+looks_like_ticket() { [[ "$1" =~ ^[A-Za-z#][A-Za-z0-9_-]*[0-9]$ ]]; }
 
 if [ "$FAILED" -ne 0 ]; then
   looks_like_ticket "$GATE_TICKET" && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.result \
