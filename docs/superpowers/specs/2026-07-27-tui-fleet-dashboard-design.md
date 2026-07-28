@@ -185,7 +185,7 @@ Under `O_APPEND` a write below `PIPE_BUF` is atomic, so an orchestrator and a
 sub-agent appending concurrently cannot interleave. Each run owns its own file, so
 parallel runs never contend at all.
 
-**`--await` never blocks forever.** On `ui.escalationTimeoutMinutes` it emits
+**`--await` never blocks forever.** On `dashboard.escalationTimeoutMinutes` it emits
 `escalation.timeout`, exits non-zero, and the agent falls back to its existing
 behaviour of printing the escalation to chat. The TUI accelerates escalations; it
 must never become a new way for a run to hang.
@@ -223,7 +223,7 @@ A five-method interface over tmux so the TUI never shells out directly:
 spawn(ticket, cmd) · list() · capture(ticket) · attach(ticket) · kill(ticket)
 ```
 
-One tmux session (`ui.tmuxSession`, default `concertino`), one window per run,
+One tmux session (`dashboard.tmuxSession`, default `concertino`), one window per run,
 window named for the ticket.
 
 `concertino watch` **adopts an existing session on startup** rather than clobbering
@@ -387,7 +387,7 @@ harness.
 
 ## Launch pad and queue
 
-Gated on **all three** of `ui.launchPad.enabled`, `ticketProvider.kind ===
+Gated on **all three** of `dashboard.launchPad.enabled`, `ticketProvider.kind ===
 "linear"`, and a `LINEAR_API_KEY` environment variable, so the feature cannot
 half-activate.
 
@@ -396,7 +396,7 @@ orchestrator already owns that transition.
 
 Launching runs `tmux new-window` with the harness's configured launch template
 (`claude "/concertino-deliver HEL-334"`, or the Codex equivalent). The queue runner
-holds `ui.maxConcurrent` and starts the next ticket when a run emits `run.end` or
+holds `dashboard.maxConcurrent` and starts the next ticket when a run emits `run.end` or
 its window dies. **Sequential is `maxConcurrent: 1`** — the degenerate case of the
 same path, not a second code path.
 
@@ -407,13 +407,19 @@ same path, not a second code path.
 Added to `concertino.config.json` and `config/concertino.schema.json`:
 
 ```json
-"ui": {
+"dashboard": {
   "tmuxSession": "concertino",
   "maxConcurrent": 2,
   "escalationTimeoutMinutes": 60,
   "launchPad": { "enabled": false }
 }
 ```
+
+**Not `ui`** — that key is already taken. `ui` describes whether the *project under
+test* has a user interface and how the evaluator reviews it (`ui.enabled`,
+`ui.tool`, `ui.triggers`, `ui.breakpoints`), consumed at `bin/concertino:186` and
+defined at `config/concertino.schema.json:106`. Reusing it would collide with the
+evaluator's UI-review phase.
 
 ---
 
@@ -461,7 +467,7 @@ No test requires a real Claude session, a Linear token, or network access.
 | `core/roles/{orchestrator,executor,evaluator,skeptic}.md` | emit tier-3 events where each already writes `workflow-state.md` |
 | `lib/ui/*` | new — session, reducer, render, screens, linear |
 | `bin/concertino` | new `watch` subcommand; `doctor` gains a tmux check; `sync` copies `emit-event.sh` |
-| `config/concertino.schema.json` | `ui` block |
+| `config/concertino.schema.json` | `dashboard` block |
 | `package.json` | `files` gains `lib/`; `test` runs `node --test` |
 | `docs/` | a `dashboard.md` page |
 
