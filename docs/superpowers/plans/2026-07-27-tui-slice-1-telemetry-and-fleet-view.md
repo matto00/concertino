@@ -291,17 +291,14 @@ In `package.json`, replace the `test` script:
 
 ```json
 "scripts": {
-  "test": "node --test test/ && bash test/scripts/emit-event.test.sh",
+  "test": "bash test/scripts/emit-event.test.sh",
   "test:selftest": "node bin/concertino sync --out=/tmp/concertino-selftest --config=config/examples/helio.json --dry-run"
 }
 ```
 
-`node --test test/` fails if `test/` has no test files yet, so create a placeholder that Task 3 replaces:
-
-```bash
-mkdir -p test/scripts
-printf "const { test } = require('node:test');\ntest('placeholder', () => {});\n" > test/placeholder.test.js
-```
+`node --test test/` is deliberately **not** added yet — it errors when `test/`
+contains no JS test files, and Task 3 adds it along with the first one. Do not
+create a placeholder test to work around this.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -314,7 +311,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add core/scripts/emit-event.sh test/scripts/emit-event.test.sh test/placeholder.test.js package.json
+git add core/scripts/emit-event.sh test/scripts/emit-event.test.sh package.json
 git commit -m "feat(telemetry): add emit-event.sh, the harness-agnostic event emitter"
 ```
 
@@ -446,7 +443,7 @@ git commit -m "feat(telemetry): add blocking --await mode for escalations"
 **Files:**
 - Create: `lib/ui/store.js`
 - Create: `test/store.test.js`
-- Delete: `test/placeholder.test.js`
+- Modify: `package.json` (add `node --test test/` now that a JS suite exists)
 
 **Interfaces:**
 - Consumes: the on-disk layout written by Task 1.
@@ -625,17 +622,24 @@ module.exports = { runsDir, runDir, eventsPath, answerPath, listTickets, readEve
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-```bash
-rm test/placeholder.test.js
-node --test test/store.test.js
-```
+Run: `node --test test/store.test.js`
 Expected: PASS — 8 tests.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Add the JS suite to `npm test`**
+
+Now that `test/` holds a real JS suite, update the `test` script in `package.json`:
+
+```json
+"test": "node --test test/ && bash test/scripts/emit-event.test.sh"
+```
+
+Run: `npm test`
+Expected: PASS — both the JS suite and the shell suite.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git rm -q test/placeholder.test.js
-git add lib/ui/store.js test/store.test.js
+git add lib/ui/store.js test/store.test.js package.json
 git commit -m "feat(dashboard): add event log store with malformed-line tolerance"
 ```
 
@@ -1774,20 +1778,25 @@ npm test
 
 Expected: help lists `watch`; doctor reports a tmux version or a warning; all tests pass.
 
-Then a real smoke test:
+Then a **non-interactive** smoke test. `watch` handles a non-TTY stdin (it skips
+raw mode), so piping `q` in drives one render and a clean exit — no terminal
+required:
 
 ```bash
-tmux new-window -d -t concertino -n HEL-999 'sleep 300' 2>/dev/null || \
-  tmux new-session -d -s concertino -n HEL-999 'sleep 300'
-node bin/concertino watch
-```
-
-Expected: `HEL-999` appears under `RUNNING` with `no telemetry` and a rising idle
-time. Press `↵` to attach, `Ctrl-b d` to detach back to the dashboard, `q` to quit.
-
-```bash
+tmux kill-session -t concertino 2>/dev/null
+tmux new-session -d -s concertino -n HEL-999 'sleep 300'
+echo q | node bin/concertino watch > /tmp/watch-smoke.txt 2>&1
+echo "exit=$?"
+cat /tmp/watch-smoke.txt
 tmux kill-session -t concertino
 ```
+
+Expected: `exit=0`, and the captured output contains `HEL-999` and
+`no telemetry` — a live window with no event log is exactly the tier-1-only
+degradation case.
+
+Do **not** attempt to test attach, key navigation, or detach: those need a real
+terminal and are verified separately by the human partner.
 
 - [ ] **Step 8: Commit**
 
