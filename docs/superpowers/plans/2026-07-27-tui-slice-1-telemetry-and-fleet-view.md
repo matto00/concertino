@@ -1770,7 +1770,10 @@ function renderFleet(runs, opts) {
   const malformed = runs.reduce((n, r) => n + (r.malformed || 0), 0);
   if (malformed) out.push('  ' + f.yellow(`▲ ${malformed} malformed events`));
 
-  out.push(f.dim('  ↵ attach   n new run   k kill   r restart   q quit'));
+  // Advertise only what this slice actually binds. `k` is selection-up here, so
+  // labelling it "kill" would be worse than omitting it — new run, kill and
+  // restart all arrive with the control plane in slice 2.
+  out.push(f.dim('  ↵ attach   j/k move   q quit'));
 
   return out.map((l) => (f.visibleLength(l) > cols ? f.truncate(l, cols) : l)).join('\n');
 }
@@ -2346,8 +2349,12 @@ test* has a user interface and how the evaluator reviews it.
 ```
 .concertino/runs/<TICKET>/
   events.jsonl    append-only event log — survives cleanup
-  answer.json     written by the dashboard to answer an escalation
 ```
+
+`emit-event.sh --await` also polls for an `answer.json` beside that log, which is
+how a human decision reaches a blocked agent. Nothing writes it yet — the
+dashboard side of the control plane lands in slice 2, and until then an
+escalation still resolves the way it always has, in chat.
 
 The log lives in the main checkout, not the worktree, so a run's history
 survives `cleanup.sh --phase4` removing the worktree. Tail it directly:
