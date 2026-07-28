@@ -63,7 +63,7 @@ Five units, each independently testable.
 | Session backend | `lib/ui/session.js` | tmux |
 | Run store (reducer) | `lib/ui/reducer.js` | nothing — pure |
 | TUI renderer | `lib/ui/render.js`, `lib/ui/screens/*.js` | run store |
-| Linear client | `lib/ui/linear.js` | `LINEAR_API_KEY`, feature-flagged |
+| Linear client + cache | `lib/ui/linear.js` | `LINEAR_API_KEY`, feature-flagged |
 
 The reducer is the keystone:
 
@@ -319,7 +319,7 @@ rather than only on the confirm screen.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ NEW RUN · helio                                          34 open tickets │
+│ NEW RUN · helio                    34 open · fetched 12m ago · r refresh │
 ├──────────────────────────────┬───────────────────────────────────────────┤
 │ EPICS                        │ Pipeline v2                               │
 │ ▸ Pipeline v2         8 open │ [x] HEL-338  spec-delta-validation   Todo │
@@ -330,7 +330,7 @@ rather than only on the confirm screen.
 │   ─ unassigned ─      6 open │                                           │
 │                              │ 3 selected · parallel ×2                  │
 ├──────────────────────────────┴───────────────────────────────────────────┤
-│ space select   a all   s sequential   p parallel   ↵ launch   esc back   │
+│ space select   ↵ read   a all   s sequential   p parallel   L launch     │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -393,6 +393,46 @@ half-activate.
 
 Read-only against Linear. Concertino never writes ticket state from the TUI — the
 orchestrator already owns that transition.
+
+### Ticket cache
+
+The launch pad fetches **once, in bulk** — every open ticket with its full
+metadata (description, comments, state, estimate, epic, assignee, labels) — and
+writes it to a local cache. It never queries Linear per keystroke.
+
+```
+.concertino/cache/
+  linear.json      { fetchedAt, tickets: [...], epics: [...] }
+```
+
+Three things this buys, in order of importance:
+
+- **A ticket viewer.** With descriptions and comments already local, `↵` on a
+  ticket in the launch pad opens a full read view — the thing you actually need
+  before deciding whether to hand a ticket to an autonomous agent. Fetching that
+  lazily per-ticket would make the browser feel like a web page; having it in
+  hand makes it feel like a file.
+- **Instant, offline browsing.** Filtering and navigation are local reads. The
+  launch pad opens with no network round-trip.
+- **A single, visible staleness point.** The header shows `fetched 12m ago`, and
+  `r` refetches. Cache age is never ambiguous, and there is no background polling
+  quietly burning API quota.
+
+The cache is **never** the source of truth for whether a ticket is already being
+worked on — that comes from the live event log and tmux, which is why the inline
+status column can say `▲ running` even against a cache fetched an hour ago.
+
+Two constraints:
+
+- **`.concertino/cache/` must be gitignored.** It contains full ticket
+  descriptions and comment threads, which are frequently more sensitive than
+  anything else in the repo. `concertino init` adds the entry; `doctor` warns if
+  it is missing.
+- **A cold cache is not an error.** If `linear.json` is absent or unreadable, the
+  launch pad opens with an empty list and a `press r to fetch` hint, exactly as if
+  the fetch had returned nothing.
+
+### Launching
 
 Launching runs `tmux new-window` with the harness's configured launch template
 (`claude "/concertino-deliver HEL-334"`, or the Codex equivalent). The queue runner
@@ -483,7 +523,8 @@ Three shippable slices, each useful on its own:
    you just can't steer it from the TUI.
 2. **Control plane + drill-down.** `--await`, `answer.json`, the escalation screen,
    the D1 drill-down, and kill/restart.
-3. **Launch pad.** Linear client, epic/ticket browser, launch plan, queue runner.
+3. **Launch pad.** Linear bulk fetch and cache, epic/ticket browser, ticket
+   viewer, launch plan, queue runner.
 
 Slice 1 must land before slice 2 — the control plane has nothing to act on without
 the event log. Slice 3 depends only on the session backend from slice 1 and can be
