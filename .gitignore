@@ -10,3 +10,6 @@ scripts/concertino/.concertino.env
 .DS_Store
 *.log
 node_modules/
+
+# superpowers brainstorming scratch
+.superpowers/
