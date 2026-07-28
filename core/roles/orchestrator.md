@@ -237,6 +237,16 @@ exactly as always. Answering from the dashboard arrives in a later slice; until
 then the event is only a signal that a human is needed, and the chat block is
 how they respond. Never treat silence as an approval.
 
+Once the human has answered, record that too — otherwise the row stays lit on
+the dashboard for the rest of the run, and a question that was settled hours ago
+still reads as one somebody is blocked on:
+
+```bash
+scripts/concertino/emit-event.sh escalation.answered \
+  ticket=$TICKET_ID role=orchestrator \
+  answer="<their decision, one line>" || true
+```
+
 ### Resolves in-loop (no human)
 
 - Self-approvable planning decisions (anything not escalated in Phase 1).
