@@ -128,7 +128,8 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "enabled": { "type": "boolean", "description": "Enables the ticket-provider launch pad, reached from `concertino watch`'s fleet view on 'N'. Read by lib/ui/linear.js launchPadStatus(), which additionally requires ticketProvider.kind=linear and a non-empty LINEAR_API_KEY — 'N' is always bound and explains whichever of the three is missing rather than doing nothing.", "default": false }
+            "enabled": { "type": "boolean", "description": "Enables the ticket-provider launch pad, reached from `concertino watch`'s fleet view on 'N'. Read by lib/ui/linear.js launchPadStatus(), which additionally requires ticketProvider.kind=linear and a non-empty LINEAR_API_KEY — 'N' is always bound and explains whichever of the three is missing rather than doing nothing.", "default": false },
+            "backlog": { "type": "boolean", "description": "Whether the launch pad's fetch includes backlog-state tickets. Default true preserves today's behaviour (backlog, unstarted and started tickets all fetched). Set to exactly false to exclude backlog tickets — read by lib/ui/linear.js stateTypesFromConfig(), for a project whose backlog dwarfs its active work (see docs/dashboard.md).", "default": true }
           }
         }
       }

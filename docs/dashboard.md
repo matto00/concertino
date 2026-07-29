@@ -393,17 +393,45 @@ selection time rather than only on the confirm screen — and you cannot warn ab
 a ticket you never fetched. `completed` and `canceled` are excluded because there
 is nothing left to deliver.
 
-### Comments are capped
+### The fetch is bounded by ticket count, not comments
 
-A description is written once; a comment thread grows without limit. Comments are
-the only unbounded axis in the payload, so the fetch takes the first
-`COMMENT_LIMIT` (50) per ticket and records `commentCount` and
-`commentsTruncated`. A viewer must say "showing 50 of 214" — a silently short
-thread reads as a complete one.
+Measurement against real data found `COMMENT_LIMIT` was aimed at the wrong
+thing: across a real 267-ticket / 740.1 KB fetch (Helio Platform), descriptions
+were 79% of the payload and comments were 0.6% — the busiest thread in the
+entire backlog had **one** comment. Ticket count was the axis that was actually
+unbounded (paging continued until Linear ran out, capped only by `MAX_PAGES`'s
+10,000-ticket hang-guard).
 
-For scale: the `Concertino` team's six open tickets carry ~1.5–3.5 KB of
-description each and **zero** comments, so its cache is around 10 KB. A busy team
-is the case the cap exists for.
+So `lib/ui/linear.js` now caps a fetch at `MAX_TICKETS` (500) — double the
+largest team measured, so it doesn't engage for any team seen so far, and
+~1.4 MB at the worst case (500 tickets * ~2.8 KB/ticket). When a fetch would
+exceed it, `fetchTickets` stops paging, slices to exactly 500 tickets, and
+reports `truncated: true`; the launch pad's header shows a
+`(truncated — more available)` marker next to the open-ticket count rather
+than silently returning a short list. `truncated` round-trips through the
+on-disk cache like every other field.
+
+`COMMENT_LIMIT` (50 comments/ticket) stays as cheap insurance against a single
+pathological thread — a comment thread the busiest ticket ever measured
+doesn't come close to needing — not as the mechanism that keeps the cache
+small. The fetch still takes only the first `COMMENT_LIMIT` comments and
+records `commentCount` / `commentsTruncated`, so a viewer can say "showing 50
+of 214" rather than silently pretending a thread is complete.
+
+For scale: the `Concertino` team's seven open tickets carry ~1.5–3.5 KB of
+description each and **zero** comments, so its cache is around 15.5 KB.
+
+### Excluding backlog tickets
+
+A team's `backlog` state can dwarf its active work — in the same measurement,
+266 of Helio Platform's 267 open tickets were `backlog`. A project like that
+can set `dashboard.launchPad.backlog: false` to fetch only `unstarted` and
+`started` tickets, leaving `backlog` out of both the query and the cache
+entirely. This is the bigger lever on cache size for a real team — bigger than
+`MAX_TICKETS` — because it changes which tickets exist to be counted, not how
+many of them fit under the cap. Default (absent, or anything but exactly
+`false`) preserves today's behaviour: backlog, unstarted and started tickets
+are all fetched, unchanged.
 
 ### Configuration
 
@@ -422,6 +450,15 @@ Which team to fetch comes from `ticketProvider.teamKey`:
 `idExample` prefix, which is a **guess** and labelled as one — `idExample` is a
 sample id for agent prose and is often a placeholder, and a wrong team key
 fetches cleanly and returns nothing.
+
+`dashboard.launchPad.backlog: false` excludes backlog-state tickets from the
+fetch (see "Excluding backlog tickets" above); omit it, or leave it anything
+but exactly `false`, to keep today's default of fetching backlog, unstarted
+and started tickets. The fetch itself is capped at `MAX_TICKETS` (500,
+see "The fetch is bounded by ticket count, not comments" above) — not
+configurable, the same plain-constant precedent as `COMMENT_LIMIT` — with a
+`(truncated — more available)` marker on the launch pad's header when the cap
+cuts a fetch short.
 
 Read-only throughout. Concertino never writes ticket state from the dashboard;
 the orchestrator already owns that transition.

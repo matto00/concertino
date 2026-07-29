@@ -273,6 +273,94 @@ test('fetchTickets stops at MAX_PAGES', async () => {
   assert.equal(out.pages, linear.MAX_PAGES);
 });
 
+// --- MAX_TICKETS (the real bound) -------------------------------------------
+
+test('MAX_TICKETS is 500', () => {
+  assert.equal(linear.MAX_TICKETS, 500);
+});
+
+test('a fetch under the cap returns everything with truncated: false', async () => {
+  const transport = fakeTransport([
+    page([issueNode({ id: 'a', identifier: 'CON-1' }), issueNode({ id: 'b', identifier: 'CON-2' })], false, null),
+  ]);
+  const out = await linear.fetchTickets({ teamKey: 'CON', apiKey: 'k', transport, maxTickets: 5 });
+  assert.equal(out.tickets.length, 2);
+  assert.equal(out.truncated, false);
+});
+
+test('a fetch that would exceed the cap stops at exactly maxTickets and is flagged truncated', async () => {
+  // Cap is 3. Page 1 brings the total to 2 (under the cap, keep paging).
+  // Page 2 brings it to exactly 3 (the cap) but Linear still reports a
+  // further page — that alone is what should flag `truncated`, not overshoot.
+  const transport = fakeTransport([
+    page([issueNode({ id: 'a', identifier: 'CON-1' }), issueNode({ id: 'b', identifier: 'CON-2' })], true, 'cursor-1'),
+    page([issueNode({ id: 'c', identifier: 'CON-3' })], true, 'cursor-2'),
+  ]);
+
+  const out = await linear.fetchTickets({ teamKey: 'CON', apiKey: 'k', transport, maxTickets: 3 });
+
+  assert.equal(out.tickets.length, 3);
+  assert.equal(out.truncated, true);
+  assert.equal(transport.calls.length, 2); // no third page requested past the cap-crossing one
+});
+
+test('a fetch landing exactly on the cap with nothing left is not truncated', async () => {
+  const transport = fakeTransport([
+    page([issueNode({ id: 'a', identifier: 'CON-1' }), issueNode({ id: 'b', identifier: 'CON-2' })], false, null),
+  ]);
+  const out = await linear.fetchTickets({ teamKey: 'CON', apiKey: 'k', transport, maxTickets: 2 });
+  assert.equal(out.tickets.length, 2);
+  assert.equal(out.truncated, false);
+});
+
+test('a cap-crossing page that overshoots is truncated even when Linear reports no further page', async () => {
+  // design.md Decision 3's overshoot case: the shipped constants (PAGE_SIZE
+  // 50, MAX_TICKETS 500) make this impossible in production — every page
+  // boundary lands exactly on a multiple of 50 — so a small maxTickets
+  // fixture is needed to exercise a single page overshooting the cap.
+  const transport = fakeTransport([
+    page(
+      [
+        issueNode({ id: 'a', identifier: 'CON-1' }),
+        issueNode({ id: 'b', identifier: 'CON-2' }),
+        issueNode({ id: 'c', identifier: 'CON-3' }),
+      ],
+      false,
+      null,
+    ),
+  ]);
+
+  const out = await linear.fetchTickets({ teamKey: 'CON', apiKey: 'k', transport, maxTickets: 2 });
+
+  assert.equal(out.tickets.length, 2);
+  assert.equal(out.truncated, true);
+  assert.equal(transport.calls.length, 1);
+});
+
+// --- stateTypesFromConfig ----------------------------------------------------
+
+test('stateTypesFromConfig includes backlog by default', () => {
+  assert.deepEqual(linear.stateTypesFromConfig({}), linear.OPEN_STATE_TYPES);
+  assert.deepEqual(linear.stateTypesFromConfig(undefined), linear.OPEN_STATE_TYPES);
+});
+
+test('stateTypesFromConfig excludes backlog when set to exactly false', () => {
+  const types = linear.stateTypesFromConfig({ dashboard: { launchPad: { backlog: false } } });
+  assert.deepEqual(types, ['unstarted', 'started']);
+});
+
+test('stateTypesFromConfig preserves the default for any value other than exactly false', () => {
+  assert.deepEqual(
+    linear.stateTypesFromConfig({ dashboard: { launchPad: { backlog: true } } }),
+    linear.OPEN_STATE_TYPES,
+  );
+  assert.deepEqual(
+    linear.stateTypesFromConfig({ dashboard: { launchPad: { backlog: 'false' } } }),
+    linear.OPEN_STATE_TYPES,
+  );
+  assert.deepEqual(linear.stateTypesFromConfig({ dashboard: {} }), linear.OPEN_STATE_TYPES);
+});
+
 test('auth uses the raw key with no Bearer prefix', async () => {
   let seen = null;
   const transport = (req) => {

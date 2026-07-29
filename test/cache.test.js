@@ -165,7 +165,32 @@ test('a second write replaces the first', () => {
 test('write of an empty result is legal — a team can have no open tickets', () => {
   const root = tmpRoot();
   cache.write(root, {}, 9);
-  assert.deepEqual(cache.read(root), { fetchedAt: 9, tickets: [], epics: [], teamKey: null });
+  assert.deepEqual(cache.read(root), { fetchedAt: 9, tickets: [], epics: [], teamKey: null, truncated: false });
+});
+
+// --- truncated ---------------------------------------------------------------
+// design.md Decision 4: no schema version bump — a cache written before
+// `truncated` existed was, in fact, not truncated by MAX_TICKETS (the concept
+// didn't exist yet), so defaulting a missing value to `false` is simply true.
+
+test('write then read round-trips truncated: true', () => {
+  const root = tmpRoot();
+  cache.write(root, Object.assign({}, SAMPLE, { truncated: true }), 1);
+  assert.equal(cache.read(root).truncated, true);
+});
+
+test('write then read round-trips truncated: false', () => {
+  const root = tmpRoot();
+  cache.write(root, Object.assign({}, SAMPLE, { truncated: false }), 1);
+  assert.equal(cache.read(root).truncated, false);
+});
+
+test('a pre-existing cache file with no truncated field reads as false', () => {
+  const root = seed(
+    tmpRoot(),
+    JSON.stringify(Object.assign({ schemaVersion: cache.CACHE_SCHEMA_VERSION, fetchedAt: 1 }, SAMPLE)),
+  );
+  assert.equal(cache.read(root).truncated, false);
 });
 
 // --- age -------------------------------------------------------------------
