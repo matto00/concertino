@@ -126,6 +126,7 @@ trimmed.
   "launchCommand": "claude \"/concertino-deliver {{TICKET}}\"",
   "maxConcurrent": 2,
   "escalationTimeoutMinutes": 8,
+  "retentionDays": 30,
   "launchPad": { "enabled": false }
 }
 ```
@@ -143,6 +144,12 @@ command call, and Claude Code caps a Bash call at roughly 10 minutes — a longe
 timeout risks the harness killing the wait before `--await` gets to log
 `escalation.timeout` and return control cleanly. Lower it further for a fleet
 you expect to check in on constantly; there is little reason to raise it.
+
+`retentionDays` bounds how long a **terminal** run's event log under
+`.concertino/runs/<TICKET>/` is kept before it becomes eligible for pruning.
+The default is **30 days**. A run that has not yet emitted a `run.end` event
+is never pruned, regardless of age — pruning is conservative by
+construction, not merely by tuning the cutoff (see "Retention", below).
 
 `dashboard` is distinct from `ui`, which describes whether the *project under
 test* has a user interface and how the evaluator reviews it.
@@ -181,6 +188,32 @@ survives `cleanup.sh --phase4` removing the worktree. Tail it directly:
 ```bash
 tail -f .concertino/runs/HEL-334/events.jsonl | jq .
 ```
+
+### Retention
+
+Nothing removes `.concertino/runs/<TICKET>/` on its own — logs accumulate for
+the life of the project unless pruned. Pruning is deliberately blunt and
+conservative: a run's log is only eligible once it is **both** terminal (its
+log contains a `run.end` event) **and** older than `dashboard.retentionDays`
+(default 30). A run that has never emitted `run.end` — still running, or
+crashed before it got the chance — is never removed, however old its log
+gets; that is the safe failure mode, not an oversight.
+
+Run it explicitly whenever you like:
+
+```bash
+concertino prune             # removes eligible run directories, reports what it removed
+concertino prune --dry-run   # reports what would be removed, touches nothing
+```
+
+`concertino watch` also runs the same prune pass once, best-effort, at
+startup — before the poll loop begins, never on the per-second poll itself —
+so a fleet you check in on regularly stays bounded without a separate cron
+job. A pruning failure there (permissions, races) is swallowed; it never
+blocks the dashboard from starting. Pruning removes the whole
+`.concertino/runs/<TICKET>/` directory, not just `events.jsonl`, so a pruned
+ticket reads as "never ran" rather than as a run with a suspiciously empty
+log.
 
 ## The cross-screen escalation banner
 

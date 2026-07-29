@@ -9,7 +9,7 @@
   "properties": {
     "harnesses": {
       "type": "array",
-      "description": "Which harness adapters to render on sync.",
+      "description": "Which harness adapters to render on sync. Also drives the static CONCERTINO_HARNESS default written to .concertino.env: the single value when exactly one harness is configured, else empty (setup-worktree.sh resolves the actual value at runtime).",
       "items": { "enum": ["claude-code", "codex"] },
       "default": ["claude-code", "codex"]
     },
@@ -123,6 +123,7 @@
         "launchCommand": { "type": "string", "description": "Command `n` runs in a new tmux window. `{{TICKET}}` is substituted with the ticket id. Defaults from the configured harness: `claude \"/concertino-deliver {{TICKET}}\"`, or `codex \"...\"` for a codex-only project." },
         "maxConcurrent": { "type": "integer", "minimum": 1, "description": "Cap on simultaneously running orchestrators launched from the launch pad's queue runner (lib/ui/queue.js). Sequential batches use maxConcurrent 1 — the same code path, not a separate one. Editable per-batch on the launch plan screen ('c'); this is only the default.", "default": 2 },
         "escalationTimeoutMinutes": { "type": "integer", "minimum": 0, "description": "How long `emit-event.sh --await` blocks before giving up and letting the agent fall back to presenting the escalation in chat. Rendered into CONCERTINO_ESCALATION_TIMEOUT_MIN in .concertino.env by `concertino sync`. The orchestrator invokes --await inside a single harness command call, which has its own outer timeout (Claude Code caps a Bash call at ~10 minutes) — keep this comfortably under that, or the harness kills the wait before --await's own timeout can fire and log escalation.timeout cleanly.", "default": 8 },
+        "retentionDays": { "type": "integer", "minimum": 1, "description": "How long, in days, a terminal run's event log under `.concertino/runs/<TICKET>/` is kept before `concertino prune` (or the best-effort prune at `concertino watch` startup) removes it. A run that has not yet emitted a `run.end` event is never pruned, regardless of age.", "default": 30 },
         "launchPad": {
           "type": "object",
           "additionalProperties": false,
