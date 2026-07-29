@@ -19,7 +19,31 @@ const { execSync } = require('child_process');
 
 const REPO = path.resolve(__dirname, '..');
 const ADAPTERS = path.join(REPO, 'adapters');
-const CODEX_MODEL_FALLBACK = 'codex-mini-latest'; // used only if config has no models.codex
+const CODEX_MODEL_FALLBACK = 'codex-mini-latest'; // used only if config has no models.codex.<role> or modelTiers.codex.standard
+// Default modelTiers.<harness> — the concrete model each named tier resolves
+// to when a project doesn't set its own (see design.md Decision 1 /
+// tasks.md 1.2). Claude Code's three aliases are the harness's own official
+// vocabulary (opus/sonnet/haiku), so cheap/standard/capable map onto them in
+// the obvious order. Codex has no equivalent agreed three-tier vocabulary —
+// as of this change there is one broadly-available model id
+// (`codex-mini-latest`) plus the flagship `gpt-5.1-codex`; `cheap`/`standard`
+// both point at the mini model (the only inexpensive option) and `capable`
+// at the flagship, so a `fast`/`default` run and a `slow` run still resolve
+// to two visibly different Codex models even though the tier vocabulary
+// itself is coarser than Claude Code's.
+const DEFAULT_MODEL_TIERS = {
+  'claude-code': { cheap: 'haiku', standard: 'sonnet', capable: 'opus' },
+  codex: { cheap: 'codex-mini-latest', standard: 'codex-mini-latest', capable: 'gpt-5.1-codex' },
+};
+// The implicit `default` speed synthesized when a project's config has no
+// `speeds` block at all — an empty budgets override (falls through entirely
+// to the top-level `budgets`) and every role at `standard`, i.e. byte-for-
+// byte the same resolution every run had before this feature shipped.
+const IMPLICIT_DEFAULT_SPEED = {
+  budgets: {},
+  roleTiers: { orchestrator: 'standard', executor: 'standard', evaluator: 'standard', skeptic: 'standard', auditor: 'standard' },
+};
+const ROLES = ['orchestrator', 'executor', 'evaluator', 'skeptic', 'auditor'];
 // `emit-event.sh --await` blocks inside a single harness command call, which
 // has its own outer timeout (Claude Code caps a Bash call at ~10 minutes).
 // This has to stay comfortably under that or the harness kills the process
@@ -266,6 +290,40 @@ function detectGates(dir) {
 }
 
 // ---------- config defaults ----------------------------------------------
+// Defaults just the models/modelTiers/speeds trio — split out of
+// withDefaults() below so `cmdValidate` can apply the identical defaulting
+// to a Models-section preview without running the rest of withDefaults()
+// (which assumes `c.project`/`c.ticketProvider`/etc. are already present —
+// exactly the fields validate's own earlier sections are still in the
+// middle of checking, possibly reporting as missing). Mutates `c` in place
+// and returns it, same contract as withDefaults() itself.
+function withModelDefaults(c) {
+  // `models` is sparse by design (Decision 1) — presence of a role here means
+  // "explicit override, ignore the active speed's tier". Never invent a
+  // per-role entry here the way the old flat shape did; only ensure the two
+  // harness keys exist as (possibly empty) objects so every downstream
+  // reader can do `c.models['claude-code'][role]` without a null-check.
+  c.models = c.models || {};
+  c.models['claude-code'] = c.models['claude-code'] || {};
+  c.models.codex = c.models.codex || {};
+  // `modelTiers`, unlike `models`, IS fully defaulted — every project gets a
+  // sensible cheap/standard/capable resolution even if it never configures
+  // one, since a speed's roleTiers has nothing to resolve against otherwise.
+  // A project overriding only some tiers keeps its own for the rest (merge,
+  // not replace).
+  c.modelTiers = c.modelTiers || {};
+  for (const h of ['claude-code', 'codex']) {
+    c.modelTiers[h] = Object.assign({}, DEFAULT_MODEL_TIERS[h], c.modelTiers[h] || {});
+  }
+  // `speeds` similarly always resolves — a project with none at all gets
+  // exactly the implicit `default` speed (Migration Plan step 1), so
+  // `resolve-speed.sh 'default'` (or any call omitting a speed argument)
+  // behaves identically on a project that has never heard of this feature.
+  c.speeds = c.speeds || {};
+  if (!c.speeds.default) c.speeds.default = JSON.parse(JSON.stringify(IMPLICIT_DEFAULT_SPEED));
+  return c;
+}
+
 function withDefaults(c) {
   c.harnesses = c.harnesses || ['claude-code', 'codex'];
   c.project.baseBranch = c.project.baseBranch || 'main';
@@ -283,16 +341,37 @@ function withDefaults(c) {
     { executionCycles: 3, skepticDesignRounds: 3, skepticFinalRounds: 2, debugAttempts: 2 },
     c.budgets || {}
   );
-  c.models = Object.assign(
-    { orchestrator: 'sonnet', executor: 'sonnet', evaluator: 'sonnet', skeptic: 'sonnet', auditor: 'sonnet', codex: CODEX_MODEL_FALLBACK },
-    c.models || {}
-  );
+  withModelDefaults(c);
   c.agentMerge = Object.assign(
     { enabled: false, mergeMethod: 'squash' },
     c.agentMerge || {}
   );
   c.commitTrailer = c.commitTrailer || '';
   return c;
+}
+
+// ---------- per-harness model resolution ----------------------------------
+// The one place every reader of `c.models`/`c.modelTiers` goes through
+// (design.md Decision 1 / tasks.md 1.5) — `emitClaude`, `emitCodex`,
+// `cmdEject`, `cmdDiff`, and `cmdValidate`'s Models section all call this
+// instead of independently re-implementing the flat lookup the old shape
+// used, which is exactly how cmdEject/cmdDiff silently drifted from the sync
+// emitters in the first place. Always resolves at the **default** speed —
+// sync-time rendering (frontmatter `model:`, Codex `.toml`) is a static
+// baseline; the per-run, per-speed resolution happens at run time via
+// resolve-speed.sh, never here. `c` must already be `withDefaults()`-shaped
+// (models/modelTiers/speeds all present) for every call site except
+// `cmdValidate`, which passes a project's raw config to deliberately
+// surface an old/missing shape rather than paper over it — see its own
+// call site for how it copes with an unshaped `c`.
+function resolveModel(c, harness, role) {
+  const explicit = c.models && c.models[harness] && c.models[harness][role];
+  if (explicit) return explicit;
+  const defaultSpeed = (c.speeds && c.speeds.default) || IMPLICIT_DEFAULT_SPEED;
+  const tier = (defaultSpeed.roleTiers && defaultSpeed.roleTiers[role]) || 'standard';
+  const tiers = c.modelTiers && c.modelTiers[harness];
+  if (tiers && tiers[tier]) return tiers[tier];
+  return harness === 'codex' ? CODEX_MODEL_FALLBACK : 'sonnet';
 }
 
 // ---------- deep-set + coerce (for `update` command) ---------------------
@@ -492,6 +571,22 @@ function renderEnv(c) {
   return L.join('\n') + '\n';
 }
 
+// ---------- speeds.json ----------------------------------------------------
+// The sync-time-defaulted snapshot resolve-speed.sh reads at run time
+// (design.md Decision 3) — exactly the config's `budgets`/`speeds`/
+// `modelTiers`/`models` blocks, already merged with defaults by
+// withDefaults(), not yet resolved to any one speed/harness. Harness-
+// agnostic: one file serves every harness a project configures, the same
+// way `speeds.<name>.roleTiers` and `modelTiers` themselves are.
+function renderSpeedsJson(c) {
+  return JSON.stringify({
+    budgets: c.budgets,
+    speeds: c.speeds,
+    modelTiers: c.modelTiers,
+    models: c.models,
+  }, null, 2) + '\n';
+}
+
 // ---------- harness emitters ---------------------------------------------
 function emitClaude(c, out, core, dry) {
   const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
@@ -503,7 +598,7 @@ function emitClaude(c, out, core, dry) {
     tools = tools.concat(mcp);
     const body = renderBody(readRoleFile(role, out, core), c, 'claude-code');
     const desc = r.description.split('{{project}}').join(c.project.name);
-    const model = (c.models && c.models[role]) || r.model;
+    const model = resolveModel(c, 'claude-code', role);
     const fm = [
       '---',
       '# concertino:sync v' + VERSION,
@@ -552,7 +647,7 @@ function emitCodex(c, out, core, dry) {
     const desc = meta.roles[role].description.split('{{project}}').join(c.project.name);
     const toml = tmpl.split('{{role}}').join(role)
       .split('{{description}}').join(desc.replace(/"/g, '\\"'))
-      .split('{{model}}').join((c.models && c.models.codex) || CODEX_MODEL_FALLBACK)
+      .split('{{model}}').join(resolveModel(c, 'codex', role))
       .split('{{body}}').join(body);
     write(path.join(out, '.codex', 'agents', 'concertino-' + role + '.toml'), '# concertino:sync v' + VERSION + '\n' + toml, dry);
   }
@@ -630,14 +725,6 @@ function buildConfig(a) {
       { name: 'build', when: 'always', command: 'echo "TODO: configure build gate"' },
     ],
     canonicalDocs: [],
-    models: {
-      orchestrator: 'sonnet',
-      executor: 'sonnet',
-      evaluator: 'sonnet',
-      skeptic: 'sonnet',
-      auditor: 'sonnet',
-      codex: a.codexModel || 'codex-mini-latest',
-    },
     ui: a.hasUi
       ? { enabled: true, tool: 'playwright', triggers: ['src/**'], breakpoints: [1280, 768, 0] }
       : { enabled: false, tool: 'none' },
@@ -649,6 +736,14 @@ function buildConfig(a) {
     cfg.devServers = {
       frontend: { cwd: '.', start: 'PORT=$DEV_PORT npm run dev', health: 'http://localhost:$DEV_PORT', timeoutSec: 60 }
     };
+  }
+  // The interactive prompt only asks for ONE Codex model id (there is no
+  // per-role prompt at init time), so it is written as the `standard` tier
+  // override, not a flat `models.codex` — `models` itself stays sparse
+  // (omitted entirely here; withDefaults() fills modelTiers/speeds at sync
+  // time) exactly like a project that never customizes models at all.
+  if (a.codexModel && a.codexModel !== DEFAULT_MODEL_TIERS.codex.standard) {
+    cfg.modelTiers = { codex: Object.assign({}, DEFAULT_MODEL_TIERS.codex, { standard: a.codexModel }) };
   }
   return cfg;
 }
@@ -724,7 +819,7 @@ async function promptConfig(out) {
       '  canonicalDocs   — add your standards docs (CONTRIBUTING.md, DESIGN.md, etc.)\n' +
       '  devServers      — fill in start commands + health URLs if using dev servers\n' +
       '  worktree.hooks  — post-checkout commands (npm ci, husky install, etc.)\n' +
-      '  models          — set executor/evaluator/skeptic/auditor to opus|sonnet|haiku as needed\n' +
+      '  speeds          — retune fast/default/slow budgets + per-role model tiers (models.<harness>.<role> pins a role regardless of speed)\n' +
       '  agentMerge      — override enabled/mergeMethod per project, or per-run with --agent-merge'
     ));
     console.log('');
@@ -792,7 +887,7 @@ function cmdEject(args) {
     if (exists(overridePath)) process.stderr.write(dim('note: using local override .concertino/roles/' + role + '.md\n'));
     const body = renderBody(readRoleFile(role, out, core), c, 'claude-code');
     const desc  = r.description.split('{{project}}').join(c.project.name);
-    const model = (c.models && c.models[role]) || r.model;
+    const model = resolveModel(c, 'claude-code', role);
     const fm = ['---', '# concertino:sync v' + VERSION, 'name: concertino-' + role, 'description: >-', '  ' + desc, 'model: ' + model, 'color: ' + r.color, 'tools:', ...tools.map((t) => '  - ' + t), '---', ''].join('\n');
     process.stdout.write(fm + body);
   } else if (harness === 'codex') {
@@ -807,7 +902,7 @@ function cmdEject(args) {
     const toml  = '# concertino:sync v' + VERSION + '\n' + tmpl
       .split('{{role}}').join(role)
       .split('{{description}}').join(desc.replace(/"/g, '\\"'))
-      .split('{{model}}').join((c.models && c.models.codex) || CODEX_MODEL_FALLBACK)
+      .split('{{model}}').join(resolveModel(c, 'codex', role))
       .split('{{body}}').join(body);
     process.stdout.write(toml);
   } else {
@@ -1111,6 +1206,7 @@ function cmdDiff(args) {
   const diff = (dest, content) => { const r = diffFile(dest, content); counts[r]++; };
 
   diff(path.join(out, 'scripts', 'concertino', '.concertino.env'), renderEnv(c));
+  diff(path.join(out, 'scripts', 'concertino', 'speeds.json'), renderSpeedsJson(c));
 
   if (harnesses.includes('claude-code')) {
     const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
@@ -1121,7 +1217,7 @@ function cmdDiff(args) {
       tools = tools.concat((r.mcpTools && r.mcpTools[c.ticketProvider.kind]) || []);
       const body = renderBody(readRoleFile(role, out, core), c, 'claude-code');
       const desc = r.description.split('{{project}}').join(c.project.name);
-      const model = (c.models && c.models[role]) || r.model;
+      const model = resolveModel(c, 'claude-code', role);
       const fm = ['---', '# concertino:sync v' + VERSION, 'name: concertino-' + role, 'description: >-', '  ' + desc, 'model: ' + model, 'color: ' + r.color, 'tools:', ...tools.map((t) => '  - ' + t), '---', ''].join('\n');
       diff(path.join(out, '.claude', 'agents', 'concertino-' + role + '.md'), fm + body);
     }
@@ -1140,7 +1236,7 @@ function cmdDiff(args) {
       const toml = '# concertino:sync v' + VERSION + '\n' + tmpl
         .split('{{role}}').join(role)
         .split('{{description}}').join(desc.replace(/"/g, '\\"'))
-        .split('{{model}}').join((c.models && c.models.codex) || CODEX_MODEL_FALLBACK)
+        .split('{{model}}').join(resolveModel(c, 'codex', role))
         .split('{{body}}').join(body);
       diff(path.join(out, '.codex', 'agents', 'concertino-' + role + '.toml'), toml);
     }
@@ -1390,17 +1486,45 @@ function cmdValidate(args) {
 
   // ── Models ───────────────────────────────────────────────────────────────
   section('Models');
-  const ALIASES = ['opus', 'sonnet', 'haiku'];
-  const modelDefaults = { orchestrator: 'sonnet', executor: 'sonnet', evaluator: 'sonnet', skeptic: 'sonnet', auditor: 'sonnet', codex: CODEX_MODEL_FALLBACK };
-  const models = Object.assign({}, modelDefaults, cfg.models || {});
-  for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic', 'auditor']) {
-    const m = models[role];
-    (ALIASES.includes(m) || /^claude-/.test(m))
-      ? ok(role, m)
-      : warn(`models.${role}: unrecognized alias "${m}" — check Claude Code docs for valid model aliases`);
-  }
-  if ((cfg.harnesses || []).includes('codex')) {
-    ok('codex (openai)', models.codex);
+  // The old flat shape (models.orchestrator = "sonnet", models.codex =
+  // "codex-mini-latest", etc. — a bare STRING directly under `models`) is
+  // detected specifically here, before any per-harness resolution is
+  // attempted, so a project upgrading past this version hits one clear
+  // migration message rather than a wall of generic schema-validation
+  // failures or (worse, on a correctly-migrated project) a false
+  // "unrecognized alias undefined" for every role — see design.md Decision 1.
+  const rawModels = cfg.models;
+  const oldFlatKeys = (rawModels && typeof rawModels === 'object')
+    ? Object.keys(rawModels).filter((k) => typeof rawModels[k] === 'string')
+    : [];
+  if (oldFlatKeys.length) {
+    fail(
+      `models is the pre-delivery-speed-presets flat shape (bare string value(s) for: ${oldFlatKeys.join(', ')}). ` +
+      `models is now per-harness, per-role: models.orchestrator="sonnet" -> models["claude-code"].orchestrator="sonnet"; ` +
+      `models.codex="codex-mini-latest" -> models.codex.<role>="codex-mini-latest" per role, or omit entirely to use ` +
+      `modelTiers.codex.standard. See CHANGELOG for the full migration.`
+    );
+  } else {
+    // A shallow copy defaulted through the identical models/modelTiers/speeds
+    // logic `concertino sync` itself uses (withModelDefaults — shared, not
+    // re-implemented here), so this preview can never drift from what sync
+    // actually renders. Only this trio is defaulted — cfg.project etc. are
+    // deliberately left as-is, since this section must not crash (or paper
+    // over) a config the earlier sections are still in the middle of
+    // reporting as incomplete.
+    const c2 = withModelDefaults(JSON.parse(JSON.stringify(cfg)));
+    const ALIASES = ['opus', 'sonnet', 'haiku'];
+    for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic', 'auditor']) {
+      const m = resolveModel(c2, 'claude-code', role);
+      (ALIASES.includes(m) || /^claude-/.test(m))
+        ? ok('claude-code.' + role, m)
+        : warn(`models["claude-code"].${role}: unrecognized alias "${m}" — check Claude Code docs for valid model aliases`);
+    }
+    if ((cfg.harnesses || []).includes('codex')) {
+      for (const role of ['executor', 'evaluator', 'auditor']) {
+        ok('codex.' + role, resolveModel(c2, 'codex', role));
+      }
+    }
   }
 
   // ── UI & dev servers ─────────────────────────────────────────────────────
@@ -1482,6 +1606,7 @@ function cmdSync(args, resolvedCore) {
   console.log(dim('  harnesses: ') + harnesses.join(', '));
   copyAssets(out, core, dry, true);
   write(path.join(out, 'scripts', 'concertino', '.concertino.env'), renderEnv(c), dry);
+  write(path.join(out, 'scripts', 'concertino', 'speeds.json'), renderSpeedsJson(c), dry);
   if (harnesses.includes('claude-code')) emitClaude(c, out, core, dry);
   if (harnesses.includes('codex')) emitCodex(c, out, core, dry);
   console.log(green('done.'));
@@ -1491,7 +1616,7 @@ function cmdUpdate(args) {
   const pairs = args._.slice(1);
   if (!pairs.length) {
     console.error(red('error: ') + 'usage: concertino update <key=value> [key=value ...]');
-    console.error('       example: concertino update models.skeptic=opus models.auditor=opus budgets.executionCycles=5');
+    console.error('       example: concertino update models.claude-code.skeptic=opus budgets.executionCycles=5');
     console.error('       example: concertino update agentMerge.enabled=true agentMerge.mergeMethod=squash');
     process.exit(1);
   }
@@ -1622,8 +1747,8 @@ function help() {
   ${cyan('concertino update')} ${dim('<key=value> [...] [--config=PATH] [--out=DIR] [--core=PATH] [--dry-run]')}
       Update one or more config fields using dot-notation, then re-sync.
       Examples:
-        ${dim('concertino update models.skeptic=opus models.evaluator=haiku')}
-        ${dim('concertino update models.auditor=opus')}
+        ${dim('concertino update models.claude-code.skeptic=opus models.claude-code.evaluator=haiku')}
+        ${dim('concertino update models.codex.auditor=gpt-5.1-codex')}
         ${dim('concertino update project.name=myapp budgets.executionCycles=5')}
         ${dim('concertino update agentMerge.enabled=true agentMerge.mergeMethod=squash')}
 

@@ -9,18 +9,26 @@ workflow for the ticket referenced in `$ARGUMENTS`.
 
 `$ARGUMENTS` contains a ticket id (e.g. `{{idExample}}`), optionally followed by
 a trailing `--agent-merge` or `--no-agent-merge` flag (e.g.
-`{{idExample}} --agent-merge`). Extract the ticket id and, if present, the
-flag. If neither flag is present, the override is "unset" — the orchestrator
-falls back to the project's `agentMerge.enabled` config default.
+`{{idExample}} --agent-merge`), and independently, optionally followed by a
+trailing `fast` or `slow` speed token (e.g. `{{idExample}} fast`) — a
+per-run trade of rigour against turnaround (see `core/roles/orchestrator.md`'s
+`SPEED` input). Extract the ticket id and, if present, the flag and/or the
+speed token — this ships speed-only or agent-merge-only parsing (not yet
+combined in one invocation; each is its own independent trailing token,
+extracted separately). If neither flag is present, the override is "unset" —
+the orchestrator falls back to the project's `agentMerge.enabled` config
+default. If no speed token is present, `SPEED` is "unset" — the orchestrator
+resolves it to `default`.
 
 ## What to do
 
 Make a single `Agent` call with `subagent_type: concertino-orchestrator`. Prompt:
 
-> TICKET_ID=`<extracted-id>`. AGENT_MERGE_OVERRIDE=`<true|false|unset>`. Run the
-> full ticket-delivery workflow end-to-end: Setup → Planning →
-> Execution/Evaluation loop → Delivery → Post-merge cleanup. Surface any
-> `ESCALATION`, `BLOCKER`, or final PR presentation back to me.
+> TICKET_ID=`<extracted-id>`. AGENT_MERGE_OVERRIDE=`<true|false|unset>`.
+> SPEED=`<fast|slow|unset>`. Run the full ticket-delivery workflow end-to-end:
+> Setup → Planning → Execution/Evaluation loop → Delivery → Post-merge
+> cleanup. Surface any `ESCALATION`, `BLOCKER`, or final PR presentation back
+> to me.
 
 When the orchestrator returns:
 

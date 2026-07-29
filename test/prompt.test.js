@@ -84,15 +84,15 @@ test('a failed spawn on a valid ticket is reported as an error, not thrown', () 
 // --- CON-24: agent-merge per-run override in the `n` prompt -----------------
 
 test('parseTicketInput accepts a bare ticket with no flag', () => {
-  assert.deepEqual(parseTicketInput('CON-17'), { ticket: 'CON-17', flag: null });
+  assert.deepEqual(parseTicketInput('CON-17'), { ticket: 'CON-17', flag: null, speed: null });
 });
 
 test('parseTicketInput accepts a trailing --agent-merge flag', () => {
-  assert.deepEqual(parseTicketInput('CON-17 --agent-merge'), { ticket: 'CON-17', flag: '--agent-merge' });
+  assert.deepEqual(parseTicketInput('CON-17 --agent-merge'), { ticket: 'CON-17', flag: '--agent-merge', speed: null });
 });
 
 test('parseTicketInput accepts a trailing --no-agent-merge flag', () => {
-  assert.deepEqual(parseTicketInput('CON-17 --no-agent-merge'), { ticket: 'CON-17', flag: '--no-agent-merge' });
+  assert.deepEqual(parseTicketInput('CON-17 --no-agent-merge'), { ticket: 'CON-17', flag: '--no-agent-merge', speed: null });
 });
 
 test('parseTicketInput rejects a flag that only looks like one of the two allowed strings', () => {
@@ -131,4 +131,40 @@ test('an invalid flag never reaches session.spawn', () => {
   const result = submitTicket('CON-17 --agent-merge-typo', TEMPLATE, session);
   assert.equal(result.spawned, false);
   assert.match(result.error, /not a ticket id/);
+});
+
+// --- CON-22: speed token in the `n` prompt (independent of AGENT_MERGE_FLAGS) ----
+
+test('parseTicketInput accepts a trailing fast token', () => {
+  assert.deepEqual(parseTicketInput('CON-17 fast'), { ticket: 'CON-17', flag: null, speed: 'fast' });
+});
+
+test('parseTicketInput accepts a trailing slow token', () => {
+  assert.deepEqual(parseTicketInput('CON-17 slow'), { ticket: 'CON-17', flag: null, speed: 'slow' });
+});
+
+test('parseTicketInput rejects an unrecognized trailing token (not fast/slow, not an agent-merge flag)', () => {
+  assert.equal(parseTicketInput('CON-17 turbo'), null);
+});
+
+test('parseTicketInput rejects extra tokens beyond ticket + speed', () => {
+  assert.equal(parseTicketInput('CON-17 fast extra'), null);
+});
+
+test('submitTicket substitutes "<ticket> fast" inside the quoted argument, same insert-after-{{TICKET}} placement as --agent-merge', () => {
+  let seen = null;
+  const session = { spawn(ticket, cmd) { seen = { ticket, cmd }; } };
+  const result = submitTicket('CON-17 fast', TEMPLATE, session);
+  assert.equal(result.spawned, true);
+  assert.deepEqual(seen, {
+    ticket: 'CON-17',
+    cmd: 'claude "/concertino-deliver CON-17 fast"',
+  });
+});
+
+test('submitTicket substitutes "<ticket> slow" the same way', () => {
+  let seen = null;
+  const session = { spawn(ticket, cmd) { seen = { ticket, cmd }; } };
+  submitTicket('CON-17 slow', TEMPLATE, session);
+  assert.equal(seen.cmd, 'claude "/concertino-deliver CON-17 slow"');
 });

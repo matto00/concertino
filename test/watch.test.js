@@ -1,8 +1,12 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const {
   buildFrame, attachAndRestore, computeLiveEscalations, idleMsFromActivity,
+  canonicalHarness, resolveModelsForPlan,
   CURSOR_HOME, ALT_SCREEN_ENTER, ALT_SCREEN_EXIT,
 } = require('../lib/ui/watch');
 const { padTo, visibleLength } = require('../lib/ui/format');
@@ -290,5 +294,101 @@ test('reap.reapFinished runs once per draw(), against the runs snapshot reduce()
     delete require.cache[watchPath];
     delete require.cache[sessionPath];
     delete require.cache[reapPath];
+  }
+});
+
+// ===========================================================================
+// CON-22 — canonicalHarness() + resolveModelsForPlan(), the two pure/thin
+// helpers `open-launchplan`/`cycle-harness`/`cycle-speed` build on. The
+// applyAction switch itself is a private closure inside watch() (no seam to
+// unit-test it directly without a real tmux session — covered end to end by
+// test/scripts/watch-smoke.test.sh instead), but these two are exactly the
+// design's own "one small helper" / "one child-process call" — testable in
+// isolation, and that IS the design-gate-required assertion: cycling to (or
+// opening on) harness 'claude' must invoke resolve-speed.sh with
+// 'claude-code', never 'claude', as $2.
+// ===========================================================================
+
+test('canonicalHarness maps the CLI-binary label to the canonical harness id', () => {
+  assert.equal(canonicalHarness('claude'), 'claude-code');
+});
+
+test('canonicalHarness passes codex and claude-code through unchanged', () => {
+  assert.equal(canonicalHarness('codex'), 'codex');
+  assert.equal(canonicalHarness('claude-code'), 'claude-code');
+});
+
+// A throwaway project root with a fake resolve-speed.sh that just echoes its
+// own argv back as JSON — enough to prove exactly what resolveModelsForPlan
+// invoked it with, without depending on the real script's own resolution
+// logic (already covered by test/scripts/resolve-speed.test.sh).
+function fakeProjectRoot() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-test-'));
+  const scriptsDir = path.join(root, 'scripts', 'concertino');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+  const scriptPath = path.join(scriptsDir, 'resolve-speed.sh');
+  fs.writeFileSync(scriptPath, '#!/usr/bin/env bash\nprintf \'{"speed":"%s","harness":"%s"}\' "$1" "$2"\n');
+  fs.chmodSync(scriptPath, 0o755);
+  return root;
+}
+
+test('resolveModelsForPlan invokes resolve-speed.sh with the given speed/harness and parses its stdout', () => {
+  const root = fakeProjectRoot();
+  try {
+    const result = resolveModelsForPlan(root, 'fast', 'claude-code');
+    assert.deepEqual(result, { speed: 'fast', harness: 'claude-code' });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('resolveModelsForPlan is called with the CANONICAL harness id, never the CLI-binary label, when fed through canonicalHarness first', () => {
+  const root = fakeProjectRoot();
+  try {
+    const result = resolveModelsForPlan(root, 'slow', canonicalHarness('claude'));
+    assert.equal(result.harness, 'claude-code');
+    assert.notEqual(result.harness, 'claude');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('resolveModelsForPlan returns null (never throws) when the script is missing', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-test-'));
+  try {
+    assert.doesNotThrow(() => resolveModelsForPlan(root, 'fast', 'claude-code'));
+    assert.equal(resolveModelsForPlan(root, 'fast', 'claude-code'), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('resolveModelsForPlan returns null (never throws) when the script exits non-zero', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-test-'));
+  const scriptsDir = path.join(root, 'scripts', 'concertino');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+  const scriptPath = path.join(scriptsDir, 'resolve-speed.sh');
+  fs.writeFileSync(scriptPath, '#!/usr/bin/env bash\necho "FAIL unknown speed" >&2\nexit 1\n');
+  fs.chmodSync(scriptPath, 0o755);
+  try {
+    assert.doesNotThrow(() => resolveModelsForPlan(root, 'turbo', 'claude-code'));
+    assert.equal(resolveModelsForPlan(root, 'turbo', 'claude-code'), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('resolveModelsForPlan returns null (never throws) on malformed JSON output', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-test-'));
+  const scriptsDir = path.join(root, 'scripts', 'concertino');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+  const scriptPath = path.join(scriptsDir, 'resolve-speed.sh');
+  fs.writeFileSync(scriptPath, '#!/usr/bin/env bash\nprintf \'not json\'\n');
+  fs.chmodSync(scriptPath, 0o755);
+  try {
+    assert.doesNotThrow(() => resolveModelsForPlan(root, 'fast', 'claude-code'));
+    assert.equal(resolveModelsForPlan(root, 'fast', 'claude-code'), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

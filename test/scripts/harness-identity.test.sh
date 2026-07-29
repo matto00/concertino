@@ -72,14 +72,32 @@ rm -rf "$OUT"
 #     default, with the honest unknown fallback
 # ===========================================================================
 
-# A throwaway copy of the two scripts under test, so writing a scratch
+# A throwaway copy of the scripts under test, so writing a scratch
 # .concertino.env next to them never touches this checkout's own core/scripts/
 # (which carries no .concertino.env of its own) or scripts/concertino/'s real,
-# project-owned one.
+# project-owned one. Includes resolve-speed.sh + a fixtured speeds.json
+# (CON-22) since setup-worktree.sh now resolves speed unconditionally as part
+# of its own run.start emission — every scenario below that expects a
+# successful run.start needs both to resolve.
 new_scripts() {
   local d; d="$(mktemp -d)"
   cp "$ROOT/core/scripts/setup-worktree.sh" "$d/"
   cp "$ROOT/core/scripts/emit-event.sh" "$d/"
+  cp "$ROOT/core/scripts/resolve-speed.sh" "$d/"
+  chmod +x "$d/resolve-speed.sh"
+  cat > "$d/speeds.json" <<'JSON'
+{
+  "budgets": { "executionCycles": 3, "skepticDesignRounds": 3, "skepticFinalRounds": 2, "debugAttempts": 2 },
+  "speeds": {
+    "default": { "budgets": {}, "roleTiers": { "orchestrator": "standard", "executor": "standard", "evaluator": "standard", "skeptic": "standard", "auditor": "standard" } }
+  },
+  "modelTiers": {
+    "claude-code": { "cheap": "haiku", "standard": "sonnet", "capable": "opus" },
+    "codex": { "cheap": "codex-mini-latest", "standard": "codex-mini-latest", "capable": "gpt-5.1-codex" }
+  },
+  "models": { "claude-code": {}, "codex": {} }
+}
+JSON
   printf '%s' "$d"
 }
 
@@ -101,6 +119,7 @@ run_setup() {
   local scripts="$1" repo="$2" ticket="$3" branch="$4"; shift 4
   ( cd "$repo" && env -u CLAUDECODE -u CODEX_SANDBOX -u CODEX_SANDBOX_NETWORK_DISABLED \
       "$@" "$scripts/setup-worktree.sh" "$ticket" "$branch" ) >/dev/null 2>&1
+  return $?
 }
 
 harness_of() {
@@ -153,12 +172,31 @@ run_setup "$SCRIPTS" "$REPO" TEST-105 feat/105
 check "b.5 no runtime signal -> falls back to static default" "$(harness_of "$REPO" TEST-105)" "codex"
 rm -rf "$SCRIPTS" "$REPO"
 
-# --- no runtime signal, no static default -> honest "unknown" ---------------
+# --- no runtime signal, no static default -> HARNESS itself still resolves
+# to the honest "unknown" (detect_harness()'s own fallback chain, unchanged
+# by CON-22) — but speeds.json (fixtured above) carries modelTiers data only
+# for claude-code/codex, never "unknown", so resolve-speed.sh now correctly
+# fails for it, and setup-worktree.sh's own "FAIL <reason>" contract means
+# the whole script bails BEFORE ever creating a worktree or emitting
+# run.start — no half-set-up run, no telemetry recording a harness the
+# resolver itself just refused to price a model for. This is a deliberate
+# CON-22 tightening, not a regression: the orchestrator treats
+# resolve-speed.sh's non-zero exit as a BLOCKER (design.md Decision 3),
+# exactly like the existing "Server start" circuit breaker — a run that
+# cannot even be identified now stops for a human rather than proceeding on
+# an admittedly-guessed identity.
 SCRIPTS="$(new_scripts)"
 printf "CONCERTINO_HARNESS=''\n" > "$SCRIPTS/.concertino.env"
 REPO="$(new_repo)"
 run_setup "$SCRIPTS" "$REPO" TEST-106 feat/106
-check "b.6 no signal, no static default -> unknown" "$(harness_of "$REPO" TEST-106)" "unknown"
+RC=$?
+check "b.6 no signal, no static default -> setup-worktree.sh now FAILs (unknown harness has no modelTiers data)" "$RC" "1"
+# The events LOG ITSELF is never created (setup-worktree.sh bails before any
+# emit-event.sh call happens at all) — harness_of's node helper throws
+# reading a nonexistent file, printing nothing to stdout (stderr suppressed),
+# distinct from the "<no run.start event>" string it prints when the file
+# exists but simply has no matching line.
+check "b.6 no run.start emitted for a run whose harness could not be resolved" "$(harness_of "$REPO" TEST-106)" ""
 rm -rf "$SCRIPTS" "$REPO"
 
 # --- runtime signal overrides a CONFLICTING static default ------------------
@@ -171,6 +209,58 @@ printf "CONCERTINO_HARNESS='codex'\n" > "$SCRIPTS/.concertino.env"
 REPO="$(new_repo)"
 run_setup "$SCRIPTS" "$REPO" TEST-107 feat/107 CLAUDECODE=1
 check "b.7 runtime signal overrides a conflicting static default" "$(harness_of "$REPO" TEST-107)" "claude-code"
+rm -rf "$SCRIPTS" "$REPO"
+
+# ===========================================================================
+# (c) CON-22 — setup-worktree.sh's run.start/READY output now carries
+#     speed=/models=/budgets=, resolved via resolve-speed.sh from the
+#     already-fixtured speeds.json (new_scripts(), above).
+# ===========================================================================
+
+run_setup_capture() {
+  # Same as run_setup, but captures stdout (the READY lines) instead of
+  # discarding it — a separate helper rather than changing run_setup's own
+  # contract, since every (b) test above relies on run_setup's return-code-
+  # only behavior and discards stdout deliberately.
+  local scripts="$1" repo="$2" ticket="$3" branch="$4" speed="$5"; shift 5
+  ( cd "$repo" && env -u CLAUDECODE -u CODEX_SANDBOX -u CODEX_SANDBOX_NETWORK_DISABLED \
+      "$@" "$scripts/setup-worktree.sh" "$ticket" "$branch" "$speed" ) 2>/dev/null
+}
+
+has_str() {
+  # $1 = label, $2 = haystack string, $3 = needle — has() above greps a FILE
+  # ($3 is a path), which the multi-line READY capture below is not; this is
+  # the string-content equivalent.
+  if printf '%s' "$2" | grep -qF "$3"; then ok "$1"; else bad "$1" "expected to find [$3] in [$2]"; fi
+}
+
+run_field() {
+  # $1 = repo, $2 = ticket, $3 = event field name
+  node -e '
+    const fs = require("fs");
+    const lines = fs.readFileSync(process.argv[1], "utf8").trim().split("\n");
+    const line = lines.map(l => JSON.parse(l)).find(e => e.kind === "run.start");
+    console.log(line ? String(line[process.argv[2]]) : "<no run.start event>");
+  ' "$1/.concertino/runs/$2/events.jsonl" "$3" 2>/dev/null
+}
+
+# --- SPEED argument threads through to READY and run.start ------------------
+SCRIPTS="$(new_scripts)"
+REPO="$(new_repo)"
+READY="$(run_setup_capture "$SCRIPTS" "$REPO" TEST-201 feat/201 default CLAUDECODE=1)"
+has_str "c.1 READY carries speed=" "$READY" "READY speed=default"
+has_str "c.1 READY carries budgets=" "$READY" "READY budgets={"
+has_str "c.1 READY carries models=" "$READY" "READY models={"
+check "c.1 run.start carries speed=default" "$(run_field "$REPO" TEST-201 speed)" "default"
+has_str "c.1 run.start carries models JSON" "$(run_field "$REPO" TEST-201 models)" "orchestrator"
+rm -rf "$SCRIPTS" "$REPO"
+
+# --- omitting SPEED resolves "default" (same as resolve-speed.sh itself) ---
+SCRIPTS="$(new_scripts)"
+REPO="$(new_repo)"
+( cd "$REPO" && env -u CLAUDECODE -u CODEX_SANDBOX -u CODEX_SANDBOX_NETWORK_DISABLED \
+    CLAUDECODE=1 "$SCRIPTS/setup-worktree.sh" TEST-202 feat/202 ) >/dev/null 2>&1
+check "c.2 omitted SPEED resolves default" "$(run_field "$REPO" TEST-202 speed)" "default"
 rm -rf "$SCRIPTS" "$REPO"
 
 echo "  $PASS passed, $FAIL failed"

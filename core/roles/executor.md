@@ -96,8 +96,11 @@ gates whose `when` matches:
 Fix any failure before proceeding. Never skip a failing gate. When a gate fails or
 you hit a bug, follow `systematic-debugging.md`: **no fix without a probe-confirmed
 root cause** — name the failing layer, run a minimal probe that confirms the cause,
-then fix the cause (not the symptom). After {{var:budgets.debugAttempts}} failed
-attempts on the same symptom, stop and escalate per that doc's circuit breaker.
+then fix the cause (not the symptom). After `DEBUG_ATTEMPTS` failed attempts on the
+same symptom (read the current value from `WORKTREE_PATH/<change-dir>/workflow-state.md`
+— resolved once at Setup from the run's speed; the `default` speed's value is
+**{{var:budgets.debugAttempts}}**, shown only as an illustrative example), stop and
+escalate per that doc's circuit breaker.
 
 Per `verification-before-completion.md`: do not report a gate as passing until you
 have run it fresh and read its output. Gate results in your return must be

@@ -48,6 +48,24 @@ test('renders the header: ticket, change name, branch, worktree, ports, harness/
   assert.match(out, /opus-5/);
 });
 
+// --- CON-22: resolved speed + per-role models, auditable after the fact ----
+
+test('renders the resolved speed and per-role models when present', () => {
+  const out = plain(renderDrillDown(run({
+    speed: 'fast',
+    models: { orchestrator: 'sonnet', executor: 'haiku', evaluator: 'haiku', skeptic: 'opus', auditor: 'sonnet' },
+  }), OPTS));
+  assert.match(out, /fast/);
+  assert.match(out, /executor=haiku/);
+  assert.match(out, /skeptic=opus/);
+});
+
+test('a run predating this feature (no speed/models) renders absence gracefully, not as malformed', () => {
+  const out = plain(renderDrillDown(run({ speed: null, models: null }), OPTS));
+  assert.match(out, /speed unknown/);
+  assert.doesNotMatch(out, /undefined/);
+});
+
 test('renders the phase pipeline with the current phase marked', () => {
   const out = plain(renderDrillDown(run({}), OPTS));
   assert.match(out, /Setup ✓/);

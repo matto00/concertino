@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Shell tests for CON-24 (agent-merge-role): the fifth `auditor` role must be
 # rendered into both harnesses, reported by doctor/diff when missing, and the
-# new `models.auditor` / `agentMerge.*` config fields must validate cleanly.
+# `models["claude-code"].auditor` / `agentMerge.*` config fields must validate
+# cleanly. (`models.auditor` was the pre-delivery-speed-presets (CON-22) flat
+# shape — updated here to the per-harness, per-role shape that replaced it.)
 #
 # SAFETY: every invocation below runs against a throwaway --out directory,
 # never this checkout's own scripts/concertino/ or .claude/.codex directories.
@@ -28,7 +30,7 @@ node -e '
   const fs = require("fs");
   const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
   cfg.harnesses = ["claude-code", "codex"];
-  cfg.models = Object.assign({}, cfg.models, { auditor: "opus" });
+  cfg.models = { "claude-code": { auditor: "opus" } };
   cfg.agentMerge = { enabled: true, mergeMethod: "squash" };
   fs.writeFileSync(process.argv[2], JSON.stringify(cfg, null, 2));
 ' "$ROOT/config/examples/generic.json" "$OUT/concertino.config.json"
@@ -39,7 +41,7 @@ check "a.1 sync exits zero" "$RC" "0"
 
 AUDITOR_MD="$OUT/.claude/agents/concertino-auditor.md"
 [ -f "$AUDITOR_MD" ] && ok "a.2 concertino-auditor.md is written" || bad "a.2 concertino-auditor.md is written" "missing: $AUDITOR_MD"
-has "a.3 auditor model resolved from models.auditor" "model: opus" "$AUDITOR_MD"
+has "a.3 auditor model resolved from models[\"claude-code\"].auditor" "model: opus" "$AUDITOR_MD"
 has "a.4 auditor has its own tools: frontmatter" "tools:" "$AUDITOR_MD"
 hasnt "a.5 auditor is not the skeptic's UI tool grant" "mcp__playwright__browser_navigate" "$AUDITOR_MD"
 
@@ -78,7 +80,7 @@ OUT="$(mktemp -d)"
 node -e '
   const fs = require("fs");
   const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-  cfg.models = Object.assign({}, cfg.models, { auditor: "sonnet" });
+  cfg.models = { "claude-code": { auditor: "sonnet" } };
   cfg.agentMerge = { enabled: true, mergeMethod: "merge" };
   fs.writeFileSync(process.argv[2], JSON.stringify(cfg, null, 2));
 ' "$ROOT/config/examples/generic.json" "$OUT/concertino.config.json"
@@ -86,7 +88,7 @@ node -e '
 VALIDATE_OUT="$OUT/validate-out.txt"
 node "$ROOT/bin/concertino" validate --out="$OUT" > "$VALIDATE_OUT" 2>&1
 RC=$?
-check "c.1 validate exits zero with agentMerge + models.auditor set" "$RC" "0"
+check "c.1 validate exits zero with agentMerge + models[\"claude-code\"].auditor set" "$RC" "0"
 has "c.2 validate reports the auditor model" "auditor" "$VALIDATE_OUT"
 
 rm -rf "$OUT"

@@ -16,10 +16,6 @@ Planned improvements to Concertino. Not commitments — a living list.
   mirror. Origin: Helio carries a bespoke `.cursor/` mirror of the delivery
   workflow that the adoption left untouched.
 
-- **Codex model id.** `adapters/codex/agent.toml.tmpl` renders a placeholder
-  model (`gpt-5.1-codex`, via `CODEX_MODEL` in `bin/concertino`). Make it
-  config-driven (e.g. `harness.codex.model`) instead of a hardcoded constant.
-
 - **Stale-base warning at the delivery gate.** 0.1.3 makes `setup-worktree.sh`
   cut new branches from the fetched remote base, but a long-running orchestrator
   can still fall behind a base that moves under it mid-run. Cheap belt-and-
