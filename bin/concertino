@@ -983,6 +983,33 @@ function cmdWatch(args) {
   return watch({ root: out, config });
 }
 
+const DEFAULT_RETENTION_DAYS = 30;
+
+function cmdPrune(args) {
+  const out = path.resolve(args.out || '.');
+  const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
+  let config = {};
+  if (exists(cfgPath)) {
+    try { config = JSON.parse(read(cfgPath)); } catch (e) { /* prune works without config */ }
+  }
+  const retentionDays = (config.dashboard && Number.isInteger(config.dashboard.retentionDays))
+    ? config.dashboard.retentionDays : DEFAULT_RETENTION_DAYS;
+  const dryRun = !!args['dry-run'];
+
+  const retention = require(path.join(REPO, 'lib', 'ui', 'retention'));
+  const report = retention.prune(out, { retentionDays, dryRun });
+
+  console.log('concertino prune → ' + out + dim('  (retention: ' + retentionDays + 'd)') +
+    (dryRun ? dim('  (dry run)') : ''));
+
+  if (report.removed.length) {
+    for (const ticket of report.removed) console.log('  ' + red('-') + ' ' + ticket);
+  } else {
+    console.log('  ' + dim('nothing eligible'));
+  }
+  console.log(dim('  ' + report.keptActive.length + ' run(s) kept (still active, or within the window).'));
+}
+
 function diffFile(dest, newContent) {
   if (!exists(dest)) {
     console.log('\n' + green('+++ ') + cyan(path.relative(process.cwd(), dest)) + dim(' (new file)'));
@@ -1560,6 +1587,14 @@ function help() {
   ${cyan('concertino watch')} ${dim('[--config=PATH] [--out=DIR]')}
       Live fleet dashboard: every active run, its phase, gates,
       and escalations. ↵ attaches, n starts a run, q quits. Needs tmux.
+      Also prunes eligible run logs once, best-effort, at startup.
+
+  ${cyan('concertino prune')} ${dim('[--dry-run] [--config=PATH] [--out=DIR]')}
+      Remove event logs under .concertino/runs/ that are both terminal (a
+      run.end event was logged) and older than dashboard.retentionDays
+      (default 30). A run with no run.end event is never removed, regardless
+      of age. ${dim('--dry-run')} reports what would be removed without
+      touching disk.
 
   ${cyan('concertino upgrade')} ${dim('[--out=DIR]')}
       Scan generated files for stale concertino version markers and report
@@ -1603,6 +1638,7 @@ if (args.version) { console.log('concertino v' + VERSION); process.exit(0); }
     else if (cmd === 'diff')      cmdDiff(args);
     else if (cmd === 'doctor')    cmdDoctor(args);
     else if (cmd === 'watch')     await cmdWatch(args);
+    else if (cmd === 'prune')     cmdPrune(args);
     else if (cmd === 'upgrade')   cmdUpgrade(args);
     else if (cmd === 'gates')      cmdGates(args);
     else if (cmd === 'completion') cmdCompletion(args);
