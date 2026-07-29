@@ -9,6 +9,13 @@ PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok   $1"; }
 bad()  { FAIL=$((FAIL+1)); echo "  FAIL $1"; echo "       $2"; }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$3] got [$2]"; fi; }
+# CON-17: counts raw occurrences of an escape-sequence byte pattern in a
+# captured output file — `grep -c` counts matching LINES, not occurrences,
+# which would undercount a sequence that appears more than once with no
+# newline in between (exactly what an alternate-buffer enter/exit pair looks
+# like when written back-to-back around a fast-failing attach). `grep -o`
+# emits one line per match instead, so `wc -l` gives the real count.
+esc_count() { grep -o "$1" "$2" 2>/dev/null | wc -l | tr -d ' '; }
 
 echo "concertino watch (smoke)"
 
@@ -55,16 +62,45 @@ STATUS=$?
 check "exits 0 on q (printf, no newline)" "$STATUS" "0"
 grep -q 'SMOKE-1'      "$OUT" && ok "renders the live window"      || bad "renders the live window"      "no SMOKE-1 in output"
 grep -q 'no telemetry' "$OUT" && ok "reports missing telemetry"    || bad "reports missing telemetry"    "no 'no telemetry' in output"
+# CON-17: no full-screen clear anywhere in the dashboard's real lifetime
+# (steady-state redraw AND quit()'s shutdown), and the alternate-screen
+# buffer is entered exactly once (startup) and exited exactly once (quit) —
+# real bytes from the real running dashboard, not a unit-test double.
+check "no \\x1b[2J anywhere in the session (q)"        "$(esc_count $'\x1b\[2J' "$OUT")"     "0"
+check "alternate buffer entered exactly once (q)"      "$(esc_count $'\x1b\[?1049h' "$OUT")"  "1"
+check "alternate buffer exited exactly once (q)"       "$(esc_count $'\x1b\[?1049l' "$OUT")"  "1"
 
 echo q | timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" > "$OUT" 2>&1
 STATUS=$?
 check "exits 0 on q (echo, trailing newline)" "$STATUS" "0"
+check "no \\x1b[2J anywhere in the session (echo q)"   "$(esc_count $'\x1b\[2J' "$OUT")"     "0"
+check "alternate buffer entered exactly once (echo q)" "$(esc_count $'\x1b\[?1049h' "$OUT")"  "1"
+check "alternate buffer exited exactly once (echo q)"  "$(esc_count $'\x1b\[?1049l' "$OUT")"  "1"
 
 # Immediate EOF: 'data' never fires at all, so a quit path that lives only in
 # the keypress handler leaves the poll loop spinning until the timeout kills it.
+# This also drives BOTH stdin 'end' and 'close' through the same quit() —
+# without quit()'s re-entry guard this would double-write \x1b[?1049l.
 timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" < /dev/null > "$OUT" 2>&1
 STATUS=$?
 check "exits 0 on immediate EOF (< /dev/null)" "$STATUS" "0"
+check "no \\x1b[2J anywhere in the session (EOF)"      "$(esc_count $'\x1b\[2J' "$OUT")"     "0"
+check "alternate buffer entered exactly once (EOF)"    "$(esc_count $'\x1b\[?1049h' "$OUT")"  "1"
+check "alternate buffer exited exactly once (EOF)"     "$(esc_count $'\x1b\[?1049l' "$OUT")"  "1"
+
+# --- Enter attaches; the alternate buffer is suspended around it and
+# restored on return (design.md Decision 4) ---------------------------------
+# tmux fails fast ("open terminal failed: not a terminal") with a non-tty
+# stdout, so this reliably drives the suspend/restore pair without hanging:
+# \r (attach the selected run) then q (quit). Total across the session: TWO
+# enters (startup + post-attach restore) and TWO exits (pre-attach suspend +
+# final quit).
+printf '\rq' | timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" > "$OUT" 2>&1
+STATUS=$?
+check "exits 0 after enter (attach attempt) + q" "$STATUS" "0"
+check "no \\x1b[2J anywhere in the session (attach)"          "$(esc_count $'\x1b\[2J' "$OUT")"     "0"
+check "alternate buffer entered twice (startup + post-attach)" "$(esc_count $'\x1b\[?1049h' "$OUT")" "2"
+check "alternate buffer exited twice (pre-attach + quit)"      "$(esc_count $'\x1b\[?1049l' "$OUT")" "2"
 
 # --- l drills into the run, esc backs out to the fleet ---------------------
 # `l` (not enter — enter is already claimed by attach) opens the drill-down on
