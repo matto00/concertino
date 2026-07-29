@@ -3,6 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { renderFleet, handleKey } = require('../lib/ui/screens/fleet');
 const { reduce } = require('../lib/ui/reducer');
+const f = require('../lib/ui/format');
 
 // eslint-disable-next-line no-control-regex
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
@@ -98,6 +99,112 @@ test('an idle/empty queue (nothing pending, nothing in flight) shows no queue li
 test('no queueState at all renders exactly as before', () => {
   const out = renderFleet([run({})], OPTS);
   assert.doesNotMatch(out, /queued/);
+});
+
+// --- QUEUED section (CON-28) ------------------------------------------------
+// A ticket sitting in queueState.pending has no run object behind it — no run
+// directory, no window, no event log — so the reducer never sees it and, before
+// this section existed, it rendered as nothing at all: a queued batch of five
+// looked identical to having mis-selected and queued only one.
+
+function manyQueued(n, prefix) {
+  return Array.from({ length: n }, (_, i) => (prefix || 'CON-') + (300 + i));
+}
+
+test('a non-empty queue renders a QUEUED section, titled with the pending count and maxConcurrent', () => {
+  const queueState = { pending: ['CON-2', 'CON-3', 'CON-4'], inFlight: new Set(['CON-1']), maxConcurrent: 1 };
+  const out = renderFleet([run({ ticket: 'CON-1', status: 'running' })], { ...OPTS, queueState });
+  assert.match(out, /QUEUED \(3, running 1 at a time\)/);
+  // statusKey: 'queued' wires the title through f.STATUS_COLOUR — without it
+  // the title would silently render uncoloured (STATUS_COLOUR[key] || no-op).
+  const escapedTitle = f.STATUS_COLOUR.queued('QUEUED (3, running 1 at a time)').replace(/[[\]()]/g, '\\$&');
+  assert.match(out, new RegExp(escapedTitle));
+});
+
+test('QUEUED never renders when queueState is absent or pending is empty', () => {
+  const noQueue = renderFleet([run({})], OPTS);
+  assert.doesNotMatch(noQueue, /QUEUED/);
+
+  const emptyQueue = renderFleet([run({})],
+    { ...OPTS, queueState: { pending: [], inFlight: new Set(), maxConcurrent: 1 } });
+  assert.doesNotMatch(emptyQueue, /QUEUED/);
+});
+
+test('a queued row shows position, ticket id, and the cached title when present in queuedTitles', () => {
+  const queueState = { pending: ['CON-2', 'CON-3'], inFlight: new Set(), maxConcurrent: 1 };
+  const queuedTitles = new Map([['CON-2', 'Add zod validation']]);
+  const out = renderFleet([run({})], { ...OPTS, queueState, queuedTitles });
+  assert.match(out, /1\. CON-2 {2}Add zod validation/);
+  // CON-3 has no cache entry: id only, no fabricated title.
+  const con3Line = out.split('\n').find((l) => l.includes('CON-3'));
+  assert.ok(con3Line, 'CON-3 should still render');
+  assert.match(con3Line, /2\. CON-3\s/);
+  assert.doesNotMatch(con3Line, /Add zod validation/);
+});
+
+test('a queued row with no cached title falls back to id-only — no fabricated status, phase, elapsed, or bar', () => {
+  const queueState = { pending: ['CON-9'], inFlight: new Set(), maxConcurrent: 2 };
+  const out = renderFleet([run({})], { ...OPTS, queueState });
+  const line = out.split('\n').find((l) => l.includes('CON-9'));
+  assert.ok(line);
+  assert.match(line, /1\. CON-9\s/);
+  assert.doesNotMatch(line, /running|failed|done|phase|elapsed|▪|░|\d+[sm]\b/);
+});
+
+test('QUEUED trims under a height budget identically to FAILED/DONE, and is never treated as pinned', () => {
+  const queueState = { pending: manyQueued(20), inFlight: new Set(), maxConcurrent: 1 };
+  const out = renderFleet([run({ ticket: 'HEL-1', status: 'running' })],
+    { cols: 78, rows: 13, selected: 0, queueState });
+  const shownQueued = out.split('\n').filter((l) => /CON-3\d\d/.test(l)).length;
+  assert.ok(shownQueued <= 5, `expected at most 5 (MAX_FINISHED) queued rows shown, got ${shownQueued}`);
+  assert.match(out, /… and \d+ more/, 'a trimmed QUEUED section must still show an overflow line');
+});
+
+test('a queued row is never rendered with the ▸ selection marker, for any valid selected value', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'running' }),
+    run({ ticket: 'HEL-2', status: 'failed', endStatus: 'escalated', endedAt: 100 }),
+  ];
+  const queueState = { pending: ['CON-90', 'CON-91'], inFlight: new Set(), maxConcurrent: 1 };
+  for (let selected = 0; selected < runs.length; selected++) {
+    const out = plain(renderFleet(runs, { cols: 100, selected, queueState }));
+    const queuedLines = out.split('\n').filter((l) => /CON-9[01]/.test(l));
+    assert.ok(queuedLines.length > 0, 'expected the queued rows to render');
+    for (const line of queuedLines) {
+      assert.ok(!line.includes('▸'), `a queued row must never carry the selection marker: ${line}`);
+    }
+  }
+});
+
+// --- row-index safety: QUEUED must never shift what runs[selected] resolves to
+// This is the ticket's primary hazard: queued rows have no run object, so
+// inserting them naively would silently shift the index of every row below
+// them — selecting a FAILED/DONE row would then attach to, kill, or restart
+// the WRONG ticket. QUEUED is `unselectable`, so the shared index counter must
+// skip it entirely (design.md Decision 1).
+
+test('inserting a non-empty QUEUED section never perturbs which run a FAILED/DONE row below it resolves to', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'running' }),
+    run({ ticket: 'HEL-2', status: 'failed', endStatus: 'escalated', endedAt: 100 }),
+    run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered', endedAt: 100 }),
+  ];
+  const queueState = { pending: ['CON-9', 'CON-10'], inFlight: new Set(), maxConcurrent: 1 };
+
+  for (let selected = 0; selected < runs.length; selected++) {
+    const withoutQueue = plain(renderFleet(runs, { cols: 100, selected }));
+    const withQueue = plain(renderFleet(runs, { cols: 100, selected, queueState }));
+
+    const markedWithout = withoutQueue.split('\n').filter((l) => l.includes('▸'));
+    const markedWith = withQueue.split('\n').filter((l) => l.includes('▸'));
+
+    assert.equal(markedWithout.length, 1, `selected:${selected} (no queue) produced ${markedWithout.length} markers`);
+    assert.equal(markedWith.length, 1, `selected:${selected} (with queue) produced ${markedWith.length} markers`);
+    assert.ok(markedWithout[0].includes(runs[selected].ticket));
+    assert.ok(markedWith[0].includes(runs[selected].ticket),
+      `selected:${selected} with QUEUED present should still mark ${runs[selected].ticket}, ` +
+      `got: ${markedWith[0]}`);
+  }
 });
 
 // --- quitting with a queue still active warns instead of discarding it -----
@@ -243,6 +350,41 @@ test('the total-height cap holds with all four sections populated', () => {
       `rows:${rows} lost the NEEDS YOU heading`);
     assert.match(out, /HEL-338/,
       `rows:${rows} lost the escalation itself`);
+  }
+});
+
+// CON-28's own version of the incident above: a populated QUEUED section adds
+// a fifth section AND a 1-line-per-row shape sectionHeight() must reason about
+// via `linesPerRow`, not the old hardcoded 2-per-row constant. If that constant
+// stayed hardcoded, the height budget would systematically UNDERcount QUEUED's
+// true cost (2 lines charged for what only ever renders 1), silently letting
+// more rows through than the terminal can hold — the exact "stale height
+// computation" failure mode the comment above describes, just reachable a
+// different way. Five real sections' floor is one line taller than four's, so
+// the smallest terminal height this fixture can hold everything in also shifts
+// up accordingly (rows:12, not rows:10 — see the four-section test above).
+test('the total-height cap holds with all five sections (including a populated QUEUED) populated', () => {
+  const runs = [
+    run({ ticket: 'HEL-338', status: 'needs-you',
+          escalation: { question: 'add zod@3?', options: ['approve', 'deny'], raisedAt: 1 } }),
+    run({ ticket: 'HEL-401', status: 'running' }),
+    run({ ticket: 'HEL-402', status: 'running' }),
+    run({ ticket: 'HEL-403', status: 'running' }),
+  ].concat(manyFinished(8, 'failed'))
+   .concat(manyFinished(8, 'done'));
+  const queueState = { pending: manyQueued(20), inFlight: new Set(), maxConcurrent: 1 };
+
+  for (const rows of [12, 14, 16, 20, 24, 28]) {
+    const out = renderFleet(runs, { cols: 78, rows, selected: 0, queueState });
+    const lines = out.split('\n');
+    assert.ok(lines.length <= rows,
+      `rows:${rows} rendered ${lines.length} lines`);
+    assert.match(out, /NEEDS YOU/,
+      `rows:${rows} lost the NEEDS YOU heading`);
+    assert.match(out, /HEL-338/,
+      `rows:${rows} lost the escalation itself`);
+    assert.match(out, /concertino/,
+      `rows:${rows} lost the header`);
   }
 });
 
@@ -396,6 +538,29 @@ test('the selection marker points at reduce()\'s run for every index', () => {
     assert.equal(marked.length, 1, `selected:${n} produced ${marked.length} markers`);
     assert.ok(marked[0].includes(runs[n].ticket),
       `selected:${n} should mark ${runs[n].ticket}, marked line was: ${marked[0]}`);
+  }
+});
+
+// CON-28: the same pin, but with a non-empty QUEUED section rendered between
+// RUNNING and FAILED — the exact scenario tasks.md 4.5 calls the ticket's
+// primary constraint. QUEUED rows have no run object at all, so if the shared
+// index counter advanced for them (even by accident), every FAILED/DONE
+// selection below QUEUED would resolve to the wrong run.
+test('the selection marker still points at the correct run when a non-empty QUEUED section renders between RUNNING and FAILED', () => {
+  const runs = reduce(realisticLog(), REAL_WINDOWS, 2000);
+  assert.ok(runs.length >= 8, `expected the full fleet, got ${runs.length}`);
+  const queueState = { pending: ['CON-90', 'CON-91', 'CON-92'], inFlight: new Set(), maxConcurrent: 2 };
+
+  for (let n = 0; n < runs.length; n++) {
+    const out = plain(renderFleet(runs, { cols: 100, selected: n, queueState }));
+    assert.match(out, /QUEUED \(3, running 2 at a time\)/, `selected:${n} should still render QUEUED`);
+    const marked = out.split('\n').filter((l) => l.includes('▸'));
+    assert.equal(marked.length, 1, `selected:${n} produced ${marked.length} markers`);
+    assert.ok(marked[0].includes(runs[n].ticket),
+      `selected:${n} should mark ${runs[n].ticket} even with QUEUED rendered above, marked line was: ${marked[0]}`);
+    // The marker must never land on a queued row either — those tickets
+    // (CON-90/91/92) never appear in `runs`, so they should never be marked.
+    assert.ok(!marked[0].includes('CON-9'), `selected:${n} marked a QUEUED row instead of a run: ${marked[0]}`);
   }
 });
 
