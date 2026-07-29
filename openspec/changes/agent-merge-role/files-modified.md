@@ -1,0 +1,22 @@
+- `core/roles/auditor.md` — new: the fifth agent role spec (cold, single-pass, `MERGE|ESCALATE|BLOCKER` verdict vocabulary, four-condition check, merge command, evidence/output contract mirroring `skeptic.md`'s shape).
+- `core/scripts/check-merge-readiness.sh` — new: deterministic script checking the three machine-verifiable merge conditions (CI green, mergeable, this run's evaluator PASS + skeptic CONFIRM), mirroring `assert-phase.sh`'s `PASS`/`FAIL <reason>` contract.
+- `scripts/concertino/check-merge-readiness.sh` — this project's own synced copy of the above (this repo dogfoods concertino on itself; produced by `concertino sync`, kept byte-identical to `core/scripts/check-merge-readiness.sh`).
+- `adapters/claude-code/agents.json` — added the `auditor` entry (tool grant, color, description) alongside the existing four roles.
+- `adapters/claude-code/command.md` — `/concertino-deliver` now extracts an optional trailing `--agent-merge`/`--no-agent-merge` flag and forwards it to the orchestrator as `AGENT_MERGE_OVERRIDE`.
+- `adapters/codex/prompt.md` — added the auditor as a seventh sequential stage, strictly after PR creation.
+- `adapters/codex/header.md` — updated the four-role description to five roles and mentioned the auditor in the worker-dispatch note.
+- `core/roles/orchestrator.md` — Setup resolves `AGENT_MERGE` once; Phase 3 branches on it to spawn the auditor and handle `MERGE`/`ESCALATE`/`BLOCKER`; Phase 4's entry condition and the "post-merge cleanup" Guardrails bullet now admit an auditor `MERGE` verdict alongside a human confirmation; Signal Types table, telemetry, circuit-breaker table, and escalation list gained the auditor's rows.
+- `core/workflow-state.template.md` — added the `AGENT_MERGE: true|false` line, resolved once at Setup.
+- `config/concertino.schema.json` — added `models.auditor` and the new `agentMerge: { enabled, mergeMethod }` config object.
+- `bin/concertino` — extended every role array/loop hardcoded to the four existing roles (`emitClaude`, `emitCodex`'s AGENTS.md sections and codex-worker-toml list, `cmdEject`'s validation/messages, `checkArtifacts`/`cmdDiff`'s existence checks, `cmdValidate`'s Models section) to include `auditor`; added `agentMerge`/`models.auditor` defaults to `withDefaults()`/`buildConfig()`; added an `init` wizard prompt + summary row for agent-merge; updated `update`/`eject`/`help` usage text.
+- `lib/ui/prompt.js` — `submitTicket`/new `parseTicketInput` accept an optional trailing `--agent-merge`/`--no-agent-merge` flag in the `n` prompt's typed value, substituting `<ticket> <flag>` inside the quoted launch command.
+- `lib/ui/screens/launchplan.js` — new `withAgentMergeFlag` helper; the plan now shows the resolved `agent-merge` value pre-flight and an `m` key (guarded like harness-cycling) toggles it.
+- `lib/ui/watch.js` — seeds `plan.agentMerge`/`agentMergeEditable` from config, handles `cycle-agent-merge`, and preserves the agent-merge flag across a harness cycle.
+- `lib/ui/format.js` — added `auditor: red` to `ROLE_COLOUR`.
+- `docs/harness-capabilities.md` — capability matrix and prose updated to a five-agent topology, including the auditor's Codex fidelity story.
+- `README.md` — intro paragraph, role table, and CLI reference updated to describe the fifth role and the agent-merge toggle.
+- `package.json` — added the two new shell test files to the `test` script.
+- `test/prompt.test.js` — added coverage for the `n` prompt's agent-merge flag parsing/substitution.
+- `test/launchplan.test.js` — added coverage for `withAgentMergeFlag` and the plan's agent-merge display/`m` toggle.
+- `test/scripts/auditor-render.test.sh` — new: verifies `concertino sync` renders the auditor into both harnesses, that `doctor`/`diff` report a missing auditor file, and that `agentMerge`/`models.auditor` validate cleanly.
+- `test/scripts/check-merge-readiness.test.sh` — new: exercises `check-merge-readiness.sh` against a mocked `gh` across all-pass, pending/failed CI, behind/dirty/unstable, review-required, unknown/draft, missing-gate, malformed-log-line, and gh-failure scenarios.

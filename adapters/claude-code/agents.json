@@ -22,7 +22,7 @@
     "orchestrator": {
       "model": "sonnet",
       "color": "green",
-      "description": "Orchestrates the {{project}} ticket-delivery workflow end-to-end: fetches the ticket, creates the worktree, drives Planning -> Execution -> Evaluation, delivers, and cleans up. Spawns the executor/evaluator/skeptic sub-agents. Invoked by /concertino-deliver.",
+      "description": "Orchestrates the {{project}} ticket-delivery workflow end-to-end: fetches the ticket, creates the worktree, drives Planning -> Execution -> Evaluation, delivers, and cleans up. Spawns the executor/evaluator/skeptic sub-agents, plus the auditor when agent-merge is enabled. Invoked by /concertino-deliver.",
       "baseTools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Agent", "SendMessage", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList"],
       "usesUi": false,
       "mcpTools": {
@@ -55,6 +55,17 @@
       "description": "Cold adversarial verification gate for the {{project}} ticket-delivery workflow. Spawned fresh at the design-soundness and final gates; verifies against ground truth, owns subjective design judgment. Invoked only by the orchestrator.",
       "baseTools": ["Read", "Write", "Bash", "Grep", "Glob"],
       "usesUi": true,
+      "mcpTools": {
+        "linear": ["mcp__linear__get_issue"],
+        "github": ["mcp__github__get_issue"]
+      }
+    },
+    "auditor": {
+      "model": "sonnet",
+      "color": "cyan",
+      "description": "Cold agent-merge auditor for the {{project}} ticket-delivery workflow. Spawned fresh, once, after PR creation when agent-merge is enabled for the run: verifies CI is green, the PR is mergeable, this run's own evaluator/skeptic gates passed, and the diff satisfies the ticket's acceptance criteria, then merges or escalates with the specific reason. Distinct from the evaluator (mid-loop mechanical checklist) and the skeptic (design/final judgment gates) — the auditor's job starts only after both have already passed. Invoked only by the orchestrator.",
+      "baseTools": ["Read", "Write", "Bash", "Grep", "Glob"],
+      "usesUi": false,
       "mcpTools": {
         "linear": ["mcp__linear__get_issue"],
         "github": ["mcp__github__get_issue"]
