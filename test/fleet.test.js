@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { renderFleet, handleKey } = require('../lib/ui/screens/fleet');
+const { renderFleet, handleKey, CONFIRM_RESTORED_QUEUE_KEY } = require('../lib/ui/screens/fleet');
 const { reduce } = require('../lib/ui/reducer');
 const f = require('../lib/ui/format');
 
@@ -174,6 +174,54 @@ test('a queued row is never rendered with the ▸ selection marker, for any vali
       assert.ok(!line.includes('▸'), `a queued row must never carry the selection marker: ${line}`);
     }
   }
+});
+
+// --- CON-29: a queue restored from a previous session shows a distinct,
+// unmissable "resumed — press <key> to continue" affordance, since it is
+// NOT ticking and nothing in it will launch until the operator confirms.
+
+test('a restored, unconfirmed queue renders the resume affordance naming the confirm key', () => {
+  const queueState = {
+    pending: ['CON-2', 'CON-3'], inFlight: new Set(['CON-1']), maxConcurrent: 1, confirmed: false,
+  };
+  const out = plain(renderFleet([run({ ticket: 'CON-1', status: 'running' })], { ...OPTS, queueState }));
+  assert.match(out, /resumed from a previous session/);
+  assert.match(out, new RegExp('press ' + CONFIRM_RESTORED_QUEUE_KEY + ' to continue'));
+  // The pending ticket ids are still listed exactly as a normal QUEUED
+  // section would list them (same rows, same lookup) — the affordance is
+  // additive, not a replacement rendering.
+  assert.match(out, /QUEUED/);
+  assert.match(out, /CON-2/);
+  assert.match(out, /CON-3/);
+});
+
+test('a normal, same-session (confirmed) queue never shows the resume affordance', () => {
+  const queueState = { pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1, confirmed: true };
+  const out = renderFleet([run({})], { ...OPTS, queueState });
+  assert.doesNotMatch(out, /resumed from a previous session/);
+});
+
+test('a queueState with no `confirmed` field at all (pre-CON-29 shape) never shows the resume affordance', () => {
+  const queueState = { pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1 };
+  const out = renderFleet([run({})], { ...OPTS, queueState });
+  assert.doesNotMatch(out, /resumed from a previous session/);
+});
+
+test('an inFlight-only restored queue (pending already fully drained) still shows the resume affordance', () => {
+  const queueState = { pending: [], inFlight: new Set(['CON-1']), maxConcurrent: 1, confirmed: false };
+  const out = plain(renderFleet([run({ ticket: 'CON-1', status: 'running' })], { ...OPTS, queueState }));
+  assert.match(out, /resumed from a previous session/);
+});
+
+test('pressing the confirm key with a restored unconfirmed queue on screen emits confirm-restored-queue', () => {
+  const s = state({ queueState: { pending: ['CON-2'], inFlight: new Set(), confirmed: false } });
+  assert.deepEqual(handleKey(CONFIRM_RESTORED_QUEUE_KEY, s), { type: 'confirm-restored-queue' });
+});
+
+test('the confirm key does nothing when there is no restored-unconfirmed queue on screen', () => {
+  assert.equal(handleKey(CONFIRM_RESTORED_QUEUE_KEY, state({})), null);
+  const confirmedQueue = state({ queueState: { pending: ['CON-2'], inFlight: new Set(), confirmed: true } });
+  assert.equal(handleKey(CONFIRM_RESTORED_QUEUE_KEY, confirmedQueue), null);
 });
 
 // --- row-index safety: QUEUED must never shift what runs[selected] resolves to

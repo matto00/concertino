@@ -1,7 +1,9 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { createQueue, tick, isIdle } = require('../lib/ui/queue');
+const {
+  createQueue, tick, isIdle, shouldTick, reconcileRestored, createRestoredQueue,
+} = require('../lib/ui/queue');
 
 function run(ticket, status) {
   return { ticket, status };
@@ -165,4 +167,142 @@ test('a needs-you or unknown status also counts as live for admission — only d
   const q = createQueue(['CON-9'], 1);
   assert.deepEqual(tick(q, [run('CON-9', 'needs-you')]).toLaunch, []);
   assert.deepEqual(tick(q, [run('CON-9', 'unknown')]).toLaunch, []);
+});
+
+// --- CON-29: `confirmed` is a mandatory, always-explicit field -------------
+// watch.js's tick guard is `queue.confirmed !== false` — unambiguous only if
+// every queue object either factory produces sets this field explicitly,
+// never leaves it absent/undefined (design.md Decision 5a).
+
+test('createQueue always sets confirmed: true explicitly', () => {
+  const q = createQueue(['CON-1'], 1);
+  assert.equal(q.confirmed, true);
+});
+
+test('tick() carries confirmed: true forward on every returned queue', () => {
+  let q = createQueue(['CON-1', 'CON-2'], 1);
+  q = tick(q, []).queue;
+  assert.equal(q.confirmed, true);
+  q = tick(q, [run('CON-1', 'done')]).queue;
+  assert.equal(q.confirmed, true);
+});
+
+// --- shouldTick: the guard watch.js's poll loop uses at the tick() call site
+
+test('shouldTick is true for a normal, same-session confirmed queue', () => {
+  assert.equal(shouldTick(createQueue(['CON-1'], 1)), true);
+});
+
+test('shouldTick is false for a restored, not-yet-confirmed queue', () => {
+  const record = { pending: ['CON-1'], inFlight: [], maxConcurrent: 1, sessionId: 's1', writtenAt: 1 };
+  const restored = createRestoredQueue(record, []);
+  assert.equal(shouldTick(restored), false);
+});
+
+test('shouldTick is false for null/undefined — no queue at all never ticks', () => {
+  assert.equal(shouldTick(null), false);
+  assert.equal(shouldTick(undefined), false);
+});
+
+// --- reconcileRestored: filters a persisted record's pending/inFlight ------
+// against the exact isRunLive predicate tick() itself uses (design.md
+// Decision 5 / 5a).
+
+test('a pending id already live in the fleet snapshot is dropped on restore', () => {
+  const record = { pending: ['CON-1', 'CON-2'], inFlight: [] };
+  const { pending } = reconcileRestored(record, [run('CON-1', 'running')]);
+  assert.deepEqual(pending, ['CON-2']);
+});
+
+test('a pending id not live survives reconciliation', () => {
+  const record = { pending: ['CON-1', 'CON-2'], inFlight: [] };
+  const { pending } = reconcileRestored(record, [run('CON-1', 'done')]);
+  assert.deepEqual(pending, ['CON-1', 'CON-2']);
+});
+
+test('reconciliation that drops every pending id is correctly reported as empty', () => {
+  const record = { pending: ['CON-1'], inFlight: [] };
+  const { pending } = reconcileRestored(record, [run('CON-1', 'running')]);
+  assert.deepEqual(pending, []);
+});
+
+test('a still-running in-flight id keeps occupying its concurrency slot after restore', () => {
+  const record = { pending: [], inFlight: ['CON-1'] };
+  const { inFlight } = reconcileRestored(record, [run('CON-1', 'running')]);
+  assert.deepEqual(Array.from(inFlight), ['CON-1']);
+});
+
+test('a finished in-flight id frees its slot on restore', () => {
+  const record = { pending: [], inFlight: ['CON-1'] };
+  const { inFlight } = reconcileRestored(record, [run('CON-1', 'done')]);
+  assert.deepEqual(Array.from(inFlight), []);
+});
+
+test('an in-flight id missing from the fleet snapshot entirely also frees its slot', () => {
+  const record = { pending: [], inFlight: ['CON-1'] };
+  const { inFlight } = reconcileRestored(record, []);
+  assert.deepEqual(Array.from(inFlight), []);
+});
+
+// --- createRestoredQueue: the restore-time counterpart to createQueue ------
+
+test('createRestoredQueue builds a paused, unconfirmed queue with reconciled pending and reconstructed inFlight', () => {
+  const record = {
+    pending: ['CON-2', 'CON-3'], inFlight: ['CON-1'], maxConcurrent: 1,
+    launchCommand: 'codex "/concertino-deliver {{TICKET}}"', sessionId: 'sess-1', writtenAt: 5000,
+  };
+  const restored = createRestoredQueue(record, [run('CON-1', 'running'), run('CON-2', 'running')]);
+  assert.deepEqual(restored.pending, ['CON-3']); // CON-2 already live, dropped
+  assert.deepEqual(Array.from(restored.inFlight), ['CON-1']); // still live, slot kept
+  assert.equal(restored.maxConcurrent, 1);
+  assert.equal(restored.launchCommand, 'codex "/concertino-deliver {{TICKET}}"');
+  assert.equal(restored.confirmed, false);
+  assert.deepEqual(restored.restoredFrom, { sessionId: 'sess-1', writtenAt: 5000 });
+});
+
+test('a maxConcurrent:1 restored queue with its one ticket still live never lets confirm launch a second one', () => {
+  const record = { pending: ['CON-2'], inFlight: ['CON-1'], maxConcurrent: 1, sessionId: 's', writtenAt: 1 };
+  const restored = createRestoredQueue(record, [run('CON-1', 'running')]);
+  assert.equal(restored.confirmed, false);
+  restored.confirmed = true; // exactly what watch.js's confirm-restored-queue action does
+  const { toLaunch, queue: nextQueue } = tick(restored, [run('CON-1', 'running')]);
+  assert.deepEqual(toLaunch, [], 'the slot is still occupied by CON-1 — CON-2 must not launch on top of it');
+  assert.deepEqual(Array.from(nextQueue.inFlight), ['CON-1']);
+  assert.deepEqual(nextQueue.pending, ['CON-2']);
+});
+
+test('reconciliation leaving both pending and inFlight empty restores nothing (null), not an empty confirmable queue', () => {
+  const record = { pending: ['CON-1'], inFlight: ['CON-2'], maxConcurrent: 1, sessionId: 's', writtenAt: 1 };
+  const restored = createRestoredQueue(record, [run('CON-1', 'running'), run('CON-2', 'done')]);
+  assert.equal(restored, null);
+});
+
+test('createRestoredQueue of a null/missing record is null', () => {
+  assert.equal(createRestoredQueue(null, []), null);
+  assert.equal(createRestoredQueue(undefined, []), null);
+});
+
+test('inFlight-only restore (every pending id already claimed, but a slot is legitimately occupied) still restores', () => {
+  const record = { pending: [], inFlight: ['CON-1'], maxConcurrent: 1, sessionId: 's', writtenAt: 1 };
+  const restored = createRestoredQueue(record, [run('CON-1', 'running')]);
+  assert.notEqual(restored, null);
+  assert.deepEqual(restored.pending, []);
+  assert.deepEqual(Array.from(restored.inFlight), ['CON-1']);
+});
+
+// --- confirming a restored queue never mutates pending/inFlight ------------
+
+test('confirming a restored queue (flipping `confirmed`) never touches pending or inFlight contents', () => {
+  const record = {
+    pending: ['CON-2', 'CON-3'], inFlight: ['CON-1'], maxConcurrent: 2, sessionId: 's', writtenAt: 1,
+  };
+  const restored = createRestoredQueue(record, [run('CON-1', 'running')]);
+  const pendingBefore = restored.pending.slice();
+  const inFlightBefore = Array.from(restored.inFlight).sort();
+
+  restored.confirmed = true; // exactly what watch.js's confirm-restored-queue action does
+
+  assert.deepEqual(restored.pending, pendingBefore);
+  assert.deepEqual(Array.from(restored.inFlight).sort(), inFlightBefore);
+  assert.equal(shouldTick(restored), true);
 });
