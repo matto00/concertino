@@ -66,6 +66,11 @@ main_checkout() {
   ( cd "$(dirname "$common")" 2>/dev/null && pwd ) || return 1
 }
 
+# A ticket value feeds directly into RUN_DIR below; unvalidated, a traversal
+# shape (`../../../..`) walks out of the runs directory. Same pattern
+# assert-phase.sh/start-servers.sh/cleanup.sh already carry.
+looks_like_ticket() { [[ "$1" =~ ^[A-Za-z#][A-Za-z0-9_-]*[0-9]$ ]]; }
+
 json_escape() {
   local s="$1"
   s="${s//\\/\\\\}"
@@ -141,6 +146,7 @@ for kv in ${ARGS+"${ARGS[@]}"}; do
 done
 
 [ -z "$TICKET" ] && exit 0
+looks_like_ticket "$TICKET" || exit 0
 
 RUN_DIR="${ROOT}/.concertino/runs/${TICKET}"
 mkdir -p "$RUN_DIR" 2>/dev/null || exit 0

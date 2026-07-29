@@ -18,7 +18,6 @@ const readline = require('readline');
 const { execSync } = require('child_process');
 
 const REPO = path.resolve(__dirname, '..');
-const CORE = path.join(REPO, 'core');
 const ADAPTERS = path.join(REPO, 'adapters');
 const CODEX_MODEL_FALLBACK = 'codex-mini-latest'; // used only if config has no models.codex
 // `emit-event.sh --await` blocks inside a single harness command call, which
@@ -87,9 +86,9 @@ function copy(src, dest, dry) {
   fs.copyFileSync(src, dest);
 }
 const bt = (s) => '`' + s + '`';
-function readRoleFile(role, out) {
+function readRoleFile(role, out, core) {
   const override = path.join(out, '.concertino', 'roles', role + '.md');
-  return exists(override) ? read(override) : read(path.join(CORE, 'roles', role + '.md'));
+  return exists(override) ? read(override) : read(path.join(core, 'roles', role + '.md'));
 }
 function findAdded(original, enriched, prefix) {
   const result = [];
@@ -116,6 +115,95 @@ function parseArgs(argv) {
     else out._.push(a);
   }
   return out;
+}
+
+// ---------- core resolution ------------------------------------------------
+// Which `core/` a render reads from. Default: the core next to the executing
+// script's own package (today's behavior — right for an npm-installed
+// dependency). When the executing script's own repo is itself a git
+// working-tree root, and the target belongs to the same superproject (same
+// `git rev-parse --git-common-dir`), and the target's own checkout has a
+// `core/` of its own, render from THAT — this is the repo actually being
+// operated on (e.g. a delivery worktree with its own, possibly-edited
+// core/scripts/*), not a guess. See design.md Decision 1.
+function gitRun(gitArgs, cwd) {
+  try {
+    return execSync('git ' + gitArgs, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  } catch (_) {
+    return null;
+  }
+}
+// `git rev-parse --git-common-dir` is relative on some git versions, absolute
+// on others (mirrors core/scripts/emit-event.sh's main_checkout() normalization).
+function gitCommonDir(dir) {
+  const raw = gitRun('rev-parse --git-common-dir', dir);
+  if (!raw) return null;
+  return path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(dir, raw);
+}
+function gitTopLevel(dir) {
+  const raw = gitRun('rev-parse --show-toplevel', dir);
+  return raw ? path.resolve(raw) : null;
+}
+function realpathSafe(p) {
+  try { return fs.realpathSync(p); } catch (_) { return p; }
+}
+function normPath(p) { return p ? realpathSafe(path.resolve(p)) : null; }
+function samePath(a, b) { return !!a && !!b && normPath(a) === normPath(b); }
+
+// Byte-identical to checkArtifacts()'s own comparison, over the same set of
+// files (core/scripts/*, core/laws/*, core/workflow-state.template.md) — the
+// only files a render actually reads from core/. Used only to decide whether
+// to print a divergence note; never gates whether resolution proceeds.
+function coresDiffer(coreA, coreB) {
+  const readDirSafe = (d) => { try { return fs.readdirSync(d); } catch (_) { return []; } };
+  const fileDiffers = (a, b) => {
+    if (exists(a) !== exists(b)) return true;
+    if (!exists(a)) return false;
+    return !fs.readFileSync(a).equals(fs.readFileSync(b));
+  };
+  for (const sub of ['scripts', 'laws']) {
+    const names = new Set([...readDirSafe(path.join(coreA, sub)), ...readDirSafe(path.join(coreB, sub))]);
+    for (const f of names) {
+      if (fileDiffers(path.join(coreA, sub, f), path.join(coreB, sub, f))) return true;
+    }
+  }
+  return fileDiffers(path.join(coreA, 'workflow-state.template.md'), path.join(coreB, 'workflow-state.template.md'));
+}
+
+function resolveCore(repo, out, coreOverride) {
+  if (coreOverride) return path.resolve(coreOverride);
+
+  // Part 1: repo must be a git working-tree root in its own right — not
+  // merely nested inside a foreign repository it doesn't control (rules out
+  // the ordinary node_modules/<pkg> topology, which has no .git of its own).
+  const repoToplevel = gitTopLevel(repo);
+  if (!samePath(repoToplevel, repo)) return path.join(repo, 'core');
+
+  // Part 2: out belongs to the same superproject as repo — same shared .git,
+  // whether out is a worktree of repo, repo is a worktree of out's main
+  // checkout, or they're literally the same checkout.
+  const scriptCommon = gitCommonDir(repo);
+  const targetCommon = gitCommonDir(out);
+  if (scriptCommon && targetCommon && samePath(scriptCommon, targetCommon)) {
+    // out's OWN checkout root — not the shared main checkout — is the
+    // worktree that actually has the possibly-diverged core/ this exists for.
+    const targetRoot = gitTopLevel(out);
+    if (targetRoot) {
+      const targetCore = path.join(targetRoot, 'core');
+      if (exists(targetCore)) {
+        const repoCore = path.join(repo, 'core');
+        if (!samePath(targetRoot, repo) && coresDiffer(targetCore, repoCore)) {
+          console.log('  ' + yellow('note: ') + 'rendering from ' + targetCore +
+            ' — differs from the executing script\'s own core at ' + repoCore);
+        }
+        return targetCore;
+      }
+    }
+  }
+
+  // Not the same superproject, out has no core of its own, or git is
+  // unavailable — today's behavior, unchanged.
+  return path.join(repo, 'core');
 }
 
 // ---------- gate auto-detection ------------------------------------------
@@ -400,7 +488,7 @@ function renderEnv(c) {
 }
 
 // ---------- harness emitters ---------------------------------------------
-function emitClaude(c, out, dry) {
+function emitClaude(c, out, core, dry) {
   const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
   for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic']) {
     const r = meta.roles[role];
@@ -408,7 +496,7 @@ function emitClaude(c, out, dry) {
     if (r.usesUi && c.ui.enabled && c.ui.tool === 'playwright') tools = tools.concat(meta.playwrightTools);
     const mcp = (r.mcpTools && r.mcpTools[c.ticketProvider.kind]) || [];
     tools = tools.concat(mcp);
-    const body = renderBody(readRoleFile(role, out), c, 'claude-code');
+    const body = renderBody(readRoleFile(role, out, core), c, 'claude-code');
     const desc = r.description.split('{{project}}').join(c.project.name);
     const model = (c.models && c.models[role]) || r.model;
     const fm = [
@@ -432,10 +520,10 @@ function emitClaude(c, out, dry) {
   write(path.join(out, '.claude', 'commands', 'concertino-deliver.md'), cmd, dry);
 }
 
-function emitCodex(c, out, dry) {
+function emitCodex(c, out, core, dry) {
   const header = read(path.join(ADAPTERS, 'codex', 'header.md')).split('{{project}}').join(c.project.name);
   const roleSections = ['orchestrator', 'executor', 'evaluator', 'skeptic'].map((role) => {
-    const body = renderBody(read(path.join(CORE, 'roles', role + '.md')), c, 'codex');
+    const body = renderBody(read(path.join(core, 'roles', role + '.md')), c, 'codex');
     return '## Role: ' + role[0].toUpperCase() + role.slice(1) + '\n\n' + body;
   }).join('\n\n---\n\n');
   let blockText = header.replace('<!-- CONCERTINO:ROLES -->', roleSections)
@@ -455,7 +543,7 @@ function emitCodex(c, out, dry) {
   const tmpl = read(path.join(ADAPTERS, 'codex', 'agent.toml.tmpl'));
   const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
   for (const role of ['executor', 'evaluator']) {
-    const body = renderBody(readRoleFile(role, out), c, 'codex');
+    const body = renderBody(readRoleFile(role, out, core), c, 'codex');
     const desc = meta.roles[role].description.split('{{project}}').join(c.project.name);
     const toml = tmpl.split('{{role}}').join(role)
       .split('{{description}}').join(desc.replace(/"/g, '\\"'))
@@ -468,14 +556,14 @@ function emitCodex(c, out, dry) {
 }
 
 // ---------- copy shared assets into the project --------------------------
-function copyAssets(out, dry, withScripts) {
-  for (const f of fs.readdirSync(path.join(CORE, 'laws')))
-    copy(path.join(CORE, 'laws', f), path.join(out, '.concertino', 'laws', f), dry);
-  copy(path.join(CORE, 'workflow-state.template.md'), path.join(out, '.concertino', 'workflow-state.template.md'), dry);
+function copyAssets(out, core, dry, withScripts) {
+  for (const f of fs.readdirSync(path.join(core, 'laws')))
+    copy(path.join(core, 'laws', f), path.join(out, '.concertino', 'laws', f), dry);
+  copy(path.join(core, 'workflow-state.template.md'), path.join(out, '.concertino', 'workflow-state.template.md'), dry);
   if (withScripts) {
-    for (const f of fs.readdirSync(path.join(CORE, 'scripts'))) {
+    for (const f of fs.readdirSync(path.join(core, 'scripts'))) {
       const dest = path.join(out, 'scripts', 'concertino', f);
-      copy(path.join(CORE, 'scripts', f), dest, dry);
+      copy(path.join(core, 'scripts', f), dest, dry);
       if (!dry && f.endsWith('.sh')) fs.chmodSync(dest, 0o755);
     }
   }
@@ -675,6 +763,7 @@ function cmdEject(args) {
   }
 
   const c = withDefaults(JSON.parse(read(cfgPath)));
+  const core = resolveCore(REPO, out, args.core);
 
   if (harness === 'claude-code') {
     const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
@@ -688,7 +777,7 @@ function cmdEject(args) {
     tools = tools.concat((r.mcpTools && r.mcpTools[c.ticketProvider.kind]) || []);
     const overridePath = path.join(out, '.concertino', 'roles', role + '.md');
     if (exists(overridePath)) process.stderr.write(dim('note: using local override .concertino/roles/' + role + '.md\n'));
-    const body = renderBody(readRoleFile(role, out), c, 'claude-code');
+    const body = renderBody(readRoleFile(role, out, core), c, 'claude-code');
     const desc  = r.description.split('{{project}}').join(c.project.name);
     const model = (c.models && c.models[role]) || r.model;
     const fm = ['---', '# concertino:sync v' + VERSION, 'name: concertino-' + role, 'description: >-', '  ' + desc, 'model: ' + model, 'color: ' + r.color, 'tools:', ...tools.map((t) => '  - ' + t), '---', ''].join('\n');
@@ -700,7 +789,7 @@ function cmdEject(args) {
     }
     const tmpl = read(path.join(ADAPTERS, 'codex', 'agent.toml.tmpl'));
     const meta  = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
-    const body  = renderBody(readRoleFile(role, out), c, 'codex');
+    const body  = renderBody(readRoleFile(role, out, core), c, 'codex');
     const desc  = meta.roles[role].description.split('{{project}}').join(c.project.name);
     const toml  = '# concertino:sync v' + VERSION + '\n' + tmpl
       .split('{{role}}').join(role)
@@ -758,8 +847,9 @@ function cmdMigrate(args) {
 // BYTES, not mtimes. copyAssets() copies these verbatim, so a byte difference
 // is exact evidence of drift with no false positives, whereas mtime says
 // nothing useful about an npm-installed package where install time is arbitrary.
-function checkArtifacts(out, harnesses, r) {
+function checkArtifacts(out, core, coreForced, harnesses, r) {
   section('Rendered artifacts');
+  r.ok('core', core + (coreForced ? dim('  (forced via --core)') : dim('  (auto-detected)')));
 
   const missing = [], differs = [];
   let checked = 0;
@@ -770,11 +860,11 @@ function checkArtifacts(out, harnesses, r) {
     if (!fs.readFileSync(src).equals(fs.readFileSync(dest))) differs.push(rel);
   };
 
-  for (const f of fs.readdirSync(path.join(CORE, 'scripts')))
-    compare(path.join(CORE, 'scripts', f), path.join(out, 'scripts', 'concertino', f));
-  for (const f of fs.readdirSync(path.join(CORE, 'laws')))
-    compare(path.join(CORE, 'laws', f), path.join(out, '.concertino', 'laws', f));
-  compare(path.join(CORE, 'workflow-state.template.md'),
+  for (const f of fs.readdirSync(path.join(core, 'scripts')))
+    compare(path.join(core, 'scripts', f), path.join(out, 'scripts', 'concertino', f));
+  for (const f of fs.readdirSync(path.join(core, 'laws')))
+    compare(path.join(core, 'laws', f), path.join(out, '.concertino', 'laws', f));
+  compare(path.join(core, 'workflow-state.template.md'),
     path.join(out, '.concertino', 'workflow-state.template.md'));
 
   // Missing and differing are different user problems: one file never arrived,
@@ -867,7 +957,8 @@ function cmdDoctor(args) {
         pwVer ? ok('playwright', pwVer) : warn('playwright not found — run `npx playwright install` in the project');
       }
 
-      checkArtifacts(out, harnesses, { ok, warn });
+      const core = resolveCore(REPO, out, args.core);
+      checkArtifacts(out, core, !!args.core, harnesses, { ok, warn });
     }
   }
 
@@ -930,6 +1021,7 @@ function cmdDiff(args) {
   const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
   if (!exists(cfgPath)) { console.error(red('error: ') + 'no config at ' + cfgPath); process.exit(1); }
   const c = withDefaults(JSON.parse(read(cfgPath)));
+  const core = resolveCore(REPO, out, args.core);
   const harnesses = args.harness ? args.harness.split(',') : c.harnesses;
   console.log('concertino diff → ' + out);
 
@@ -945,7 +1037,7 @@ function cmdDiff(args) {
       let tools = r.baseTools.slice();
       if (r.usesUi && c.ui.enabled && c.ui.tool === 'playwright') tools = tools.concat(meta.playwrightTools);
       tools = tools.concat((r.mcpTools && r.mcpTools[c.ticketProvider.kind]) || []);
-      const body = renderBody(readRoleFile(role, out), c, 'claude-code');
+      const body = renderBody(readRoleFile(role, out, core), c, 'claude-code');
       const desc = r.description.split('{{project}}').join(c.project.name);
       const model = (c.models && c.models[role]) || r.model;
       const fm = ['---', '# concertino:sync v' + VERSION, 'name: concertino-' + role, 'description: >-', '  ' + desc, 'model: ' + model, 'color: ' + r.color, 'tools:', ...tools.map((t) => '  - ' + t), '---', ''].join('\n');
@@ -961,7 +1053,7 @@ function cmdDiff(args) {
     const tmpl = read(path.join(ADAPTERS, 'codex', 'agent.toml.tmpl'));
     const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
     for (const role of ['executor', 'evaluator']) {
-      const body = renderBody(readRoleFile(role, out), c, 'codex');
+      const body = renderBody(readRoleFile(role, out, core), c, 'codex');
       const desc = meta.roles[role].description.split('{{project}}').join(c.project.name);
       const toml = '# concertino:sync v' + VERSION + '\n' + tmpl
         .split('{{role}}').join(role)
@@ -1283,21 +1375,25 @@ function loadConfig(args, out) {
   return withDefaults(JSON.parse(read(p)));
 }
 
-function cmdSync(args) {
+// `resolvedCore` lets a caller that already resolved its own core (cmdInit)
+// pass it straight through instead of having cmdSync re-resolve independently
+// — see design.md Decision 6 / tasks.md 1.4.
+function cmdSync(args, resolvedCore) {
   const out = path.resolve(args.out || '.');
   const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
   // Run validate first (errors block sync; warnings are informational).
   cmdValidate({ ...args, config: cfgPath, out });
   console.log('');
   const c = loadConfig(args, out);
+  const core = resolvedCore || resolveCore(REPO, out, args.core);
   const dry = !!args['dry-run'];
   const harnesses = args.harness ? args.harness.split(',') : c.harnesses;
   console.log('concertino sync → ' + out + (dry ? dim('  (dry run)') : ''));
   console.log(dim('  harnesses: ') + harnesses.join(', '));
-  copyAssets(out, dry, true);
+  copyAssets(out, core, dry, true);
   write(path.join(out, 'scripts', 'concertino', '.concertino.env'), renderEnv(c), dry);
-  if (harnesses.includes('claude-code')) emitClaude(c, out, dry);
-  if (harnesses.includes('codex')) emitCodex(c, out, dry);
+  if (harnesses.includes('claude-code')) emitClaude(c, out, core, dry);
+  if (harnesses.includes('codex')) emitCodex(c, out, core, dry);
   console.log(green('done.'));
 }
 
@@ -1378,7 +1474,13 @@ async function cmdInit(args) {
     console.log('  ' + green('✓') + ' wrote ' + cfgPath);
   }
 
-  copyAssets(out, false, true);
+  // Resolve the core exactly once and reuse it for both the direct
+  // copyAssets() call below and the internal cmdSync(...) call at the end —
+  // a second, independent resolveCore() call inside cmdSync would let
+  // `--core` (or auto-detection) disagree with itself within one `init`
+  // invocation. See design.md Decision 6 / tasks.md 1.4.
+  const core = resolveCore(REPO, out, args.core);
+  copyAssets(out, core, false, true);
   const full = withDefaults(JSON.parse(JSON.stringify(cfg)));
   write(path.join(out, 'scripts', 'concertino', '.concertino.env'), renderEnv(full), false);
 
@@ -1392,7 +1494,7 @@ async function cmdInit(args) {
 
   // Auto-sync so agent files are ready immediately.
   console.log('\n' + gray('  ─── Generating agent files ' + '─'.repeat(16)));
-  cmdSync({ _: ['sync'], config: cfgPath, out });
+  cmdSync({ _: ['sync'], config: cfgPath, out }, core);
 
   console.log('\n  ' + bold('Ready.') + ' Edit ' + cyan('concertino.config.json') + ' to tune gates/models/devServers, then ' + cyan('concertino sync') + ' to re-render.');
   console.log('  Start a delivery: Claude Code → ' + cyan('/concertino-deliver <TICKET_ID>'));
@@ -1409,7 +1511,7 @@ function help() {
   console.log(banner());
   console.log(`render the agent orchestra from ${dim('core/')} + your project config.
 
-  ${cyan('concertino init')} ${dim('[--out=DIR]')}
+  ${cyan('concertino init')} ${dim('[--out=DIR] [--core=PATH]')}
       Interactive setup (TUI): write concertino.config.json, copy scripts + laws,
       scaffold the spec provider, then auto-sync agent files.
       Flags:
@@ -1417,12 +1519,16 @@ function help() {
         ${dim('--yes')}                     skip prompts; use generic defaults + gate detection
         ${dim('--openspec-init')}           force openspec install + init (non-interactive)
         ${dim('--no-spec-setup')}           don't touch the spec provider
+        ${dim('--core=PATH')}               render from PATH instead of the auto-detected core
 
-  ${cyan('concertino sync')} ${dim('[--config=PATH] [--out=DIR] [--harness=claude-code,codex] [--dry-run]')}
+  ${cyan('concertino sync')} ${dim('[--config=PATH] [--out=DIR] [--harness=claude-code,codex] [--core=PATH] [--dry-run]')}
       Render the harness files (Claude agents/command, Codex AGENTS.md/.codex)
       and regenerate .concertino.env from the config. Re-run after every edit.
+      By default renders from the target's own ${dim('core/')} when the target is a
+      git worktree of the same repo the CLI's own code lives in (with a note
+      if the two differ); ${dim('--core=PATH')} forces a specific core explicitly.
 
-  ${cyan('concertino update')} ${dim('<key=value> [...] [--config=PATH] [--out=DIR] [--dry-run]')}
+  ${cyan('concertino update')} ${dim('<key=value> [...] [--config=PATH] [--out=DIR] [--core=PATH] [--dry-run]')}
       Update one or more config fields using dot-notation, then re-sync.
       Examples:
         ${dim('concertino update models.skeptic=opus models.evaluator=haiku')}
@@ -1431,15 +1537,16 @@ function help() {
   ${cyan('concertino validate')} ${dim('[--config=PATH] [--out=DIR]')}
       Check concertino.config.json for errors and warnings before syncing.
 
-  ${cyan('concertino diff')} ${dim('[--config=PATH] [--out=DIR] [--harness=...]')}
+  ${cyan('concertino diff')} ${dim('[--config=PATH] [--out=DIR] [--harness=...] [--core=PATH]')}
       Show a unified diff between what sync would write and what's on disk.
       Runs the full template render; nothing is written.
 
-  ${cyan('concertino doctor')} ${dim('[--config=PATH] [--out=DIR]')}
+  ${cyan('concertino doctor')} ${dim('[--config=PATH] [--out=DIR] [--core=PATH]')}
       Check the environment: node, git, gh auth, claude CLI, Codex CLI (if
       harness includes codex), Linear MCP (if ticket provider is linear),
       Playwright (if ui.enabled). Also byte-compares the rendered artifacts
-      against core and warns when they have drifted.
+      against core and warns when they have drifted. Always reports which
+      core path it compared against, and whether it was forced via --core.
 
   ${cyan('concertino watch')} ${dim('[--config=PATH] [--out=DIR]')}
       Live fleet dashboard: every active run, its phase, gates,
@@ -1453,7 +1560,7 @@ function help() {
       Without --run: list all configured gates with their commands.
       With --run: execute that gate's command against the project root.
 
-  ${cyan('concertino eject')} ${dim('--role=<role> [--harness=claude-code|codex] [--config=PATH] [--out=DIR]')}
+  ${cyan('concertino eject')} ${dim('--role=<role> [--harness=claude-code|codex] [--config=PATH] [--out=DIR] [--core=PATH]')}
       Print the fully-rendered agent file for a role to stdout. Respects
       local template overrides in .concertino/roles/. Useful for debugging
       exactly what an agent is reading.

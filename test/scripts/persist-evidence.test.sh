@@ -69,5 +69,26 @@ check "same ref path across re-runs" "$REF2" "$REF1"
 check "re-run reflects the current source content" "$(cat "$REF2")" "v2"
 rm -rf "$REPO"
 
+# --- a traversal-shaped TICKET_ID fails without touching the filesystem ----
+REPO="$(new_repo)"
+printf 'secret\n' > "$REPO/source.md"
+BEFORE="$(find "$REPO" -type f | sort)"
+OUT="$(cd "$REPO" && "$SCRIPT" '../../../../escape' "$REPO/source.md" 2>/tmp/persist-evidence-test-err)"
+RC=$?
+AFTER="$(find "$REPO" -type f | sort)"
+check "exit non-zero on traversal-shaped TICKET_ID" "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
+check "no READY line on traversal-shaped TICKET_ID" "$(printf '%s' "$OUT" | grep -c '^READY')" "0"
+check "FAIL printed to stderr on traversal-shaped TICKET_ID" "$(grep -c '^FAIL' /tmp/persist-evidence-test-err)" "1"
+check "no new file created outside the runs directory" "$AFTER" "$BEFORE"
+check "no runs directory created at all" "$([ -d "$REPO/.concertino/runs" ] && echo yes || echo no)" "no"
+# A well-formed sibling ticket id still succeeds in the same run.
+OUT2="$(cd "$REPO" && "$SCRIPT" CON-14 "$REPO/source.md")"
+RC2=$?
+REF2="$(printf '%s' "$OUT2" | sed -n 's/^READY ref=//p')"
+check "well-formed sibling ticket id still succeeds" "$RC2" "0"
+check "well-formed sibling ticket id ref exists" "$([ -f "$REF2" ] && echo yes || echo no)" "yes"
+rm -f /tmp/persist-evidence-test-err
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
