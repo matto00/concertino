@@ -75,6 +75,109 @@ test('readAll returns a map keyed by ticket', () => {
   assert.equal(all.get('HEL-1').events.length, 1);
 });
 
+// --- readAll(root, cache) — incremental, offset-cached reads ----------------
+// The logs are append-only, so a cache-aware readAll should cost
+// O(bytes appended since the last poll), not O(total log size). These tests
+// exercise that contract directly rather than trusting the implementation.
+
+test('readAll(root, cache): unchanged file returns the SAME events array on a second call (no re-parse)', () => {
+  const root = tmpRoot({
+    'HEL-50': '{"t":1,"kind":"note","ticket":"HEL-50"}\n{"t":2,"kind":"note","ticket":"HEL-50"}\n',
+  });
+  const cache = store.createEventsCache();
+
+  const first = store.readAll(root, cache).get('HEL-50');
+  const second = store.readAll(root, cache).get('HEL-50');
+
+  assert.equal(first.events.length, 2);
+  // Reference equality is the only way to prove nothing was re-parsed.
+  assert.strictEqual(second.events, first.events);
+});
+
+test('readAll(root, cache): appended complete lines are picked up incrementally, in order, with correct malformed accounting', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-store-'));
+  const root = dir;
+  const runDir = path.join(root, '.concertino', 'runs', 'HEL-51');
+  fs.mkdirSync(runDir, { recursive: true });
+  const file = path.join(runDir, 'events.jsonl');
+  fs.writeFileSync(file, '{"t":1,"kind":"note","ticket":"HEL-51"}\nnot json\n');
+
+  const cache = store.createEventsCache();
+  const first = store.readAll(root, cache).get('HEL-51');
+  assert.equal(first.events.length, 1);
+  assert.equal(first.malformed, 1);
+
+  fs.appendFileSync(file, '{"t":2,"kind":"note","ticket":"HEL-51"}\n{"t":3,"kind":"note","ticket":"HEL-51"}\n');
+  const second = store.readAll(root, cache).get('HEL-51');
+
+  assert.equal(second.events.length, 3);
+  assert.equal(second.malformed, 1);
+  assert.deepEqual(second.events.map((e) => e.t), [1, 2, 3]);
+});
+
+test('readAll(root, cache): a truncated/rewritten file is read fresh, without throwing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-store-'));
+  const root = dir;
+  const runDir = path.join(root, '.concertino', 'runs', 'HEL-52');
+  fs.mkdirSync(runDir, { recursive: true });
+  const file = path.join(runDir, 'events.jsonl');
+  fs.writeFileSync(file, '{"t":1,"kind":"note","ticket":"HEL-52"}\n{"t":2,"kind":"note","ticket":"HEL-52"}\n');
+
+  const cache = store.createEventsCache();
+  const first = store.readAll(root, cache).get('HEL-52');
+  assert.equal(first.events.length, 2);
+
+  // Rewrite with fewer bytes than before — a truncation/rewrite, which
+  // should not happen to an append-only log but must not corrupt state.
+  fs.writeFileSync(file, '{"t":9,"kind":"note","ticket":"HEL-52"}\n');
+
+  assert.doesNotThrow(() => {
+    const second = store.readAll(root, cache).get('HEL-52');
+    assert.equal(second.events.length, 1);
+    assert.equal(second.events[0].t, 9);
+  });
+});
+
+test('readAll(root, cache): a ticket removed from disk is absent from the next read and its cache entry is evicted', () => {
+  const root = tmpRoot({
+    'HEL-53': '{"t":1,"kind":"note","ticket":"HEL-53"}\n',
+    'HEL-54': '{"t":1,"kind":"note","ticket":"HEL-54"}\n',
+  });
+  const cache = store.createEventsCache();
+
+  const first = store.readAll(root, cache);
+  assert.equal(first.size, 2);
+  assert.equal(cache.size, 2);
+
+  fs.rmSync(path.join(root, '.concertino', 'runs', 'HEL-53'), { recursive: true, force: true });
+
+  const second = store.readAll(root, cache);
+  assert.equal(second.has('HEL-53'), false);
+  assert.equal(second.has('HEL-54'), true);
+  // No unbounded growth: the evicted ticket's cache entry is gone too.
+  assert.equal(cache.has('HEL-53'), false);
+  assert.equal(cache.size, 1);
+});
+
+test('readAll(root) with no cache argument behaves exactly as it does today: a full read, no cross-call persistence', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-store-'));
+  const root = dir;
+  const runDir = path.join(root, '.concertino', 'runs', 'HEL-55');
+  fs.mkdirSync(runDir, { recursive: true });
+  const file = path.join(runDir, 'events.jsonl');
+  fs.writeFileSync(file, '{"t":1,"kind":"note","ticket":"HEL-55"}\n');
+
+  const first = store.readAll(root).get('HEL-55');
+  fs.appendFileSync(file, '{"t":2,"kind":"note","ticket":"HEL-55"}\n');
+  const second = store.readAll(root).get('HEL-55');
+
+  assert.equal(first.events.length, 1);
+  assert.equal(second.events.length, 2);
+  // Uncached calls never persist anything across calls, so this is a fresh
+  // array every time — never the same reference as a previous call.
+  assert.notStrictEqual(second.events, first.events);
+});
+
 // --- writeAnswer: the control-plane write -----------------------------------
 // O_EXCL is the whole safety property here: two dashboards racing to answer
 // the same escalation must not both believe they succeeded.
