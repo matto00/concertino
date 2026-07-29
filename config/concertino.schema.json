@@ -146,15 +146,25 @@
     "models": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Model overrides per role. Accepts Claude Code model aliases (opus, sonnet, haiku) or full model IDs. All roles default to sonnet.",
+      "description": "Explicit per-harness, per-role model overrides (design.md Decision 1 of delivery-speed-presets). Sparse by design — a role absent here falls back to the active speed's roleTiers entry resolved through modelTiers.<harness>. Only roles a project has deliberately pinned should appear; withDefaults() never invents an entry here (unlike modelTiers, which IS defaulted), since presence here means 'explicit override, ignore the speed'.",
       "properties": {
-        "orchestrator": { "type": "string", "description": "Claude Code model alias — e.g. sonnet" },
-        "executor":     { "type": "string", "description": "Claude Code model alias — e.g. sonnet" },
-        "evaluator":    { "type": "string", "description": "Claude Code model alias — e.g. haiku (re-runs gates mechanically, cheaper is fine)" },
-        "skeptic":      { "type": "string", "description": "Claude Code model alias — e.g. opus (subjective design judgment; benefits from a stronger model)" },
-        "auditor":      { "type": "string", "description": "Claude Code model alias — e.g. sonnet (cold agent-merge verification; only used when agentMerge.enabled)" },
-        "codex":        { "type": "string", "description": "OpenAI model ID for the Codex harness — e.g. codex-mini-latest, o4-mini, gpt-4.1" }
+        "claude-code": { "$ref": "#/$defs/roleModelMap" },
+        "codex":       { "$ref": "#/$defs/roleModelMap" }
       }
+    },
+    "modelTiers": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-harness tier -> concrete model. A speed's roleTiers names a tier (cheap/standard/capable); this is what resolves that tier to an actual model string for the harness in play. withDefaults() fills in both harnesses' tiers when a project doesn't set them, so an unconfigured project resolves identically to today's sonnet-everywhere/codex-mini-latest-everywhere behavior at the standard tier.",
+      "properties": {
+        "claude-code": { "$ref": "#/$defs/tierMap" },
+        "codex":       { "$ref": "#/$defs/tierMap" }
+      }
+    },
+    "speeds": {
+      "type": "object",
+      "description": "Named presets (fast/default/slow) resolving a run's budgets override + per-role model tier + (slow-only) two behavioral flags. Resolved per-run by scripts/concertino/resolve-speed.sh from a sync-time snapshot (scripts/concertino/speeds.json) of this block + modelTiers + models. withDefaults() synthesizes an implicit `default` speed (empty budgets override, every role at the `standard` tier) when this key is absent entirely, so an unmigrated project's runs are untouched.",
+      "additionalProperties": { "$ref": "#/$defs/speed" }
     },
     "agentMerge": {
       "type": "object",
@@ -177,6 +187,61 @@
         "start": { "type": "string", "description": "Start command (no nohup/redirect); may reference $DEV_PORT / $BACKEND_PORT." },
         "health": { "type": "string", "description": "Health URL (may reference ports)." },
         "timeoutSec": { "type": "integer", "default": 120 }
+      }
+    },
+    "roleModelMap": {
+      "type": "object",
+      "description": "Sparse per-role explicit model override for one harness. Any subset of the five roles; an absent role falls back to the active speed's tier resolution.",
+      "additionalProperties": false,
+      "properties": {
+        "orchestrator": { "type": "string" },
+        "executor":     { "type": "string" },
+        "evaluator":    { "type": "string" },
+        "skeptic":      { "type": "string" },
+        "auditor":      { "type": "string" }
+      }
+    },
+    "tierMap": {
+      "type": "object",
+      "description": "The three named tiers a speed's roleTiers picks from, resolved to one concrete model string per tier for this harness.",
+      "required": ["cheap", "standard", "capable"],
+      "additionalProperties": false,
+      "properties": {
+        "cheap":    { "type": "string" },
+        "standard": { "type": "string" },
+        "capable":  { "type": "string" }
+      }
+    },
+    "speed": {
+      "type": "object",
+      "description": "One named speed preset: a partial budgets override merged over the top-level budgets block, a role->tier map, and (meaningful only for slow) two behavioral flags. The schema permits the two flags on any speed for forward-compatibility, but the shipped default config never sets them true outside slow — the final skeptic gate itself is never gated by any of these fields (see delivery-speed-presets spec: 'The final skeptic gate runs at every speed').",
+      "additionalProperties": false,
+      "properties": {
+        "budgets": {
+          "type": "object",
+          "description": "Partial override merged over the project's top-level budgets — any field omitted here falls back to the top-level default, never to a hardcoded number.",
+          "additionalProperties": false,
+          "properties": {
+            "executionCycles":     { "type": "integer" },
+            "skepticDesignRounds": { "type": "integer" },
+            "skepticFinalRounds":  { "type": "integer" },
+            "debugAttempts":       { "type": "integer" }
+          }
+        },
+        "roleTiers": {
+          "type": "object",
+          "description": "Role -> cheap|standard|capable. Resolved per harness through modelTiers.<harness>.<tier>, unless models.<harness>.<role> is set explicitly (which always wins).",
+          "additionalProperties": false,
+          "properties": {
+            "orchestrator": { "enum": ["cheap", "standard", "capable"] },
+            "executor":     { "enum": ["cheap", "standard", "capable"] },
+            "evaluator":    { "enum": ["cheap", "standard", "capable"] },
+            "skeptic":      { "enum": ["cheap", "standard", "capable"] },
+            "auditor":      { "enum": ["cheap", "standard", "capable"] }
+          }
+        },
+        "secondFinalGateSkeptic": { "type": "boolean", "default": false, "description": "slow-only: spawn a second, independent cold skeptic at the final gate; a disagreement between the two verdicts is a BLOCKER to the human, never resolved automatically. Never removes the baseline final gate any speed already requires — this can only ADD a second one." },
+        "evaluatorCleanWorktree": { "type": "boolean", "default": false, "description": "slow-only: the evaluator re-runs gates from a clean checkout rather than trusting the executor's own worktree state." }
       }
     }
   }

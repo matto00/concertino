@@ -89,7 +89,7 @@ concertino sync       [--config=PATH] [--out=DIR] [--harness=claude-code,codex] 
 
 concertino update     <key=value> [...] [--config=PATH] [--out=DIR] [--dry-run]
                       Update one or more config fields via dot-notation, then re-sync.
-                      Example: concertino update models.skeptic=opus budgets.executionCycles=5
+                      Example: concertino update models.claude-code.skeptic=opus budgets.executionCycles=5
                       Example: concertino update agentMerge.enabled=true agentMerge.mergeMethod=squash
 
 concertino validate   [--config=PATH] [--out=DIR]

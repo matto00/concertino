@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   renderLaunchPlan, handleKey, render, derivePorts, deriveTicketNum, cycleConcurrency,
-  withAgentMergeFlag,
+  withAgentMergeFlag, withSpeedFlag,
 } = require('../lib/ui/screens/launchplan');
 
 // eslint-disable-next-line no-control-regex
@@ -193,6 +193,67 @@ test('m cycles agent-merge when editable', () => {
   const out = plain(renderLaunchPlan(plan({ agentMergeEditable: true }), 0, OPTS));
   assert.match(out, /m agent-merge/);
   assert.deepEqual(handleKey('m', { plan: plan({ agentMergeEditable: true }) }), { type: 'cycle-agent-merge' });
+});
+
+// --- CON-22: speed shown pre-flight + resolved models preview ---------------
+
+test('withSpeedFlag inserts a speed token immediately after {{TICKET}}, inside the quotes', () => {
+  assert.equal(
+    withSpeedFlag('claude "/concertino-deliver {{TICKET}}"', 'fast'),
+    'claude "/concertino-deliver {{TICKET}} fast"',
+  );
+});
+
+test('withSpeedFlag with "default" removes any existing speed token rather than writing the literal word', () => {
+  const withFast = withSpeedFlag('claude "/concertino-deliver {{TICKET}}"', 'fast');
+  assert.equal(withSpeedFlag(withFast, 'default'), 'claude "/concertino-deliver {{TICKET}}"');
+});
+
+test('withSpeedFlag replaces a previously-set speed rather than appending a second one', () => {
+  const once = withSpeedFlag('claude "/concertino-deliver {{TICKET}}"', 'fast');
+  const twice = withSpeedFlag(once, 'slow');
+  assert.equal(twice, 'claude "/concertino-deliver {{TICKET}} slow"');
+});
+
+test('withSpeedFlag and withAgentMergeFlag compose without disturbing each other, agent-merge slot immediately after {{TICKET}}, speed after that', () => {
+  let cmd = 'claude "/concertino-deliver {{TICKET}}"';
+  cmd = withSpeedFlag(cmd, 'fast');
+  cmd = withAgentMergeFlag(cmd, true);
+  assert.equal(cmd, 'claude "/concertino-deliver {{TICKET}} --agent-merge fast"');
+  // Cycling agent-merge again must not drop the speed token.
+  cmd = withAgentMergeFlag(cmd, false);
+  assert.equal(cmd, 'claude "/concertino-deliver {{TICKET}} --no-agent-merge fast"');
+  // Cycling speed again must not drop the agent-merge flag.
+  cmd = withSpeedFlag(cmd, 'slow');
+  assert.equal(cmd, 'claude "/concertino-deliver {{TICKET}} --no-agent-merge slow"');
+});
+
+test('the plan shows the resolved speed pre-flight, defaulting to "default"', () => {
+  const out = plain(renderLaunchPlan(plan({ speed: 'fast' }), 0, OPTS));
+  assert.match(out, /speed\s+fast/);
+  const outDefault = plain(renderLaunchPlan(plan({}), 0, OPTS));
+  assert.match(outDefault, /speed\s+default/);
+});
+
+test('the plan shows the resolved per-role models when resolvedModels is present', () => {
+  const out = plain(renderLaunchPlan(plan({
+    speed: 'fast',
+    resolvedModels: { models: { orchestrator: 'sonnet', executor: 'haiku', evaluator: 'haiku', skeptic: 'opus', auditor: 'sonnet' } },
+  }), 0, OPTS));
+  assert.match(out, /executor=haiku/);
+  assert.match(out, /skeptic=opus/);
+});
+
+test('a null resolvedModels renders "models unknown" rather than throwing', () => {
+  assert.doesNotThrow(() => renderLaunchPlan(plan({ resolvedModels: null }), 0, OPTS));
+  const out = plain(renderLaunchPlan(plan({ resolvedModels: null }), 0, OPTS));
+  assert.match(out, /models unknown/);
+});
+
+test('s is always advertised and bound, unlike h/m', () => {
+  const out = plain(renderLaunchPlan(plan({ harnesses: ['claude'], agentMergeEditable: false }), 0, OPTS));
+  assert.match(out, /s speed/);
+  assert.deepEqual(handleKey('s', { plan: plan({}) }), { type: 'cycle-speed' });
 });
 
 // --- key handling ----------------------------------------------------------------

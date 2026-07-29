@@ -37,13 +37,6 @@
     }
   ],
   "canonicalDocs": [],
-  "models": {
-    "orchestrator": "sonnet",
-    "executor": "sonnet",
-    "evaluator": "sonnet",
-    "skeptic": "sonnet",
-    "codex": "codex-mini-latest"
-  },
   "ui": {
     "enabled": false,
     "tool": "none"
@@ -53,6 +46,22 @@
     "skepticDesignRounds": 3,
     "skepticFinalRounds": 2,
     "debugAttempts": 2
+  },
+  "speeds": {
+    "fast": {
+      "budgets": { "executionCycles": 2, "skepticDesignRounds": 1 },
+      "roleTiers": { "orchestrator": "standard", "executor": "cheap", "evaluator": "cheap", "skeptic": "capable", "auditor": "standard" }
+    },
+    "default": {
+      "budgets": {},
+      "roleTiers": { "orchestrator": "standard", "executor": "standard", "evaluator": "standard", "skeptic": "standard", "auditor": "standard" }
+    },
+    "slow": {
+      "budgets": { "executionCycles": 5, "skepticDesignRounds": 5, "skepticFinalRounds": 3, "debugAttempts": 3 },
+      "roleTiers": { "orchestrator": "capable", "executor": "capable", "evaluator": "capable", "skeptic": "capable", "auditor": "capable" },
+      "secondFinalGateSkeptic": true,
+      "evaluatorCleanWorktree": true
+    }
   },
   "commitTrailer": "Co-Authored-By: Claude <noreply@anthropic.com>",
   "dashboard": {

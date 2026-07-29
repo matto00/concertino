@@ -22,6 +22,38 @@ test('folds run.start into identity fields', () => {
   assert.equal(run.startedAt, 100);
 });
 
+// --- CON-22: speed/models on run.start -------------------------------------
+
+test('folds run.start speed and models (JSON-string-valued, per emit-event.sh) into the run', () => {
+  const modelsJson = JSON.stringify({ orchestrator: 'sonnet', executor: 'haiku', evaluator: 'haiku', skeptic: 'opus', auditor: 'sonnet' });
+  const [run] = reduce(log('HEL-2', [
+    { t: 100, kind: 'run.start', ticket: 'HEL-2', role: 'script',
+      branch: 'feature/x/HEL-2', harness: 'claude-code', speed: 'fast', models: modelsJson },
+  ]), [], NOW);
+
+  assert.equal(run.speed, 'fast');
+  assert.deepEqual(run.models, { orchestrator: 'sonnet', executor: 'haiku', evaluator: 'haiku', skeptic: 'opus', auditor: 'sonnet' });
+});
+
+test('a run predating this feature has no speed/models — absent, not malformed', () => {
+  const [run] = reduce(log('HEL-3', [
+    { t: 100, kind: 'run.start', ticket: 'HEL-3', role: 'script', branch: 'feature/x/HEL-3', harness: 'claude-code' },
+  ]), [], NOW);
+
+  assert.equal(run.speed, null);
+  assert.equal(run.models, null);
+});
+
+test('a malformed models= value degrades to absent rather than throwing', () => {
+  assert.doesNotThrow(() => reduce(log('HEL-4', [
+    { t: 100, kind: 'run.start', ticket: 'HEL-4', role: 'script', branch: 'feature/x/HEL-4', models: '{not valid json' },
+  ]), [], NOW));
+  const [run] = reduce(log('HEL-4', [
+    { t: 100, kind: 'run.start', ticket: 'HEL-4', role: 'script', branch: 'feature/x/HEL-4', models: '{not valid json' },
+  ]), [], NOW);
+  assert.equal(run.models, null);
+});
+
 test('derives changeName from the branch middle segment', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script', branch: 'feature/panel-resize-handles/HEL-1' },

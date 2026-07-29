@@ -3,6 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   renderDrillDown, handleKey, render, isLive, fmtGateDuration, phasePipeline,
+  ticketPanelLines,
 } = require('../lib/ui/screens/drilldown');
 
 // eslint-disable-next-line no-control-regex
@@ -46,6 +47,24 @@ test('renders the header: ticket, change name, branch, worktree, ports, harness/
   assert.match(out, /:8334/);
   assert.match(out, /claude/);
   assert.match(out, /opus-5/);
+});
+
+// --- CON-22: resolved speed + per-role models, auditable after the fact ----
+
+test('renders the resolved speed and per-role models when present', () => {
+  const out = plain(renderDrillDown(run({
+    speed: 'fast',
+    models: { orchestrator: 'sonnet', executor: 'haiku', evaluator: 'haiku', skeptic: 'opus', auditor: 'sonnet' },
+  }), OPTS));
+  assert.match(out, /fast/);
+  assert.match(out, /executor=haiku/);
+  assert.match(out, /skeptic=opus/);
+});
+
+test('a run predating this feature (no speed/models) renders absence gracefully, not as malformed', () => {
+  const out = plain(renderDrillDown(run({ speed: null, models: null }), OPTS));
+  assert.match(out, /speed unknown/);
+  assert.doesNotMatch(out, /undefined/);
 });
 
 test('renders the phase pipeline with the current phase marked', () => {
@@ -473,16 +492,22 @@ test('header shows the "ticket text unavailable" fallback when opts.ticketText i
 });
 
 test('the TICKET panel renders markdown-stripped plain text', () => {
-  const out = plain(renderDrillDown(run({}), Object.assign({}, OPTS, {
-    ticketText: {
-      title: 'Some title',
-      description: '# Heading\n\nSome **bold** and `code` and a [link](https://example.com) here.',
-    },
-  })));
+  const ticketText = {
+    title: 'Some title',
+    description: '# Heading\n\nSome **bold** and `code` and a [link](https://example.com) here.',
+  };
+  const out = plain(renderDrillDown(run({}), Object.assign({}, OPTS, { ticketText })));
   assert.match(out, /TICKET/);
   assert.match(out, /Heading/);
   assert.match(out, /Some bold and code and a link here\./);
-  assert.doesNotMatch(out, /[#*`[\]()]/);
+  // Scoped to the TICKET panel's own content specifically (via the exported
+  // ticketPanelLines(), not the whole screen's text) — CON-22 added a fourth
+  // header row with its own legitimate parens (the "(speed unknown)"
+  // fallback when a run predates the speed feature), so asserting against
+  // the full `out` string would fail on content that has nothing to do with
+  // whether the TICKET panel itself strips markdown syntax.
+  const panelText = plain(ticketPanelLines(ticketText, OPTS.cols - 4).join('\n'));
+  assert.doesNotMatch(panelText, /[#*`[\]()]/);
 });
 
 test('a description longer than the row cap is truncated with the correct "… N more lines" count', () => {

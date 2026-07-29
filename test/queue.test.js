@@ -87,6 +87,30 @@ test('the queue carries its launchCommand through every tick unchanged', () => {
   assert.equal(q.launchCommand, 'codex "/concertino-deliver {{TICKET}}"');
 });
 
+// CON-22: the batch's single resolved speed is already baked into
+// launchCommand by the time it reaches createQueue() — launchplan.js's
+// withSpeedFlag (applied by watch.js at plan-creation/cycle-speed time, the
+// exact same seam --agent-merge/--no-agent-merge already goes through) — so
+// there is no separate "speed" field for this module to thread; it rides
+// through as part of the same opaque launchCommand string every ticket in
+// the batch launches with, unchanged by tick(), exactly as the test above
+// already proves for an agent-merge-flavored command. This test names that
+// explicitly for a speed-flavored one, so "the batch carries one speed for
+// the whole batch" is provable at the queue layer, not just inferred from
+// the launchCommand test already covering "any string, unchanged".
+test('a speed token baked into launchCommand (via withSpeedFlag) rides through the queue unchanged for the whole batch', () => {
+  let q = createQueue(['CON-1', 'CON-2', 'CON-3'], 2, 'claude "/concertino-deliver {{TICKET}} fast"');
+  assert.equal(q.launchCommand, 'claude "/concertino-deliver {{TICKET}} fast"');
+  const first = tick(q, []);
+  assert.deepEqual(first.toLaunch, ['CON-1', 'CON-2']);
+  assert.equal(first.queue.launchCommand, 'claude "/concertino-deliver {{TICKET}} fast"');
+  const second = tick(first.queue, [run('CON-1', 'done'), run('CON-2', 'running')]);
+  assert.deepEqual(second.toLaunch, ['CON-3']);
+  // CON-3 — launched later, on a subsequent tick — carries the SAME speed
+  // as CON-1/CON-2 did: one speed for the whole batch, not per-ticket.
+  assert.equal(second.queue.launchCommand, 'claude "/concertino-deliver {{TICKET}} fast"');
+});
+
 // --- isIdle ------------------------------------------------------------------
 
 test('a queue with nothing pending and nothing in flight is idle', () => {
