@@ -458,6 +458,89 @@ test('the gates column is sized to its content, not a fixed 45% fraction, at 70/
     `gates/evidence pane width should be content-driven and constant: ${rightWidthAt70} at 70 cols vs ${rightWidthAt130} at 130 cols`);
 });
 
+// --- CON-18: TICKET panel and header title row --------------------------
+
+test('header shows the resolved ticket title', () => {
+  const out = plain(renderDrillDown(run({}), Object.assign({}, OPTS, {
+    ticketText: { title: 'Drill-down should show the ticket title and description', description: 'body' },
+  })));
+  assert.match(out, /Drill-down should show the ticket title and description/);
+});
+
+test('header shows the "ticket text unavailable" fallback when opts.ticketText is absent', () => {
+  const out = plain(renderDrillDown(run({}), OPTS));
+  assert.match(out, /ticket text unavailable/);
+});
+
+test('the TICKET panel renders markdown-stripped plain text', () => {
+  const out = plain(renderDrillDown(run({}), Object.assign({}, OPTS, {
+    ticketText: {
+      title: 'Some title',
+      description: '# Heading\n\nSome **bold** and `code` and a [link](https://example.com) here.',
+    },
+  })));
+  assert.match(out, /TICKET/);
+  assert.match(out, /Heading/);
+  assert.match(out, /Some bold and code and a link here\./);
+  assert.doesNotMatch(out, /[#*`[\]()]/);
+});
+
+test('a description longer than the row cap is truncated with the correct "… N more lines" count', () => {
+  const longDescription = Array.from({ length: 20 }, (_, i) => 'line ' + i).join('\n');
+  const out = plain(renderDrillDown(run({}), Object.assign({}, OPTS, {
+    ticketText: { title: 'Long ticket', description: longDescription },
+  })));
+  assert.match(out, /line 0/);
+  assert.match(out, /line 4/);
+  assert.doesNotMatch(out, /line 5\b/);
+  assert.match(out, /… 15 more lines/);
+});
+
+test('a short description renders in full with no truncation row', () => {
+  const out = plain(renderDrillDown(run({}), Object.assign({}, OPTS, {
+    ticketText: { title: 'Short ticket', description: 'just one short line' },
+  })));
+  assert.match(out, /just one short line/);
+  assert.doesNotMatch(out, /more lines/);
+});
+
+test('a run with no ticket text shows the fallback in the TICKET panel too', () => {
+  const out = plain(renderDrillDown(run({}), OPTS));
+  const ticketPanelIdx = out.indexOf('TICKET');
+  assert.ok(ticketPanelIdx >= 0);
+  // "ticket text unavailable" appears at least twice: once in the header,
+  // once inside the TICKET panel.
+  const occurrences = out.split('ticket text unavailable').length - 1;
+  assert.ok(occurrences >= 2, `expected at least 2 occurrences, got ${occurrences}`);
+});
+
+test('TIMELINE/GATES/EVIDENCE panel dimensions are unchanged whether or not there is a long ticket description', () => {
+  const longDescription = Array.from({ length: 40 }, (_, i) => 'a much longer line of prose number ' + i).join('\n');
+  const withLongDescription = renderDrillDown(run({}), Object.assign({}, OPTS, {
+    ticketText: { title: 'x', description: longDescription },
+  }));
+  const withNone = renderDrillDown(run({}), OPTS);
+
+  function timelineGatesEvidenceBoxLines(out) {
+    return out.split('\n').filter((l) =>
+      l.includes('TIMELINE') || l.includes('GATES') || l.includes('EVIDENCE') ||
+      /^[│┌└].*[│┐┘]$/.test(plain(l)));
+  }
+  // Compare the width of the row carrying both TIMELINE's and GATES' box
+  // titles — this is exactly rightPaneStartColumn()'s own row-finder, reused
+  // here to prove the TIMELINE/GATES split point does not move.
+  const rowWithBoth = (out) => plain(out).split('\n').find((l) => l.includes('TIMELINE') && l.includes('GATES'));
+  assert.equal(
+    plain(rowWithBoth(withLongDescription)).length,
+    plain(rowWithBoth(withNone)).length,
+    'the TIMELINE/GATES top-border row width must be unaffected by ticket description length',
+  );
+  // Cross-check via timelineGatesEvidenceBoxLines just to ensure both renders
+  // actually still contain the three panels' boxes at all.
+  assert.ok(timelineGatesEvidenceBoxLines(plain(withLongDescription)).length > 0);
+  assert.ok(timelineGatesEvidenceBoxLines(plain(withNone)).length > 0);
+});
+
 test('a pathologically long first_error still caps the gates column rather than crushing the timeline', () => {
   const { visibleLength } = require('../lib/ui/format');
   const out = plain(renderDrillDown(run({

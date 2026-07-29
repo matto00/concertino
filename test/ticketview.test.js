@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { renderTicketView, handleKey, render, findTicket, wrap } = require('../lib/ui/screens/ticketview');
+const { renderTicketView, handleKey, render, findTicket } = require('../lib/ui/screens/ticketview');
 
 // eslint-disable-next-line no-control-regex
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
@@ -133,18 +133,6 @@ test('esc backs out to the launch pad', () => {
 
 test('an unbound key is a no-op', () => {
   assert.equal(handleKey('z', {}), null);
-});
-
-// --- wrap ------------------------------------------------------------------------
-
-test('wrap keeps lines within budget', () => {
-  const lines = wrap('one two three four five six seven eight nine ten', 20);
-  for (const l of lines) assert.ok(l.length <= 20);
-});
-
-test('wrap preserves blank lines between paragraphs', () => {
-  const lines = wrap('first paragraph\n\nsecond paragraph', 40);
-  assert.ok(lines.includes(''));
 });
 
 // --- router seam / findTicket -----------------------------------------------------

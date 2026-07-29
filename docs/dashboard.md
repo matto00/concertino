@@ -67,6 +67,37 @@ pane (e.g. `Pipeline v2` above) stays visible but recedes — dimmed, never
 bold — so the two panes' selections read as clearly different states, not as
 "both panes are somehow active."
 
+### The drill-down's TICKET panel
+
+Drilling into a run (`l` from the fleet view) shows the ticket's title in the
+header — right under the ticket id/change name row — and its description in a
+bounded `TICKET` panel, between the phase pipeline and the TIMELINE/GATES/
+EVIDENCE row. Markdown is rendered as plain text (headings, list markers,
+emphasis, inline code and link syntax stripped), not shown as raw markup.
+
+Text is resolved from whichever of two sources survives the run, in
+preference order:
+
+1. The **persisted `ticket.md`** at `.concertino/runs/<TICKET_ID>/evidence/
+   ticket.md` in the main checkout — a snapshot of exactly what the run
+   worked from, written during Planning and durable past `cleanup.sh
+   --phase4` destroying the worktree.
+2. The **launch pad cache** (`.concertino/cache/linear.json`), matched by
+   ticket identifier, for a run whose `ticket.md` was never persisted (e.g. a
+   run from before this feature shipped).
+
+If neither source has anything, both the header and the panel show the
+honest fallback `ticket text unavailable`, the same styling this screen's
+other degradation strings (`no evidence recorded`, `no gate results
+recorded`) already use — never an empty frame.
+
+The panel is capped to a fixed 5 content rows, independent of terminal height
+or how long TIMELINE/GATES/EVIDENCE's own content is: a longer description
+never grows the panel or pushes the other panels off screen. When the
+description overflows the cap, only the leading rows are shown, followed by
+a dimmed `… N more lines` row — the same "count what's hidden" convention
+TIMELINE already uses for events beyond its own cap (`… N earlier events`).
+
 ## Keys
 
 | Key | Action |

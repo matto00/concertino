@@ -132,7 +132,11 @@ Execute directly (no subagent).
    {{block:specScaffold}}
    Write the full ticket content (title, description, acceptance criteria) to
    `WORKTREE_PATH/<change-dir>/ticket.md`. Sub-agents read this instead of receiving
-   ticket content inline.
+   ticket content inline. The title goes on the first line (`# <TICKET_ID>: <Title>`),
+   immediately followed by a `## Description` heading whose content is the ticket's
+   description — this is what the dashboard's drill-down TICKET panel parses out of
+   the persisted file. Acceptance criteria and any other content go in their own
+   subsequent `##` sections, after the description.
 3. **Create the planning artifacts** (proposal/design/tasks, plus spec deltas if
    the change affects a contract), in dependency order:
 {{block:specArtifacts}}
@@ -155,8 +159,8 @@ Execute directly (no subagent).
      to the human as an `ESCALATION` immediately. If still REFUTE at the last round,
      escalate.
 6. **Persist evidence for the planning artifacts.** For each artifact just
-   written (`proposal.md`, `design.md`, `tasks.md`, and any spec delta files
-   under `specs/`):
+   written (`ticket.md`, `proposal.md`, `design.md`, `tasks.md`, and any spec
+   delta files under `specs/`):
 
    ```bash
    scripts/concertino/persist-evidence.sh "$TICKET_ID" "<path to the artifact>"

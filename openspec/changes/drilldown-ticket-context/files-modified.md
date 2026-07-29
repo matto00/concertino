@@ -1,0 +1,14 @@
+- `lib/ui/markdown.js` — new: `toPlainText(md)`, a dependency-free markdown-to-plain-text stripper (headings, blockquotes, bullets, ordered-list numbering, inline code, bold/italic, link syntax).
+- `lib/ui/textwrap.js` — new: `wrap(text, width)`, extracted verbatim from `ticketview.js` so `drilldown.js`'s TICKET panel can share the same word-wrap.
+- `lib/ui/ticket-text.js` — new: `resolve(root, ticket, cache)`, resolves `{ title, description } | null` from the persisted `ticket.md` snapshot first, the launch pad cache second.
+- `lib/ui/screens/ticketview.js` — imports `wrap` from the new `textwrap.js` instead of defining it locally; no behavior change.
+- `lib/ui/screens/drilldown.js` — new header title row (`titleLine`), new bounded TICKET panel (`ticketPanelLines`, `TICKET_MAX_LINES = 5`) between the phase pipeline and TIMELINE/GATES/EVIDENCE, `renderDrillDown`/`render` now read `opts.ticketText`.
+- `lib/ui/watch.js` — `draw()` resolves `ticket-text.resolve(root, drillTicket, cache.read(root))` once per poll, gated on `mode === 'drilldown'`, and passes it through `opts.ticketText` to `router.render` (same seam as the existing `queuedTitles`).
+- `core/roles/orchestrator.md` — Phase 1 step 2's ticket.md instruction now requires a `## Description` heading immediately after the title; step 6's persist-evidence loop now includes `ticket.md` alongside `proposal.md`/`design.md`/`tasks.md`.
+- `docs/dashboard.md` — documents the drill-down's new TICKET panel: what it shows, the two-source resolution order, and the fixed 5-row truncation cap.
+- `test/markdown.test.js` — new: `toPlainText` coverage for every stripped construct plus fenced-code-block and null-input handling.
+- `test/textwrap.test.js` — new: the wrap-specific tests moved out of `test/ticketview.test.js`, now importing from `lib/ui/textwrap.js`.
+- `test/ticketview.test.js` — wrap-specific tests removed (moved to `test/textwrap.test.js`); unchanged otherwise, still passing.
+- `test/ticket-text.test.js` — new: source preference (persisted-over-cache, cache-fallback, both-absent-null), title parsing (well-formed and malformed first line), description scoping (`## Description`, pre-heading-prose fallback, whole-remainder fallback), and blank-title-falls-back-to-cache.
+- `test/drilldown.test.js` — added: header title row, header/panel `ticket text unavailable` fallback, markdown-stripped TICKET panel content, truncation with `… N more lines`, short-description no-truncation, and TIMELINE/GATES/EVIDENCE dimensions unaffected by ticket description length.
+- `test/watch.test.js` — added: `ticket-text.resolve` called once per poll while `mode === 'drilldown'` (including on a resize-triggered redraw) and not called in any other mode.
