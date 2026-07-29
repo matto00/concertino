@@ -152,7 +152,17 @@
         "executor":     { "type": "string", "description": "Claude Code model alias — e.g. sonnet" },
         "evaluator":    { "type": "string", "description": "Claude Code model alias — e.g. haiku (re-runs gates mechanically, cheaper is fine)" },
         "skeptic":      { "type": "string", "description": "Claude Code model alias — e.g. opus (subjective design judgment; benefits from a stronger model)" },
+        "auditor":      { "type": "string", "description": "Claude Code model alias — e.g. sonnet (cold agent-merge verification; only used when agentMerge.enabled)" },
         "codex":        { "type": "string", "description": "OpenAI model ID for the Codex harness — e.g. codex-mini-latest, o4-mini, gpt-4.1" }
+      }
+    },
+    "agentMerge": {
+      "type": "object",
+      "description": "Whether a verified run may merge its own PR via the cold auditor role, instead of stopping for a human 'merged' confirmation. Per-run override (--agent-merge/--no-agent-merge, the n prompt, the launch plan) takes precedence over this default.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false, "description": "Project-level default. false preserves today's human-confirms-merge flow for every run that doesn't explicitly override it." },
+        "mergeMethod": { "enum": ["squash", "merge", "rebase"], "default": "squash", "description": "Passed to `gh pr merge --<mergeMethod>` when the auditor merges." }
       }
     },
     "commitTrailer": { "type": "string", "description": "Trailer appended to commits.", "default": "" }

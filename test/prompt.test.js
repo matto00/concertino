@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
-const { submitTicket } = require('../lib/ui/prompt');
+const { submitTicket, parseTicketInput } = require('../lib/ui/prompt');
 
 const TEMPLATE = 'claude "/concertino-deliver {{TICKET}}"';
 
@@ -79,4 +79,56 @@ test('a failed spawn on a valid ticket is reported as an error, not thrown', () 
   assert.equal(result.spawned, false);
   assert.match(result.error, /could not start CON-9/);
   assert.match(result.error, /tmux exited 1/);
+});
+
+// --- CON-24: agent-merge per-run override in the `n` prompt -----------------
+
+test('parseTicketInput accepts a bare ticket with no flag', () => {
+  assert.deepEqual(parseTicketInput('CON-17'), { ticket: 'CON-17', flag: null });
+});
+
+test('parseTicketInput accepts a trailing --agent-merge flag', () => {
+  assert.deepEqual(parseTicketInput('CON-17 --agent-merge'), { ticket: 'CON-17', flag: '--agent-merge' });
+});
+
+test('parseTicketInput accepts a trailing --no-agent-merge flag', () => {
+  assert.deepEqual(parseTicketInput('CON-17 --no-agent-merge'), { ticket: 'CON-17', flag: '--no-agent-merge' });
+});
+
+test('parseTicketInput rejects a flag that only looks like one of the two allowed strings', () => {
+  assert.equal(parseTicketInput('CON-17 --agent-merge-typo'), null);
+  assert.equal(parseTicketInput('CON-17 --agentmerge'), null);
+});
+
+test('parseTicketInput rejects extra tokens beyond ticket + flag', () => {
+  assert.equal(parseTicketInput('CON-17 --agent-merge extra'), null);
+});
+
+test('parseTicketInput rejects a non-ticket-shaped first token even with a valid flag', () => {
+  assert.equal(parseTicketInput('$(touch /tmp/x) --agent-merge'), null);
+});
+
+test('submitTicket substitutes "<ticket> --agent-merge" inside the quoted argument', () => {
+  let seen = null;
+  const session = { spawn(ticket, cmd) { seen = { ticket, cmd }; } };
+  const result = submitTicket('CON-17 --agent-merge', TEMPLATE, session);
+  assert.equal(result.spawned, true);
+  assert.deepEqual(seen, {
+    ticket: 'CON-17',
+    cmd: 'claude "/concertino-deliver CON-17 --agent-merge"',
+  });
+});
+
+test('submitTicket substitutes "<ticket> --no-agent-merge" the same way', () => {
+  let seen = null;
+  const session = { spawn(ticket, cmd) { seen = { ticket, cmd }; } };
+  submitTicket('CON-17 --no-agent-merge', TEMPLATE, session);
+  assert.equal(seen.cmd, 'claude "/concertino-deliver CON-17 --no-agent-merge"');
+});
+
+test('an invalid flag never reaches session.spawn', () => {
+  const session = { spawn() { throw new Error('spawn must not be called for an invalid flag'); } };
+  const result = submitTicket('CON-17 --agent-merge-typo', TEMPLATE, session);
+  assert.equal(result.spawned, false);
+  assert.match(result.error, /not a ticket id/);
 });
