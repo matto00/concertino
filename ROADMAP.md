@@ -16,6 +16,10 @@ Planned improvements to Concertino. Not commitments — a living list.
   mirror. Origin: Helio carries a bespoke `.cursor/` mirror of the delivery
   workflow that the adoption left untouched.
 
+- **Codex model id.** `adapters/codex/agent.toml.tmpl` renders a placeholder
+  model (`gpt-5.1-codex`, via `CODEX_MODEL` in `bin/concertino`). Make it
+  config-driven (e.g. `harness.codex.model`) instead of a hardcoded constant.
+
 - **Worktree dependency install.** A fresh worktree isn't fully real until its
   deps exist: `CONCERTINO_WORKTREE_HOOKS` is the seam (e.g. `npm ci`), but
   nothing guides adopters toward it, so worktrees come up missing `node_modules`
