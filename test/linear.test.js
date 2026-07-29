@@ -87,6 +87,10 @@ test('the query asks for descriptions and comments — the ticket viewer depends
   assert.match(linear.QUERY, /pageInfo \{ hasNextPage endCursor \}/);
 });
 
+test('the query asks for priority — the launch pad cannot render what it never fetched', () => {
+  assert.match(linear.QUERY, /\bpriority\b/);
+});
+
 // --- normalisation ---------------------------------------------------------
 
 test('normalise flattens the GraphQL shape to the internal model', () => {
@@ -144,6 +148,32 @@ test('a missing assignee, project, estimate or description is null-safe', () => 
   assert.deepEqual(t.labels, []);
   assert.deepEqual(t.state, { name: null, type: null });
   assert.equal(t.commentCount, 0);
+});
+
+// --- priority ----------------------------------------------------------------
+// `0` is Linear's "None" — a real value — so it must round-trip exactly, never
+// falling back to null the way an `||` guard would.
+
+test('priority 0 (None) round-trips as 0, not null', () => {
+  const { tickets } = linear.normalise('CON', [issueNode({ priority: 0 })]);
+  assert.strictEqual(tickets[0].priority, 0);
+});
+
+test('a numeric priority round-trips unchanged', () => {
+  const { tickets } = linear.normalise('CON', [issueNode({ priority: 1 })]);
+  assert.strictEqual(tickets[0].priority, 1);
+});
+
+test('a missing priority field normalises to null', () => {
+  const node = issueNode({});
+  delete node.priority;
+  const { tickets } = linear.normalise('CON', [node]);
+  assert.strictEqual(tickets[0].priority, null);
+});
+
+test('a non-numeric priority normalises to null rather than passing through', () => {
+  const { tickets } = linear.normalise('CON', [issueNode({ priority: 'Urgent' })]);
+  assert.strictEqual(tickets[0].priority, null);
 });
 
 test('a truncated comment thread is flagged, not silently shortened', () => {
