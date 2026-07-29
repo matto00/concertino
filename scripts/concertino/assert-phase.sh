@@ -62,6 +62,16 @@ resolve_url() { eval "echo \"$1\""; }
 
 START_TS="$(now_ms)"
 
+# The ticket id is not an argument here, so derive it from the worktree path —
+# worktrees are created at <base>/<branch> and branches end in /<TICKET-ID>.
+# A branch that doesn't follow that convention (`chore/cleanup-old-logs`) would
+# otherwise write this run's events into a different ticket's log, silently
+# splitting one run's history in two. Emitting nothing is the safe failure.
+# Computed here (before the phase dispatch) rather than after it, so the
+# `delivery` case's own best-effort telemetry (CON-31) can use it too.
+GATE_TICKET="${WORKTREE_PATH##*/}"
+looks_like_ticket() { [[ "$1" =~ ^[A-Za-z#][A-Za-z0-9_-]*[0-9]$ ]]; }
+
 case "$PHASE" in
   setup)
     [ -d "$WORKTREE_PATH" ]                 || fail "worktree dir missing: $WORKTREE_PATH"
@@ -91,6 +101,46 @@ case "$PHASE" in
         || fail "branch ${BRANCH} not pushed to origin"
     [ -z "$(git -C "$WORKTREE_PATH" status --porcelain)" ] \
         || fail "worktree has uncommitted changes"
+
+    # -----------------------------------------------------------------------
+    # CON-31: best-effort, non-blocking stale-base warning. Fetches the
+    # configured base remote/branch and compares it to this branch's
+    # merge-base with it. Purely additive: never sets FAILED, never changes
+    # the exit code or the `PASS delivery` stdout line. Every git call is
+    # individually guarded (`... || VAR=""` / `if ...; then`) so a fetch
+    # failure, an unresolvable ref, or any other unexpected git error
+    # degrades to "skip this check silently" rather than tripping
+    # `set -euo pipefail` and aborting the whole script (design.md
+    # Decision 2, Goals).
+    # -----------------------------------------------------------------------
+    STALE_REMOTE="${CONCERTINO_BASE_REMOTE:-origin}"
+    STALE_BRANCH="${CONCERTINO_BASE_BRANCH:-main}"
+    if git -C "$WORKTREE_PATH" fetch --quiet "$STALE_REMOTE" "$STALE_BRANCH" 2>/dev/null; then
+      STALE_REMOTE_TIP="$(git -C "$WORKTREE_PATH" rev-parse "${STALE_REMOTE}/${STALE_BRANCH}" 2>/dev/null)" || STALE_REMOTE_TIP=""
+      if [ -n "$STALE_REMOTE_TIP" ]; then
+        STALE_MERGE_BASE="$(git -C "$WORKTREE_PATH" merge-base HEAD "$STALE_REMOTE_TIP" 2>/dev/null)" || STALE_MERGE_BASE=""
+        if [ -n "$STALE_MERGE_BASE" ] && [ "$STALE_MERGE_BASE" != "$STALE_REMOTE_TIP" ]; then
+          STALE_BEHIND="$(git -C "$WORKTREE_PATH" rev-list --count "${STALE_MERGE_BASE}..${STALE_REMOTE_TIP}" 2>/dev/null)" || STALE_BEHIND=""
+          if [[ "$STALE_BEHIND" =~ ^[0-9]+$ ]] && [ "$STALE_BEHIND" -gt 0 ]; then
+            STALE_LOG="$(git -C "$WORKTREE_PATH" log --oneline -5 "${STALE_MERGE_BASE}..${STALE_REMOTE_TIP}" 2>/dev/null)" || STALE_LOG=""
+            if [ -n "$STALE_LOG" ]; then
+              echo "WARN base ${STALE_REMOTE}/${STALE_BRANCH} has moved — this branch is ${STALE_BEHIND} commit(s) behind:" >&2
+              while IFS= read -r stale_line; do
+                echo "  $stale_line" >&2
+              done <<< "$STALE_LOG"
+              if [ "$STALE_BEHIND" -gt 5 ]; then
+                echo "  (+$((STALE_BEHIND - 5)) more)" >&2
+              fi
+
+              STALE_SHAS="$(printf '%s\n' "$STALE_LOG" | awk '{print $1}' | paste -sd, -)" || STALE_SHAS=""
+              looks_like_ticket "$GATE_TICKET" && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.warning \
+                "ticket=${GATE_TICKET}" "gate=phase:delivery" "behind=${STALE_BEHIND}" \
+                "base=${STALE_BRANCH}" "remote=${STALE_REMOTE}" "commits=${STALE_SHAS}" || true
+            fi
+          fi
+        fi
+      fi
+    fi
     ;;
 
   cleanup)
@@ -112,14 +162,6 @@ case "$PHASE" in
     exit 2
     ;;
 esac
-
-# The ticket id is not an argument here, so derive it from the worktree path —
-# worktrees are created at <base>/<branch> and branches end in /<TICKET-ID>.
-# A branch that doesn't follow that convention (`chore/cleanup-old-logs`) would
-# otherwise write this run's events into a different ticket's log, silently
-# splitting one run's history in two. Emitting nothing is the safe failure.
-GATE_TICKET="${WORKTREE_PATH##*/}"
-looks_like_ticket() { [[ "$1" =~ ^[A-Za-z#][A-Za-z0-9_-]*[0-9]$ ]]; }
 
 DURATION_MS=$(( $(now_ms) - START_TS ))
 
