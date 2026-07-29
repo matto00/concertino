@@ -893,6 +893,46 @@ function checkArtifacts(out, core, coreForced, harnesses, r) {
     : r.ok('agent files', 'present for ' + harnesses.join(', '));
 }
 
+// ---------- local-base-behind-remote check (doctor, CON-25) ---------------
+// Names the likely CAUSE of the rendered-artifact drift checkArtifacts()
+// above already detects: Phase 4 cleanup's fast-forward not having run, or a
+// merge that landed outside the workflow entirely. Best-effort — a fetch
+// failure (offline, or no such remote) must never make doctor hang or fail;
+// it just skips this one check silently, exactly like cleanup.sh's own
+// fast-forward step does for the same reason.
+function checkBaseBranch(out, cfg, r) {
+  const remote = 'origin';
+  const branch = (cfg.project && cfg.project.baseBranch) || 'main';
+  section('Git');
+
+  let fetchOk = true;
+  try {
+    execSync(`git fetch --quiet ${remote} ${branch}`, { cwd: out, stdio: ['ignore', 'ignore', 'ignore'] });
+  } catch (e) { fetchOk = false; }
+  if (!fetchOk) return;
+
+  let counts;
+  try {
+    counts = execSync(`git rev-list --left-right --count ${branch}...${remote}/${branch}`,
+      { cwd: out, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch (e) { return; }
+
+  // `--left-right --count A...B` prints "<unique to A> <unique to B>" —
+  // ahead, then behind. Ahead-only or even is silent: a human legitimately
+  // ahead of origin (unpushed local commits) is a different, unrelated
+  // situation this check must not false-positive against.
+  const m = /^(\d+)\s+(\d+)$/.exec(counts);
+  if (!m) return;
+  const behind = parseInt(m[2], 10);
+  if (behind > 0) {
+    r.warn(`local ${branch} is ${behind} commit${behind === 1 ? '' : 's'} behind ${remote}/${branch} — ` +
+      'usually because Phase 4 cleanup\'s fast-forward didn\'t run, or a merge landed outside the ' +
+      'workflow; run `concertino sync` after bringing it forward');
+  } else {
+    r.ok('base branch', `${branch} is current with ${remote}/${branch}`);
+  }
+}
+
 function cmdDoctor(args) {
   const out = path.resolve(args.out || '.');
   const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
@@ -957,6 +997,8 @@ function cmdDoctor(args) {
         const pwVer = shell('npx playwright --version 2>/dev/null');
         pwVer ? ok('playwright', pwVer) : warn('playwright not found — run `npx playwright install` in the project');
       }
+
+      checkBaseBranch(out, cfg, { ok, warn });
 
       const core = resolveCore(REPO, out, args.core);
       checkArtifacts(out, core, !!args.core, harnesses, { ok, warn });

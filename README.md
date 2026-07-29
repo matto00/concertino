@@ -22,7 +22,7 @@ Three structural properties — none requiring a human — make the loop self-co
 
 | Agent | Posture | Role |
 | ----- | ------- | ---- |
-| **Orchestrator** | coordinator | Fetches the ticket, sets up an isolated worktree, drives Planning → Execution → Evaluation, delivers, cleans up. Never writes code. Holds only IDs/paths/counters in `workflow-state.md`. |
+| **Orchestrator** | coordinator | Fetches the ticket, sets up an isolated worktree, drives Planning → Execution → Evaluation, delivers, cleans up — including fast-forwarding local `main` after the merge, escalating rather than touching it if that isn't safe. Never writes code. Holds only IDs/paths/counters in `workflow-state.md`. |
 | **Executor** | builder (warm) | Implements the planned change, runs the configured verification gates, commits. Bound to the Iron Laws and the project's canonical docs. |
 | **Evaluator** | reviewer (warm) | Three-phase review (spec / code / UI). Re-runs gates independently. Files specific, actionable change requests. Owns the *mechanical* checklist. |
 | **Skeptic** | adversary (cold) | Spawned fresh at two gates — design-soundness (post-planning) and final (post-evaluator-PASS). Tries to *refute*. Owns subjective design judgment and the final sign-off. |

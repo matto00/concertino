@@ -2,7 +2,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const {
-  buildFrame, attachAndRestore, CURSOR_HOME, ALT_SCREEN_ENTER, ALT_SCREEN_EXIT,
+  buildFrame, attachAndRestore, computeLiveEscalations,
+  CURSOR_HOME, ALT_SCREEN_ENTER, ALT_SCREEN_EXIT,
 } = require('../lib/ui/watch');
 const { padTo, visibleLength } = require('../lib/ui/format');
 
@@ -109,4 +110,40 @@ test('attachAndRestore runs restore() even when fn() throws, and rethrows', () =
   );
   assert.equal(restored, true,
     'the terminal hand-back (alternate-buffer restore, raw mode) must still run after a throwing attach');
+});
+
+// --- computeLiveEscalations: what the cross-screen banner (CON-25) targets --
+// Deliberately narrower than, and not the same filter as, fleet.js's
+// `needsYou` (status === 'needs-you' also matches a BLOCKER-verdict run with
+// no live run.escalation at all — nothing answer.json could resolve).
+
+function run(over) {
+  return Object.assign({ ticket: 'HEL-1', escalation: null, escalationStale: false }, over);
+}
+
+test('a run with no escalation at all is excluded', () => {
+  assert.deepEqual(computeLiveEscalations([run({})]), []);
+});
+
+test('a run with a stale escalation is excluded', () => {
+  const r = run({ escalation: { question: 'q', raisedAt: 1 }, escalationStale: true });
+  assert.deepEqual(computeLiveEscalations([r]), []);
+});
+
+test('a run with a live escalation is included', () => {
+  const r = run({ escalation: { question: 'q', raisedAt: 1 }, escalationStale: false });
+  assert.deepEqual(computeLiveEscalations([r]), [r]);
+});
+
+test('several live escalations sort oldest-raisedAt-first', () => {
+  const newest = run({ ticket: 'HEL-3', escalation: { question: 'q3', raisedAt: 900 } });
+  const oldest = run({ ticket: 'HEL-1', escalation: { question: 'q1', raisedAt: 100 } });
+  const middle = run({ ticket: 'HEL-2', escalation: { question: 'q2', raisedAt: 500 } });
+  const sorted = computeLiveEscalations([newest, oldest, middle]);
+  assert.deepEqual(sorted.map((r) => r.ticket), ['HEL-1', 'HEL-2', 'HEL-3']);
+});
+
+test('an empty or missing runs list is handled safely', () => {
+  assert.deepEqual(computeLiveEscalations([]), []);
+  assert.deepEqual(computeLiveEscalations(undefined), []);
 });

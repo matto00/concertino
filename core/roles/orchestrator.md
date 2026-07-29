@@ -280,6 +280,16 @@ After the human confirms merge:
    scripts/concertino/assert-phase.sh cleanup "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"
    ```
 
+   `cleanup.sh` also fast-forwards local `<base>` now (bringing it up to date
+   after the merge that just happened) and, when it can't do that safely, may
+   itself block on an `emit-event.sh escalation --await` call exactly like the
+   ones described below. **Give this Bash call the same long, explicit timeout
+   guidance given for the orchestrator's own `--await` calls above** — it may
+   now block for as long as a human takes to answer. It always still exits 0
+   and prints its normal `READY cleaned worktree=...` line once that
+   escalation resolves (answered, skipped, or timed out), so this step
+   completes either way; there is nothing else to handle here.
+
 2. Set the ticket to **Done** and post a closing comment (what shipped + merged PR link).
 3. **Hygiene check** (report only — do not auto-fix):
 {{block:hygiene}}
