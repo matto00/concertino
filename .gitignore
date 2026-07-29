@@ -8,6 +8,10 @@ scripts/concertino/.concertino.env
 /.claude/agents/concertino-*.md
 /.claude/commands/concertino-*.md
 
+# Git worktrees live inside the repo; committing one records a gitlink to a
+# local-only checkout that no clone can resolve.
+/.claude/worktrees/
+
 # Editor / OS
 .DS_Store
 *.log
