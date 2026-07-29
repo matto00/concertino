@@ -1,8 +1,0 @@
-- `lib/ui/session.js` — new `captureFull(ticket)` (`tmux capture-pane -p -S - -t <target>`, full history), same error-swallowing shape as `capture()`.
-- `lib/ui/store.js` — new `scrollbackPath(root, ticket)` helper alongside `eventsPath`/`answerPath`; exported.
-- `lib/ui/reap.js` (new) — pure `selectReapable(runs)` (terminal `endStatus` + dead window) and `reapFinished(root, session, runs)` (capture scrollback best-effort, write best-effort, then kill — kill always runs).
-- `lib/ui/watch.js` — requires `./reap` and calls `reap.reapFinished(root, session, runs)` in `draw()`, immediately after `runs = reduce(...)`.
-- `docs/dashboard.md` — new "Window reaping" subsection near Retention: conservative policy, scrollback capture location, the never-reaps-without-`run.end` guarantee, and the placeholder/smoke-session exclusion.
-- `test/session.test.js` — `captureFull` coverage (full scrollback for a live window; `''` for an unknown/unaddressable ticket).
-- `test/reap.test.js` (new) — pure `selectReapable` cases; the ticket's mandatory guarantee (`reducer.reduce()` on a dead window with no `run.end` resolves to `failed` and is never selected); `reapFinished` against a fake session (scrollback-before-kill ordering, capture-throw and write-failure don't block kill); a real-tmux integration test (window closed, scrollback on disk).
-- `test/watch.test.js` — wiring test: `reap.reapFinished` is invoked exactly once per `draw()`, called with `reduce()`'s own output, via require.cache-substituted `session`/`reap` modules and a fake stdin (no real tmux touched).
