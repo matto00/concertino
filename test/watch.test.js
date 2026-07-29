@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const {
-  buildFrame, attachAndRestore, computeLiveEscalations,
+  buildFrame, attachAndRestore, computeLiveEscalations, idleMsFromActivity,
   CURSOR_HOME, ALT_SCREEN_ENTER, ALT_SCREEN_EXIT,
 } = require('../lib/ui/watch');
 const { padTo, visibleLength } = require('../lib/ui/format');
@@ -110,6 +110,55 @@ test('attachAndRestore runs restore() even when fn() throws, and rethrows', () =
   );
   assert.equal(restored, true,
     'the terminal hand-back (alternate-buffer restore, raw mode) must still run after a throwing attach');
+});
+
+// --- CON-5: idle time is a stateless function of tmux window_activity ------
+// (replaces the old idle-Map + pane-content-hash tracking; see design.md).
+
+test('idleMsFromActivity reflects a later activity timestamp immediately, not only on the first call', () => {
+  const t0 = 1000; // epoch seconds
+  const now = t0 * 1000 + 5000; // 5s after t0, in ms
+
+  const stale = idleMsFromActivity(t0, now);
+  assert.equal(stale, 5000);
+
+  // A later poll observes activity has advanced closer to `now` — the
+  // result must shrink accordingly on THIS call, not wait for a subsequent
+  // one to notice.
+  const advanced = t0 + 4; // 4s later, still in epoch seconds
+  const fresh = idleMsFromActivity(advanced, now);
+  assert.equal(fresh, 1000);
+  assert.ok(fresh < stale, 'idleMs must decrease as soon as activity advances, on the very next call');
+});
+
+test('idleMsFromActivity tracks activity, never pane content, since content is not and cannot be an input', () => {
+  // The acceptance criterion is "a window that redraws identical content
+  // must not read as idle". idleMsFromActivity takes no content argument at
+  // all, so this is demonstrated structurally: an advancing `activity`
+  // (the only signal tmux gives us, whether or not the redrawn frame is
+  // byte-identical to the last one) always yields a correspondingly low
+  // idleMs, regardless of what — if anything — was on screen.
+  const now = 100000;
+  const justWritten = idleMsFromActivity(100, now); // activity in epoch seconds
+  const longAgo = idleMsFromActivity(1, now);
+  assert.equal(justWritten, now - 100 * 1000);
+  assert.equal(longAgo, now - 1 * 1000);
+  assert.ok(justWritten < longAgo,
+    'result tracks activity alone — there is no content parameter that could override it either way');
+});
+
+test('idleMsFromActivity survives a restart: a fresh process\'s very first call returns the full elapsed time, not zero', () => {
+  // Stateless — there is no "first sight" seed to fall back to, and none is
+  // needed: a "restart" is just calling this function again with a fresh
+  // `now` and the same tmux-owned activity timestamp.
+  const oldActivity = 1000; // epoch seconds, from well before this process started
+  const now = oldActivity * 1000 + 3600000; // an hour later
+  assert.equal(idleMsFromActivity(oldActivity, now), 3600000);
+});
+
+test('idleMsFromActivity falls back to 0 when activity is null (no tmux timestamp yet)', () => {
+  assert.equal(idleMsFromActivity(null, Date.now()), 0);
+  assert.equal(idleMsFromActivity(undefined, Date.now()), 0);
 });
 
 // --- computeLiveEscalations: what the cross-screen banner (CON-25) targets --
