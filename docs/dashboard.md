@@ -75,6 +75,7 @@ bold — so the two panes' selections read as clearly different states, not as
 | `j` / `k` | Move the selection |
 | `n` | Start a new run — type a ticket id, `↵` to launch, `esc` to cancel |
 | `N` | Open the launch pad — browse epics/tickets, pick a batch, launch it. Always bound; if the feature gate is off it explains why rather than doing nothing (see below) |
+| `g` | Reply to the oldest live escalation across the whole fleet, from **whatever screen you're on** — see "The cross-screen escalation banner" below |
 | `q` | Quit the dashboard (runs keep going) |
 
 On the escalation screen: a letter key per option (`a` approve, `d` deny, ...,
@@ -213,6 +214,40 @@ blocks the dashboard from starting. Pruning removes the whole
 `.concertino/runs/<TICKET>/` directory, not just `events.jsonl`, so a pruned
 ticket reads as "never ran" rather than as a run with a suspiciously empty
 log.
+
+## The cross-screen escalation banner
+
+An escalation is a **fleet-wide** concern, not just a property of the run
+that raised it — a blocked `main` fast-forward (below) is the clearest case:
+every *other* run now branches from a stale base until someone answers. So
+any live escalation also renders as a persistent one- or two-line banner
+above whatever screen is currently on top — the fleet, a drilldown, the
+launch pad, even a *different* run's own escalation screen. It is suppressed
+only on the one screen that would otherwise duplicate it: the raising run's
+own dedicated escalation screen.
+
+Press `g` from anywhere to open a reply box for the banner's escalation
+(always the **oldest** live one, if several are live — the banner also
+states how many more there are) without leaving the screen you're on;
+`esc` cancels without writing anything, `↵` submits through the same
+`answer.json` writer the dedicated escalation screen uses. The banner
+disappears the moment that escalation is answered or times out, on the very
+next poll — the same event (`escalation.answered` / `escalation.timeout`)
+that already clears the row on the fleet.
+
+## Local `main`, fast-forwarded automatically after every merge
+
+Phase 4 cleanup (`cleanup.sh --phase4`) now also fetches the configured base
+remote/branch and fast-forwards local `main` to match it — the one moment
+the workflow already knows a merge just happened. A clean, unambiguous
+fast-forward (nobody has `main` checked out, or it's checked out somewhere
+clean) happens silently, followed by a best-effort `concertino sync`
+re-render so rendered artifacts (`.claude/agents/`, `scripts/concertino/`)
+can't go stale unnoticed. A dirty tree or a diverged local `main` is never
+touched — `cleanup.sh` raises a blocking escalation instead (`retry` after
+you've resolved it out of band, or `skip` to leave it for later), visible via
+the banner above from every screen. `concertino doctor` separately warns when
+local `main` is behind its remote, naming this step as the usual cause.
 
 ## The launch pad — epic browser, ticket viewer, launch plan, queue
 

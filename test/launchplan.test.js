@@ -3,6 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   renderLaunchPlan, handleKey, render, derivePorts, deriveTicketNum, cycleConcurrency,
+  withAgentMergeFlag,
 } = require('../lib/ui/screens/launchplan');
 
 // eslint-disable-next-line no-control-regex
@@ -144,6 +145,54 @@ test('h cycles the harness when more than one is configured', () => {
   const out = plain(renderLaunchPlan(plan({ harnesses: ['claude', 'codex'] }), 0, OPTS));
   assert.match(out, /h harness/);
   assert.deepEqual(handleKey('h', { plan: plan({ harnesses: ['claude', 'codex'] }) }), { type: 'cycle-harness' });
+});
+
+// --- CON-24: agent-merge toggle, shown pre-flight like ports/harness --------
+
+test('withAgentMergeFlag inserts --agent-merge immediately after {{TICKET}}, inside the quotes', () => {
+  assert.equal(
+    withAgentMergeFlag('claude "/concertino-deliver {{TICKET}}"', true),
+    'claude "/concertino-deliver {{TICKET}} --agent-merge"',
+  );
+});
+
+test('withAgentMergeFlag inserts --no-agent-merge when disabled', () => {
+  assert.equal(
+    withAgentMergeFlag('claude "/concertino-deliver {{TICKET}}"', false),
+    'claude "/concertino-deliver {{TICKET}} --no-agent-merge"',
+  );
+});
+
+test('withAgentMergeFlag replaces a previously-set flag rather than appending a second one', () => {
+  const once = withAgentMergeFlag('claude "/concertino-deliver {{TICKET}}"', true);
+  const twice = withAgentMergeFlag(once, false);
+  assert.equal(twice, 'claude "/concertino-deliver {{TICKET}} --no-agent-merge"');
+});
+
+test('withAgentMergeFlag survives a harness change (re-applied, not dropped)', () => {
+  const withFlag = withAgentMergeFlag('claude "/concertino-deliver {{TICKET}}"', true);
+  const afterHarnessSwitch = withAgentMergeFlag('codex "/concertino-deliver {{TICKET}}"', true);
+  assert.equal(afterHarnessSwitch, 'codex "/concertino-deliver {{TICKET}} --agent-merge"');
+  assert.notEqual(withFlag, afterHarnessSwitch);
+});
+
+test('the plan shows the resolved agent-merge value pre-flight', () => {
+  const outOn = plain(renderLaunchPlan(plan({ agentMerge: true, agentMergeEditable: true }), 0, OPTS));
+  assert.match(outOn, /agent-merge\s+on/);
+  const outOff = plain(renderLaunchPlan(plan({ agentMerge: false, agentMergeEditable: true }), 0, OPTS));
+  assert.match(outOff, /agent-merge\s+off/);
+});
+
+test('m is not advertised (or bound) when a custom launchCommand override disables editing', () => {
+  const out = plain(renderLaunchPlan(plan({ agentMergeEditable: false }), 0, OPTS));
+  assert.doesNotMatch(out, /m agent-merge/);
+  assert.equal(handleKey('m', { plan: plan({ agentMergeEditable: false }) }), null);
+});
+
+test('m cycles agent-merge when editable', () => {
+  const out = plain(renderLaunchPlan(plan({ agentMergeEditable: true }), 0, OPTS));
+  assert.match(out, /m agent-merge/);
+  assert.deepEqual(handleKey('m', { plan: plan({ agentMergeEditable: true }) }), { type: 'cycle-agent-merge' });
 });
 
 // --- key handling ----------------------------------------------------------------

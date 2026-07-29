@@ -284,8 +284,12 @@ function withDefaults(c) {
     c.budgets || {}
   );
   c.models = Object.assign(
-    { orchestrator: 'sonnet', executor: 'sonnet', evaluator: 'sonnet', skeptic: 'sonnet', codex: CODEX_MODEL_FALLBACK },
+    { orchestrator: 'sonnet', executor: 'sonnet', evaluator: 'sonnet', skeptic: 'sonnet', auditor: 'sonnet', codex: CODEX_MODEL_FALLBACK },
     c.models || {}
+  );
+  c.agentMerge = Object.assign(
+    { enabled: false, mergeMethod: 'squash' },
+    c.agentMerge || {}
   );
   c.commitTrailer = c.commitTrailer || '';
   return c;
@@ -491,7 +495,7 @@ function renderEnv(c) {
 // ---------- harness emitters ---------------------------------------------
 function emitClaude(c, out, core, dry) {
   const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
-  for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic']) {
+  for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic', 'auditor']) {
     const r = meta.roles[role];
     let tools = r.baseTools.slice();
     if (r.usesUi && c.ui.enabled && c.ui.tool === 'playwright') tools = tools.concat(meta.playwrightTools);
@@ -523,7 +527,7 @@ function emitClaude(c, out, core, dry) {
 
 function emitCodex(c, out, core, dry) {
   const header = read(path.join(ADAPTERS, 'codex', 'header.md')).split('{{project}}').join(c.project.name);
-  const roleSections = ['orchestrator', 'executor', 'evaluator', 'skeptic'].map((role) => {
+  const roleSections = ['orchestrator', 'executor', 'evaluator', 'skeptic', 'auditor'].map((role) => {
     const body = renderBody(read(path.join(core, 'roles', role + '.md')), c, 'codex');
     return '## Role: ' + role[0].toUpperCase() + role.slice(1) + '\n\n' + body;
   }).join('\n\n---\n\n');
@@ -543,7 +547,7 @@ function emitCodex(c, out, core, dry) {
 
   const tmpl = read(path.join(ADAPTERS, 'codex', 'agent.toml.tmpl'));
   const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
-  for (const role of ['executor', 'evaluator']) {
+  for (const role of ['executor', 'evaluator', 'auditor']) {
     const body = renderBody(readRoleFile(role, out, core), c, 'codex');
     const desc = meta.roles[role].description.split('{{project}}').join(c.project.name);
     const toml = tmpl.split('{{role}}').join(role)
@@ -631,12 +635,14 @@ function buildConfig(a) {
       executor: 'sonnet',
       evaluator: 'sonnet',
       skeptic: 'sonnet',
+      auditor: 'sonnet',
       codex: a.codexModel || 'codex-mini-latest',
     },
     ui: a.hasUi
       ? { enabled: true, tool: 'playwright', triggers: ['src/**'], breakpoints: [1280, 768, 0] }
       : { enabled: false, tool: 'none' },
     budgets: { executionCycles: 3, skepticDesignRounds: 3, skepticFinalRounds: 2, debugAttempts: 2 },
+    agentMerge: { enabled: !!a.agentMergeEnabled, mergeMethod: a.agentMergeMethod || 'squash' },
     commitTrailer: a.trailer,
   };
   if (a.hasUi) {
@@ -683,6 +689,10 @@ async function promptConfig(out) {
 
     section('Extras');
     const trailer = await ask('Commit trailer', 'Co-Authored-By: Claude <noreply@anthropic.com>', s());
+    const agentMergeEnabled = await askYN(ask, 'Agent-merge (let a verified run merge its own PR)?', false, s());
+    const agentMergeMethod = agentMergeEnabled
+      ? await askChoice(ask, 'Agent-merge method', ['squash', 'merge', 'rebase'], 'squash', s())
+      : 'squash';
 
     // Summary
     section('Summary');
@@ -699,6 +709,7 @@ async function promptConfig(out) {
       ['UI',       hasUi ? 'playwright' : 'none'],
       ['Gates',    gateNote],
       ['Trailer',  dim(trailer || '(none)')],
+      ['Agent-merge', agentMergeEnabled ? green('enabled') + dim('  (' + agentMergeMethod + ')') : dim('disabled')],
     ];
     for (const [k, v] of rows) {
       console.log(`  ${gray(k.padEnd(10))}  ${v}`);
@@ -713,11 +724,12 @@ async function promptConfig(out) {
       '  canonicalDocs   — add your standards docs (CONTRIBUTING.md, DESIGN.md, etc.)\n' +
       '  devServers      — fill in start commands + health URLs if using dev servers\n' +
       '  worktree.hooks  — post-checkout commands (npm ci, husky install, etc.)\n' +
-      '  models          — set executor/evaluator/skeptic to opus|sonnet|haiku as needed'
+      '  models          — set executor/evaluator/skeptic/auditor to opus|sonnet|haiku as needed\n' +
+      '  agentMerge      — override enabled/mergeMethod per project, or per-run with --agent-merge'
     ));
     console.log('');
 
-    return buildConfig({ name, baseBranch, ticket, spec, harnesses, codexModel, frontendBase, backendBase, hasUi, trailer, gates: detection.gates });
+    return buildConfig({ name, baseBranch, ticket, spec, harnesses, codexModel, frontendBase, backendBase, hasUi, trailer, gates: detection.gates, agentMergeEnabled, agentMergeMethod });
   } finally {
     rl.close();
   }
@@ -755,7 +767,7 @@ function cmdEject(args) {
   const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
 
   if (!role) {
-    console.error(red('error: ') + '--role is required  (orchestrator | executor | evaluator | skeptic)');
+    console.error(red('error: ') + '--role is required  (orchestrator | executor | evaluator | skeptic | auditor)');
     process.exit(1);
   }
   if (!exists(cfgPath)) {
@@ -784,8 +796,8 @@ function cmdEject(args) {
     const fm = ['---', '# concertino:sync v' + VERSION, 'name: concertino-' + role, 'description: >-', '  ' + desc, 'model: ' + model, 'color: ' + r.color, 'tools:', ...tools.map((t) => '  - ' + t), '---', ''].join('\n');
     process.stdout.write(fm + body);
   } else if (harness === 'codex') {
-    if (!['executor', 'evaluator'].includes(role)) {
-      console.error(red('error: ') + 'codex harness only has executor and evaluator');
+    if (!['executor', 'evaluator', 'auditor'].includes(role)) {
+      console.error(red('error: ') + 'codex harness only has executor, evaluator, and auditor');
       process.exit(1);
     }
     const tmpl = read(path.join(ADAPTERS, 'codex', 'agent.toml.tmpl'));
@@ -879,7 +891,7 @@ function checkArtifacts(out, core, coreForced, harnesses, r) {
   // check; claiming more than that would be worse than checking less.
   const absent = [];
   if (harnesses.includes('claude-code')) {
-    for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic']) {
+    for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic', 'auditor']) {
       const p = path.join(out, '.claude', 'agents', 'concertino-' + role + '.md');
       if (!exists(p)) absent.push(path.relative(out, p));
     }
@@ -891,6 +903,46 @@ function checkArtifacts(out, core, coreForced, harnesses, r) {
   absent.length
     ? r.warn('not rendered: ' + absent.join(', ') + ' — run `concertino sync`')
     : r.ok('agent files', 'present for ' + harnesses.join(', '));
+}
+
+// ---------- local-base-behind-remote check (doctor, CON-25) ---------------
+// Names the likely CAUSE of the rendered-artifact drift checkArtifacts()
+// above already detects: Phase 4 cleanup's fast-forward not having run, or a
+// merge that landed outside the workflow entirely. Best-effort — a fetch
+// failure (offline, or no such remote) must never make doctor hang or fail;
+// it just skips this one check silently, exactly like cleanup.sh's own
+// fast-forward step does for the same reason.
+function checkBaseBranch(out, cfg, r) {
+  const remote = 'origin';
+  const branch = (cfg.project && cfg.project.baseBranch) || 'main';
+  section('Git');
+
+  let fetchOk = true;
+  try {
+    execSync(`git fetch --quiet ${remote} ${branch}`, { cwd: out, stdio: ['ignore', 'ignore', 'ignore'] });
+  } catch (e) { fetchOk = false; }
+  if (!fetchOk) return;
+
+  let counts;
+  try {
+    counts = execSync(`git rev-list --left-right --count ${branch}...${remote}/${branch}`,
+      { cwd: out, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch (e) { return; }
+
+  // `--left-right --count A...B` prints "<unique to A> <unique to B>" —
+  // ahead, then behind. Ahead-only or even is silent: a human legitimately
+  // ahead of origin (unpushed local commits) is a different, unrelated
+  // situation this check must not false-positive against.
+  const m = /^(\d+)\s+(\d+)$/.exec(counts);
+  if (!m) return;
+  const behind = parseInt(m[2], 10);
+  if (behind > 0) {
+    r.warn(`local ${branch} is ${behind} commit${behind === 1 ? '' : 's'} behind ${remote}/${branch} — ` +
+      'usually because Phase 4 cleanup\'s fast-forward didn\'t run, or a merge landed outside the ' +
+      'workflow; run `concertino sync` after bringing it forward');
+  } else {
+    r.ok('base branch', `${branch} is current with ${remote}/${branch}`);
+  }
 }
 
 function cmdDoctor(args) {
@@ -957,6 +1009,8 @@ function cmdDoctor(args) {
         const pwVer = shell('npx playwright --version 2>/dev/null');
         pwVer ? ok('playwright', pwVer) : warn('playwright not found — run `npx playwright install` in the project');
       }
+
+      checkBaseBranch(out, cfg, { ok, warn });
 
       const core = resolveCore(REPO, out, args.core);
       checkArtifacts(out, core, !!args.core, harnesses, { ok, warn });
@@ -1060,7 +1114,7 @@ function cmdDiff(args) {
 
   if (harnesses.includes('claude-code')) {
     const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
-    for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic']) {
+    for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic', 'auditor']) {
       const r = meta.roles[role];
       let tools = r.baseTools.slice();
       if (r.usesUi && c.ui.enabled && c.ui.tool === 'playwright') tools = tools.concat(meta.playwrightTools);
@@ -1080,7 +1134,7 @@ function cmdDiff(args) {
   if (harnesses.includes('codex')) {
     const tmpl = read(path.join(ADAPTERS, 'codex', 'agent.toml.tmpl'));
     const meta = JSON.parse(read(path.join(ADAPTERS, 'claude-code', 'agents.json')));
-    for (const role of ['executor', 'evaluator']) {
+    for (const role of ['executor', 'evaluator', 'auditor']) {
       const body = renderBody(readRoleFile(role, out, core), c, 'codex');
       const desc = meta.roles[role].description.split('{{project}}').join(c.project.name);
       const toml = '# concertino:sync v' + VERSION + '\n' + tmpl
@@ -1337,9 +1391,9 @@ function cmdValidate(args) {
   // ── Models ───────────────────────────────────────────────────────────────
   section('Models');
   const ALIASES = ['opus', 'sonnet', 'haiku'];
-  const modelDefaults = { orchestrator: 'sonnet', executor: 'sonnet', evaluator: 'sonnet', skeptic: 'sonnet', codex: CODEX_MODEL_FALLBACK };
+  const modelDefaults = { orchestrator: 'sonnet', executor: 'sonnet', evaluator: 'sonnet', skeptic: 'sonnet', auditor: 'sonnet', codex: CODEX_MODEL_FALLBACK };
   const models = Object.assign({}, modelDefaults, cfg.models || {});
-  for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic']) {
+  for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic', 'auditor']) {
     const m = models[role];
     (ALIASES.includes(m) || /^claude-/.test(m))
       ? ok(role, m)
@@ -1437,7 +1491,8 @@ function cmdUpdate(args) {
   const pairs = args._.slice(1);
   if (!pairs.length) {
     console.error(red('error: ') + 'usage: concertino update <key=value> [key=value ...]');
-    console.error('       example: concertino update models.skeptic=opus budgets.executionCycles=5');
+    console.error('       example: concertino update models.skeptic=opus models.auditor=opus budgets.executionCycles=5');
+    console.error('       example: concertino update agentMerge.enabled=true agentMerge.mergeMethod=squash');
     process.exit(1);
   }
 
@@ -1568,7 +1623,9 @@ function help() {
       Update one or more config fields using dot-notation, then re-sync.
       Examples:
         ${dim('concertino update models.skeptic=opus models.evaluator=haiku')}
+        ${dim('concertino update models.auditor=opus')}
         ${dim('concertino update project.name=myapp budgets.executionCycles=5')}
+        ${dim('concertino update agentMerge.enabled=true agentMerge.mergeMethod=squash')}
 
   ${cyan('concertino validate')} ${dim('[--config=PATH] [--out=DIR]')}
       Check concertino.config.json for errors and warnings before syncing.
@@ -1604,10 +1661,11 @@ function help() {
       Without --run: list all configured gates with their commands.
       With --run: execute that gate's command against the project root.
 
-  ${cyan('concertino eject')} ${dim('--role=<role> [--harness=claude-code|codex] [--config=PATH] [--out=DIR] [--core=PATH]')}
+  ${cyan('concertino eject')} ${dim('--role=<orchestrator|executor|evaluator|skeptic|auditor> [--harness=claude-code|codex] [--config=PATH] [--out=DIR] [--core=PATH]')}
       Print the fully-rendered agent file for a role to stdout. Respects
       local template overrides in .concertino/roles/. Useful for debugging
-      exactly what an agent is reading.
+      exactly what an agent is reading. The codex harness only supports
+      executor, evaluator, and auditor (the optional worker-dispatch roles).
       Example: ${dim('concertino eject --role=executor | less')}
 
   ${cyan('concertino migrate')} ${dim('[--config=PATH] [--out=DIR] [--dry-run]')}

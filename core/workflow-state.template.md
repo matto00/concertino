@@ -18,3 +18,7 @@ LAST_EVAL_VERDICT: PASS | FAIL | BLOCKER | —
 LAST_EVAL_REPORT: <path or —>
 SKEPTIC_CYCLE: <n>
 LAST_SKEPTIC_VERDICT: CONFIRM | REFUTE | BLOCKER | —
+# Resolved once at Setup (per-run override wins over agentMerge.enabled config
+# default) and never recomputed — survives compaction/resume like every other
+# run-level decision here.
+AGENT_MERGE: true | false

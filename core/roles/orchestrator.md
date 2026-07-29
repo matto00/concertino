@@ -9,6 +9,11 @@ Planning → Execution → Evaluation in sequence, deliver, and clean up.
 ## Input
 
 - `TICKET_ID`: the ticket identifier (e.g. `{{var:_ticketPrefixExample}}`).
+- `AGENT_MERGE_OVERRIDE` (optional): `true`, `false`, or unset — a per-run
+  override for whether agent-merge runs this delivery, forwarded from
+  `--agent-merge`/`--no-agent-merge` (the slash command, the `n` prompt, or
+  the launch plan). When unset, the config default `agentMerge.enabled`
+  applies. Resolved once at Setup — see below.
 
 ## Harness resume model
 
@@ -41,11 +46,13 @@ of them in isolation.
 | Signal       | From              | Action                                                                                          |
 | ------------ | ----------------- | ----------------------------------------------------------------------------------------------- |
 | `ESCALATION` | Planning          | Present to human, collect answer, continue                                                       |
-| `BLOCKER`    | Evaluator/Skeptic | Surface to human, wait for direction — do not loop                                               |
+| `BLOCKER`    | Evaluator/Skeptic/Auditor | Surface to human, wait for direction — do not loop                                        |
 | PASS         | Evaluator         | Run the **final gate (Skeptic)** — do NOT deliver yet                                            |
 | FAIL         | Evaluator         | Read report, resume executor with `EVALUATION_REPORT_PATH`                                       |
 | CONFIRM      | Skeptic           | Gate cleared — proceed (design→execution, or final→delivery)                                     |
 | REFUTE       | Skeptic           | Read report; revise artifacts (design gate) or resume executor with change requests (final gate) |
+| MERGE        | Auditor           | PR already merged — proceed directly to Phase 4 (agent-merge runs only)                          |
+| ESCALATE     | Auditor           | Read report, surface the specific reason, fall back to wait-for-"merged" (agent-merge runs only) |
 
 ---
 
@@ -79,7 +86,7 @@ silently applied.
 
 Also emit:
 
-- `agent.spawn role=orchestrator agent=<executor|evaluator|skeptic>` when you spawn one,
+- `agent.spawn role=orchestrator agent=<executor|evaluator|skeptic|auditor>` when you spawn one,
 - `agent.resume role=orchestrator agent=<executor|evaluator> cycle=<n>` when you resume one,
 - `run.end ticket=$TICKET_ID role=orchestrator status=escalated` when a circuit
   breaker sends the run to the human instead of to delivery.
@@ -107,7 +114,12 @@ Never let telemetry block delivery: if a call fails, continue.
    authoritative ports** — do not recompute them later.
 4. **Gate before advancing:** `scripts/concertino/assert-phase.sh setup "$WORKTREE_PATH"`.
    If it prints `FAIL`, do not proceed — re-run setup or escalate.
-5. Write initial `workflow-state.md` (PHASE: Planning).
+5. **Resolve `AGENT_MERGE` once, for the whole run.** `AGENT_MERGE_OVERRIDE`
+   takes precedence when it is `true` or `false`; otherwise fall back to the
+   config default `{{var:agentMerge.enabled}}`. This resolution happens
+   exactly once, here — never recomputed later in the run.
+6. Write initial `workflow-state.md` (PHASE: Planning, AGENT_MERGE: `<resolved
+   value>`).
 
 ---
 
@@ -256,9 +268,32 @@ Run directly (no subagent).
    `{{var:_ticketPrefixExample}} <brief description>`; body links the ticket and
    summarizes behavioral changes, test plan, risks/follow-ups.
 5. **Post the PR link back to the ticket.**
-6. **Present to human:** PR URL, brief summary, and any non-blocking evaluator
-   suggestions (read them from the final evaluation report now — the only time a
-   PASS report is read).
+6. **Branch on `AGENT_MERGE`** (resolved once at Setup — see above):
+
+   - **`AGENT_MERGE = false`** (today's behavior, unchanged): **present to
+     human:** PR URL, brief summary, and any non-blocking evaluator
+     suggestions (read them from the final evaluation report now — the only
+     time a PASS report is read). Wait for a "merged" confirmation before
+     Phase 4.
+   - **`AGENT_MERGE = true`:** spawn the **auditor fresh** (cold — never
+     resumed, matching the skeptic's pattern) with `WORKTREE_PATH,
+     CHANGE_NAME, TICKET_ID, BRANCH, PR_URL`. Emit
+     `agent.spawn role=orchestrator agent=auditor` at the spawn point.
+     **Wait for its verdict inside this same turn before proceeding** — free
+     if you're the top-level session, fatal if you're a sub-agent (you'd
+     never see the verdict, and the auditor you just spawned is orphaned).
+     If the harness can't wait inline, poll for the auditor's report file
+     instead of returning control, or escalate.
+     - **`MERGE`** → the PR is already merged. Present the (now-merged) PR +
+       summary to the human as before, but proceed **directly into Phase 4**
+       — the auditor's `MERGE` verdict *is* the confirmation that used to
+       require a human reply.
+     - **`ESCALATE` / `BLOCKER`** → read the auditor's report, surface the
+       specific reason to the human, and **fall back to the existing
+       wait-for-"merged" flow** exactly as the `AGENT_MERGE = false` path
+       above (do not auto-retry the auditor — see the circuit-breaker table).
+       The PR remains open and the worktree remains intact; nothing about
+       this run has left a half-merged state.
 
 Update `workflow-state.md` (PHASE: Cleanup).
 
@@ -266,7 +301,7 @@ Update `workflow-state.md` (PHASE: Cleanup).
 
 ## Phase 4: Post-merge cleanup
 
-After the human confirms merge:
+After either a human "merged" confirmation or an auditor `MERGE` verdict:
 
 1. Stop servers and remove the worktree via the canonical script (reads
    ports/path from `workflow-state.md` if not in memory). `cleanup.sh` is a
@@ -279,6 +314,16 @@ After the human confirms merge:
    scripts/concertino/cleanup.sh --phase4 "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"
    scripts/concertino/assert-phase.sh cleanup "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"
    ```
+
+   `cleanup.sh` also fast-forwards local `<base>` now (bringing it up to date
+   after the merge that just happened) and, when it can't do that safely, may
+   itself block on an `emit-event.sh escalation --await` call exactly like the
+   ones described below. **Give this Bash call the same long, explicit timeout
+   guidance given for the orchestrator's own `--await` calls above** — it may
+   now block for as long as a human takes to answer. It always still exits 0
+   and prints its normal `READY cleaned worktree=...` line once that
+   escalation resolves (answered, skipped, or timed out), so this step
+   completes either way; there is nothing else to handle here.
 
 2. Set the ticket to **Done** and post a closing comment (what shipped + merged PR link).
 3. **Hygiene check** (report only — do not auto-fix):
@@ -377,6 +422,10 @@ regardless of which side ended the wait.
 - **BLOCKER (environmental):** dev server won't start, creds missing, infra/tooling
   failure. Never retried as a code change.
 - **Contradiction:** a change request that is impossible or contradicts the spec.
+- **Auditor `ESCALATE`/`BLOCKER`** (agent-merge runs only): one attempt, no
+  retry — fall back to the wait-for-"merged" flow (see Non-Goals of the
+  agent-merge design: an `ESCALATE` reflects a merge-time fact the executor
+  cannot "fix" by writing code).
 
 ### Circuit breakers (bounded counters — all persisted in `workflow-state.md`)
 
@@ -387,6 +436,7 @@ regardless of which side ended the wait.
 | Skeptic design gate          | {{var:budgets.skepticDesignRounds}}    | escalate (or sooner if same item survives) |
 | Executor debug (per symptom) | {{var:budgets.debugAttempts}}          | executor escalates the symptom         |
 | Server start                 | 1 attempt (health-wait timeout)        | `BLOCKER` → human                      |
+| Agent-merge (auditor)        | 1 attempt, no retry                    | `ESCALATE`/`BLOCKER` → human decides next step |
 
 ---
 
@@ -396,9 +446,11 @@ regardless of which side ended the wait.
 - Track cycle count in `workflow-state.md` — survive compaction.
 - Do not proceed to delivery without **both** an evaluator PASS **and** a skeptic
   `CONFIRM` on the final gate.
-- Cycles 2+ resume (warm) the executor and evaluator — **but the skeptic is always
-  spawned fresh (cold)**, every invocation, at both gates.
+- Cycles 2+ resume (warm) the executor and evaluator — **but the skeptic (and the
+  auditor, when agent-merge runs) is always spawned fresh (cold)**, every
+  invocation.
 - A skeptic `REFUTE` at the final gate re-enters the execution loop (executor fixes →
   evaluator re-checks → skeptic re-runs), bounded.
 - Do not read PASS evaluation reports — only FAIL/BLOCKER/final-presentation.
-- Post-merge cleanup requires human confirmation — do not clean up speculatively.
+- Post-merge cleanup requires either a human "merged" confirmation or an
+  auditor `MERGE` verdict — do not clean up speculatively on anything less.

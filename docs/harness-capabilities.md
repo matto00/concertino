@@ -12,7 +12,7 @@ here means a shared neutral core with **full fidelity on Claude Code** and a
 | Spawn a typed sub-agent from the running agent | ✅ `Agent` tool | ⚠️ only `spawn_agents_on_csv` (batch); no targeted dispatch |
 | Sub-agent nesting | ✅ up to 5 levels | ⚠️ `max_depth` (default 1) |
 | Warm resume / inter-agent messaging | ✅ `SendMessage`, persisted transcripts | ❌ workers `report_agent_job_result`; no routing |
-| Orchestrator → executor → evaluator → skeptic topology | ✅ first-class | ❌ not supported directly |
+| Orchestrator → executor → evaluator → skeptic → (agent-merge) auditor topology | ✅ first-class | ❌ not supported directly |
 | Background / parallel agents | ✅ | ⚠️ threads run, coordination is manual |
 | Custom instructions | `.claude/agents/*.md` (per-agent) | `AGENTS.md` (single shared doc) |
 | Slash commands / prompts | `.claude/commands/*.md` | `.codex/prompts/*.md` |
@@ -28,6 +28,8 @@ The orchestrator runs as a coordinator agent and:
 - **warm-resumes** them with `SendMessage` across evaluation cycles (so they keep
   their context instead of re-reading everything),
 - spawns the **skeptic fresh** at both gates (cold by construction),
+- spawns the **auditor fresh**, once, after PR creation — only when agent-merge
+  resolves `true` for the run — to verify the delivery and merge it, or escalate,
 - falls back to a `RESUME — do not start over` fresh spawn if `SendMessage` is
   unavailable in the session (state lives in `workflow-state.md`).
 
@@ -45,20 +47,25 @@ playing each role in turn:
 4. Evaluator: re-run gates → three-phase review → PASS / change requests.
 5. Skeptic (final gate): re-establish ground truth, trace ACs, run the app, judge UI.
 6. Orchestrator: squash → archive → push → PR → comment.
+7. Auditor (agent-merge only): verify the four merge conditions
+   (`check-merge-readiness.sh` plus a cold AC trace) and merge, or escalate with
+   the reason — strictly after step 6, since it operates on the PR step 6 just
+   created. Skipped entirely when agent-merge is disabled for the run.
 
-**The one property that degrades is *coldness*.** On Claude Code the skeptic is a
-genuinely fresh process with no shared context. On Codex the same thread plays the
-skeptic, so it's asked to **deliberately re-derive every conclusion from ground
-truth** (the diff, the files, the running app, fresh gate runs) and *ignore its own
+**The one property that degrades is *coldness*.** On Claude Code the skeptic (and,
+when agent-merge is enabled, the auditor) is a genuinely fresh process with no
+shared context. On Codex the same thread plays both, so it's asked to
+**deliberately re-derive every conclusion from ground truth** (the diff, the
+files, the running app, fresh gate runs, the event log) and *ignore its own
 earlier narrative*. That's a behavioral discipline, not a structural guarantee — it
 catches less than a truly cold reviewer, but the evidence gates (re-run the gates,
-trace each AC to real code, screenshot the UI) still hold because they're grounded in
-artifacts, not memory.
+trace each AC to real code, screenshot the UI, re-check `check-merge-readiness.sh`)
+still hold because they're grounded in artifacts, not memory.
 
 The `.codex/agents/*.toml` definitions are provided for environments where Codex's
-limited worker spawning *is* available — you can optionally dispatch the executor or
-evaluator as a worker — but the default and recommended Codex path is the sequential
-single-thread flow in `AGENTS.md`.
+limited worker spawning *is* available — you can optionally dispatch the executor,
+evaluator, or auditor as a worker — but the default and recommended Codex path is
+the sequential single-thread flow in `AGENTS.md`.
 
 ### Everything that stays identical
 

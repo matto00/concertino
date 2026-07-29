@@ -2,11 +2,14 @@
 
 # Concertino — ticket-delivery orchestra ({{project}})
 
-This project uses **Concertino**: an evidence-gated, four-role workflow for taking a
-ticket from spec to merged PR. On Codex there is **no programmatic multi-agent
-dispatch or warm-resume**, so you run the loop **sequentially in a single thread** —
-you play each role in turn, reading its spec below, persisting `workflow-state.md`
-between phases, and calling the procedure scripts under `scripts/concertino/`.
+This project uses **Concertino**: an evidence-gated, five-role workflow for taking
+a ticket from spec to merged PR — orchestrator, executor, evaluator, skeptic, and
+(when agent-merge is enabled for a run) a cold **auditor** that verifies a
+completed delivery and merges it, or escalates. On Codex there is **no
+programmatic multi-agent dispatch or warm-resume**, so you run the loop
+**sequentially in a single thread** — you play each role in turn, reading its spec
+below, persisting `workflow-state.md` between phases, and calling the procedure
+scripts under `scripts/concertino/`.
 
 The skeptic's "cold" property is approximated by **re-reading ground truth from
 scratch** (the diff, the files, the running app) and deliberately ignoring your own
@@ -23,7 +26,7 @@ the single thread reading this file, play every role yourself in turn, so there 
 no child to orphan. The one place the identical risk still exists is the
 *optional* worker-dispatch path (`.codex/agents/*.toml` + `spawn_agents_on_csv`,
 described in `docs/harness-capabilities.md`): if you use it to dispatch the
-executor or evaluator as a worker, you must wait for it to call
+executor, evaluator, or auditor as a worker, you must wait for it to call
 `report_agent_job_result` before your own turn ends — returning early leaves the
 dispatched worker orphaned exactly as an unresumed Claude Code sub-agent would be.
 
@@ -37,6 +40,6 @@ These govern every role. The full text is in `.concertino/laws/`:
 ## How to run
 
 When asked to deliver a ticket, follow the **Orchestrator** role below, switching
-into the Executor / Evaluator / Skeptic roles as it directs.
+into the Executor / Evaluator / Skeptic / Auditor roles as it directs.
 
 <!-- CONCERTINO:ROLES -->
