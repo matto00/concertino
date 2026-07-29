@@ -84,10 +84,14 @@ check "not inside the worktree" \
 rm -rf "$REPO"
 
 # --- identity fields stay strings even when they look numeric ---------------
+# `ticket` itself can no longer be pure digits (looks_like_ticket requires a
+# leading letter/# and a trailing digit — see CON-14), so HEL-42 stands in as
+# a ticket-shaped value; `role` carries no such shape requirement, so `7`
+# still exercises the same auto-unquote-avoidance for that field.
 REPO="$(new_repo)"
-( cd "$REPO" && "$SCRIPT" note ticket=42 role=7 msg=hi ) >/dev/null 2>&1
-LOG="$REPO/.concertino/runs/42/events.jsonl"
-check "numeric ticket stays a string" "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).ticket)' "$LOG")" "string"
+( cd "$REPO" && "$SCRIPT" note ticket=HEL-42 role=7 msg=hi ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/HEL-42/events.jsonl"
+check "ticket stays a string" "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).ticket)' "$LOG")" "string"
 check "numeric role stays a string"   "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).role)' "$LOG")" "string"
 rm -rf "$REPO"
 
@@ -341,6 +345,21 @@ wait "$AWAIT_PID" 2>/dev/null
 check "no context=: no context key at all" \
   "$(grep escalation.raised "$LOG" | head -1 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log("context" in JSON.parse(s))})')" \
   "false"
+rm -rf "$REPO"
+
+# --- a traversal-shaped ticket writes nothing, anywhere ---------------------
+REPO="$(new_repo)"
+BEFORE="$(find "$REPO" -type f | sort)"
+( cd "$REPO" && "$SCRIPT" note ticket=../../../../escape msg=hi ) >/dev/null 2>&1
+RC=$?
+AFTER="$(find "$REPO" -type f | sort)"
+check "exit 0 on traversal-shaped ticket" "$RC" "0"
+check "no runs directory created" "$([ -d "$REPO/.concertino/runs" ] && echo yes || echo no)" "no"
+check "no new file created anywhere" "$AFTER" "$BEFORE"
+# A well-formed sibling ticket id still succeeds in the same run.
+( cd "$REPO" && "$SCRIPT" note ticket=CON-14 msg=hi ) >/dev/null 2>&1
+check "well-formed sibling ticket id still writes its event" \
+  "$([ -f "$REPO/.concertino/runs/CON-14/events.jsonl" ] && echo yes || echo no)" "yes"
 rm -rf "$REPO"
 
 echo "  $PASS passed, $FAIL failed"

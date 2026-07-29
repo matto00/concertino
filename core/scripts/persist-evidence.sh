@@ -30,6 +30,17 @@ set -uo pipefail
 TICKET_ID="${1:?usage: persist-evidence.sh <TICKET_ID> <SOURCE_PATH>}"
 SOURCE_PATH="${2:?usage: persist-evidence.sh <TICKET_ID> <SOURCE_PATH>}"
 
+# A ticket id feeds directly into DEST_DIR below; unvalidated, a traversal
+# shape (`../../../..`) walks out of the runs directory. Same pattern
+# assert-phase.sh/start-servers.sh/cleanup.sh already carry — checked before
+# anything else in this script touches the filesystem.
+looks_like_ticket() { [[ "$1" =~ ^[A-Za-z#][A-Za-z0-9_-]*[0-9]$ ]]; }
+
+if ! looks_like_ticket "$TICKET_ID"; then
+  echo "FAIL invalid TICKET_ID: ${TICKET_ID}" >&2
+  exit 1
+fi
+
 # Resolve the main checkout. `git rev-parse --git-common-dir` points at the
 # shared .git directory from a worktree as well as from the main checkout, but
 # it is RELATIVE on some git versions and absolute on others — normalise both.
