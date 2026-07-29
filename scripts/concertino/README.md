@@ -66,6 +66,14 @@ CONCERTINO_FRONTEND_PORT_BASE   # e.g. 5173
 CONCERTINO_BACKEND_PORT_BASE    # e.g. 8080
 CONCERTINO_ENV_FILES            # space-separated, e.g. "backend/.env"
 CONCERTINO_WORKTREE_HOOKS       # ;-separated, e.g. "npx husky install"
+CONCERTINO_HARNESS              # static default for run.start telemetry: the
+                                 # single configured harness, or empty when more
+                                 # than one is configured. setup-worktree.sh
+                                 # overrides this at runtime with a harness-set
+                                 # env var (CLAUDECODE -> claude-code,
+                                 # CODEX_SANDBOX(_NETWORK_DISABLED) -> codex)
+                                 # when present, falling back to this static
+                                 # value and then "unknown".
 CONCERTINO_BACKEND_CWD          # e.g. backend
 CONCERTINO_BACKEND_START        # e.g. PORT=$BACKEND_PORT sbt run   (no nohup/redirect)
 CONCERTINO_BACKEND_HEALTH       # e.g. http://localhost:$BACKEND_PORT/health

@@ -9,7 +9,7 @@
   "properties": {
     "harnesses": {
       "type": "array",
-      "description": "Which harness adapters to render on sync.",
+      "description": "Which harness adapters to render on sync. Also drives the static CONCERTINO_HARNESS default written to .concertino.env: the single value when exactly one harness is configured, else empty (setup-worktree.sh resolves the actual value at runtime).",
       "items": { "enum": ["claude-code", "codex"] },
       "default": ["claude-code", "codex"]
     },
