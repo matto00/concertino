@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   renderLaunchPad, handleKey, render, inlineStatus, ticketsForEpic, windowStart,
-  isSelectable, selectableIdentifiers,
+  isSelectable, selectableIdentifiers, currentTicket, priorityLabel, priorityRank, sortByPriority,
 } = require('../lib/ui/screens/launchpad');
 
 // eslint-disable-next-line no-control-regex
@@ -221,9 +221,12 @@ test('the header shows total open count and cache age', () => {
 });
 
 test('a checked ticket renders [x], an unchecked one [ ]', () => {
+  // The priority column now sits between the checkbox and the identifier
+  // (design.md Decision 3), so "[x]" and "CON-1" are no longer adjacent —
+  // this asserts the checkbox itself, ordered ahead of the identifier.
   const selected = new Set(['CON-1']);
   const out = plain(renderLaunchPad(lp({ selected }), [], OPTS));
-  assert.match(out, /\[x\] CON-1/);
+  assert.match(out, /\[x\][^\n]*CON-1/);
 });
 
 test('the footer omits "L launch" until something is selected', () => {
@@ -460,4 +463,175 @@ test('no rendered line exceeds opts.cols', () => {
       assert.ok(visibleLength(line) <= cols, `cols:${cols} line is ${visibleLength(line)} wide: ${JSON.stringify(line)}`);
     }
   }
+});
+
+// --- priority column (CON-35) -------------------------------------------------
+
+test('each priority value renders a distinct label, and unknown is distinct from None', () => {
+  assert.equal(priorityLabel(0), 'None');
+  assert.equal(priorityLabel(1), 'Urg');
+  assert.equal(priorityLabel(2), 'High');
+  assert.equal(priorityLabel(3), 'Med');
+  assert.equal(priorityLabel(4), 'Low');
+  assert.equal(priorityLabel(null), null);
+  assert.equal(priorityLabel(undefined), null);
+  // No two distinct priority values collide on the same label.
+  const labels = [0, 1, 2, 3, 4].map(priorityLabel);
+  assert.equal(new Set(labels).size, labels.length);
+});
+
+test('priority renders in the tickets pane, and unknown is visibly distinct from None', () => {
+  const tickets = [
+    ticket({ identifier: 'CON-1', title: 'urgent-ticket', priority: 1 }),
+    ticket({ identifier: 'CON-2', title: 'none-ticket', priority: 0 }),
+    ticket({ identifier: 'CON-3', title: 'unknown-ticket', priority: null }),
+  ];
+  const state = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 3 }]) });
+  const out = plain(renderLaunchPad(state, [], { cols: 100, now: NOW }));
+  assert.match(out, /Urg[^\n]*CON-1/);
+  assert.match(out, /None[^\n]*CON-2/);
+  assert.match(out, /\?[^\n]*CON-3/);
+});
+
+test('the status column is not truncated by the new fixed-width priority budget', () => {
+  const tickets = [
+    ticket({ identifier: 'CON-1', title: 'in-progress-ticket', priority: 2, state: { name: 'In Progress', type: 'started' } }),
+  ];
+  const state = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]) });
+  const out = plain(renderLaunchPad(state, [], { cols: 90, now: NOW }));
+  // The full status string must survive whole, not clipped to "In Progres…"
+  // — the exact defect ticketRow's own header comment calls out.
+  assert.match(out, /In Progress/);
+  assert.doesNotMatch(out, /In Progres…/);
+});
+
+test('priorityRank ranks Urgent < High < Medium < Low < None < unknown', () => {
+  assert.ok(priorityRank(1) < priorityRank(2));
+  assert.ok(priorityRank(2) < priorityRank(3));
+  assert.ok(priorityRank(3) < priorityRank(4));
+  assert.ok(priorityRank(4) < priorityRank(0));
+  assert.ok(priorityRank(0) < priorityRank(null));
+  assert.ok(priorityRank(0) < priorityRank(undefined));
+});
+
+test('sortByPriority ranks priority 1 (Urgent) ahead of priority 0 (None), not by raw integer', () => {
+  const tickets = [ticket({ identifier: 'CON-1', priority: 0 }), ticket({ identifier: 'CON-2', priority: 1 })];
+  assert.deepEqual(sortByPriority(tickets).map((t) => t.identifier), ['CON-2', 'CON-1']);
+});
+
+test('P returns a toggle-ticket-sort action', () => {
+  assert.deepEqual(handleKey('P', { lp: lp({}), runs: [] }), { type: 'toggle-ticket-sort' });
+});
+
+test('renderLaunchPad sorts priority-1 ahead of priority-0 when lp.ticketSort is "priority"', () => {
+  const tickets = [
+    ticket({ identifier: 'CON-1', title: 'none-ticket', priority: 0 }),
+    ticket({ identifier: 'CON-2', title: 'urgent-ticket', priority: 1 }),
+  ];
+  const state = lp({
+    cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 2 }]),
+    ticketSort: 'priority',
+  });
+  const out = plain(renderLaunchPad(state, [], { cols: 100, now: NOW }));
+  const idxUrgent = out.indexOf('CON-2');
+  const idxNone = out.indexOf('CON-1');
+  assert.ok(idxUrgent >= 0 && idxNone >= 0 && idxUrgent < idxNone, 'CON-2 (Urgent) must render ahead of CON-1 (None)');
+});
+
+test('ticketsForEpic defaults to identifier order when lp.ticketSort is unset', () => {
+  const tickets = [ticket({ identifier: 'CON-2', priority: 1 }), ticket({ identifier: 'CON-1', priority: 0 })];
+  const state = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 2 }]) });
+  assert.deepEqual(ticketsForEpic(state).map((t) => t.identifier), ['CON-2', 'CON-1']);
+});
+
+// --- inline detail pane (CON-35) ----------------------------------------------
+
+test('the detail pane shows the selected ticket\'s title and description', () => {
+  const tickets = [ticket({ identifier: 'CON-1', title: 'first-ticket', description: 'first ticket body' })];
+  const state = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]) });
+  const out = plain(renderLaunchPad(state, [], OPTS));
+  assert.match(out, /DESCRIPTION/);
+  assert.match(out, /first ticket body/);
+});
+
+test('the detail pane content changes when lp.ticketIndex moves', () => {
+  const tickets = [
+    ticket({ identifier: 'CON-1', title: 'first-ticket', description: 'first ticket body' }),
+    ticket({ identifier: 'CON-2', title: 'second-ticket', description: 'second ticket body' }),
+  ];
+  const epics = [{ id: 'p1', name: 'Pipeline v2', openCount: 2 }];
+  const first = plain(renderLaunchPad(lp({ cache: cacheWith(tickets, epics), ticketIndex: 0 }), [], OPTS));
+  const second = plain(renderLaunchPad(lp({ cache: cacheWith(tickets, epics), ticketIndex: 1 }), [], OPTS));
+  assert.match(first, /first ticket body/);
+  assert.doesNotMatch(first, /second ticket body/);
+  assert.match(second, /second ticket body/);
+  assert.doesNotMatch(second, /first ticket body/);
+});
+
+test('an empty description in the detail pane says so explicitly, not blank', () => {
+  const tickets = [ticket({ identifier: 'CON-1', description: '' })];
+  const state = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]) });
+  const out = plain(renderLaunchPad(state, [], OPTS));
+  assert.match(out, /\(no description\)/);
+});
+
+test('a truncated comment thread stays visible in the inline detail pane', () => {
+  const tickets = [ticket({
+    identifier: 'CON-1',
+    comments: [{ author: 'matt', body: 'first of many', createdAt: 1000 }],
+    commentCount: 214,
+    commentsTruncated: true,
+  })];
+  const state = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]) });
+  const out = plain(renderLaunchPad(state, [], OPTS));
+  assert.match(out, /showing 1 of 214/);
+});
+
+test('an empty ticket list renders "no ticket selected", not a blank or stale pane', () => {
+  // The cache is not cold overall (it has a ticket, under a DIFFERENT epic) —
+  // this exercises "the CURRENT epic has no open tickets", not "no tickets
+  // cached yet", which is a distinct, earlier-returning code path.
+  const tickets = [ticket({ identifier: 'CON-1', epicId: 'p1' })];
+  const epics = [
+    { id: 'p1', name: 'Pipeline v2', openCount: 1 },
+    { id: 'p2', name: 'Empty epic', openCount: 0 },
+  ];
+  const state = lp({ cache: cacheWith(tickets, epics), epicIndex: 1 });
+  const out = plain(renderLaunchPad(state, [], OPTS));
+  assert.match(out, /no ticket selected/);
+});
+
+test('currentTicket resolves the tickets pane\'s current selection, null when the epic has no tickets', () => {
+  const tickets = [ticket({ identifier: 'CON-1' })];
+  const withTicket = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]) });
+  assert.equal(currentTicket(withTicket).identifier, 'CON-1');
+
+  const empty = lp({ cache: cacheWith([], [{ id: 'p1', name: 'Pipeline v2', openCount: 0 }]) });
+  assert.equal(currentTicket(empty), null);
+});
+
+test('the detail pane renders at full content height when opts.rows is unbounded (0 or absent)', () => {
+  const tickets = [ticket({ identifier: 'CON-1', description: 'the-unbounded-description-marker' })];
+  const state = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]) });
+  const absent = plain(renderLaunchPad(state, [], { cols: 78, now: NOW }));
+  const zero = plain(renderLaunchPad(state, [], { cols: 78, now: NOW, rows: 0 }));
+  assert.match(absent, /the-unbounded-description-marker/);
+  assert.match(zero, /the-unbounded-description-marker/);
+});
+
+test('the detail pane is omitted on a short opts.rows, and the epics/tickets pane still renders at its normal budget', () => {
+  const tickets = [ticket({ identifier: 'CON-1', description: 'the-should-be-omitted-marker' })];
+  const state = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]) });
+  const out = plain(renderLaunchPad(state, [], { cols: 78, now: NOW, rows: 10 }));
+  assert.doesNotMatch(out, /the-should-be-omitted-marker/);
+  // The tickets pane itself must still show — it is the detail pane that
+  // yields, never the list (design.md Decision 4).
+  assert.match(out, /CON-1/);
+});
+
+test('the detail pane renders at full height when the terminal is generously sized', () => {
+  const tickets = [ticket({ identifier: 'CON-1', description: 'the-should-render-marker' })];
+  const state = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]) });
+  const out = plain(renderLaunchPad(state, [], { cols: 78, now: NOW, rows: 60 }));
+  assert.match(out, /the-should-render-marker/);
 });

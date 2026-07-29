@@ -60,16 +60,16 @@ test('JSON null reads as empty', () => {
 });
 
 test('a cache with no tickets array reads as empty', () => {
-  assert.deepEqual(cache.read(seed(tmpRoot(), '{"fetchedAt":1}')), { fetchedAt: null, tickets: [], epics: [] });
+  assert.deepEqual(cache.read(seed(tmpRoot(), '{"schemaVersion":2,"fetchedAt":1}')), { fetchedAt: null, tickets: [], epics: [] });
 });
 
 test('a non-numeric fetchedAt degrades to null rather than rendering NaN', () => {
-  const root = seed(tmpRoot(), '{"fetchedAt":"2026-07-27T00:00:00Z","tickets":[]}');
+  const root = seed(tmpRoot(), '{"schemaVersion":2,"fetchedAt":"2026-07-27T00:00:00Z","tickets":[]}');
   assert.equal(cache.read(root).fetchedAt, null);
 });
 
 test('a missing epics array degrades to empty without losing the tickets', () => {
-  const root = seed(tmpRoot(), '{"fetchedAt":5,"tickets":[{"identifier":"CON-1"}]}');
+  const root = seed(tmpRoot(), '{"schemaVersion":2,"fetchedAt":5,"tickets":[{"identifier":"CON-1"}]}');
   const c = cache.read(root);
   assert.equal(c.tickets.length, 1);
   assert.deepEqual(c.epics, []);
@@ -79,6 +79,27 @@ test('the empty value is a fresh object each time, not shared state', () => {
   const a = cache.empty();
   a.tickets.push('x');
   assert.deepEqual(cache.empty().tickets, []);
+});
+
+// --- schema versioning -------------------------------------------------------
+// CON-35: a cache written before `priority` existed must never be misread as
+// if every ticket's priority were 0/None. See design.md Decision 1.
+
+test('a cache file with no schemaVersion field reads as empty (stale-shape, not partially-priority-less)', () => {
+  const root = seed(tmpRoot(), JSON.stringify(SAMPLE));
+  assert.deepEqual(cache.read(root), { fetchedAt: null, tickets: [], epics: [] });
+});
+
+test('a cache file with an older schemaVersion reads as empty', () => {
+  const root = seed(tmpRoot(), JSON.stringify(Object.assign({ schemaVersion: 1 }, SAMPLE)));
+  assert.deepEqual(cache.read(root), { fetchedAt: null, tickets: [], epics: [] });
+});
+
+test('a cache file with the current schemaVersion reads normally', () => {
+  const root = seed(tmpRoot(), JSON.stringify(Object.assign({ schemaVersion: cache.CACHE_SCHEMA_VERSION, fetchedAt: 1 }, SAMPLE)));
+  const c = cache.read(root);
+  assert.equal(c.tickets.length, 1);
+  assert.equal(c.tickets[0].identifier, 'CON-1');
 });
 
 // --- write / round-trip ----------------------------------------------------
@@ -91,6 +112,25 @@ test('write then read round-trips the model', () => {
   assert.equal(c.teamKey, 'CON');
   assert.equal(c.tickets[0].identifier, 'CON-1');
   assert.equal(c.epics[0].openCount, 1);
+});
+
+test('write stamps the current schemaVersion, and read round-trips priority unaltered', () => {
+  const root = tmpRoot();
+  const withPriority = Object.assign({}, SAMPLE, {
+    tickets: [
+      { identifier: 'CON-1', title: 'x', priority: 0 },
+      { identifier: 'CON-2', title: 'y', priority: 1 },
+      { identifier: 'CON-3', title: 'z', priority: null },
+    ],
+  });
+  cache.write(root, withPriority, 1);
+  const c = cache.read(root);
+  assert.strictEqual(c.tickets[0].priority, 0);
+  assert.strictEqual(c.tickets[1].priority, 1);
+  assert.strictEqual(c.tickets[2].priority, null);
+
+  const raw = JSON.parse(fs.readFileSync(cache.cachePath(root), 'utf8'));
+  assert.equal(raw.schemaVersion, cache.CACHE_SCHEMA_VERSION);
 });
 
 test('write stamps fetchedAt itself', () => {
