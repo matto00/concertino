@@ -18,7 +18,7 @@ After any edit, run `concertino sync` to re-render.
 
 | Field | Type | Default | Purpose |
 | ----- | ---- | ------- | ------- |
-| `harnesses` | `string[]` | `["claude-code","codex"]` | Which adapters `sync` renders. Drop `"codex"` if you only target Claude Code. |
+| `harnesses` | `string[]` | `["claude-code","codex"]` | Which adapters `sync` renders. Drop `"codex"` if you only target Claude Code. Also drives the static `CONCERTINO_HARNESS` default in `.concertino.env` — see below. |
 | `project` | object | — (required) | Identity + base branch. |
 | `ticketProvider` | object | — (required) | Where tickets come from and how status is set. |
 | `specProvider` | object | — (required) | How planning artifacts are scaffolded/archived. |
@@ -29,6 +29,18 @@ After any edit, run `concertino sync` to re-render.
 | `ui` | object | `{enabled:false}` | Browser-review config (Playwright). |
 | `budgets` | object | see below | Circuit-breaker bounds. |
 | `commitTrailer` | string | `""` | Trailer appended to commits. |
+
+`harnesses` also drives the `CONCERTINO_HARNESS` value `sync` writes into
+`scripts/concertino/.concertino.env`: when exactly one harness is configured,
+that harness is written as the static default (it can never be wrong — there's
+nothing else it could be). When more than one is configured, `sync` cannot know
+at render time which one a given run will use, so it writes an empty string
+rather than guessing. `setup-worktree.sh` then overrides that static default at
+runtime with a harness-set environment variable when one is present
+(`CLAUDECODE` → `claude-code`, `CODEX_SANDBOX`/`CODEX_SANDBOX_NETWORK_DISABLED`
+→ `codex`), falling back to the static default and then to the literal
+`unknown` if neither resolves. `concertino validate` reports which mode
+(static vs. runtime-detected) a project's configured `harnesses` will use.
 
 ---
 

@@ -467,6 +467,7 @@ function renderEnv(c) {
   L.push('CONCERTINO_ENV_FILES=' + envValue(c.worktree.envFiles.join(' ')));
   L.push('CONCERTINO_LINK_MODULES=' + envValue((c.worktree.linkModules || []).join(' ')));
   L.push('CONCERTINO_WORKTREE_HOOKS=' + envValue(c.worktree.hooks.join(';')));
+  L.push('CONCERTINO_HARNESS=' + envValue(c.harnesses.length === 1 ? c.harnesses[0] : ''));
   const dash = c.dashboard || {};
   const escalationTimeout = dash.escalationTimeoutMinutes != null
     ? dash.escalationTimeoutMinutes : DEFAULT_ESCALATION_TIMEOUT_MIN;
@@ -1253,6 +1254,14 @@ function cmdValidate(args) {
   if (!harnesses.length) fail('harnesses must not be empty');
   else if (badHarnesses.length) fail(`unknown harnesses: ${badHarnesses.join(', ')} (valid: ${VALID_HARNESSES.join(', ')})`);
   else ok('harnesses', harnesses.join(', '));
+
+  // Informational only — an empty static default for a multi-harness project is
+  // a correct, expected state (Decision 1), never a misconfiguration.
+  if (harnesses.length === 1) {
+    ok('harness telemetry', `static: ${harnesses[0]}`);
+  } else if (harnesses.length > 1) {
+    ok('harness telemetry', `runtime-detected (${harnesses.length} harnesses configured)`);
+  }
 
   const tp = cfg.ticketProvider || {};
   ['linear', 'github', 'manual'].includes(tp.kind)

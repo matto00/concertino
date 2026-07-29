@@ -22,8 +22,19 @@ set -euo pipefail
 #                                worktree so pre-commit hooks that need installed
 #                                deps can run without `git commit -n`
 #   CONCERTINO_WORKTREE_HOOKS    ;-separated commands to run inside the worktree
+#   CONCERTINO_HARNESS           static harness default (empty when the project
+#                                configures more than one harness — see below)
 #
 # CONCERTINO_BASE_REMOTE (default: origin) may be set in the environment.
+#
+# The harness recorded on the run.start event is resolved in this order:
+#   1. Runtime signal read directly from the process environment — CLAUDECODE
+#      set non-empty means claude-code; CODEX_SANDBOX or
+#      CODEX_SANDBOX_NETWORK_DISABLED set non-empty means codex (checked in
+#      that order, so CLAUDECODE wins if somehow both are set).
+#   2. The static CONCERTINO_HARNESS default sourced from .concertino.env,
+#      when no runtime signal is present.
+#   3. The literal string "unknown", when neither resolves a value.
 #
 # On success prints the stable READY contract (the orchestrator parses these):
 #   READY worktree=<absolute path>
@@ -39,6 +50,20 @@ BRANCH="${2:?usage: setup-worktree.sh <TICKET_ID> <BRANCH>}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 [ -f "${SCRIPT_DIR}/.concertino.env" ] && source "${SCRIPT_DIR}/.concertino.env"
+
+# Detect the harness actually running this script from real, harness-set
+# process environment variables — never a guess. Neither variable is a
+# documented public contract, so only presence is relied on, not any
+# particular value/format; the static CONCERTINO_HARNESS default and the
+# literal "unknown" remain the fallback chain if detection ever stops
+# working. See docs/config-reference.md for the full resolution order.
+detect_harness() {
+  if [ -n "${CLAUDECODE:-}" ]; then echo "claude-code"; return; fi
+  if [ -n "${CODEX_SANDBOX:-}" ] || [ -n "${CODEX_SANDBOX_NETWORK_DISABLED:-}" ]; then echo "codex"; return; fi
+  echo ""
+}
+RUNTIME_HARNESS="$(detect_harness)"
+HARNESS="${RUNTIME_HARNESS:-${CONCERTINO_HARNESS:-unknown}}"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
@@ -172,7 +197,7 @@ CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.start \
   "worktree=${WORKTREE_PATH}" \
   "dev_port=${DEV_PORT}" \
   "backend_port=${BACKEND_PORT}" \
-  "harness=${CONCERTINO_HARNESS:-unknown}" || true
+  "harness=${HARNESS}" || true
 
 echo "READY worktree=${WORKTREE_PATH}"
 echo "READY branch=${BRANCH}"
