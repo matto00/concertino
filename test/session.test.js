@@ -46,6 +46,19 @@ test('capture returns the pane contents', skip, () => {
   assert.match(s.capture('HEL-2'), /concertino-marker/);
 });
 
+// --- captureFull (CON-34: full-history capture for reap.js) ----------------
+
+test('captureFull returns the full pane history for a live window', skip, () => {
+  s.spawn('HEL-6', 'echo concertino-full-marker; sleep 300');
+  require('child_process').execFileSync('sleep', ['1']);
+  assert.match(s.captureFull('HEL-6'), /concertino-full-marker/);
+});
+
+test('captureFull of an unknown/unaddressable ticket is empty, not an error', skip, () => {
+  assert.equal(s.captureFull('NOPE'), '');
+  assert.equal(s.captureFull('a.b'), '');
+});
+
 test('a finished window stays listed but not alive', skip, () => {
   s.spawn('HEL-3', 'true');
   require('child_process').execFileSync('sleep', ['1']);

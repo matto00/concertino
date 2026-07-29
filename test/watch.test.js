@@ -196,3 +196,99 @@ test('an empty or missing runs list is handled safely', () => {
   assert.deepEqual(computeLiveEscalations([]), []);
   assert.deepEqual(computeLiveEscalations(undefined), []);
 });
+
+// --- CON-34: reap.reapFinished is wired into draw(), right after reduce() --
+// watch() itself owns the interval loop and real stdin/stdout, so this
+// exercises the real call site inside watch()'s draw() against FAKE
+// session/reap modules — substituted via require.cache, the same technique
+// test/fleet.test.js already uses for layout.degrade() — and a fake stdin.
+// No real tmux session is ever touched (session.js is fully replaced).
+
+test('reap.reapFinished runs once per draw(), against the runs snapshot reduce() just produced', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { EventEmitter } = require('node:events');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-reap-'));
+  // A real, on-disk terminal run — reduce() reads this file for real; only
+  // tmux itself (session.listWindows()) is faked.
+  const runDir = path.join(root, '.concertino', 'runs', 'HEL-99');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+    JSON.stringify({ t: 1, kind: 'run.start' }) + '\n' +
+    JSON.stringify({ t: 2, kind: 'run.end', status: 'delivered' }) + '\n');
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const reapPath = require.resolve('../lib/ui/reap');
+
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return [{ ticket: 'HEL-99', alive: false, activity: null }]; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const reapCalls = [];
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+  require.cache[reapPath] = {
+    id: reapPath, filename: reapPath, loaded: true,
+    exports: {
+      selectReapable: () => [],
+      reapFinished(reapRoot, session, runs) {
+        reapCalls.push({ root: reapRoot, session, runs });
+        return [];
+      },
+    },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  process.stdout.write = () => true;
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  try {
+    const watchModule = require('../lib/ui/watch');
+    const donePromise = watchModule.watch({ root, config: {} });
+
+    // Everything up to `await new Promise(...)` inside watch() — including
+    // the first draw() — runs synchronously (nothing before it is async),
+    // so by the time watch() has returned its promise, draw() has already
+    // run exactly once.
+    assert.equal(reapCalls.length, 1, 'reapFinished should run exactly once for the first draw()');
+    assert.equal(reapCalls[0].root, root);
+    assert.equal(reapCalls[0].session, fakeSessionObj);
+    const passedRun = reapCalls[0].runs.find((r) => r.ticket === 'HEL-99');
+    assert.ok(passedRun, 'reapFinished must be called with reduce()\'s own output');
+    // Proves this ran AFTER reduce(), not before: endStatus/window are only
+    // populated once reduce() has folded the log + tmux snapshot together.
+    assert.equal(passedRun.endStatus, 'delivered');
+    assert.equal(passedRun.window.alive, false);
+
+    fakeStdin.emit('end'); // let watch() quit and clean up its interval timer
+    await donePromise;
+  } finally {
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[sessionPath];
+    delete require.cache[reapPath];
+  }
+});

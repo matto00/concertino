@@ -215,6 +215,43 @@ blocks the dashboard from starting. Pruning removes the whole
 ticket reads as "never ran" rather than as a run with a suspiciously empty
 log.
 
+### Window reaping
+
+Retention prunes logs; **reaping** is its independent tmux-window
+counterpart — neither assumes the other has run. On every `concertino watch`
+poll, the dashboard automatically closes ("reaps") the tmux window of any run
+for which **both** hold: the run's event log contains a terminal `run.end`
+event, **and** tmux itself already reports the window's pane as dead. This is
+the conservative policy: it can never truncate live work, because it only
+ever acts on a window tmux already reports as finished. Unlike retention,
+reaping is not configurable and has no age cutoff — it runs unconditionally,
+every poll, at the same cadence as the rest of the dashboard's render.
+
+A run whose window is dead but whose log has **no** `run.end` event — a
+crash, an OOM kill, `kill -9`, a harness that exited before Phase 4 — is
+**never reaped**, no matter how long the dead window sits there. That window
+is `lib/ui/reducer.js`'s only source of evidence that the run existed and
+failed; destroying it would let the run fall through to `unknown` instead of
+`failed`, which the project treats as a hard failure mode ("absent data must
+never render as healthy data"), not an edge case to optimise away.
+
+A run that has emitted `run.end` but is still alive (finishing up Phase 4's
+tail — updating the ticket, posting a closing comment, a hygiene check) is
+left alone too: reaping only ever acts once tmux's own liveness bit agrees
+the window is done, never on `run.end` alone.
+
+Before a window is closed, its full scrollback (`tmux capture-pane -p -S -`,
+from the start of history) is captured to
+`.concertino/runs/<TICKET>/session-scrollback.txt` — the same per-ticket run
+directory `events.jsonl`/`answer.json` already live in, so it is discovered,
+gitignored, and pruned by retention alongside them with no extra code. A
+capture or write failure never blocks the window from closing; the courtesy
+save is best-effort, exactly like retention's own startup prune.
+
+`__concertino__` (the session's placeholder window) and any
+`concertino-smoke-<pid>`-style isolated test session are never reaped —
+neither is ever part of the window set reaping considers.
+
 ## The cross-screen escalation banner
 
 An escalation is a **fleet-wide** concern, not just a property of the run
