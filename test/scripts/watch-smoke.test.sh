@@ -49,7 +49,8 @@ cleanup() {
   [ -n "${LP2_SESSION:-}" ] && tmux kill-session -t "$LP2_SESSION" 2>/dev/null
   [ -n "${Q_SESSION:-}" ] && tmux kill-session -t "$Q_SESSION" 2>/dev/null
   [ -n "${H_SESSION:-}" ] && tmux kill-session -t "$H_SESSION" 2>/dev/null
-  rm -rf "$WORK" "$KR_WORK" "${LP2_WORK:-}" "${Q_WORK:-}" "${H_WORK:-}"
+  [ -n "${LP3_SESSION:-}" ] && tmux kill-session -t "$LP3_SESSION" 2>/dev/null
+  rm -rf "$WORK" "$KR_WORK" "${LP2_WORK:-}" "${Q_WORK:-}" "${H_WORK:-}" "${LP3_WORK:-}"
 }
 trap cleanup EXIT
 
@@ -160,7 +161,7 @@ LP2_SESSION="concertino-smoke-$$-lp2"
 LP2_WORK="$(mktemp -d)"
 tmux new-session -d -s "$LP2_SESSION" -n CON-9 'sleep 300'
 mkdir -p "$LP2_WORK/.concertino/cache"
-printf '{"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-9","title":"already-running-ticket","epicId":"e1","epicName":"Epic","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e1","name":"Epic","openCount":1}]}' \
+printf '{"schemaVersion":2,"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-9","title":"already-running-ticket","epicId":"e1","epicName":"Epic","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e1","name":"Epic","openCount":1}]}' \
   "$(($(date +%s) * 1000))" > "$LP2_WORK/.concertino/cache/linear.json"
 cat > "$LP2_WORK/concertino.config.json" <<EOF
 {"dashboard":{"tmuxSession":"$LP2_SESSION","launchPad":{"enabled":true}},"ticketProvider":{"kind":"linear","idExample":"CON-1"}}
@@ -186,7 +187,7 @@ rm -rf "$LP2_WORK"
 Q_SESSION="concertino-smoke-$$-queue"
 Q_WORK="$(mktemp -d)"
 mkdir -p "$Q_WORK/.concertino/cache"
-printf '{"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-21","title":"batch-one","epicId":"e2","epicName":"Batch","state":{"name":"Todo","type":"unstarted"}},{"identifier":"CON-22","title":"batch-two","epicId":"e2","epicName":"Batch","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e2","name":"Batch","openCount":2}]}' \
+printf '{"schemaVersion":2,"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-21","title":"batch-one","epicId":"e2","epicName":"Batch","state":{"name":"Todo","type":"unstarted"}},{"identifier":"CON-22","title":"batch-two","epicId":"e2","epicName":"Batch","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e2","name":"Batch","openCount":2}]}' \
   "$(($(date +%s) * 1000))" > "$Q_WORK/.concertino/cache/linear.json"
 cat > "$Q_WORK/concertino.config.json" <<EOF
 {"dashboard":{"tmuxSession":"$Q_SESSION","launchPad":{"enabled":true},"launchCommand":"sleep 60 # {{TICKET}}"},"ticketProvider":{"kind":"linear","idExample":"CON-1"}}
@@ -220,7 +221,7 @@ rm -rf "$Q_WORK"
 H_SESSION="concertino-smoke-$$-harness"
 H_WORK="$(mktemp -d)"
 mkdir -p "$H_WORK/.concertino/cache"
-printf '{"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-31","title":"harness-check","epicId":"e3","epicName":"Epic3","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e3","name":"Epic3","openCount":1}]}' \
+printf '{"schemaVersion":2,"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-31","title":"harness-check","epicId":"e3","epicName":"Epic3","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e3","name":"Epic3","openCount":1}]}' \
   "$(($(date +%s) * 1000))" > "$H_WORK/.concertino/cache/linear.json"
 cat > "$H_WORK/concertino.config.json" <<EOF
 {"dashboard":{"tmuxSession":"$H_SESSION","launchPad":{"enabled":true},"launchCommand":"sleep 60 # {{TICKET}}"},"harnesses":["claude","codex"],"ticketProvider":{"kind":"linear","idExample":"CON-1"}}
@@ -239,6 +240,45 @@ grep -q 'h harness' "$OUT" \
   || ok "'h harness' is not advertised when a launchCommand override pins the real command"
 tmux kill-session -t "$H_SESSION" 2>/dev/null
 rm -rf "$H_WORK"
+
+# --- CON-35: P actually reorders the tickets pane, end to end --------------
+# handleKey('P', ...) returning the right action, and renderLaunchPad sorting
+# correctly against a hand-built fixture, are both covered by the unit tests
+# in test/launchpad.test.js — but applyAction/openLaunchPad are private
+# closures inside watch(opts) (see lib/ui/watch.js's own header comment above
+# module.exports), so the only way to prove the REAL keypress reaches
+# lp.ticketSort is end to end, against a real running dashboard. Two tickets,
+# same epic, deliberately seeded in "None-then-Urgent" (identifier) order so
+# a priority-sort toggle has something to actually change.
+LP3_SESSION="concertino-smoke-$$-lp3"
+LP3_WORK="$(mktemp -d)"
+mkdir -p "$LP3_WORK/.concertino/cache"
+tmux new-session -d -s "$LP3_SESSION" -n LP3-WINDOW 'sleep 300'
+printf '{"schemaVersion":2,"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-41","title":"none-priority-ticket","priority":0,"epicId":"e4","epicName":"Priorities","state":{"name":"Todo","type":"unstarted"}},{"identifier":"CON-42","title":"urgent-priority-ticket","priority":1,"epicId":"e4","epicName":"Priorities","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e4","name":"Priorities","openCount":2}]}' \
+  "$(($(date +%s) * 1000))" > "$LP3_WORK/.concertino/cache/linear.json"
+cat > "$LP3_WORK/concertino.config.json" <<EOF
+{"dashboard":{"tmuxSession":"$LP3_SESSION","launchPad":{"enabled":true}},"ticketProvider":{"kind":"linear","idExample":"CON-1"}}
+EOF
+# N (open) · Tab (tickets pane) · P (toggle priority sort — CON-42 (Urgent)
+# must now render ahead of CON-41 (None), reversing the seeded order) ·
+# esc (back to fleet, so no further launch-pad frame is drawn) · q (quit).
+printf 'N\tP\x1bq' | LINEAR_API_KEY=dummy-not-a-real-key timeout 10 node "$ROOT/bin/concertino" watch --out="$LP3_WORK" > "$OUT" 2>&1
+STATUS=$?
+check "exits 0 after N + Tab + P + esc + q" "$STATUS" "0"
+# Matched against the "[ ]" checkbox prefix so this only finds the TICKETS
+# PANE row, not the inline detail pane's own header line (CON-35) — which
+# also renders the selected ticket's identifier and would otherwise be the
+# last match, silently defeating this ordering check.
+CON41_LINE="$(grep -n '\[ \].*CON-41' "$OUT" | tail -1 | cut -d: -f1)"
+CON42_LINE="$(grep -n '\[ \].*CON-42' "$OUT" | tail -1 | cut -d: -f1)"
+if [ -n "$CON41_LINE" ] && [ -n "$CON42_LINE" ] && [ "$CON42_LINE" -lt "$CON41_LINE" ]; then
+  ok "P actually reorders the tickets pane — Urgent (CON-42) renders ahead of None (CON-41) after the real keypress"
+else
+  bad "P actually reorders the tickets pane" \
+    "expected CON-42 (Urgent) to render before CON-41 (None) in the final frame; CON-41 line=$CON41_LINE CON-42 line=$CON42_LINE"
+fi
+tmux kill-session -t "$LP3_SESSION" 2>/dev/null
+rm -rf "$LP3_WORK"
 
 # --- `n` starts a run -------------------------------------------------------
 # Piped stdin delivers the whole script as ONE chunk, so this also covers the

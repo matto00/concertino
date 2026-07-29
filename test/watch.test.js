@@ -392,3 +392,112 @@ test('resolveModelsForPlan returns null (never throws) on malformed JSON output'
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// --- CON-18: ticket-text.resolve is wired into draw(), gated on mode -------
+// Same technique as the reap test above (fake session/ticket-text modules via
+// require.cache, a fake EventEmitter stdin, no real tmux). Verifies the exact
+// seam design.md Decision 2 describes: resolve() is called once per draw()
+// while mode === 'drilldown', and not at all in any other mode — mirroring
+// how queuedTitles is only ever read while there is something queued.
+
+test('ticket-text.resolve runs once per draw() while mode is drilldown, and not otherwise', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { EventEmitter } = require('node:events');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-tickettext-'));
+  const runDir = path.join(root, '.concertino', 'runs', 'HEL-99');
+  fs.mkdirSync(runDir, { recursive: true });
+  // A live (not finished) run: only run.start, no run.end — so reap.js's
+  // real reapFinished (unfaked here) never touches it.
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+    JSON.stringify({ t: 1, kind: 'run.start', harness: 'claude', model: 'opus-5' }) + '\n');
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const ticketTextPath = require.resolve('../lib/ui/ticket-text');
+
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return [{ ticket: 'HEL-99', alive: true, activity: null }]; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const resolveCalls = [];
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+  require.cache[ticketTextPath] = {
+    id: ticketTextPath, filename: ticketTextPath, loaded: true,
+    exports: {
+      resolve(resolveRoot, ticket, cache) {
+        resolveCalls.push({ root: resolveRoot, ticket, cache });
+        return { title: 'fake title', description: 'fake description' };
+      },
+    },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  process.stdout.write = () => true;
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  try {
+    const watchModule = require('../lib/ui/watch');
+    const donePromise = watchModule.watch({ root, config: {} });
+
+    // The very first draw() (synchronous, before `await new Promise(...)`)
+    // ran with mode === 'fleet' — resolve() must not have been called at all.
+    assert.equal(resolveCalls.length, 0, 'ticket-text.resolve must not run while mode is fleet');
+
+    // 'l' on the (only, selected) fleet row opens the drill-down for HEL-99
+    // (fleet.js's own handleKey) — this redraws once via applyAction's own
+    // `runs = draw()` call.
+    fakeStdin.emit('data', 'l');
+    assert.equal(resolveCalls.length, 1, 'resolve() should run exactly once for the draw() that opened the drill-down');
+    assert.equal(resolveCalls[0].root, root);
+    assert.equal(resolveCalls[0].ticket, 'HEL-99');
+    assert.ok(resolveCalls[0].cache && Array.isArray(resolveCalls[0].cache.tickets),
+      'resolve() should be called with cache.read(root)\'s own shape');
+
+    // A SIGWINCH-triggered redraw (process.stdout's own 'resize' listener,
+    // watch.js's own real seam) is another poll while STILL in drilldown —
+    // resolve() must run again, once.
+    process.stdout.emit('resize');
+    assert.equal(resolveCalls.length, 2, 'resolve() should run again on the next poll while still in drilldown');
+
+    // esc backs out to the fleet (drilldown.js's own handleKey) — the very
+    // next poll must NOT call resolve() at all.
+    fakeStdin.emit('data', '\x1b');
+    assert.equal(resolveCalls.length, 2, 'back-to-fleet\'s own redraw must not call resolve()');
+
+    process.stdout.emit('resize');
+    assert.equal(resolveCalls.length, 2, 'resolve() must stay uncalled on subsequent polls once back in fleet mode');
+
+    fakeStdin.emit('end');
+    await donePromise;
+  } finally {
+    process.stdout.write = realWrite;
+    process.stdout.removeAllListeners('resize');
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[sessionPath];
+    delete require.cache[ticketTextPath];
+  }
+});

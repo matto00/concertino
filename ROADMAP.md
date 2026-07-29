@@ -16,14 +16,6 @@ Planned improvements to Concertino. Not commitments — a living list.
   mirror. Origin: Helio carries a bespoke `.cursor/` mirror of the delivery
   workflow that the adoption left untouched.
 
-- **Stale-base warning at the delivery gate.** 0.1.3 makes `setup-worktree.sh`
-  cut new branches from the fetched remote base, but a long-running orchestrator
-  can still fall behind a base that moves under it mid-run. Cheap belt-and-
-  suspenders: at PR creation, warn (never block) when the branch's merge base is
-  far behind `origin/<base>`, so the human sees it before it becomes a conflict.
-  Origin: the HEL-296/#202 stale-base bug that 0.1.3 fixed — this is the residual
-  case the branch-time fetch can't cover.
-
 - **Worktree dependency install.** A fresh worktree isn't fully real until its
   deps exist: `CONCERTINO_WORKTREE_HOOKS` is the seam (e.g. `npm ci`), but
   nothing guides adopters toward it, so worktrees come up missing `node_modules`
