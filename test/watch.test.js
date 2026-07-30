@@ -16,56 +16,151 @@ const { padTo, visibleLength } = require('../lib/ui/format');
 // sequence-producing logic, extracted pure (no process.stdout access) so
 // this is testable without a real TTY — see watch.js's own header comment
 // on buildFrame.
+//
+// CON-27 turned that always-full-rewrite into a per-row diff:
+// `buildFrame(text, cols, rows, prevLines) -> { bytes, lines }`. Two things
+// changed for these tests specifically. First, a full-rewrite frame no longer
+// starts with the bare CURSOR_HOME (`\x1b[H`, 3 bytes) unless it took the
+// over-tall fallback — on the ordinary diff path row 1 is prefixed with its
+// own placement, `\x1b[1;1H` (7 bytes). Second, `rows` is passed as 0 in
+// every test that is not specifically exercising the fallback, so those tests
+// stay on the diff path (a falsy `rows` means "height unknown", under which
+// the fallback never triggers — exactly how the smoke gate's redirected
+// stdout runs).
+
+// The per-row placement prefix for row N on the diff path.
+const at = (row) => '\x1b[' + row + ';1H';
+
+// Replays everything the dashboard wrote to stdout into a virtual screen and
+// returns it as plain text, one row per line.
+//
+// CON-27: any test that drives the real watch() loop and then asks "what is on
+// screen?" MUST go through this rather than reading the last chunk that
+// process.stdout.write received. Under the old full-rewrite writer those were
+// the same thing — every redraw wrote the entire frame in one call, so the
+// last chunk WAS the frame. The differential writer only writes the rows that
+// changed since the previous tick, so the last chunk is a partial frame, and
+// asserting on it silently changes the question from "is this on screen?" to
+// "did this change on the most recent tick?" — which makes a `doesNotMatch`
+// assertion pass for the wrong reason (the row is still displayed; it just
+// wasn't rewritten). Replaying keeps these tests asking the original question
+// under either writer mode.
+//
+// Handles both modes: `\x1b[<n>;1H` addresses row n directly; `\x1b[H` homes
+// and subsequent newlines advance a row (the over-tall fallback's flow).
+// Colour escapes are stripped from row content only, after placement parsing.
+function screenOf(chunks) {
+  const all = chunks.join('');
+  const rows = [];
+  let cur = 0;
+  let i = 0;
+  while (i < all.length) {
+    const place = /^\x1b\[(?:(\d+);1H|H)/.exec(all.slice(i));
+    if (place) {
+      cur = place[1] ? parseInt(place[1], 10) - 1 : 0;
+      i += place[0].length;
+      continue;
+    }
+    let j = i;
+    let text = '';
+    while (j < all.length) {
+      if (/^\x1b\[(?:\d+;1H|H)/.test(all.slice(j))) break;
+      if (all[j] === '\n') break;
+      text += all[j];
+      j++;
+    }
+    // eslint-disable-next-line no-control-regex
+    if (text) rows[cur] = text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+    if (all[j] === '\n') { cur++; j++; }
+    i = j;
+  }
+  return rows.join('\n');
+}
+
+// Every `\x1b[<row>;1H<content>` write, in order, as { row, text } — the raw
+// material for asserting WHICH rows a redraw touched (as opposed to
+// screenOf's "what does the finished screen look like").
+//
+// Deliberately not built on screenOf: these tests need to distinguish "the
+// row was rewritten with identical content" from "the row was left alone",
+// which a replayed screen cannot show — that distinction is the entire
+// subject of the two cache-invalidation regressions below. Non-placement
+// escapes (colour, and the `\x1b[?1049h/l` alternate-buffer pair an attach
+// writes) are stripped from the content rather than mistaken for text.
+function writesByRow(chunks) {
+  const out = [];
+  const re = /\x1b\[(\d+);1H((?:(?!\x1b\[(?:\d+;1H|H))[\s\S])*)/g;
+  let m;
+  while ((m = re.exec(chunks.join('')))) {
+    // eslint-disable-next-line no-control-regex
+    out.push({ row: parseInt(m[1], 10), text: m[2].replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '') });
+  }
+  return out;
+}
 
 test('buildFrame never emits a full-screen clear (\\x1b[2J)', () => {
-  const frame = buildFrame('line one\nline two', 20, 0);
+  const frame = buildFrame('line one\nline two', 20, 0, []);
   assert.doesNotMatch(frame.bytes, /\x1b\[2J/);
 });
 
-test('buildFrame homes the cursor instead of clearing', () => {
-  const frame = buildFrame('hello', 10, 0);
-  assert.ok(frame.bytes.startsWith(CURSOR_HOME));
+test('buildFrame positions the cursor instead of clearing', () => {
+  const frame = buildFrame('hello', 10, 0, []);
+  assert.ok(frame.bytes.startsWith(at(1)));
+});
+
+test('buildFrame treats an omitted prevLines as an empty previous frame', () => {
+  // The `prevLines || []` guard: makes the argument genuinely optional rather
+  // than defensive-only, so a caller that has no previous frame at all reads
+  // the same as one passing [] — every row counts as changed.
+  const omitted = buildFrame('a\nb', 5, 0);
+  const explicit = buildFrame('a\nb', 5, 0, []);
+  assert.equal(omitted.bytes, explicit.bytes);
+  assert.deepEqual(omitted.lines, explicit.lines);
 });
 
 test('buildFrame pads every line to the requested column width', () => {
-  const frame = buildFrame('ab\ncd', 5, 0);
-  const [l1, l2] = frame.bytes.slice(CURSOR_HOME.length).split('\n');
-  assert.equal(l1, 'ab   ');
-  assert.equal(l2, 'cd   ');
+  const frame = buildFrame('ab\ncd', 5, 0, []);
+  // First frame: both rows are "changed", so each gets its own placement.
+  assert.equal(frame.lines[0], 'ab   ');
+  assert.equal(frame.lines[1], 'cd   ');
+  assert.ok(frame.bytes.startsWith(at(1) + 'ab   ' + at(2) + 'cd   '));
 });
 
-test('buildFrame reports the line count it padded from', () => {
-  const frame = buildFrame('a\nb\nc', 5, 0);
-  assert.equal(frame.lineCount, 3);
+test('buildFrame reports the lines it padded from', () => {
+  const frame = buildFrame('a\nb\nc', 5, 0, []);
+  assert.deepEqual(frame.lines, ['a    ', 'b    ', 'c    ']);
 });
 
 // --- 5.1a: visible-width-aware padding, not raw .length ---------------------
 
 test('a coloured (ANSI-wrapped) line is padded by VISIBLE width, not raw length', () => {
   const coloured = '\x1b[33mhi\x1b[0m'; // raw .length is 13; visible width is 2
-  const frame = buildFrame(coloured, 20, 0);
-  const line = frame.bytes.slice(CURSOR_HOME.length);
+  const frame = buildFrame(coloured, 20, 0, []);
+  const line = frame.lines[0];
   assert.equal(visibleLength(line), 20,
     'a raw-.length regression would under-pad this line by the escape byte count');
   // Cross-check directly against format.js's own padTo, since design.md
   // Decision 1 requires buildFrame to REUSE padTo, not reimplement it.
   assert.equal(line, padTo(coloured, 20));
+  // The padded line is what actually reaches the terminal, behind its own
+  // row-1 placement (and again via the cursor-park write, since it is also
+  // the last row).
+  assert.equal(frame.bytes, at(1) + line + at(1) + line);
 });
 
 test('an uncoloured line reaching the exact column width needs no padding', () => {
-  const frame = buildFrame('x'.repeat(10), 10, 0);
-  const line = frame.bytes.slice(CURSOR_HOME.length);
-  assert.equal(visibleLength(line), 10);
+  const frame = buildFrame('x'.repeat(10), 10, 0, []);
+  assert.equal(visibleLength(frame.lines[0]), 10);
 });
 
 // --- 5.3: a shrinking frame leaves no stale trailing rows -------------------
 
 test('a shrinking frame blanks every leftover row from the taller previous frame', () => {
-  const tall = buildFrame('a\nb\nc\nd', 5, 0); // 4 lines, no previous frame yet
-  assert.equal(tall.lineCount, 4);
+  const tall = buildFrame('a\nb\nc\nd', 5, 0, []); // 4 lines, no previous frame yet
+  assert.equal(tall.lines.length, 4);
 
-  const short = buildFrame('x\ny', 5, tall.lineCount); // shrinks to 2 lines
-  assert.equal(short.lineCount, 2);
+  const short = buildFrame('x\ny', 5, 0, tall.lines); // shrinks to 2 lines
+  assert.equal(short.lines.length, 2);
 
   // Rows 3 and 4 (the leftover rows from the taller frame) must be blanked,
   // each preceded by an explicit cursor position rather than relying on
@@ -76,35 +171,154 @@ test('a shrinking frame blanks every leftover row from the taller previous frame
   assert.doesNotMatch(short.bytes, /\x1b\[5;1H/);
 });
 
-test('a frame that grows (or stays the same height) blanks nothing', () => {
-  const first = buildFrame('a\nb', 5, 0);
-  const grown = buildFrame('a\nb\nc', 5, first.lineCount);
-  assert.doesNotMatch(grown.bytes, /\x1b\[\d+;1H/);
+test('a frame that grows writes each new row via its own cursor placement', () => {
+  // CON-27 inverts CON-17's assertion here: under the always-full-rewrite
+  // writer a growing frame emitted no `\x1b[<row>;1H` at all (it blanked
+  // nothing and flowed by newlines); under the diff path every written row —
+  // including the new ones — carries its own placement.
+  const first = buildFrame('a\nb', 5, 0, []);
+  const grown = buildFrame('a\nb\nc\nd', 5, 0, first.lines);
+  assert.match(grown.bytes, /\x1b\[\d+;1H/);
+  // Rows 1 and 2 are unchanged; EVERY new row (3 and 4) is written via its
+  // own placement, not a single cursor-home + join (plus the cursor-park
+  // write, which targets the last row, 4).
+  assert.equal(grown.bytes, at(3) + 'c    ' + at(4) + 'd    ' + at(4) + 'd    ');
+  assert.doesNotMatch(grown.bytes, /\x1b\[H/);
+  // Nothing is blanked when a frame grows.
+  assert.doesNotMatch(grown.bytes, /\x1b\[\d+;1H {5}/);
+});
+
+// --- CON-27: the diff itself ------------------------------------------------
+
+test('an entirely unchanged frame writes no bytes at all', () => {
+  // Decision 5: the tick this whole ticket exists to make free. Note this is
+  // also the assertion behind "the cursor is not moved on an unchanged tick"
+  // (Decision 8 / the spec's own cursor-rest scenario) — the cursor-park
+  // write is appended only when something else was already written, so an
+  // empty `bytes` here proves the cursor stays exactly where the last
+  // writing tick left it, rather than being re-parked every second.
+  const first = buildFrame('a\nb\nc', 5, 0, []);
+  const second = buildFrame('a\nb\nc', 5, 0, first.lines);
+  assert.equal(second.bytes, '');
+  assert.doesNotMatch(second.bytes, /\x1b\[\d+;1H/);
+  // The cache still round-trips, so a third identical tick is free too.
+  assert.deepEqual(second.lines, first.lines);
+});
+
+test('a single changed row writes only that row, plus the cursor-park write', () => {
+  const first = buildFrame('aaa\nbbb\nccc\nddd', 5, 0, []);
+  const second = buildFrame('aaa\nXXX\nccc\nddd', 5, 0, first.lines);
+  // The changed row (row 2) is written...
+  assert.ok(second.bytes.includes(at(2) + 'XXX  '));
+  // ...and the frame's last row is re-written to park the cursor (Decision
+  // 8), since the changed row is not itself the last row.
+  assert.ok(second.bytes.endsWith(at(4) + 'ddd  '));
+  // No OTHER row's placement appears — exactly two placements in total.
+  assert.equal(second.bytes, at(2) + 'XXX  ' + at(4) + 'ddd  ');
+  assert.doesNotMatch(second.bytes, /\x1b\[1;1H/);
+  assert.doesNotMatch(second.bytes, /\x1b\[3;1H/);
+});
+
+// --- CON-27: the over-tall fallback ----------------------------------------
+
+test('a frame taller than the terminal falls back to the full newline-flow rewrite', () => {
+  const text = Array.from({ length: 10 }, (_, i) => 'r' + i).join('\n');
+  const frame = buildFrame(text, 5, 5, []); // 10 lines into a 5-row terminal
+  const padded = text.split('\n').map((l) => padTo(l, 5));
+  assert.equal(frame.bytes, CURSOR_HOME + padded.join('\n'));
+  // No absolute row addressing at all on this path — a `\x1b[<row>;1H` past
+  // the terminal's height clamps onto the last row instead of scrolling.
+  assert.doesNotMatch(frame.bytes, /\x1b\[\d+;1H/);
+  // Only the tail the terminal's scroll actually leaves visible is cached
+  // (Decision 6), so absolute row i means prevLines[i] again next tick.
+  assert.deepEqual(frame.lines, padded.slice(5));
+  assert.equal(frame.lines.length, 5);
+});
+
+test('a back-within-bounds frame resumes per-row diffing against the truncated tail', () => {
+  const tallText = Array.from({ length: 10 }, (_, i) => 'r' + i).join('\n');
+  const tall = buildFrame(tallText, 5, 5, []);
+  assert.deepEqual(tall.lines, ['r5   ', 'r6   ', 'r7   ', 'r8   ', 'r9   ']);
+
+  // The next frame fits in 5 rows, and its content happens to equal the
+  // visible tail the scroll left behind — so nothing should be written, and
+  // the fallback must NOT re-trigger merely because an overflow just
+  // happened (`prevLines.length <= rows` is what restores the invariant).
+  const fits = buildFrame('r5\nr6\nr7\nr8\nr9', 5, 5, tall.lines);
+  assert.equal(fits.bytes, '');
+  assert.deepEqual(fits.lines, tall.lines);
+
+  // And a genuine one-row change against that tail diffs normally.
+  const changed = buildFrame('r5\nr6\nZZ\nr8\nr9', 5, 5, tall.lines);
+  assert.equal(changed.bytes, at(3) + 'ZZ   ' + at(5) + 'r9   ');
+  assert.doesNotMatch(changed.bytes, /\x1b\[H/);
+});
+
+// --- CON-27: the resize sentinel -------------------------------------------
+
+test('a sentinel-invalidated cache repaints every row AND still blanks the shrunk tail', () => {
+  // This is the mechanism the resize listener uses (design.md Decision 3):
+  // `prevFrameLines.map(() => null)` invalidates CONTENT while preserving
+  // LENGTH. Resetting to `[]` instead would force the repaint but silently
+  // drop the length the shrink loop is driven by, leaving the pre-resize
+  // frame's trailing rows on screen — the exact regression Decision 3
+  // documents, which must not recur.
+  const before = buildFrame('a\nb\nc\nd\ne', 5, 0, []);
+  assert.equal(before.lines.length, 5);
+  const invalidated = before.lines.map(() => null);
+
+  // The post-resize frame is shorter (3 lines) and its content is byte-
+  // identical to the pre-resize frame's first three rows.
+  const after = buildFrame('a\nb\nc', 5, 0, invalidated);
+
+  // Every row repaints despite identical content — that is the sentinel
+  // doing its job for a rows-only resize.
+  assert.ok(after.bytes.includes(at(1) + 'a    '));
+  assert.ok(after.bytes.includes(at(2) + 'b    '));
+  assert.ok(after.bytes.includes(at(3) + 'c    '));
+  // ...and rows 4-5 from the taller pre-resize frame are still blanked,
+  // which is only possible because the sentinel preserved `.length`.
+  assert.match(after.bytes, /\x1b\[4;1H {5}/);
+  assert.match(after.bytes, /\x1b\[5;1H {5}/);
+  assert.doesNotMatch(after.bytes, /\x1b\[6;1H/);
+  // The cursor-park write runs last, after the blanking (Decision 8).
+  assert.ok(after.bytes.endsWith(at(3) + 'c    '));
 });
 
 // --- CON-26: trim phantom trailing blank row ------------------------------------
 // draw() appends a trailing '\n' to its content before calling buildFrame().
 // String.split('\n') on a trailing-newline-terminated string produces an extra
-// empty trailing element. This test verifies that buildFrame strips that phantom
+// empty trailing element. These tests verify that buildFrame strips that phantom
 // row and does not count or write it.
+//
+// CON-27 ported both to the 4-arg / { bytes, lines } contract — deliberately
+// PORTED, not replaced: they are the only guard on the strip, and the diff
+// writer makes the bug they cover strictly worse rather than moot. Under the
+// old full-rewrite writer a phantom row was one extra blank line at the
+// bottom; under the diff path it would ALSO be the row the cursor-park write
+// (Decision 8) leaves the cursor resting on, so the visible cursor would sit
+// one row below the footer forever. Each test therefore now also asserts
+// where the park write points.
 
 test('buildFrame does not write a phantom trailing blank row for a trailing-newline-terminated input', () => {
   // A router.render()-shaped input: "line1\nline2\n" (like draw() always builds)
   const trailingNewlineInput = 'content line 1\ncontent line 2\n';
-  const frame = buildFrame(trailingNewlineInput, 20, 0);
+  const frame = buildFrame(trailingNewlineInput, 20, 0, []);
 
-  // The lineCount should be 2 (the actual content lines), not 3 (which would
-  // include the phantom empty line from the trailing '\n').
-  assert.equal(frame.lineCount, 2,
-    'lineCount must reflect only the actual rendered content, excluding the phantom row');
+  // Two rows (the actual content lines), not three — a third would be the
+  // phantom empty line the trailing '\n' produces when split.
+  assert.equal(frame.lines.length, 2,
+    'the returned lines must reflect only the actual rendered content, excluding the phantom row');
 
-  // The written bytes should contain exactly the content lines, no extra blank row.
-  // We can verify this by checking that there is no third line in the output.
-  const lines = frame.bytes.slice(CURSOR_HOME.length).split('\n');
-  // lines[0] and lines[1] are the real content (each padded), and there should
-  // be no lines[2] (which would be the phantom blank row).
-  assert.equal(lines.length, 2,
-    'written output should have exactly 2 lines, not 3 with a phantom blank row');
+  // No row 3 is ever positioned or written...
+  assert.doesNotMatch(frame.bytes, /\x1b\[3;1H/,
+    'a phantom third row must never be positioned, let alone written');
+  // ...and the cursor-park write targets row 2, the last REAL row, so the
+  // cursor comes to rest on the footer rather than a blank row below it.
+  assert.ok(frame.bytes.endsWith(at(2) + padTo('content line 2', 20)));
+  assert.equal(frame.bytes,
+    at(1) + padTo('content line 1', 20) + at(2) + padTo('content line 2', 20)
+      + at(2) + padTo('content line 2', 20));
 });
 
 test('buildFrame strips exactly one trailing newline, preserving genuine blank content lines', () => {
@@ -112,18 +326,43 @@ test('buildFrame strips exactly one trailing newline, preserving genuine blank c
   // This represents: "content\n" (real line) + "" (real blank line) + "\n" (synthetic from draw())
   // After stripping exactly one '\n', should yield 2 lines: "content" + one blank line.
   const contentWithBlankLineAndSyntheticNewline = 'content\n\n';
-  const frame = buildFrame(contentWithBlankLineAndSyntheticNewline, 10, 0);
+  const frame = buildFrame(contentWithBlankLineAndSyntheticNewline, 10, 0, []);
 
-  // The lineCount should be 2: one real content line + one real blank line.
-  // Only the synthetic trailing '\n' is stripped; the genuine blank line remains.
-  assert.equal(frame.lineCount, 2,
+  // Two rows: one real content line + one real blank line. Only the synthetic
+  // trailing '\n' is stripped; the genuine blank line remains.
+  assert.equal(frame.lines.length, 2,
     'a genuine trailing blank content line must be preserved; only the synthetic trailing newline is stripped');
+  assert.equal(frame.lines[0], 'content   ', 'first line should be padded content');
+  assert.equal(frame.lines[1], '          ', 'second line should be a blank line, padded to column width');
 
-  // Verify both lines are written and padded (even the blank one).
-  const lines = frame.bytes.slice(CURSOR_HOME.length).split('\n');
-  assert.equal(lines.length, 2, 'output should have 2 lines: content + blank');
-  assert.equal(lines[0], 'content   ', 'first line should be padded content');
-  assert.equal(lines[1], '          ', 'second line should be a blank line, padded to column width');
+  // Both rows are written, each behind its own placement, and no third row
+  // exists. The blank row here is GENUINE content, so it is correctly also
+  // where the park write points — unlike the phantom row in the test above.
+  assert.equal(frame.bytes,
+    at(1) + 'content   ' + at(2) + '          ' + at(2) + '          ');
+  assert.doesNotMatch(frame.bytes, /\x1b\[3;1H/);
+});
+
+test('the lines cached for the next tick carry no phantom trailing row', () => {
+  // The strip has to hold in the value buildFrame RETURNS, not just in the
+  // bytes it writes: `lines` becomes the next tick's `prevLines`, so a
+  // phantom row that leaked into it would be compared against, and blanked
+  // by the shrink loop, on every subsequent frame.
+  //
+  // The length assertion is the load-bearing one. An earlier version of this
+  // test asserted only `second.bytes === ''` and was vacuous: a leaked
+  // phantom row lands in BOTH `lines` and `prevLines`, compares equal to
+  // itself, and yields `bytes === ''` either way — so it passed with the
+  // strip removed. (Caught at the final gate; the two tests above are the
+  // ones that actually kill that mutation.)
+  const first = buildFrame('alpha\nbravo\n', 10, 0, []);
+  assert.equal(first.lines.length, 2,
+    'the cached lines must hold only real content rows, not the empty string a trailing newline splits into');
+  assert.deepEqual(first.lines, ['alpha     ', 'bravo     ']);
+
+  const second = buildFrame('alpha\nbravo\n', 10, 0, first.lines);
+  assert.equal(second.bytes, '',
+    'a trailing-newline-terminated frame must still diff as unchanged tick over tick');
 });
 
 // --- alternate screen buffer constants --------------------------------------
@@ -613,9 +852,6 @@ test('repeated j past the visible window scrolls the fleet view and keeps the ma
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
   };
 
-  // eslint-disable-next-line no-control-regex
-  const plainFrame = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
-
   try {
     const watchModule = require('../lib/ui/watch');
     const donePromise = watchModule.watch({ root, config: {} });
@@ -623,7 +859,7 @@ test('repeated j past the visible window scrolls the fleet view and keeps the ma
     // The first draw() (synchronous, before `await new Promise(...)`) has
     // already rendered index 0 (HEL-200) selected, unscrolled — sanity-check
     // it before moving at all.
-    const firstFrame = plainFrame(written[written.length - 1]);
+    const firstFrame = screenOf(written);
     const firstMarked = firstFrame.split('\n').filter((l) => l.includes('▸'));
     assert.equal(firstMarked.length, 1);
     assert.ok(firstMarked[0].includes('HEL-200'));
@@ -634,7 +870,7 @@ test('repeated j past the visible window scrolls the fleet view and keeps the ma
     // an now-invisible marker.
     for (let i = 0; i < 6; i++) fakeStdin.emit('data', 'j');
 
-    const lastFrame = plainFrame(written[written.length - 1]);
+    const lastFrame = screenOf(written);
     const lastMarked = lastFrame.split('\n').filter((l) => l.includes('▸'));
     assert.equal(lastMarked.length, 1,
       `expected exactly one marker after scrolling, got ${lastMarked.length}`);
@@ -732,9 +968,6 @@ test('scrolling back up with k brings a short RUNNING section back into view whe
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
   };
 
-  // eslint-disable-next-line no-control-regex
-  const plainFrame = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
-
   // Declared outside the try so `finally` can always tear the poll loop's
   // real setInterval down, even if an assertion below throws — otherwise a
   // failing assertion here would leak a live timer that keeps firing (and
@@ -749,7 +982,7 @@ test('scrolling back up with k brings a short RUNNING section back into view whe
     // RUNNING's own row (index 1) entirely out of view along the way.
     for (let i = 0; i < 8; i++) fakeStdin.emit('data', 'j');
 
-    const scrolledFrame = plainFrame(written[written.length - 1]);
+    const scrolledFrame = screenOf(written);
     // RUNNING has scrolled entirely past — its own collapse line names it
     // (lowercase, matching the existing "… and N more <title>" wording),
     // not the bordered section title.
@@ -759,7 +992,7 @@ test('scrolling back up with k brings a short RUNNING section back into view whe
     // 7 'k' presses back: index 8 -> 1, landing exactly on HEL-2 (RUNNING).
     for (let i = 0; i < 7; i++) fakeStdin.emit('data', 'k');
 
-    const backAtRunning = plainFrame(written[written.length - 1]);
+    const backAtRunning = screenOf(written);
     const marked = backAtRunning.split('\n').filter((l) => l.includes('▸'));
     assert.equal(marked.length, 1,
       `expected exactly one marker once back at RUNNING, got ${marked.length}`);
@@ -842,8 +1075,6 @@ test('a digit press jumps directly to a scrolled-past section and scrolls it bac
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
   };
 
-  // eslint-disable-next-line no-control-regex
-  const plainFrame = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
 
   let donePromise;
   try {
@@ -853,7 +1084,7 @@ test('a digit press jumps directly to a scrolled-past section and scrolls it bac
     // Scroll deep into DONE first, exactly as the sibling test above does —
     // RUNNING's own row (HEL-2, index 1) scrolls entirely out of view.
     for (let i = 0; i < 8; i++) fakeStdin.emit('data', 'j');
-    const scrolledFrame = plainFrame(written[written.length - 1]);
+    const scrolledFrame = screenOf(written);
     assert.doesNotMatch(scrolledFrame, /HEL-2\b/, 'HEL-2 should have scrolled out of view by this point');
 
     // Sections on screen: NEEDS YOU (1), RUNNING (2), DONE (3). Digit 2
@@ -861,7 +1092,7 @@ test('a digit press jumps directly to a scrolled-past section and scrolls it bac
     // seven k's.
     fakeStdin.emit('data', '2');
 
-    const jumpedFrame = plainFrame(written[written.length - 1]);
+    const jumpedFrame = screenOf(written);
     const marked = jumpedFrame.split('\n').filter((l) => l.includes('▸'));
     assert.equal(marked.length, 1, `expected exactly one marker after the jump, got ${marked.length}`);
     assert.ok(marked[0].includes('HEL-2'),
@@ -932,8 +1163,6 @@ test('jumping into QUEUED focus, moving the cursor, and exiting leaves the run s
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
   };
 
-  // eslint-disable-next-line no-control-regex
-  const plainFrame = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
   const markedTicket = (frame) => {
     const line = frame.split('\n').find((l) => l.includes('▸'));
     return line ? (line.match(/HEL-\d+/) || [null])[0] : null;
@@ -947,24 +1176,24 @@ test('jumping into QUEUED focus, moving the cursor, and exiting leaves the run s
     // Move selection onto the SECOND running run first, so a stray reset to
     // index 0 would be caught.
     fakeStdin.emit('data', 'j');
-    const beforeFrame = plainFrame(written[written.length - 1]);
+    const beforeFrame = screenOf(written);
     assert.equal(markedTicket(beforeFrame), 'HEL-2', 'sanity: selection is on HEL-2 before entering queue focus');
 
     // Sections on screen: RUNNING (1), QUEUED (2). Digit 2 jumps INTO
     // QUEUED focus without touching the run selection at all.
     fakeStdin.emit('data', '2');
-    const inQueueFrame = plainFrame(written[written.length - 1]);
+    const inQueueFrame = screenOf(written);
     assert.match(inQueueFrame, /»/, 'the QUEUED-local cursor marker should now be on screen');
     assert.equal(markedTicket(inQueueFrame), 'HEL-2', 'the run selection marker must be unaffected by entering queue focus');
 
     // Move the QUEUED-local cursor — must still never touch the run selection.
     fakeStdin.emit('data', 'j');
-    const movedFrame = plainFrame(written[written.length - 1]);
+    const movedFrame = screenOf(written);
     assert.equal(markedTicket(movedFrame), 'HEL-2');
 
     // Escape back out — the run selection must resolve to the exact same run.
     fakeStdin.emit('data', '\x1b');
-    const afterFrame = plainFrame(written[written.length - 1]);
+    const afterFrame = screenOf(written);
     assert.doesNotMatch(afterFrame, /»/, 'the QUEUED-local cursor marker should be gone after exiting queue focus');
     assert.equal(markedTicket(afterFrame), 'HEL-2', 'the run selection must resolve to the same run after the round trip');
   } finally {
@@ -1024,8 +1253,6 @@ test('force-start: f opens a confirmation, any key cancels, y actually starts th
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
   };
 
-  // eslint-disable-next-line no-control-regex
-  const plainFrame = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
 
   let donePromise;
   try {
@@ -1035,18 +1262,18 @@ test('force-start: f opens a confirmation, any key cancels, y actually starts th
     // No runs at all — QUEUED is the ONLY section on screen, so digit 1
     // jumps straight into queue focus on CON-90 (the sole pending ticket).
     fakeStdin.emit('data', '1');
-    const focusedFrame = plainFrame(written[written.length - 1]);
+    const focusedFrame = screenOf(written);
     assert.match(focusedFrame, /»/);
 
     // f opens the confirmation — nothing has started yet.
     fakeStdin.emit('data', 'f');
-    const confirmFrame = plainFrame(written[written.length - 1]);
+    const confirmFrame = screenOf(written);
     assert.match(confirmFrame, /this will run 1 concurrently, exceeding your maxConcurrent:1 setting/);
     assert.equal(spawnCalls.length, 0, 'nothing should be spawned until y is pressed');
 
     // Any other key cancels — no spawn, queue unchanged on disk.
     fakeStdin.emit('data', 'x');
-    const cancelledFrame = plainFrame(written[written.length - 1]);
+    const cancelledFrame = screenOf(written);
     assert.doesNotMatch(cancelledFrame, /this will run 1 concurrently/);
     assert.equal(spawnCalls.length, 0);
     const afterCancelRecord = queueCache.read(root);
@@ -1055,7 +1282,7 @@ test('force-start: f opens a confirmation, any key cancels, y actually starts th
     // f again, then y — this time it actually starts.
     fakeStdin.emit('data', 'f');
     fakeStdin.emit('data', 'y');
-    const startedFrame = plainFrame(written[written.length - 1]);
+    const startedFrame = screenOf(written);
 
     assert.equal(spawnCalls.length, 1, 'exactly one spawn — the confirmed force-start');
     assert.equal(spawnCalls[0].ticket, 'CON-90');
@@ -1075,4 +1302,243 @@ test('force-start: f opens a confirmation, any key cancels, y actually starts th
     delete require.cache[sessionPath];
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ===========================================================================
+// CON-27 (skeptic-final-1b.md change requests 1 and 2): the two cache-
+// invalidation WIRING lines.
+//
+// buildFrame's own internals are well covered by the pure tests at the top of
+// this file, but the two lines that decide WHEN its previous-frame cache is
+// invalidated are not reachable from them — and a mutation run proved all
+// three plausible regressions (resize invalidation weakened to `[]`, resize
+// invalidation deleted, attach reset deleted) passed the entire `npm test`
+// gate with exit 0, while each is catastrophic in a real terminal: an
+// interleaved double-render with two selection markers for the resize cases,
+// a permanently BLANK dashboard for the attach case.
+//
+// Both requirements are MODIFIED by this change's spec delta and each has a
+// dedicated scenario there ("A rows-only resize still triggers a full
+// rewrite, not a partial diff" and "The first redraw after returning from
+// attach rewrites every row"); these are those scenarios' regression tests.
+//
+// Both drive the real watch() loop, the same fake-session/fake-stdin
+// technique the CON-6 scroll tests above use, because the seam under test is
+// watch()'s own wiring — asserting on buildFrame directly would re-test the
+// thing that already works and miss the thing that does not.
+// ===========================================================================
+
+// Shared harness: the fleet's RUNNING section is the one that actually grows
+// and shrinks with the terminal's row budget (DONE is capped at MAX_FINISHED,
+// so a DONE-only fixture renders the same height at every size and could not
+// exercise the shrink path at all — measured before writing this).
+function withWatchHarness({ tickets, rows, cols, attach }, body) {
+  const { EventEmitter } = require('node:events');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-cache-'));
+  for (let i = 0; i < tickets; i++) {
+    const runDir = path.join(root, '.concertino', 'runs', 'HEL-' + (200 + i));
+    fs.mkdirSync(runDir, { recursive: true });
+    // run.start with no run.end, and listed as a live window below, so every
+    // one of these lands in RUNNING.
+    fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+      JSON.stringify({ t: 1000 - i * 10, kind: 'run.start' }) + '\n');
+  }
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() {
+      return Array.from({ length: tickets },
+        (_, i) => ({ ticket: 'HEL-' + (200 + i), alive: true, activity: null }));
+    },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach: attach || (() => ({ status: 0 })),
+  };
+
+  const fakeStdin = new EventEmitter();
+  // isTTY true so the 'data' handler does NOT strip a trailing '\r' (the
+  // attach key) as it does for piped stdin — see watch.js's own comment there.
+  fakeStdin.isTTY = true;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realRowsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'rows');
+  const realColsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'columns');
+  const realWrite = process.stdout.write;
+  // watch() registers its 'resize' listener on the real process.stdout and
+  // never removes it — and quit() does not clear its `running` flag — so a
+  // previously-finished watch() from an earlier test in this file would ALSO
+  // redraw (into this test's `written`) when we emit 'resize'. Park them for
+  // the duration and put them back afterwards, so the only listener that
+  // fires is the one under test.
+  const parkedResizeListeners = process.stdout.listeners('resize').slice();
+  process.stdout.removeAllListeners('resize');
+
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(String(chunk)); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+  const setRows = (n) => Object.defineProperty(process.stdout, 'rows', { value: n, configurable: true });
+  setRows(rows);
+  Object.defineProperty(process.stdout, 'columns', { value: cols, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  let donePromise;
+  const cleanup = async () => {
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    if (realRowsDescriptor) Object.defineProperty(process.stdout, 'rows', realRowsDescriptor);
+    else delete process.stdout.rows;
+    if (realColsDescriptor) Object.defineProperty(process.stdout, 'columns', realColsDescriptor);
+    else delete process.stdout.columns;
+    process.stdout.removeAllListeners('resize');
+    for (const l of parkedResizeListeners) process.stdout.on('resize', l);
+    delete require.cache[watchPath];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  };
+
+  const watchModule = require('../lib/ui/watch');
+  donePromise = watchModule.watch({ root, config: {} });
+  return body({ written, fakeStdin, setRows }).finally(cleanup);
+}
+
+test('a rows-only resize repaints every row AND blanks the taller pre-resize frame\'s trailing rows', async () => {
+  // 12 live runs at 30 rows renders a 29-row frame; at 20 rows the fleet's
+  // visible window shrinks it to 18. Same column count throughout — that is
+  // the whole point: `padTo` pads to exactly `cols`, so a rows-only resize
+  // leaves unchanged content byte-identical and the diff would skip it
+  // without the listener's explicit invalidation (design.md Decision 3).
+  await withWatchHarness({ tickets: 12, rows: 30, cols: 100 }, async ({ written, setRows }) => {
+    const before = writesByRow(written);
+    assert.ok(before.length > 0, 'the startup frame should have been drawn');
+    const preHeight = Math.max(...before.map((w) => w.row));
+    assert.ok(preHeight > 20,
+      `fixture sanity: the pre-resize frame must be taller than the post-resize terminal, got ${preHeight}`);
+
+    written.length = 0;
+    setRows(20);
+    process.stdout.emit('resize');
+
+    const after = writesByRow(written);
+    assert.ok(after.length > 0, 'the resize must trigger a redraw');
+    // Still the diff path, not the over-tall fallback — otherwise this test
+    // would be asserting about a code path it does not mean to cover.
+    assert.doesNotMatch(written.join(''), /\x1b\[H/,
+      'a frame that fits its terminal must not take the full-rewrite fallback');
+
+    const touched = new Set(after.map((w) => w.row));
+    // The frame's last row is the footer, which is never blank — so the
+    // largest row carrying non-blank content is the new frame's height.
+    const newHeight = Math.max(...after.filter((w) => w.text.trim() !== '').map((w) => w.row));
+    assert.ok(newHeight < preHeight,
+      `fixture sanity: the frame must actually shrink (pre=${preHeight}, post=${newHeight})`);
+
+    // (a) EVERY row from 1 to the taller pre-resize frame's height is
+    //     touched, with no gaps: rows 1..newHeight rewritten by the diff
+    //     (this is what fails if the invalidation is removed entirely — the
+    //     unchanged rows would be skipped, leaving holes), and rows
+    //     newHeight+1..preHeight blanked by the shrink loop (this is what
+    //     fails if the invalidation is weakened to `prevFrameLines = []`,
+    //     which discards the length that loop is driven by).
+    for (let row = 1; row <= preHeight; row++) {
+      assert.ok(touched.has(row),
+        `row ${row} was not written by the resize redraw (frame 1..${newHeight}, stale tail ${newHeight + 1}..${preHeight})`);
+    }
+
+    // (b) The stale tail is blanked specifically — not merely "touched".
+    for (const w of after.filter((x) => x.row > newHeight)) {
+      assert.equal(w.text.trim(), '',
+        `row ${w.row} is past the new frame's last row and must be blanked, got ${JSON.stringify(w.text)}`);
+    }
+
+    // (c) Nothing beyond the pre-resize frame is touched — the shrink loop
+    //     must stop at the previous frame's own length.
+    assert.equal(Math.max(...after.map((w) => w.row)), preHeight,
+      'the redraw must not write past the pre-resize frame\'s last row');
+  });
+});
+
+test('the first redraw after returning from attach repaints every row', async () => {
+  await withWatchHarness({ tickets: 4, rows: 30, cols: 100 }, async ({ written, fakeStdin }) => {
+    const before = writesByRow(written);
+    const height = Math.max(...before.map((w) => w.row));
+    assert.ok(height > 1, 'the startup frame should have been drawn');
+
+    written.length = 0;
+    // '\r' on the selected run with no live escalation routes to
+    // doAttach() (fleet.js's handleKey), which exits the alternate buffer,
+    // calls the faked session.attach(), and re-enters it. applyAction then
+    // returns true, so watch()'s key handler redraws synchronously — that
+    // redraw is the one under test.
+    fakeStdin.emit('data', '\r');
+
+    const all = written.join('');
+    assert.ok(all.includes(ALT_SCREEN_EXIT) && all.includes(ALT_SCREEN_ENTER),
+      'sanity: the attach round-trip should have suspended and restored the alternate buffer');
+
+    // Re-entering the alternate buffer CLEARS it, so nothing the pre-attach
+    // cache describes is on screen any more. Every row must be repainted.
+    // Without the reset the frame is byte-identical to the pre-attach one,
+    // every row diffs as "unchanged", buildFrame returns bytes === '' — and
+    // the dashboard stays blank forever.
+    const after = writesByRow(written);
+    assert.ok(after.length > 0,
+      'the post-attach redraw wrote nothing at all — the dashboard would be left blank');
+    const touched = new Set(after.map((w) => w.row));
+    for (let row = 1; row <= height; row++) {
+      assert.ok(touched.has(row), `row ${row} was not repainted after the attach round-trip`);
+    }
+  });
+});
+
+test('the first redraw after an attach that THREW also repaints every row', async () => {
+  const boom = () => { throw new Error('tmux exploded'); };
+  await withWatchHarness({ tickets: 4, rows: 30, cols: 100, attach: boom }, async ({ written, fakeStdin }) => {
+    const before = writesByRow(written);
+    const height = Math.max(...before.map((w) => w.row));
+
+    written.length = 0;
+    // attachAndRestore is a try/finally, so the restore callback (and its
+    // cache reset) runs on this path too — but the exception unwinds past
+    // watch.js's `if (applyAction(action)) runs = draw();`, so unlike the
+    // normal path there is NO synchronous redraw. watch.js has no try/catch
+    // around onKey, so the throw surfaces here.
+    assert.throws(() => fakeStdin.emit('data', '\r'), /tmux exploded/);
+    const duringAttach = written.join('');
+    assert.ok(duringAttach.includes(ALT_SCREEN_ENTER),
+      'the restore callback must re-enter the alternate buffer even when attach throws');
+
+    written.length = 0;
+    // The next redraw is therefore whatever comes first. Rather than waiting
+    // a full POLL_MS for the poll timer, nudge one deterministically with a
+    // 'k' at the top of the list: applyAction clamps the selection to 0 (no
+    // change), so the frame is byte-identical to the pre-attach one and the
+    // ONLY reason any bytes get written is the cache reset in the restore
+    // callback. That is exactly the property under test.
+    fakeStdin.emit('data', 'k');
+
+    const after = writesByRow(written);
+    assert.ok(after.length > 0,
+      'the first redraw after a THROWING attach wrote nothing — the dashboard would be left blank');
+    const touched = new Set(after.map((w) => w.row));
+    for (let row = 1; row <= height; row++) {
+      assert.ok(touched.has(row),
+        `row ${row} was not repainted after the throwing attach round-trip`);
+    }
+  });
 });

@@ -1,8 +1,5 @@
-# dashboard-render-loop Specification
+## MODIFIED Requirements
 
-## Purpose
-Defines the terminal-control contract for `lib/ui/watch.js`'s poll loop — no full-screen clear in steady state or on shutdown, paired alternate-screen-buffer entry/exit across every exit path (including a throwing `attach`), stale-row cleanup when a frame shrinks, and immediate reflow on resize — independent of what any individual screen renders.
-## Requirements
 ### Requirement: The dashboard never fully clears the screen after startup
 The dashboard (`lib/ui/watch.js`) SHALL NOT emit a full-screen clear
 (`\x1b[2J`) anywhere in its steady-state or shutdown behavior, once the
@@ -100,38 +97,6 @@ frame remains visible in that row without an intervening blank frame.
 - **THEN** the terminal cursor is not moved by this redraw — it remains
   wherever the previous redraw that did write something left it
 
-### Requirement: A shrinking frame leaves no stale trailing rows
-The dashboard SHALL blank out any extra trailing rows left over from the
-previous, taller frame when the newly rendered frame has fewer lines than
-the immediately preceding frame, so that no row of the previous frame
-remains visible below the new frame's last line.
-
-#### Scenario: Frame shrinks between two consecutive polls
-- **WHEN** a redraw produces fewer lines than the previous redraw
-- **THEN** every row from the end of the new frame through the end of the
-  previous, taller frame is blanked (overwritten with spaces) in the same
-  redraw
-
-### Requirement: Alternate screen buffer is entered once and exited on every exit path
-The dashboard SHALL enter the terminal's alternate screen buffer
-(`\x1b[?1049h`) once, before its first redraw, and SHALL exit it
-(`\x1b[?1049l`) exactly once on every path that ends the dashboard process,
-including a normal quit keypress, Ctrl-C, piped stdin reaching EOF or close,
-and any other path that reaches the dashboard's shutdown routine. Entry and
-exit SHALL be paired: the dashboard SHALL NOT emit `\x1b[?1049h` more than
-once per session, and SHALL NOT exit without a matching prior entry.
-
-#### Scenario: Alternate buffer entered before the first frame
-- **WHEN** the dashboard starts
-- **THEN** `\x1b[?1049h` is written to the terminal before the first
-  rendered frame is written, and is written exactly once for the session
-
-#### Scenario: Alternate buffer exited on quit
-- **WHEN** the dashboard's shutdown routine runs, regardless of which input
-  triggered it (`q`, Ctrl-C, stdin `end`, stdin `close`)
-- **THEN** `\x1b[?1049l` is written to the terminal exactly once as part of
-  that shutdown
-
 ### Requirement: Attach suspends and restores the dashboard's alternate screen state around tmux
 Handing the terminal to `tmux attach` (the `attach` action) SHALL exit the
 dashboard's alternate screen buffer before control passes to tmux, and SHALL
@@ -197,11 +162,3 @@ post-resize frame is shorter.
   but its row count changes (e.g. a tmux pane height change)
 - **THEN** the resize-triggered redraw writes every row of the frame, not
   only rows whose padded content differs from the pre-resize frame
-
-### Requirement: A trailing newline in the rendered text does not produce an extra written row
-When the text handed to the frame builder ends in a trailing newline, the dashboard SHALL NOT count or write an extra blank row for the empty string that trailing newline produces when the text is split into lines — the written frame's row count and content SHALL reflect only the actual rendered lines.
-
-#### Scenario: A frame built from newline-terminated text has no phantom trailing row
-- **WHEN** the dashboard redraws from text that ends in `'\n'` (the normal case — `draw()` always appends one)
-- **THEN** the bytes written to the terminal contain exactly the rendered content's rows, with no additional fully-blank row appended at the bottom
-
