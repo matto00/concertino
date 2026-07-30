@@ -4,16 +4,16 @@ TICKET_ID: CON-39
 CHANGE_NAME: fleet-section-jump-queued-detail
 WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/feature/fleet-section-jump-queued-detail/CON-39
 BRANCH: feature/fleet-section-jump-queued-detail/CON-39
-PHASE: Execution
+PHASE: Delivery
 CYCLE: 1
 DEV_PORT: 5212
 BACKEND_PORT: 8119
-EXECUTOR_AGENT_ID: —
-EVALUATOR_AGENT_ID: —
-LAST_EVAL_VERDICT: —
-LAST_EVAL_REPORT: —
-SKEPTIC_CYCLE: 0
-LAST_SKEPTIC_VERDICT: CONFIRM (design gate, round 2)
+EXECUTOR_AGENT_ID: aa2db22468a40257c
+EVALUATOR_AGENT_ID: af0d2e06bc13e085a
+LAST_EVAL_VERDICT: PASS
+LAST_EVAL_REPORT: openspec/changes/fleet-section-jump-queued-detail/evaluation-1.md
+SKEPTIC_CYCLE: 1
+LAST_SKEPTIC_VERDICT: CONFIRM (final gate, round 1)
 AGENT_MERGE: true
 SPEED: default
 EXECUTION_CYCLES: 3
