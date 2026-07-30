@@ -174,10 +174,14 @@ function realpathSafe(p) {
 function normPath(p) { return p ? realpathSafe(path.resolve(p)) : null; }
 function samePath(a, b) { return !!a && !!b && normPath(a) === normPath(b); }
 
-// Byte-identical to checkArtifacts()'s own comparison, over the same set of
-// files (core/scripts/*, core/laws/*, core/workflow-state.template.md) — the
-// only files a render actually reads from core/. Used only to decide whether
-// to print a divergence note; never gates whether resolution proceeds.
+// Compares the set of files checked for divergence in resolveCore(). Covers
+// core/scripts/*, core/laws/*, core/roles/*, and core/workflow-state.template.md
+// — all files a render actually reads from core/. Note: checkArtifacts() compares
+// only scripts/laws/workflow-state (the files it copies), so roles/ is checked
+// here but not there: roles are rendered, not copied, so there is no byte-identical
+// artifact to compare. The divergence note printed by resolveCore() is the only
+// signal available for roles/. Used only to decide whether to print a divergence
+// note; never gates whether resolution proceeds.
 function coresDiffer(coreA, coreB) {
   const readDirSafe = (d) => { try { return fs.readdirSync(d); } catch (_) { return []; } };
   const fileDiffers = (a, b) => {
@@ -185,7 +189,7 @@ function coresDiffer(coreA, coreB) {
     if (!exists(a)) return false;
     return !fs.readFileSync(a).equals(fs.readFileSync(b));
   };
-  for (const sub of ['scripts', 'laws']) {
+  for (const sub of ['scripts', 'laws', 'roles']) {
     const names = new Set([...readDirSafe(path.join(coreA, sub)), ...readDirSafe(path.join(coreB, sub))]);
     for (const f of names) {
       if (fileDiffers(path.join(coreA, sub, f), path.join(coreB, sub, f))) return true;
