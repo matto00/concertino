@@ -23,7 +23,13 @@ file — so they stay generic and the config is the single source of truth.
   run. Other scripts call it with `|| true` for the same reason. `--await` is
   the exception and exits non-zero in two cases: the escalation timed out, or
   the initial `escalation.raised` write failed — either way there is no answer
-  coming, so the caller must fall back to escalating in chat.
+  coming, so the caller must fall back to escalating in chat. Like the other
+  scripts it sources `.concertino.env`, for `CONCERTINO_ESCALATION_TIMEOUT_MIN`
+  (`--await`'s deadline) — but it checks **two** locations: next to itself
+  first, then `scripts/concertino/` under the main checkout. Escalations are
+  raised from inside a worktree, whose own copy of this directory has no
+  `.concertino.env`, so without that fallback the configured timeout would
+  never apply and `--await` would silently use its hardcoded default.
 - `persist-evidence.sh` copies an artifact into
   `<main checkout>/.concertino/runs/<TICKET>/evidence/` — unlike
   `emit-event.sh`, it can genuinely fail (missing source, unwritable

@@ -440,5 +440,102 @@ check "well-formed sibling ticket id still writes its event" \
   "$([ -f "$REPO/.concertino/runs/CON-14/events.jsonl" ] && echo yes || echo no)" "yes"
 rm -rf "$REPO"
 
+# --- .concertino.env sourcing (CON-47) --------------------------------------
+# `--await`'s deadline comes from CONCERTINO_ESCALATION_TIMEOUT_MIN, which the
+# script only sees if it actually sources `.concertino.env`. Every case below
+# runs a *copy* of the script in its own temp directory rather than "$SCRIPT"
+# itself: `.concertino.env` must never be written into core/scripts/, which is
+# the live source tree the rest of this suite invokes directly (the cases above
+# that pass CONCERTINO_ESCALATION_TIMEOUT_MIN as a process env var would pick
+# it up, since a sourced value overrides an exported one by design).
+script_copy() {
+  local d; d="$(mktemp -d)"
+  cp "$SCRIPT" "$d/emit-event.sh"
+  chmod +x "$d/emit-event.sh"
+  printf '%s' "$d"
+}
+
+# Every case here asserts an IMMEDIATE timeout (the env file sets the deadline
+# to 0 minutes). If the sourcing regressed, the script would instead fall back
+# to its 60-minute default and park this whole suite for an hour, so bound the
+# wait and report the overrun as a failure rather than hanging. SIGKILL, not
+# TERM/INT — those two are exactly what on_kill traps to write
+# escalation.timeout, which would forge the evidence this is checking for.
+run_await_bounded() {
+  local max_s="$1" cwd="$2"; shift 2
+  local pid i rc
+  ( cd "$cwd" && exec "$@" ) >/dev/null 2>&1 &
+  pid=$!
+  for (( i = 0; i < max_s * 10; i++ )); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    printf 'still-running-after-%ss' "$max_s"
+    return 0
+  fi
+  wait "$pid"; rc=$?
+  printf 'rc=%s' "$rc"
+}
+
+# --- branch 1: .concertino.env next to the script itself --------------------
+REPO="$(new_repo)"
+DIR="$(script_copy)"
+printf 'CONCERTINO_ESCALATION_TIMEOUT_MIN=0\n' > "$DIR/.concertino.env"
+check "local .concertino.env applies (immediate timeout, exit 1)" \
+  "$(run_await_bounded 20 "$REPO" "$DIR/emit-event.sh" escalation --await ticket=HEL-30 question=q)" \
+  "rc=1"
+check "local .concertino.env: timeout was recorded" \
+  "$(grep -c escalation.timeout "$REPO/.concertino/runs/HEL-30/events.jsonl")" "1"
+rm -rf "$REPO" "$DIR"
+
+# --- branch 2: only the MAIN checkout has it, script runs from a worktree ----
+# The real invocation context: the orchestrator has cd'd into WORKTREE_PATH and
+# calls scripts/concertino/emit-event.sh by relative path there. That copy's own
+# directory has no `.concertino.env` — only the main checkout's does.
+REPO="$(new_repo)"
+git -C "$REPO" worktree add -q "$REPO/wt" -b feat-env 2>/dev/null
+mkdir -p "$REPO/scripts/concertino" "$REPO/wt/scripts/concertino"
+cp "$SCRIPT" "$REPO/wt/scripts/concertino/emit-event.sh"
+chmod +x "$REPO/wt/scripts/concertino/emit-event.sh"
+printf 'CONCERTINO_ESCALATION_TIMEOUT_MIN=0\n' > "$REPO/scripts/concertino/.concertino.env"
+check "no .concertino.env beside the worktree's own copy" \
+  "$([ -f "$REPO/wt/scripts/concertino/.concertino.env" ] && echo yes || echo no)" "no"
+check "main-checkout .concertino.env applies from inside a worktree" \
+  "$(run_await_bounded 20 "$REPO/wt" ./scripts/concertino/emit-event.sh escalation --await ticket=HEL-31 question=q)" \
+  "rc=1"
+check "worktree case: timeout recorded in the main checkout's log" \
+  "$(grep -c escalation.timeout "$REPO/.concertino/runs/HEL-31/events.jsonl")" "1"
+rm -rf "$REPO"
+
+# --- precedence: a sourced value beats an already-exported one ---------------
+# Deliberately this direction only (file 0 vs exported 60), never the reverse:
+# if the assertion were ever wrong the wrong way round, the run would block for
+# up to an hour instead of failing fast.
+REPO="$(new_repo)"
+DIR="$(script_copy)"
+printf 'CONCERTINO_ESCALATION_TIMEOUT_MIN=0\n' > "$DIR/.concertino.env"
+export CONCERTINO_ESCALATION_TIMEOUT_MIN=60
+check "sourced .concertino.env overrides an exported timeout" \
+  "$(run_await_bounded 20 "$REPO" "$DIR/emit-event.sh" escalation --await ticket=HEL-32 question=q)" \
+  "rc=1"
+unset CONCERTINO_ESCALATION_TIMEOUT_MIN
+rm -rf "$REPO" "$DIR"
+
+# --- no .concertino.env anywhere: the hardcoded default still applies --------
+# Can't wait out 60 minutes, so assert the observable consequence: the script
+# is still polling (never exited) well past the point the two cases above
+# returned in, i.e. it did NOT pick up a 0-minute deadline from nowhere.
+REPO="$(new_repo)"
+DIR="$(script_copy)"
+check "no .concertino.env: default deadline still governs (still waiting)" \
+  "$(run_await_bounded 3 "$REPO" "$DIR/emit-event.sh" escalation --await ticket=HEL-33 question=q)" \
+  "still-running-after-3s"
+check "no .concertino.env: raised but not timed out" \
+  "$(grep -c escalation.timeout "$REPO/.concertino/runs/HEL-33/events.jsonl" || true)" "0"
+rm -rf "$REPO" "$DIR"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
