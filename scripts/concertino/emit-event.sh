@@ -101,6 +101,44 @@ json_string() {
   printf '"%s"' "$(json_escape "$1")"
 }
 
+# utf8_safe_prefix <byte-budget>
+#
+# Reads raw bytes on stdin and writes to stdout the largest prefix that is (a)
+# at most <byte-budget> bytes and (b) never ends inside a multi-byte UTF-8
+# sequence — backing off to the end of the last whole character when the
+# budget lands mid-sequence. A no-op whenever the budget already lands on a
+# character boundary (including every plain-ASCII case).
+#
+# Implemented in node (already a hard dependency of this script) rather than
+# `cut -b`/bash substring indexing so behavior is identical regardless of the
+# calling shell's locale — this inspects raw bytes, not locale-dependent shell
+# string semantics. See design.md Decision 1 for the full rationale and the
+# algorithm this mirrors.
+utf8_safe_prefix() {
+  local budget="$1"
+  node -e '
+    const buf = require("fs").readFileSync(0);
+    const budget = Math.max(0, parseInt(process.argv[1], 10) || 0);
+    let end = Math.min(budget, buf.length);
+    // Walk backward from just before the cut past any continuation bytes
+    // (10xxxxxx) to find the lead byte of the last character starting
+    // before `end`. If that character'"'"'s full sequence length would run
+    // past `end`, the cut landed mid-sequence — back `end` off to the start
+    // of that character.
+    let j = end - 1;
+    while (j >= 0 && (buf[j] & 0xc0) === 0x80) j--;
+    if (j >= 0) {
+      const lead = buf[j];
+      let seqLen = 1;
+      if ((lead & 0xe0) === 0xc0) seqLen = 2;
+      else if ((lead & 0xf0) === 0xe0) seqLen = 3;
+      else if ((lead & 0xf8) === 0xf0) seqLen = 4;
+      if (j + seqLen > end) end = j;
+    }
+    process.stdout.write(buf.slice(0, end));
+  ' "$budget"
+}
+
 ROOT="$(main_checkout)" || exit 0
 
 TICKET=""
@@ -239,16 +277,20 @@ write_escalation_raised() {
   local lo=0 hi="$total" mid best_fields="" best_line=""
   while [ "$lo" -le "$hi" ]; do
     mid=$(( (lo + hi) / 2 ))
-    local prefix marker candidate fields_try line_try
-    if [ "$mid" -gt 0 ]; then
-      prefix="$(printf '%s' "$CONTEXT" | LC_ALL=C cut -b "1-${mid}")"
-    else
-      prefix=""
-    fi
+    local prefix marker candidate fields_try line_try actual_bytes
+    # utf8_safe_prefix backs the candidate off to the last whole UTF-8
+    # character before byte `mid` when `mid` would otherwise land inside a
+    # multi-byte sequence — see design.md Decision 1. A no-op for any budget
+    # that already lands on a character boundary (every ASCII candidate).
+    prefix="$(printf '%s' "$CONTEXT" | utf8_safe_prefix "$mid")"
+    # The marker reports the actual byte length of the (possibly backed-off)
+    # prefix, never the requested `mid` — see design.md Decision 2. Otherwise
+    # a back-off would make the marker overstate what is actually shown.
+    actual_bytes="$(printf '%s' "$prefix" | LC_ALL=C wc -c | tr -d ' ')"
     if [ -n "$ref" ]; then
-      marker=" … [truncated, ${mid} of ${total} bytes shown — full context: ${ref}]"
+      marker=" … [truncated, ${actual_bytes} of ${total} bytes shown — full context: ${ref}]"
     else
-      marker=" … [truncated, ${mid} of ${total} bytes shown]"
+      marker=" … [truncated, ${actual_bytes} of ${total} bytes shown]"
     fi
     candidate="${prefix}${marker}"
     fields_try="${OTHER_FIELDS},\"context\":$(json_value "$candidate"),\"context_truncated\":true"

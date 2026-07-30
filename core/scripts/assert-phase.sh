@@ -25,6 +25,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 [ -f "${SCRIPT_DIR}/.concertino.env" ] && source "${SCRIPT_DIR}/.concertino.env"
 
+# utf8_safe_char_prefix <char-budget>
+#
+# Reads UTF-8 text on stdin and writes to stdout the first <char-budget>
+# Unicode code points, never a partial multi-byte sequence. Iterates by code
+# point (`Array.from`/`for...of`, the same pattern `visibleLength()` in
+# lib/ui/format.js already uses for the analogous surrogate-pair-safety
+# reason) rather than relying on bash's `${msg:0:200}`, which is
+# character-safe only when the ambient locale names a multibyte encoding —
+# silently byte-oriented (splitting a multi-byte character) under `C`/`POSIX`,
+# the default for many minimal CI/container images. A no-op for all-ASCII
+# input, where 200 characters is also 200 bytes. Duplicated from
+# emit-event.sh's analogous helper rather than sourced — these procedure
+# scripts stay standalone (see now_ms() above for the same pattern).
+utf8_safe_char_prefix() {
+  local n="$1"
+  node -e '
+    const s = require("fs").readFileSync(0, "utf8");
+    const n = Math.max(0, parseInt(process.argv[1], 10) || 0);
+    process.stdout.write(Array.from(s).slice(0, n).join(""));
+  ' "$n"
+}
+
 fail() {
   local msg="$*"
   echo "FAIL $msg" >&2
@@ -37,7 +59,7 @@ fail() {
   # short-circuits because FIRST_ERROR is already set) would be the last
   # command in that AND-OR list and would kill the script right there.
   if [ -z "$FIRST_ERROR" ]; then
-    FIRST_ERROR="${msg:0:200}"
+    FIRST_ERROR="$(printf '%s' "$msg" | utf8_safe_char_prefix 200)"
   fi
   return 0
 }
