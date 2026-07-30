@@ -40,13 +40,21 @@ file — so they stay generic and the config is the single source of truth.
 
 | Script              | Purpose                                                    | Args                                                        |
 | ------------------- | ---------------------------------------------------------- | ----------------------------------------------------------- |
-| `setup-worktree.sh` | Create worktree, copy env files, derive ports, run hooks   | `<TICKET_ID> <BRANCH>`                                      |
+| `setup-worktree.sh` | Create worktree, copy env files, derive ports, run hooks, resolve speed | `<TICKET_ID> <BRANCH> [SPEED]`                 |
+| `resolve-speed.sh`  | (speed, harness) -> resolved budgets + per-role models + slow-only flags | `[SPEED] [HARNESS]`                          |
 | `start-servers.sh`  | Start backend/frontend dev servers, health-wait            | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>`                 |
 | `assert-phase.sh`   | Postcondition gate per phase                               | `<setup\|servers\|delivery\|cleanup> <WORKTREE_PATH> [...]` |
 | `cleanup.sh`        | Stop servers, remove worktree                              | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>`                 |
 | `emit-event.sh`     | Append a dashboard event; `--await` blocks for an answer   | `<kind> [--await] k=v ...`                                  |
 | `persist-evidence.sh` | Copy an artifact into the main checkout, print a durable ref | `<TICKET_ID> <SOURCE_PATH>`                               |
 | `gather-escalation-context.sh` | Format a structured context block for an escalation kind | `<dependency\|api-change\|budget\|blocker\|contradiction> k=v ...` |
+
+`resolve-speed.sh` reads `scripts/concertino/speeds.json` (rendered by
+`concertino sync` alongside `.concertino.env`, from the config's `budgets`/
+`speeds`/`modelTiers`/`models` blocks) — it never re-implements the
+defaulting/merge logic itself, only the final (speed, harness) lookup. See
+its own header comment for the full contract, and `docs/config-reference.md`
+for the config shape.
 
 ## Ports
 
