@@ -20,6 +20,17 @@ set -uo pipefail
 # — the MAIN checkout, never the worktree, because cleanup.sh --phase4
 # destroys the worktree and would take the run's history with it.
 #
+# Sources `.concertino.env` (written by `concertino sync` from
+# concertino.config.json) so the config is the single source of truth here too,
+# the same way every sibling procedure script does. Two locations are checked,
+# in order: (1) next to this script file, (2) `scripts/concertino/` under the
+# resolved main checkout. The second is what makes this work in the real
+# invocation context — escalations are raised from inside a worktree, whose own
+# copy of this directory never has `.concertino.env` (it is gitignored and is
+# not copied into a worktree by default). The one setting this script reads is
+# CONCERTINO_ESCALATION_TIMEOUT_MIN, which sets --await's own deadline; with no
+# `.concertino.env` at either location the hardcoded default below applies.
+#
 # ALWAYS exits 0 in normal mode, including on internal error. Telemetry must
 # never fail a delivery run. (--await is the one exception; see below.)
 # ===========================================================================
@@ -140,6 +151,30 @@ utf8_safe_prefix() {
 }
 
 ROOT="$(main_checkout)" || exit 0
+
+# Config, resolved the same way every sibling procedure script resolves it —
+# except this one needs a second location. Branch 1 matches the siblings
+# exactly (`.concertino.env` next to the running script): correct when this is
+# invoked from the main checkout, and relocatable if a project renders to a
+# non-default --out. Branch 2 is the one that fixes the real failure: in a live
+# run this script is invoked from inside WORKTREE_PATH, where SCRIPT_DIR is the
+# worktree's own copy of scripts/concertino/ and never holds a
+# `.concertino.env` (gitignored, and not in `worktree.envFiles` by default), so
+# fall back to the main checkout's copy — the one `concertino sync` actually
+# generates. ROOT is already resolved above via `git rev-parse
+# --git-common-dir`, which points at the main checkout from any worktree.
+#
+# Note: `source` assigns unconditionally, so a value set here OVERRIDES an
+# already-exported variable of the same name from the calling environment. That
+# is deliberate and matches the sibling scripts' convention (the config file
+# wins over ambient env) — not a bug. Neither branch fires, and nothing errors,
+# when no `.concertino.env` exists at either location.
+# shellcheck disable=SC1091
+if [ -f "${SCRIPT_DIR}/.concertino.env" ]; then
+  source "${SCRIPT_DIR}/.concertino.env"
+elif [ -f "${ROOT}/scripts/concertino/.concertino.env" ]; then
+  source "${ROOT}/scripts/concertino/.concertino.env"
+fi
 
 TICKET=""
 ROLE="${CONCERTINO_ROLE:-script}"
