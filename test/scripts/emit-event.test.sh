@@ -331,6 +331,84 @@ check "failed persist: no context_ref key" \
 rm -rf "$REPO"
 fi
 
+# --- a multi-byte character straddling the truncation boundary is never split (CON-16) -----
+# Old bug: the binary search's prefix came from `LC_ALL=C cut -b`, a pure byte-count cut with
+# no UTF-8 awareness, so a multi-byte character landing on the cut point was split, leaving a
+# lone continuation byte in the emitted JSON string.
+#
+# First calibrate: an ASCII-only oversized context of the same escalation shape (ticket
+# string length, question, options) reports its truncation boundary directly in the marker —
+# for ASCII content the marker's byte count is exact (no back-off needed), so read it back to
+# learn where THIS shape of escalation actually cuts, rather than guessing a boundary that
+# might drift with unrelated overhead (ref path length, timestamp digit count, etc).
+REPO="$(new_repo)"
+LOG="$REPO/.concertino/runs/HEL-19/events.jsonl"
+CALCTX="$(head -c 6000 /dev/zero | tr '\0' 'x')"
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-19 question=q options=a,b \
+    context="$CALCTX" ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+printf '{"answer":"approve"}' > "$REPO/.concertino/runs/HEL-19/answer.json"
+wait "$AWAIT_PID" 2>/dev/null
+CALLINE="$(grep escalation.raised "$LOG" | head -1)"
+BOUNDARY="$(printf '%s' "$CALLINE" | node -e '
+  let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+    const o = JSON.parse(s);
+    const m = o.context.match(/truncated, (\d+) of/);
+    console.log(m ? m[1] : "0");
+  })')"
+rm -rf "$REPO"
+
+# Build a second oversized context of the same shape (same ticket string length, question,
+# options — HEL-20 is the same length as HEL-19, and the total byte count keeps the same
+# digit count as the calibration run's, so the overhead the marker/JSON contribute to the
+# search is unchanged and the search converges on the SAME boundary). Place a single 4-byte
+# emoji so its bytes are [BOUNDARY-2, BOUNDARY+2) — straddling the boundary so that keeping
+# only the first BOUNDARY bytes keeps exactly 3 of its 4 bytes, splitting it. (A symmetric
+# zone of several emoji was tried first and turned out to land exactly on a 4-byte-aligned
+# multiple of the calibrated boundary purely by construction, which never actually split
+# anything — this direct placement is deliberate, not left to alignment luck.)
+REPO="$(new_repo)"
+LOG="$REPO/.concertino/runs/HEL-20/events.jsonl"
+EMOJI="$(printf '\xf0\x9f\x98\x80')"           # U+1F600, a 4-byte UTF-8 sequence
+BEFORE_N=$(( BOUNDARY > 3 ? BOUNDARY - 3 : 0 ))
+BEFORE="$(head -c "$BEFORE_N" /dev/zero | tr '\0' 'x')"
+AFTER="$(head -c 3000 /dev/zero | tr '\0' 'x')"
+MBCTX="${BEFORE}${EMOJI}${AFTER}"
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-20 question=q options=a,b \
+    context="$MBCTX" ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+printf '{"answer":"approve"}' > "$REPO/.concertino/runs/HEL-20/answer.json"
+wait "$AWAIT_PID" 2>/dev/null
+RAISEDLINE="$(grep escalation.raised "$LOG" | head -1)"
+check "multi-byte context: still valid JSON" \
+  "$(printf '%s' "$RAISEDLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{JSON.parse(s);console.log("yes")}catch{console.log("no")}})')" \
+  "yes"
+check "multi-byte context: decoded context has no replacement character" \
+  "$(printf '%s' "$RAISEDLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s);console.log(o.context.includes("�")?"has-replacement":"clean")})')" \
+  "clean"
+check "multi-byte context: marker byte count matches the actual inline prefix's byte length" \
+  "$(printf '%s' "$RAISEDLINE" | node -e '
+    let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+      const o = JSON.parse(s);
+      const idx = o.context.indexOf(" … [truncated,");
+      const markerText = o.context.slice(idx);
+      const reported = parseInt(markerText.match(/truncated, (\d+) of/)[1], 10);
+      const markerBytes = Buffer.byteLength(markerText, "utf8");
+      const totalBytes = Buffer.byteLength(o.context, "utf8");
+      const actualPrefixBytes = totalBytes - markerBytes;
+      console.log(reported === actualPrefixBytes ? "match" : "mismatch reported=" + reported + " actual=" + actualPrefixBytes);
+    })')" \
+  "match"
+rm -rf "$REPO"
+
 # --- an escalation raised without context= is byte-for-byte unaffected -----
 REPO="$(new_repo)"
 LOG="$REPO/.concertino/runs/HEL-18/events.jsonl"

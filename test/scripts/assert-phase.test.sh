@@ -81,6 +81,60 @@ check "first_error is a prefix of the untrimmed message" \
   "${EXPECTED_MSG:0:200}"
 rm -rf "$REPO"
 
+# --- a multi-byte character at the 200-char trim boundary is never split (CON-16) ----------
+# Old bug: fail() trimmed with bash's own `${msg:0:200}`, which slices by BYTE rather than by
+# character whenever the calling shell's locale is C/POSIX (the common case for a minimal
+# CI/container image) — bash's substring indexing is character-aware only when the ambient
+# locale names a multibyte encoding. The fix trims by Unicode code point via a node helper
+# instead, so the boundary is character-safe regardless of locale.
+#
+# "branch " is 7 ASCII characters; the emoji below is placed as the 198th character of the
+# full message (0-based index 197), so its 4 UTF-8 bytes span byte offsets 197-200 —
+# straddling byte offset 200, the OLD code's byte-oriented cut point under a C/POSIX locale.
+EMOJI="$(printf '\xf0\x9f\x98\x80')"          # U+1F600, a 4-byte UTF-8 sequence
+FILLER="$(head -c 190 /dev/zero | tr '\0' 'b')"
+TAIL="$(head -c 10 /dev/zero | tr '\0' 'b')"
+MB_BRANCH="${FILLER}${EMOJI}${TAIL}"
+# First 200 whole characters of "branch ${MB_BRANCH} not pushed to origin":
+# 7 ("branch ") + 190 (FILLER) + 1 (the emoji, one code point) + 2 (next two filler chars).
+EXPECTED_TRIMMED="branch ${FILLER}${EMOJI}bb"
+
+REPO="$(new_repo)"
+mkdir -p "$REPO/HEL-5" && git -C "$REPO/HEL-5" init -q
+( cd "$REPO" && "$SCRIPT" delivery "$REPO/HEL-5" "$MB_BRANCH" ) >/dev/null 2>&1
+RC=$?
+LOG="$REPO/.concertino/runs/HEL-5/events.jsonl"
+check "exit 1 on fail (multi-byte branch)" "$RC" "1"
+check "first_error is exactly 200 code points" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(Array.from(JSON.parse(l).first_error).length)' "$LOG")" "200"
+check "first_error has no replacement character (never split)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).first_error.includes("�")?"has-replacement":"clean")' "$LOG")" \
+  "clean"
+check "first_error is exactly the expected 200-character prefix" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).first_error)' "$LOG")" \
+  "$EXPECTED_TRIMMED"
+rm -rf "$REPO"
+
+# --- same, but with the calling shell forced into the C/POSIX locale -----------------------
+# This is exactly the environment (a minimal CI/container image) where the old
+# `${msg:0:200}` bug actually bit — proving the fix is locale-independent, not merely "works
+# on this dev machine's UTF-8 locale."
+REPO="$(new_repo)"
+mkdir -p "$REPO/HEL-6" && git -C "$REPO/HEL-6" init -q
+( cd "$REPO" && LC_ALL=C LANG=C "$SCRIPT" delivery "$REPO/HEL-6" "$MB_BRANCH" ) >/dev/null 2>&1
+RC=$?
+LOG="$REPO/.concertino/runs/HEL-6/events.jsonl"
+check "exit 1 on fail under LC_ALL=C" "$RC" "1"
+check "first_error exactly 200 code points under LC_ALL=C" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(Array.from(JSON.parse(l).first_error).length)' "$LOG")" "200"
+check "first_error has no replacement character under LC_ALL=C" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).first_error.includes("�")?"has-replacement":"clean")' "$LOG")" \
+  "clean"
+check "first_error matches the same expected prefix under LC_ALL=C" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).first_error)' "$LOG")" \
+  "$EXPECTED_TRIMMED"
+rm -rf "$REPO"
+
 # --- sub-second gate reports true millisecond resolution --------------------
 # A single run of a near-instant `setup` phase (filesystem stats only) could
 # legitimately land exactly on a millisecond tick (duration_ms == 0, itself a

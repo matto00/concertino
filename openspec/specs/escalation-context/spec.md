@@ -73,6 +73,13 @@ path>` on the event. If persisting fails, the event SHALL still carry the trunca
 `context` and `context_truncated=true`, but SHALL omit `context_ref` entirely rather than
 emit a ref that does not resolve.
 
+The truncation point SHALL NOT split a multi-byte UTF-8 character: when the byte budget lands
+inside a multi-byte sequence, the inline `context` value SHALL be backed off to the end of the
+last whole character before that point, regardless of the calling shell's locale. The visible
+marker's reported byte count SHALL be the actual byte length of the (possibly further
+backed-off) inline `context` value shown, never the byte budget that was requested before any
+such back-off.
+
 #### Scenario: Oversized context is truncated with a visible marker and a resolvable ref
 - **WHEN** `emit-event.sh escalation --await` is called with a `context=` value large enough
   that the full `escalation.raised` line would exceed 4000 bytes
@@ -97,6 +104,13 @@ emit a ref that does not resolve.
 - **WHEN** `context=` is oversized but `question=` and `options=` are of normal size
 - **THEN** the emitted `escalation.raised` event still carries the original `question` and
   `options` fields unchanged — only `context` is shortened to make room
+
+#### Scenario: A multi-byte character straddling the truncation boundary is never split
+- **WHEN** oversized `context=` contains a multi-byte UTF-8 character (e.g. an emoji or an
+  accented letter) positioned so the byte budget would otherwise cut inside its byte sequence
+- **THEN** the emitted line is still valid JSON, the inline `context` field decodes to text
+  ending on a whole character (no lone continuation byte, no replacement character), and the
+  marker's reported byte count matches the actual byte length of the inline `context` value
 
 ### Requirement: The orchestrator role gathers escalation context via the script before raising
 `core/roles/orchestrator.md`'s "How to raise one" procedure SHALL instruct the orchestrator to
