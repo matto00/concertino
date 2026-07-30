@@ -18,6 +18,21 @@ bad()  { FAIL=$((FAIL+1)); echo "  FAIL $1"; echo "       $2"; }
 has()  { grep -qF "$2" "$3" && ok "$1" || bad "$1" "expected to find [$2]"; }
 hasnt(){ grep -qF "$2" "$3" && bad "$1" "unexpectedly found [$2]" || ok "$1"; }
 
+# Create a throwaway copy of the project for testing resolveCore() — ensures
+# tests don't mutate the real repository or leave dangling git worktree entries.
+new_main() {
+  local d; d="$(mktemp -d)"
+  cp -r "$ROOT/bin" "$d/bin"
+  cp -r "$ROOT/adapters" "$d/adapters"
+  cp -r "$ROOT/core" "$d/core"
+  cp -r "$ROOT/config" "$d/config"
+  cp "$ROOT/package.json" "$d/package.json"
+  git -C "$d" init -q
+  git -C "$d" -c user.email=t@t.test -c user.name=t add -A
+  git -C "$d" -c user.email=t@t.test -c user.name=t commit -q -m init
+  printf '%s' "$d"
+}
+
 echo "concertino doctor (rendered artifacts)"
 
 WORK="$(mktemp -d)"
@@ -61,6 +76,30 @@ hasnt "drift is a warning, not an error"   "action required"                    
 node "$ROOT/bin/concertino" sync --out="$WORK" > /dev/null 2>&1
 node "$ROOT/bin/concertino" doctor --out="$WORK" > "$OUT" 2>&1
 hasnt "sync clears the warnings" "concertino sync" "$OUT"
+
+# --- diverged core/roles/* is also detected (CON-36) --------------------------
+# Test the resolveCore()/coresDiffer() path: a project in a worktree whose
+# core/roles/ has diverged must produce "differs from the executing script"
+# divergence note. Uses throwaway copy to ensure clean isolation, following
+# the pattern in sync-core-resolution.test.sh.
+MAIN="$(new_main)"
+trap 'rm -rf "$WORK" "$MAIN"' EXIT
+git -C "$MAIN" worktree add -q "$MAIN/wt" -b feat-roles || { bad "CON-36 worktree setup"; exit 1; }
+WT="$MAIN/wt"
+
+# Only divergence: modify the role file. Keep scripts/laws/workflow-state.md
+# byte-identical to ensure the assertion is specific to roles.
+printf '\nWORKTREE-ROLE-DIVERGENCE-MARKER\n' >> "$WT/core/roles/executor.md"
+
+# Sync a project inside the worktree
+cp "$MAIN/config/examples/generic.json" "$WT/concertino.config.json"
+node "$MAIN/bin/concertino" sync --out="$WT" > /dev/null 2>&1
+
+# Run doctor and verify it detects the divergence via the specific string
+node "$MAIN/bin/concertino" doctor --out="$WT" > "$OUT" 2>&1
+has   "CON-36 detects diverged roles file"        "differs from the executing script" "$OUT"
+has   "CON-36 note names the worktree's core"     "$WT/core" "$OUT"
+has   "CON-36 note names the main core"           "$MAIN/core" "$OUT"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

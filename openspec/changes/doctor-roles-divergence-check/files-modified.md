@@ -1,0 +1,2 @@
+- `bin/concertino` — Added 'roles' to the subdirectory loop in `coresDiffer()` and updated its comment to reflect that it now compares roles/ in addition to scripts/, laws/, and workflow-state.template.md
+- `test/scripts/doctor-artifacts.test.sh` — Added robust test case using throwaway-copy pattern (new_main() helper) to verify that diverged `core/roles/*.md` files are detected by doctor when a project's worktree has its own core directory; assertions are specific to roles divergence and don't mutate the real repository
