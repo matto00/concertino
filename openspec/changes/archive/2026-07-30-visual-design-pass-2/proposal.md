@@ -1,0 +1,39 @@
+## Why
+
+CON-12 delivered the structural layer (bordered panes, focus via border character, `STATUS_COLOUR`/`ROLE_COLOUR`) and CON-17 removed the flicker. The dashboard is now structurally correct but visually flat: the two statuses that dominate a healthy screen (`running`, `done`) are both mapped to `dim`, the palette is 3-bit with no background colours (no way to fill, invert, or band anything), and unfocused pane borders render with no colour at all — full brightness, competing with content. This ticket is the follow-on aesthetic pass that gives the dashboard real visual hierarchy without touching its information architecture.
+
+## What Changes
+
+- **Widen the colour palette** in `lib/ui/format.js` to a 256-colour tier, detected once at require time from `$COLORTERM`/`$TERM`, with the existing 3-bit codes kept as the honest fallback on terminals that don't advertise 256-colour support (and `isTTY === false` still emits nothing, unchanged). Truecolour (24-bit) is an explicit non-goal for this change — see Non-Goals below.
+- **Give `running` a distinct, active treatment** in `STATUS_COLOUR` (`cyan`), separate from `done` (which keeps `dim` — settled/receding is correct for it) — and route the fleet screen's per-row progress bar through it, so the common case reads as active at the row level, not only in a section title (see design.md Decision 6; this row-level piece was added after design-gate feedback — round 1 only recoloured a title word, which did not answer the ticket's own diagnosis).
+- **Add a background-fill helper** (`f.bgFill`), gated by the same `isTTY`/capability rules as every existing colour function and owned by `layout.js`'s `box()` (applied after truncation/padding, never before — see design.md Decision 4), used for the launch pad's selected row in its currently-focused pane, replacing that state's "bold only" treatment. `bgFill` is nesting-safe: it re-opens its own fill immediately after any SGR reset already embedded in the content it wraps, so a filled row is free to keep its own inner colour (e.g. the launch pad's `▲ running` status text, now itself routed through the shared `STATUS_COLOUR.running` rather than a hardcoded colour) without truncating the fill early. At the 256-colour tier the fill pairs an explicit foreground with its background so it stays legible regardless of the terminal's own theme.
+- **Dim unfocused pane borders** — `layout.js`'s `borderColour(false)` currently returns the identity function (no colour at all); it now returns `f.dim`, so unfocused chrome visually recedes behind content. Focused borders keep their existing bold/cyan (upgraded to the 256-colour accent when available).
+- **Typographic hierarchy on the fleet screen**: ticket id bold, elapsed time and phase dimmed relative to the title, running-row progress bar recoloured per above — fleet.js is the flagship, highest-traffic screen and is where this is scoped for this change (see Non-Goals).
+- All of the above route through the same `wrap()`/`isTTY` gate and the same `ANSI` regex already in `format.js` — no change to `visibleLength`/`truncate`/`padTo`, which the ticket confirms already handle `38;5;N` and `48;5;N` sequences correctly.
+
+## Non-Goals (explicit scope cut for this change)
+
+- **Truecolour (24-bit) support.** The ticket lists "256-colour and/or truecolour" as alternatives; 256-colour with an honest 3-bit fallback delivers the hierarchy goal at roughly half the surface area (no RGB tables, no 24-bit-to-256 downgrade path). Truecolour is a natural, low-risk follow-up once the 256-colour tier is in and proven.
+- **Section-header background banding.** Considered in round 1, cut after design-gate feedback: the fleet's section title is woven into the box's top border (`layout.js:80`), and a background band there needs its own settled story for how it interacts with the border/content colour-separation rule — that story isn't worked out here, so the feature isn't either. Left for a follow-up once it is.
+- **Background-fill row selection on any screen other than `launchpad.js`.** `fleet.js` has no focused pane at all (its four sections all render `focused: false`, correctly, per the baseline spec's contract for single-input-target screens) and its rows are two lines each — both properties that make "fill the selected row in the focused pane" either inapplicable or ambiguous there. `launchpad.js` is the one screen with a real pane-switch key and single-line rows, so that is where this lands.
+- **Per-screen typographic/spacing pass beyond `fleet.js`, `drilldown.js`, and `launchpad.js`.** Only `fleet.js` and `drilldown.js` render a run's `STATUS_COLOUR` at all today (`banner.js` and `escalation.js` also reference it, unrelated to run status); `ticketview.js`, `launchplan.js`, and `watch.js` reference none of `STATUS_COLOUR`/`ROLE_COLOUR` directly. Every screen that calls `layout.box()` (all six) inherits the dimmed-unfocused-border change automatically, for free, with no per-screen edit — that inheritance claim holds because `borderColour` is the one function every `box()` call already routes through. A spacing/density rework on the other three screens is left for follow-up tickets so this change stays reviewable in one pass.
+- **Zebra striping / severity bands beyond the launch-pad row fill and the fleet progress-bar recolour named above.**
+
+## Capabilities
+
+### New Capabilities
+
+(none)
+
+### Modified Capabilities
+
+- `dashboard-visual-design`: the colour vocabulary widens from a fixed 3-bit palette to a detected 256-colour tier with 3-bit fallback; `STATUS_COLOUR.running` becomes visually distinct from `STATUS_COLOUR.done`, visible at the section-title, per-row progress-bar (`fleet.js`), and launch-pad status-column level; a background-fill primitive is added, owned by `layout.box()`, nesting-safe against content it wraps, and used for the launch pad's focused-pane row selection; `borderColour(false)` changes from no colour to `f.dim`; the "Selection and focus are visually distinct states" requirement is broadened to name background fill alongside bold/accent-colour as a valid emphasis. The existing structural-focus (border character), `isTTY` gating, and border/content colour-separation requirements are unchanged and must continue to hold.
+
+## Impact
+
+- `lib/ui/format.js`: capability detection, widened palette, `STATUS_COLOUR.running`, new `bgFill` helper.
+- `lib/ui/layout.js`: `borderColour(false)` now returns `f.dim` instead of identity; `box()` gains an optional `fillRow` opt applied after its existing truncate/pad pipeline.
+- `lib/ui/screens/fleet.js`: adopts the ticket-id/elapsed-time/phase typographic hierarchy and recolours the per-row progress bar through `STATUS_COLOUR`.
+- `lib/ui/screens/launchpad.js`: `epicRow`/`ticketRow`'s focused-pane-selected state drops its outer `f.bold` (inner colour, e.g. the status column, is untouched — `bgFill`'s nesting-safety covers it); `renderLaunchPad` tracks that row's index and passes it to `layout.box()` as `fillRow`; `ticketRow`'s hardcoded `f.yellow` for `▲ running` is replaced with `f.STATUS_COLOUR.running` so the launch pad and fleet view agree on `running`'s colour.
+- `test/format-colour.test.js`, `test/layout-colour.test.js`: extended for the new capability tiers, `bgFill` (including its nesting-safety and theme-independence), and the dimmed-unfocused-border change; both existing assertions in `layout-colour.test.js` that claim an unfocused box carries no colour under `isTTY` (the direct box test and the `hsplit()` composition test) are now false and must be updated to assert `f.dim`, not colourless; both files now explicitly pin `TERM`/`COLORTERM` before each re-require so their tier — and therefore every assertion keyed to a specific 3-bit or 256-colour escape sequence — is deterministic rather than inherited from the ambient shell.
+- No change to any screen's data model, keybindings, or information architecture.

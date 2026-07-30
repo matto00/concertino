@@ -913,3 +913,39 @@ test('while prompting, q types a "q" rather than quitting', () => {
 test('an arrow key while prompting is ignored, not typed literally', () => {
   assert.equal(handleKey('\x1b[A', promptState({ value: 'x', error: null })), null);
 });
+
+// --- Progress bar colour reflects the run's status (Task 7.10) ---
+
+test('the fleet screen renders status-coloured progress bars: running and done rows use STATUS_COLOUR', () => {
+  process.stdout.isTTY = true;
+  delete process.env.TERM;
+  delete process.env.COLORTERM;
+  for (const m of ['../lib/ui/format', '../lib/ui/layout', '../lib/ui/screens/fleet']) {
+    delete require.cache[require.resolve(m)];
+  }
+  const f = require('../lib/ui/format');
+  const { renderFleet: renderColoured } = require('../lib/ui/screens/fleet');
+
+  const runningRun = run({ ticket: 'HEL-1', status: 'running', phase: 'Execution' });
+  const doneRun = run({ ticket: 'HEL-2', status: 'done', endStatus: 'delivered', endedAt: 100 });
+
+  const out = renderColoured([runningRun, doneRun], { cols: 80, selected: 0 });
+  const plainOut = plain(out);
+
+  // Both runs should render
+  assert.match(plainOut, /HEL-1/);
+  assert.match(plainOut, /Execution/);
+  assert.match(plainOut, /HEL-2/);
+  assert.match(plainOut, /RUNNING/);
+  assert.match(plainOut, /DONE/);
+
+  // The output should show that running uses STATUS_COLOUR (cyan) and done uses dim
+  // Find bar lines containing the bar characters preceded by colour escapes
+  assert.match(out, /\x1b\[36m[▪░]/, 'running bar should be cyan (STATUS_COLOUR.running)');
+  assert.match(out, /\x1b\[2m[▪░]/, 'done bar should be dim (STATUS_COLOUR.done)');
+
+  process.stdout.isTTY = false;
+  for (const m of ['../lib/ui/format', '../lib/ui/layout', '../lib/ui/screens/fleet']) {
+    delete require.cache[require.resolve(m)];
+  }
+});

@@ -341,6 +341,8 @@ test('focus distinction survives a colourless terminal — different characters,
 
 function withColour(fn) {
   process.stdout.isTTY = true;
+  delete process.env.TERM;
+  delete process.env.COLORTERM;
   for (const m of ['../lib/ui/format', '../lib/ui/layout', '../lib/ui/screens/launchpad']) {
     delete require.cache[require.resolve(m)];
   }
@@ -400,12 +402,12 @@ test('the ticket selection marker survives when focus moves to epics, rather tha
   });
 });
 
-test('the focused pane\'s own selection is bold, not dim', () => {
+test('the focused pane\'s own selection gets fill (background highlight), not dim', () => {
   withColour(({ renderLaunchPad: renderColoured }) => {
     const state = lp({ pane: 'tickets', ticketIndex: 0 });
     const out = renderColoured(state, [], OPTS);
     const markerLine = out.split('\n').find((l) => plain(l).includes('CON-1'));
-    assert.match(markerLine, /\x1b\[1m/, 'the focused pane\'s selection should be bold');
+    assert.match(markerLine, /\x1b\[7m/, 'CR4: the focused pane\'s selection should have fill (SGR 7), not bold (SGR 1)');
   });
 });
 
@@ -634,4 +636,139 @@ test('the detail pane renders at full height when the terminal is generously siz
   const state = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]) });
   const out = plain(renderLaunchPad(state, [], { cols: 78, now: NOW, rows: 60 }));
   assert.match(out, /the-should-render-marker/);
+});
+
+// --- CR2: epicRow/ticketRow direct tests for outer-bold removal ---
+
+test('epicRow selected+focused row is NOT wrapped in outer bold (Decision 4)', () => {
+  withColour(() => {
+    const { epicRow } = require('../lib/ui/screens/launchpad');
+    const epic = { id: 'p1', name: 'Pipeline v2', openCount: 2 };
+    // Call epicRow directly to get its return value
+    const row = epicRow(epic, true, true); // selected, paneFocused
+    // CR2: The row should NOT start with an outer bold escape
+    assert.doesNotMatch(row, /^\x1b\[1m/, 'epicRow selected+focused should not have outer bold');
+    // It should start with plain content (the marker)
+    assert.match(row, /^ ▸/, 'epicRow should start with marker');
+  });
+});
+
+test('ticketRow selected+focused row is NOT wrapped in outer bold (Decision 4)', () => {
+  withColour(({ renderLaunchPad: renderColoured }) => {
+    const f = require('../lib/ui/format');
+    const { ticketRow } = require('../lib/ui/screens/launchpad');
+    const ticketObj = { identifier: 'CON-1', title: 'test', priority: 2, state: { name: 'Todo', type: 'unstarted' } };
+    // Call ticketRow directly
+    const row = ticketRow(ticketObj, false, true, true, [], 50); // checked, selected, paneFocused, runs, width
+    // CR2: The row should NOT have outer bold (fill is applied by box(), not here)
+    assert.doesNotMatch(row, /^\x1b\[1m/, 'ticketRow selected+focused should not have outer bold');
+  });
+});
+
+// --- background fill and inner colour (Tasks 7.8 and 7.9) ---
+
+test('the focused pane\'s selected row has background fill spanning all inner columns, even past inner resets (▲ running case)', () => {
+  withColour(({ renderLaunchPad: renderColoured }) => {
+    const f = require('../lib/ui/format');
+    const tickets = [
+      ticket({ identifier: 'CON-1', state: { name: 'Todo', type: 'unstarted' }, priority: 2 }),
+    ];
+    const runs = [{ ticket: 'CON-1', status: 'running' }];
+    const state = lp({
+      pane: 'tickets',
+      ticketIndex: 0,
+      cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]),
+    });
+    const out = renderColoured(state, runs, OPTS);
+    const plainOut = plain(out);
+    assert.match(plainOut, /CON-1/);
+    assert.match(plainOut, /running/);
+    // The key assertion: the fill extends past the embedded running status's reset
+    // This is verified by seeing the fill escape (7m for basic tier), then the status colour, then a reset, then the fill re-opens
+    assert.match(out, /\x1b\[7m/, 'row should have background fill');
+    assert.match(out, /running\x1b\[0m\x1b\[7m/, 'fill must re-open after embedded running status reset');
+  });
+});
+
+test('the focused pane\'s selected row has background fill spanning all inner columns (unknown priority case)', () => {
+  withColour(({ renderLaunchPad: renderColoured }) => {
+    const f = require('../lib/ui/format');
+    const tickets = [
+      ticket({ identifier: 'CON-2', state: { name: 'Todo', type: 'unstarted' }, priority: null }),
+    ];
+    const state = lp({
+      pane: 'tickets',
+      ticketIndex: 0,
+      cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]),
+    });
+    const out = renderColoured(state, [], OPTS);
+    const plainOut = plain(out);
+    assert.match(plainOut, /CON-2/);
+    // The unknown priority column carries dim (\x1b[2m) which should also be re-opened after
+    assert.match(out, /\x1b\[7m.*\x1b\[2m\?.*\x1b\[0m\x1b\[7m/, 'fill must re-open after unknown priority dim reset');
+  });
+});
+
+test('the unfocused pane\'s selected row uses dim, not bold+fill (contrasts with focused pane)', () => {
+  withColour(({ renderLaunchPad: renderColoured }) => {
+    const tickets = [
+      ticket({ identifier: 'CON-1', epicId: 'p1', priority: 2 }),
+      ticket({ identifier: 'CON-2', epicId: 'p1', priority: 1 }),
+    ];
+    const state = lp({
+      pane: 'epics', // epics focused, so tickets pane is unfocused
+      cache: cacheWith(tickets, [
+        { id: 'p1', name: 'Pipeline v2', openCount: 2 },
+        { id: 'p2', name: 'Second epic', openCount: 0 },
+      ]),
+      epicIndex: 0,
+      ticketIndex: 0, // selected ticket in unfocused pane
+    });
+    const out = renderColoured(state, [], OPTS);
+    const plainOut = plain(out);
+    // Both panes should appear
+    assert.match(plainOut, /Pipeline v2/);
+    assert.match(plainOut, /CON-1/);
+
+    // Extract the line containing the unfocused pane's selected ticket row (CON-1)
+    const lines = out.split('\n');
+    const combined = lines.find((l) => plain(l).includes('CON-1') && plain(l).includes('[ ]'));
+    assert.ok(combined, 'combined hsplit line should render with CON-1');
+
+    // CR1: Verify the ticket row (right pane, unfocused) is dim-only, no fill
+    // The right pane starts after the first pane separator border(s)
+    // Find where the ticket row starts: search for dim marker + box pattern
+    const ticketMatch = combined.match(/\x1b\[2m ▸ \[ \] [^ ]+ CON-1[^\x1b]*?(?:\x1b\[0m)?/);
+    assert.ok(ticketMatch, 'ticket row with CON-1 should be found');
+    // The ticket row itself should NOT have fill (\x1b[7m) anywhere in it
+    assert.doesNotMatch(ticketMatch[0], /\x1b\[7m/, 'unfocused ticket row should NOT have reverse-video fill');
+  });
+});
+
+test('ticketRow\'s "▲ running" status uses STATUS_COLOUR.running (not hardcoded yellow)', () => {
+  withColour(({ renderLaunchPad: renderColoured }) => {
+    const f = require('../lib/ui/format');
+    const tickets = [
+      ticket({
+        identifier: 'CON-1',
+        state: { name: 'Todo', type: 'unstarted' },
+        priority: 2,
+      }),
+    ];
+    const runs = [{ ticket: 'CON-1', status: 'running' }];
+    const state = lp({
+      pane: 'tickets',
+      ticketIndex: 0,
+      cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]),
+    });
+    const out = renderColoured(state, runs, OPTS);
+    const plainOut = plain(out);
+    // The status should be "▲ running"
+    assert.match(plainOut, /▲ running/);
+    // In the coloured output, it should NOT use the hardcoded yellow (33)
+    assert.doesNotMatch(out, /\x1b\[33m▲ running/, 'running status should not be yellow');
+    // Running should be cyan (36 in basic tier, 38;5;80 in 256-colour tier)
+    // We just check that it's a cyan escape, not yellow
+    assert.match(out, /\x1b\[(36m|38;5;80m)▲ running/, 'running status should be cyan (STATUS_COLOUR.running)');
+  });
 });

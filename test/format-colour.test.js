@@ -8,8 +8,11 @@
 // and a cut landing mid-surrogate-pair inside a coloured line). Forcing isTTY
 // before the require closes it. `node --test` gives each file its own process,
 // so this cannot leak into the other suites.
+// Also pin TERM/COLORTERM so SUPPORTS_256 is deterministic (Task 7.2).
 
 process.stdout.isTTY = true;
+delete process.env.TERM;
+delete process.env.COLORTERM;
 for (const m of ['../lib/ui/format', '../lib/ui/screens/fleet']) {
   delete require.cache[require.resolve(m)];
 }
@@ -88,4 +91,66 @@ test('the width guard holds for wide characters through the render path', () => 
     assert.ok(f.visibleLength(line) <= 50,
       `line is ${f.visibleLength(line)} columns wide, terminal is 50: ${JSON.stringify(line)}`);
   }
+});
+
+test('SUPPORTS_256 determines whether colours emit 256-colour codes or 3-bit codes', () => {
+  // Already under the pinned basic tier (TERM/COLORTERM deleted), so colours
+  // should emit 3-bit codes like \x1b[33m, not 256-colour codes like \x1b[38;5;221m
+  assert.equal(f.yellow('x'), '\x1b[33mx\x1b[0m', 'yellow should emit 3-bit code in basic tier');
+  assert.equal(f.cyan('x'), '\x1b[36mx\x1b[0m', 'cyan should emit 3-bit code in basic tier');
+});
+
+test('STATUS_COLOUR.running is different from STATUS_COLOUR.done', () => {
+  // This asserts the decision, not the emitted bytes (per the isTTY-blind-spot
+  // convention). The two should be distinct functions mapping to different
+  // colour function calls.
+  assert.notEqual(f.STATUS_COLOUR.running, f.STATUS_COLOUR.done);
+  // running should be cyan, done should be dim
+  assert.equal(f.STATUS_COLOUR.running('x'), '\x1b[36mx\x1b[0m', 'running = cyan in basic tier');
+  assert.equal(f.STATUS_COLOUR.done('x'), '\x1b[2mx\x1b[0m', 'done = dim');
+});
+
+test('bgFill wraps content with background fill and handles embedded resets', () => {
+  // In basic tier (3-bit), bgFill should emit reverse video (SGR 7)
+  const filled = f.bgFill('hello');
+  assert.equal(filled, '\x1b[7mhello\x1b[0m', 'bgFill with plain text in basic tier');
+
+  // With embedded reset, bgFill should re-open the fill after it
+  const withReset = f.bgFill('hello\x1b[0mworld');
+  assert.equal(withReset, '\x1b[7mhello\x1b[0m\x1b[7mworld\x1b[0m', 'bgFill re-opens after embedded reset');
+});
+
+test('bgFill is a no-op under !isTTY', () => {
+  const oldTTY = process.stdout.isTTY;
+  process.stdout.isTTY = false;
+  delete require.cache[require.resolve('../lib/ui/format')];
+  const f2 = require('../lib/ui/format');
+
+  const filled = f2.bgFill('hello');
+  assert.equal(filled, 'hello', 'bgFill should no-op when !isTTY');
+
+  process.stdout.isTTY = oldTTY;
+});
+
+test('256-colour tier: f.cyan and f.bgFill emit 256-colour escapes when TERM/COLORTERM indicate support', () => {
+  // Force the 256-colour tier by setting TERM=xterm-256color and clearing require.cache
+  process.stdout.isTTY = true;
+  process.env.TERM = 'xterm-256color';
+  delete process.env.COLORTERM; // xterm-256color alone is enough
+  for (const m of ['../lib/ui/format']) {
+    delete require.cache[require.resolve(m)];
+  }
+  const f256 = require('../lib/ui/format');
+
+  // Cyan should emit 256-colour escape (38;5;80)
+  assert.equal(f256.cyan('x'), '\x1b[38;5;80mx\x1b[0m', 'cyan should emit 256-colour code at 256-colour tier');
+
+  // bgFill should emit 256-colour background + foreground pair (48;5;236;38;5;253)
+  const filled256 = f256.bgFill('x');
+  assert.equal(filled256, '\x1b[48;5;236;38;5;253mx\x1b[0m', 'bgFill should emit 256-colour bg+fg pair at 256-colour tier');
+
+  // Clean up: restore basic tier
+  delete process.env.TERM;
+  delete require.cache[require.resolve('../lib/ui/format')];
+  require('../lib/ui/format');
 });
