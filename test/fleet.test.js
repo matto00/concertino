@@ -213,6 +213,57 @@ test('an inFlight-only restored queue (pending already fully drained) still show
   assert.match(out, /resumed from a previous session/);
 });
 
+// --- CON-37: completed-during-downtime notice — independent of queueState --
+
+test('a restoreNotice renders even when queueState is null — nothing left to restore, but something finished during the downtime', () => {
+  const out = renderFleet([run({})], {
+    ...OPTS,
+    cols: 100, // wide enough that the truncated line still contains both ids
+    queueState: null,
+    restoreNotice: '2 ticket(s) completed while you were away and were not restored: CON-12, CON-14',
+  });
+  assert.match(out, /completed while you were away/);
+  assert.match(out, /CON-12/);
+  assert.match(out, /CON-14/);
+  assert.doesNotMatch(out, /resumed from a previous session/);
+});
+
+test('a restoreNotice too long for the available width is truncated, same as queueNotice already is', () => {
+  const longIds = Array.from({ length: 20 }, (_, i) => 'CON-' + (300 + i)).join(', ');
+  const out = renderFleet([run({})], {
+    ...OPTS,
+    queueState: null,
+    restoreNotice: `20 ticket(s) completed while you were away and were not restored: ${longIds}`,
+  });
+  const line = out.split('\n').find((l) => l.includes('completed while you were away'));
+  assert.ok(line, 'expected a truncated restoreNotice line to still render');
+  assert.doesNotMatch(line, /CON-319/, 'the tail of the id list should be truncated away at this width');
+});
+
+test('a normal restored queue with no restoreNotice shows the resume affordance but no completed-during-downtime line', () => {
+  const queueState = { pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1, confirmed: false };
+  const out = renderFleet([run({})], { ...OPTS, queueState });
+  assert.match(out, /resumed from a previous session/);
+  assert.doesNotMatch(out, /completed while you were away/);
+});
+
+test('a restoreNotice and the resume affordance both render together when a queue partially restores', () => {
+  const queueState = { pending: ['CON-3'], inFlight: new Set(), maxConcurrent: 1, confirmed: false };
+  const out = renderFleet([run({})], {
+    ...OPTS,
+    queueState,
+    restoreNotice: '1 ticket(s) completed while you were away and were not restored: CON-12',
+  });
+  assert.match(out, /resumed from a previous session/);
+  assert.match(out, /completed while you were away/);
+  assert.match(out, /CON-12/);
+});
+
+test('no restoreNotice at all renders exactly as before — no completed-during-downtime line', () => {
+  const out = renderFleet([run({})], OPTS);
+  assert.doesNotMatch(out, /completed while you were away/);
+});
+
 test('pressing the confirm key with a restored unconfirmed queue on screen emits confirm-restored-queue', () => {
   const s = state({ queueState: { pending: ['CON-2'], inFlight: new Set(), confirmed: false } });
   assert.deepEqual(handleKey(CONFIRM_RESTORED_QUEUE_KEY, s), { type: 'confirm-restored-queue' });

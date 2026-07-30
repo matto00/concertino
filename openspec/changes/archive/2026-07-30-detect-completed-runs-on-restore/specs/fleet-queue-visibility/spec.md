@@ -1,114 +1,4 @@
-# fleet-queue-visibility Specification
-
-## Purpose
-Defines how the dashboard's fleet view (`lib/ui/screens/fleet.js`) renders the launch pad's in-memory queue as a visible, trimmable QUEUED section, and guarantees that doing so never perturbs the row-index contract `watch.js` uses to resolve a selected row to a run.
-## Requirements
-### Requirement: A non-empty queue renders a QUEUED section on the fleet view
-The fleet view (`lib/ui/screens/fleet.js`) SHALL render a `QUEUED` section
-whenever `queueState.pending` is non-empty, positioned after `RUNNING` and
-before `FAILED`. The section title SHALL include the count of pending
-tickets and the queue's concurrency cap (e.g.
-`QUEUED (3, running 1 at a time)`). The section SHALL NOT render when
-`queueState` is absent or `queueState.pending` is empty.
-
-#### Scenario: A queued batch renders its own section
-- **WHEN** the fleet view renders with `queueState.pending` containing one
-  or more ticket ids
-- **THEN** the output includes a `QUEUED` section positioned after `RUNNING`
-  and before `FAILED`, titled with the pending count and
-  `queueState.maxConcurrent`
-
-#### Scenario: No queue, no section
-- **WHEN** `queueState` is `null`, or `queueState.pending` is empty
-- **THEN** no `QUEUED` section is rendered, and the rest of the fleet view is
-  unaffected
-
-### Requirement: A queued row shows only data that actually exists
-Each queued row SHALL render as exactly one line: its 1-based position in
-the queue, the ticket id, and the ticket's title if present in the on-disk
-ticket cache. A queued row SHALL NOT show a status, phase, elapsed time, or
-progress bar, since none of that data exists for a ticket that has not
-started.
-
-#### Scenario: A queued row with a cached title
-- **WHEN** a pending ticket's id is present in the ticket-title lookup
-  passed to the fleet screen
-- **THEN** its queued row shows the queue position, the ticket id, and the
-  title, on a single line
-
-#### Scenario: A queued row with no cached title
-- **WHEN** a pending ticket's id has no entry in the ticket-title lookup
-- **THEN** its queued row shows the queue position and the ticket id only,
-  with no fabricated title, status, or progress indicator
-
-### Requirement: QUEUED respects the existing height-budget and cap machinery
-The `QUEUED` section SHALL participate in the same trimming machinery as
-`RUNNING`/`FAILED`/`DONE` — the section's shown-row count SHALL be reduced
-under the same terminal-height budget as the other capped sections, and a
-trimmed `QUEUED` section SHALL show a `… and N more queued` line identical
-in form to the existing capped sections' overflow line. `QUEUED` SHALL NOT
-be `pinned`; `NEEDS YOU` SHALL remain the only pinned section.
-
-#### Scenario: A long queue is trimmed like FAILED/DONE
-- **WHEN** the terminal height budget forces the fleet view to trim
-  sections and `QUEUED` has more pending tickets than its capped display
-  count
-- **THEN** `QUEUED` is trimmed to its cap and shows a
-  `… and N more queued` line, exactly as `FAILED`/`DONE` do today
-
-#### Scenario: NEEDS YOU remains the only pinned section
-- **WHEN** the trimming loop reduces section row counts under a height
-  budget
-- **THEN** `NEEDS YOU` is never trimmed, and `QUEUED` is trimmed like any
-  other non-pinned section
-
-### Requirement: Inserting QUEUED never perturbs the row-index a selection resolves to
-Queued rows SHALL NOT consume a slot in the row-index space used to resolve
-`state.selected` to a run. The row index that advances once per
-run-corresponding row (rendered or hidden-under-cap) SHALL skip advancement
-entirely for the `QUEUED` section, so that any row rendered in `FAILED` or
-`DONE` below a non-empty `QUEUED` section resolves to the exact same run it
-would have resolved to had `QUEUED` not been rendered at all.
-
-#### Scenario: Selecting a row below a non-empty QUEUED section resolves the correct run
-- **WHEN** the fleet view renders `RUNNING`, a non-empty `QUEUED` section,
-  and `FAILED` sections together, and a row within `FAILED` is selected
-- **THEN** the ticket resolved for that selection (via `runs[selected]`) is
-  the same run that row displays, unaffected by how many rows `QUEUED`
-  rendered above it
-
-#### Scenario: Queued rows are never marked as the selected row
-- **WHEN** the fleet view renders with a non-empty `QUEUED` section and any
-  value of `state.selected` valid for the current `runs` array
-- **THEN** no row within the `QUEUED` section is ever rendered with the
-  selection marker
-
-### Requirement: The pending queue is persisted to disk on every tick and removed when idle
-The dashboard SHALL write the queue's pending tail, in-flight ticket ids,
-and metadata (`maxConcurrent`, `launchCommand`, a session id, and a write
-timestamp) to `.concertino/cache/queue.json` whenever `lib/ui/watch.js`
-calls `queue.tick()` and the resulting queue is not idle (per
-`queue.isIdle`), using a temp-file-then-rename write identical in pattern to
-`lib/ui/cache.js`'s `linear.json` write. When the resulting queue is idle,
-the dashboard SHALL remove `.concertino/cache/queue.json` if present. The
-persisted record SHALL contain only ticket ids and queue metadata — no
-ticket titles, descriptions, or other Linear payload.
-
-#### Scenario: An active queue is written on every tick
-- **WHEN** `queue.tick()` returns a non-idle queue
-- **THEN** `.concertino/cache/queue.json` is written with the queue's
-  current pending ids, in-flight ids, `maxConcurrent`, `launchCommand`, a
-  session id, and the write timestamp
-
-#### Scenario: An idle queue has no persisted file
-- **WHEN** `queue.tick()` returns an idle queue (nothing pending, nothing
-  in flight)
-- **THEN** `.concertino/cache/queue.json` is removed if it exists
-
-#### Scenario: The persisted record carries no ticket bodies
-- **WHEN** the queue file is written
-- **THEN** its contents are limited to ticket ids and queue metadata, with
-  no ticket title, description, or other fetched Linear content present
+## MODIFIED Requirements
 
 ### Requirement: A fresh, non-stale queue file is restored on startup as paused and unconfirmed
 The dashboard SHALL attempt to read `.concertino/cache/queue.json` on
@@ -186,32 +76,6 @@ restored, and no error is surfaced to the operator.
 - **THEN** no queue is restored at all, rather than restoring an empty,
   confirmable-but-inert queue
 
-### Requirement: A restored queue reconstructs in-flight concurrency occupancy, not just the pending list
-The dashboard SHALL reconstruct the restored queue's `inFlight` set from
-the persisted record's in-flight ticket ids, keeping only those still live
-per `queue.isRunLive` against the startup reconciliation snapshot. A ticket
-still genuinely running at restart time SHALL continue to occupy a
-concurrency slot in the restored queue exactly as it did before the
-restart, so that a queue's `maxConcurrent` invariant — including a
-`maxConcurrent: 1` (sequential) batch never running two tickets at once —
-holds across a dashboard restart and is not silently broken by restore
-forgetting an in-flight ticket's occupied slot.
-
-#### Scenario: A still-running ticket keeps occupying its concurrency slot after restore
-- **WHEN** a queue file persisted with one ticket in-flight is restored,
-  and the fleet snapshot at restore time shows that ticket still live
-- **THEN** the restored queue's `inFlight` set contains that ticket, and
-  confirming the restored queue does not launch a new ticket while that
-  slot remains occupied, even under `maxConcurrent: 1`
-
-#### Scenario: A finished in-flight ticket frees its slot on restore
-- **WHEN** a queue file persisted with one ticket in-flight is restored,
-  and the fleet snapshot at restore time shows that ticket is no longer
-  live (its run reached a terminal state during the downtime)
-- **THEN** the restored queue's `inFlight` set does not contain that
-  ticket, and its concurrency slot is available once the queue is
-  confirmed
-
 ### Requirement: An unconfirmed restored queue never launches until the operator confirms it
 While `queueState.confirmed` is `false`, the dashboard SHALL NOT call
 `queue.tick()` against that queue on any poll, and therefore SHALL NOT
@@ -242,6 +106,8 @@ a same-session queue would.
 - **THEN** `queueState.confirmed` becomes `true` with pending/in-flight
   contents unchanged, and the following poll's `queue.tick()` call proceeds
   normally against it
+
+## ADDED Requirements
 
 ### Requirement: The dashboard reports ticket ids that completed during the downtime independently of whether a queue is restored
 The dashboard SHALL surface a notice naming any pending ticket ids that
@@ -276,4 +142,3 @@ When no ticket ids were dropped for this reason, no such notice is shown.
 - **WHEN** startup restore reconciliation runs and no pending ticket id is
   dropped for having completed during the downtime
 - **THEN** no completed-during-downtime notice is shown
-
