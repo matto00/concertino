@@ -1191,3 +1191,239 @@ test('the fleet screen renders status-coloured progress bars: running and done r
     delete require.cache[require.resolve(m)];
   }
 });
+
+// --- CON-39: digit-key section jump -----------------------------------------
+// design.md Decision 1: numbering is positional over sections actually
+// rendered THIS frame, in on-screen order — never a fixed NEEDS YOU=1/
+// RUNNING=2/... scheme.
+
+test('digit jump lands on the first row of the target section when NEEDS YOU/RUNNING/FAILED are all present', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'running' }),
+    run({ ticket: 'HEL-3', status: 'running' }),
+    run({ ticket: 'HEL-4', status: 'failed', endStatus: 'escalated', endedAt: 100 }),
+  ];
+  // Sections on screen: NEEDS YOU (1 row, index 0), RUNNING (2 rows, index
+  // 1-2), FAILED (1 row, index 3). Digit 3 -> FAILED's first row, index 3.
+  assert.deepEqual(handleKey('3', state({ runs })), { type: 'jump', index: 3 });
+});
+
+test('numbering skips empty sections — digit 2 reaches DONE when NEEDS YOU/FAILED are empty', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'running' }),
+    run({ ticket: 'HEL-2', status: 'done', endStatus: 'delivered', endedAt: 100 }),
+    run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered', endedAt: 100 }),
+  ];
+  // Only RUNNING (index 0) and DONE (indices 1-2) are rendered — DONE is the
+  // SECOND section on screen, not the fifth in a fixed scheme.
+  assert.deepEqual(handleKey('2', state({ runs })), { type: 'jump', index: 1 });
+});
+
+test('an out-of-range digit is a no-op, leaving selection/focus unchanged', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' })];
+  assert.equal(handleKey('2', state({ runs })), null);
+  // Also true of the empty fleet — zero sections rendered.
+  assert.equal(handleKey('1', state({ runs: [] })), null);
+});
+
+test('QUEUED participates in the digit numbering but jumps via focus-queue, never perturbing selected', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } })];
+  const queueState = { pending: ['CON-9', 'CON-10'], inFlight: new Set(), maxConcurrent: 1 };
+  // NEEDS YOU (1) is section 1; QUEUED is section 2.
+  assert.deepEqual(handleKey('2', state({ runs, queueState })), { type: 'focus-queue', index: 0 });
+});
+
+test('a digit that resolves to a runs-backed section while already focused on QUEUED exits queue-focus and jumps normally', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'running' }),
+  ];
+  const queueState = { pending: ['CON-9'], inFlight: new Set(), maxConcurrent: 1 };
+  // Sections: NEEDS YOU(1)=index0, RUNNING(2)=index1, QUEUED(3). Currently
+  // focused on QUEUED (per the ticket's own "different section's digit
+  // exits queue focus and jumps as normal" requirement) — pressing 2 (RUNNING)
+  // must still emit an ordinary jump, not a queue-focus action.
+  const s = state({ runs, queueState, focus: 'queue', queueFocus: 0 });
+  assert.deepEqual(handleKey('2', s), { type: 'jump', index: 1 });
+});
+
+test('pressing QUEUED\'s own digit again while already focused on it re-emits focus-queue at index 0 (a no-op-equivalent)', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' })];
+  const queueState = { pending: ['CON-9', 'CON-10'], inFlight: new Set(), maxConcurrent: 1 };
+  const s = state({ runs, queueState, focus: 'queue', queueFocus: 1 });
+  assert.deepEqual(handleKey('2', s), { type: 'focus-queue', index: 0 });
+});
+
+// --- CON-39: the QUEUED-local focus cursor ----------------------------------
+
+function queueFocusState(over) {
+  return state(Object.assign({
+    focus: 'queue',
+    queueFocus: 0,
+    queueState: { pending: ['CON-1', 'CON-2', 'CON-3'], inFlight: new Set(), maxConcurrent: 1 },
+  }, over));
+}
+
+test('j/k (and arrow aliases) move the QUEUED-local cursor while focus is queue, never the ordinary move action', () => {
+  assert.deepEqual(handleKey('j', queueFocusState({})), { type: 'move-queue-focus', delta: 1 });
+  assert.deepEqual(handleKey('k', queueFocusState({})), { type: 'move-queue-focus', delta: -1 });
+  assert.deepEqual(handleKey('\x1b[B', queueFocusState({})), { type: 'move-queue-focus', delta: 1 });
+  assert.deepEqual(handleKey('\x1b[A', queueFocusState({})), { type: 'move-queue-focus', delta: -1 });
+});
+
+test('bare Escape exits queue focus', () => {
+  assert.deepEqual(handleKey('\x1b', queueFocusState({})), { type: 'exit-queue-focus' });
+});
+
+test('Enter/l/n/N are suppressed (no-ops) while focus is queue', () => {
+  assert.equal(handleKey('\r', queueFocusState({})), null);
+  assert.equal(handleKey('l', queueFocusState({})), null);
+  assert.equal(handleKey('\x1b[C', queueFocusState({})), null); // l's arrow alias
+  assert.equal(handleKey('n', queueFocusState({})), null);
+  assert.equal(handleKey('N', queueFocusState({})), null);
+});
+
+test('q/Ctrl-C keep behaving exactly as today, independent of queue focus', () => {
+  assert.deepEqual(handleKey('q', queueFocusState({})), { type: 'request-quit' }); // queueState has pending
+  assert.deepEqual(handleKey('\u0003', queueFocusState({})), { type: 'request-quit' });
+  const emptyQueue = queueFocusState({ queueState: { pending: [], inFlight: new Set(), maxConcurrent: 1 } });
+  assert.deepEqual(handleKey('q', emptyQueue), { type: 'quit' });
+});
+
+test('f on a focused pending ticket opens the force-start confirmation, naming that exact ticket', () => {
+  assert.deepEqual(handleKey('f', queueFocusState({ queueFocus: 1 })),
+    { type: 'open-force-start-confirm', ticket: 'CON-2' });
+});
+
+test('f is a no-op when nothing is validly focused (queueFocus null or out of range)', () => {
+  assert.equal(handleKey('f', queueFocusState({ queueFocus: null })), null);
+  assert.equal(handleKey('f', queueFocusState({ queueFocus: 99 })), null);
+});
+
+test('f outside queue focus is unbound, same as any other unclaimed key', () => {
+  assert.equal(handleKey('f', state({})), null);
+});
+
+// --- CON-39: force-start's own y/anything-else confirmation gate -----------
+
+test('y confirms force-start, naming the ticket the confirmation was opened for', () => {
+  const s = state({ forceStartConfirm: { ticket: 'CON-2' } });
+  assert.deepEqual(handleKey('y', s), { type: 'confirm-force-start', ticket: 'CON-2' });
+});
+
+test('any other key cancels force-start without starting anything', () => {
+  const s = state({ forceStartConfirm: { ticket: 'CON-2' } });
+  assert.deepEqual(handleKey('q', s), { type: 'cancel-force-start' });
+  assert.deepEqual(handleKey('j', s), { type: 'cancel-force-start' });
+  assert.deepEqual(handleKey('\x1b', s), { type: 'cancel-force-start' });
+});
+
+test('forceStartConfirm is checked before quitConfirm — the two gates never both claim a keypress', () => {
+  const s = state({ forceStartConfirm: { ticket: 'CON-2' }, quitConfirm: true });
+  // A bare 'q' would ordinarily confirm quitConfirm — forceStartConfirm's
+  // own gate must win instead, cancelling itself rather than falling
+  // through to quitConfirm's quit-key handling.
+  assert.deepEqual(handleKey('q', s), { type: 'cancel-force-start' });
+});
+
+// --- CON-39: force-start confirmation warning text --------------------------
+
+test('the force-start confirmation names the resulting concurrent count against maxConcurrent', () => {
+  const queueState = { pending: ['CON-2'], inFlight: new Set(['CON-1']), maxConcurrent: 1 };
+  const out = plain(renderFleet([run({ ticket: 'CON-1', status: 'running' })],
+    { ...OPTS, queueState, forceStartConfirm: { ticket: 'CON-2' } }));
+  assert.match(out, /this will run 2 concurrently, exceeding your maxConcurrent:1 setting/);
+  assert.match(out, /y confirm force-start/);
+});
+
+// --- CON-39: QUEUED-local cursor's own marker, distinct from ▸ -------------
+
+test('the focused queued row renders a marker distinct from the ordinary ▸ run-selection marker', () => {
+  const queueState = { pending: ['CON-9', 'CON-10'], inFlight: new Set(), maxConcurrent: 1 };
+  const out = plain(renderFleet([run({})], { ...OPTS, queueState, focus: 'queue', queueFocus: 1 }));
+  const lines = out.split('\n');
+  const con9Line = lines.find((l) => l.includes('CON-9') && !l.includes('CON-10'));
+  const con10Line = lines.find((l) => l.includes('CON-10'));
+  assert.ok(con9Line && con10Line);
+  assert.doesNotMatch(con9Line, /»/, 'the unfocused queued row must not carry the focus marker');
+  assert.match(con10Line, /»/, 'the focused queued row must carry the focus marker');
+  assert.doesNotMatch(con10Line, /▸/, 'the focus marker must never be the ordinary run-selection ▸');
+});
+
+test('no queued row carries the focus marker when focus is not on queue', () => {
+  const queueState = { pending: ['CON-9'], inFlight: new Set(), maxConcurrent: 1 };
+  const out = plain(renderFleet([run({})], { ...OPTS, queueState }));
+  assert.doesNotMatch(out, /»/);
+});
+
+// --- CON-39: QUEUED rows show the batch's speed and agent-merge setting ----
+
+test('a queued row shows speed and agent-merge when both are present in launchCommand', () => {
+  const queueState = {
+    pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1,
+    launchCommand: 'claude "/concertino-deliver {{TICKET}} --agent-merge fast"',
+  };
+  const out = renderFleet([run({})], { ...OPTS, queueState });
+  const line = out.split('\n').find((l) => l.includes('CON-2'));
+  assert.match(line, /fast/);
+  assert.match(line, /agent-merge on/);
+});
+
+test('a queued row omits the agent-merge field when launchCommand carries no flag token', () => {
+  const queueState = {
+    pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1,
+    launchCommand: 'echo "custom launcher with no {{TICKET}} placeholder"',
+  };
+  const out = renderFleet([run({})], { ...OPTS, queueState });
+  const line = out.split('\n').find((l) => l.includes('CON-2'));
+  assert.doesNotMatch(line, /agent-merge/);
+});
+
+test('every row in a QUEUED section shows the same batch-level speed/agent-merge, not re-derived per ticket', () => {
+  const queueState = {
+    pending: ['CON-2', 'CON-3', 'CON-4'], inFlight: new Set(), maxConcurrent: 1,
+    launchCommand: 'codex "/concertino-deliver {{TICKET}} --no-agent-merge slow"',
+  };
+  const out = renderFleet([run({})], { ...OPTS, queueState });
+  for (const ticket of ['CON-2', 'CON-3', 'CON-4']) {
+    const line = out.split('\n').find((l) => l.includes(ticket));
+    assert.match(line, /slow/, `${ticket}'s row should show the batch speed`);
+    assert.match(line, /agent-merge off/, `${ticket}'s row should show the batch agent-merge setting`);
+  }
+});
+
+// Existing "queued row with/without cached title" behavior (fixture near the
+// top of this file) must still hold in shape — title still renders, now
+// alongside the new speed/agent-merge fields.
+
+test('a queued row with a cached title still shows position/ticket/title, now alongside speed/agent-merge', () => {
+  const queueState = {
+    pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1,
+    launchCommand: 'claude "/concertino-deliver {{TICKET}} fast"',
+  };
+  const queuedTitles = new Map([['CON-2', 'Add zod validation']]);
+  const out = renderFleet([run({})], { ...OPTS, queueState, queuedTitles });
+  assert.match(out, /1\. CON-2 {2}Add zod validation/);
+  assert.match(out, /fast/);
+});
+
+// --- CON-39: footer discoverability -----------------------------------------
+
+test('the footer always advertises the digit-jump hint', () => {
+  const out = plain(renderFleet([run({})], OPTS));
+  assert.match(out, /1-9 jump/);
+});
+
+test('the footer advertises f force-start only when a QUEUED section is actually present this frame', () => {
+  const withoutQueue = plain(renderFleet([run({})], OPTS));
+  assert.doesNotMatch(withoutQueue, /f force-start/);
+
+  const queueState = { pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1 };
+  const withQueue = plain(renderFleet([run({})], { ...OPTS, queueState }));
+  assert.match(withQueue, /f force-start/);
+
+  const emptyQueue = plain(renderFleet([run({})],
+    { ...OPTS, queueState: { pending: [], inFlight: new Set(), maxConcurrent: 1 } }));
+  assert.doesNotMatch(emptyQueue, /f force-start/);
+});

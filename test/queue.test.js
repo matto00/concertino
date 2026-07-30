@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const {
-  createQueue, tick, isIdle, shouldTick, reconcileRestored, createRestoredQueue,
+  createQueue, tick, isIdle, shouldTick, reconcileRestored, createRestoredQueue, forceStart,
 } = require('../lib/ui/queue');
 
 function run(ticket, status, endedAt) {
@@ -392,4 +392,83 @@ test('confirming a restored queue (flipping `confirmed`) never touches pending o
   assert.deepEqual(restored.pending, pendingBefore);
   assert.deepEqual(Array.from(restored.inFlight).sort(), inFlightBefore);
   assert.equal(shouldTick(restored), true);
+});
+
+// --- CON-39: forceStart — bypass maxConcurrent for one specific ticket -----
+
+test('forceStart moves a pending ticket straight to inFlight and returns it in toLaunch', () => {
+  const q = createQueue(['CON-1', 'CON-2', 'CON-3'], 1);
+  const { toLaunch, queue: next } = forceStart(q, 'CON-2');
+  assert.deepEqual(toLaunch, ['CON-2']);
+  assert.deepEqual(next.pending, ['CON-1', 'CON-3']);
+  assert.deepEqual(Array.from(next.inFlight), ['CON-2']);
+});
+
+test('a force-started ticket is never re-admitted by a subsequent tick() call', () => {
+  const q = createQueue(['CON-1', 'CON-2'], 2);
+  const { queue: afterForce } = forceStart(q, 'CON-2');
+  // CON-2 is already inFlight per forceStart above — a normal tick() pass
+  // must not toLaunch it again, and must not re-admit it from pending either
+  // (it is not there anymore).
+  const { toLaunch, queue: afterTick } = tick(afterForce, [{ ticket: 'CON-2', status: 'running' }]);
+  assert.deepEqual(toLaunch, ['CON-1'], 'CON-1 is still legitimately admitted — only CON-2 must not double-admit');
+  assert.deepEqual(afterTick.pending, []);
+  assert.deepEqual(Array.from(afterTick.inFlight).sort(), ['CON-1', 'CON-2']);
+});
+
+test('tick() correctly withholds admission of other pending tickets once a force-started ticket fills maxConcurrent', () => {
+  const q = createQueue(['CON-1', 'CON-2'], 1);
+  const { queue: afterForce } = forceStart(q, 'CON-1');
+  assert.equal(afterForce.inFlight.size, 1);
+  const { toLaunch, queue: afterTick } = tick(afterForce, [{ ticket: 'CON-1', status: 'running' }]);
+  assert.deepEqual(toLaunch, [], 'maxConcurrent:1 is already occupied by the force-started ticket');
+  assert.deepEqual(afterTick.pending, ['CON-2']);
+});
+
+test('forceStart on a ticket not in pending is a no-op that changes nothing', () => {
+  const q = createQueue(['CON-1', 'CON-2'], 1);
+  const { toLaunch, queue: next } = forceStart(q, 'CON-9');
+  assert.deepEqual(toLaunch, []);
+  assert.equal(next, q, 'the exact same queue object should be returned unchanged');
+});
+
+test('forceStart on an already-inFlight ticket (stale caller-held reference) is a no-op, not a double-admission', () => {
+  let q = createQueue(['CON-1', 'CON-2'], 2);
+  q = tick(q, []).queue; // both launched, nothing left pending
+  const { toLaunch, queue: next } = forceStart(q, 'CON-1');
+  assert.deepEqual(toLaunch, []);
+  assert.deepEqual(Array.from(next.inFlight).sort(), ['CON-1', 'CON-2']);
+});
+
+test('force-starting one ticket out of a queue with confirmed: false returns a queue whose confirmed is still false, and shouldTick stays false', () => {
+  const record = { pending: ['CON-1', 'CON-2'], inFlight: [], maxConcurrent: 1, sessionId: 's', writtenAt: 1 };
+  const restored = createRestoredQueue(record, []);
+  assert.equal(restored.confirmed, false);
+
+  const { toLaunch, queue: next } = forceStart(restored, 'CON-1');
+  assert.deepEqual(toLaunch, ['CON-1']);
+  assert.equal(next.confirmed, false,
+    'force-starting ONE ticket must never silently reactivate auto-admission for the rest of the batch');
+  assert.equal(shouldTick(next), false);
+  // The rest of the batch is genuinely still un-admitted — a simulated poll
+  // (shouldTick() gating tick()) must not touch CON-2 at all.
+  assert.deepEqual(next.pending, ['CON-2']);
+});
+
+test('force-starting a ticket out of an already-confirmed: true queue returns confirmed: true unchanged', () => {
+  const q = createQueue(['CON-1', 'CON-2'], 1);
+  assert.equal(q.confirmed, true);
+  const { queue: next } = forceStart(q, 'CON-1');
+  assert.equal(next.confirmed, true);
+});
+
+test('forceStart carries launchCommand and restoredFrom through unchanged, same as tick()', () => {
+  const record = {
+    pending: ['CON-1'], inFlight: [], maxConcurrent: 1,
+    launchCommand: 'codex "/concertino-deliver {{TICKET}}"', sessionId: 'sess-9', writtenAt: 42,
+  };
+  const restored = createRestoredQueue(record, []);
+  const { queue: next } = forceStart(restored, 'CON-1');
+  assert.equal(next.launchCommand, 'codex "/concertino-deliver {{TICKET}}"');
+  assert.deepEqual(next.restoredFrom, { sessionId: 'sess-9', writtenAt: 42 });
 });
