@@ -16,6 +16,19 @@ check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$3] got [$2]
 # like when written back-to-back around a fast-failing attach). `grep -o`
 # emits one line per match instead, so `wc -l` gives the real count.
 esc_count() { grep -o "$1" "$2" 2>/dev/null | wc -l | tr -d ' '; }
+# CON-27: emits the captured output with one LINE per written terminal row.
+# The differential writer positions every row it writes with its own
+# `\x1b[<row>;1H` and no line feed at all (only the over-tall fallback still
+# flows by newlines), so a captured session is now a single enormous line —
+# and any check that reasons about the ORDER of two rows via `grep -n` line
+# numbers, or that uses a `.*` pattern expecting it to stop at a row
+# boundary, silently stops working. Splitting on the row-placement sequence
+# restores both properties for those checks. Content-only checks (`grep -q`)
+# and esc_count are unaffected and keep reading "$OUT" directly.
+# Assumes GNU sed (`\x1b` in the pattern, `\n` in the replacement) — a known,
+# pre-existing assumption in this suite, not a new one (see
+# test/scripts/resolve-speed.test.sh's `sed -i` with no backup suffix).
+rows_of() { sed 's/\x1b\[[0-9]\{1,\};1H/\n&/g' "$1"; }
 
 echo "concertino watch (smoke)"
 
@@ -70,6 +83,23 @@ grep -q 'no telemetry' "$OUT" && ok "reports missing telemetry"    || bad "repor
 check "no \\x1b[2J anywhere in the session (q)"        "$(esc_count $'\x1b\[2J' "$OUT")"     "0"
 check "alternate buffer entered exactly once (q)"      "$(esc_count $'\x1b\[?1049h' "$OUT")"  "1"
 check "alternate buffer exited exactly once (q)"       "$(esc_count $'\x1b\[?1049l' "$OUT")"  "1"
+# CON-27: the real dashboard redraws through the DIFF path, not the old
+# full-frame rewrite — every row it writes carries its own `\x1b[<row>;1H`
+# placement, and the full-rewrite prefix `\x1b[H` never appears. Stdout is
+# redirected to a file here, so process.stdout.rows is unset and the
+# over-tall fallback (the only remaining CURSOR_HOME writer) can never
+# trigger; a nonzero cursor-home count would mean the fallback fired when
+# the terminal height is unknown, which design.md Decision 6 forbids.
+# Deliberately NOT asserted here: "a steady-state tick with no state change
+# writes nothing". The fleet frame carries per-second idle timers, so two
+# consecutive real ticks are not reliably byte-identical and that assertion
+# would be flaky end to end — it is covered deterministically instead by
+# test/watch.test.js's "an entirely unchanged frame writes no bytes at all".
+check "no full-rewrite cursor-home (\\x1b[H) in the session (q)" "$(esc_count $'\x1b\[H' "$OUT")" "0"
+[ "$(esc_count $'\x1b\[[0-9]\{1,\};1H' "$OUT")" -gt 0 ] \
+  && ok "redraws position each written row individually (differential path)" \
+  || bad "redraws position each written row individually (differential path)" \
+       "no \\x1b[<row>;1H placements in a real session's output"
 
 echo q | timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" > "$OUT" 2>&1
 STATUS=$?
@@ -269,8 +299,13 @@ check "exits 0 after N + Tab + P + esc + q" "$STATUS" "0"
 # PANE row, not the inline detail pane's own header line (CON-35) — which
 # also renders the selected ticket's identifier and would otherwise be the
 # last match, silently defeating this ordering check.
-CON41_LINE="$(grep -n '\[ \].*CON-41' "$OUT" | tail -1 | cut -d: -f1)"
-CON42_LINE="$(grep -n '\[ \].*CON-42' "$OUT" | tail -1 | cut -d: -f1)"
+# Read through rows_of, not "$OUT" directly: under CON-27's differential
+# writer each row is placed by its own escape sequence with no line feed, so
+# on the raw file both greps report line 1 and the ordering comparison below
+# is vacuous. rows_of puts each written row back on its own line, which is
+# also what keeps the `.*` above from wandering across row boundaries.
+CON41_LINE="$(rows_of "$OUT" | grep -n '\[ \].*CON-41' | tail -1 | cut -d: -f1)"
+CON42_LINE="$(rows_of "$OUT" | grep -n '\[ \].*CON-42' | tail -1 | cut -d: -f1)"
 if [ -n "$CON41_LINE" ] && [ -n "$CON42_LINE" ] && [ "$CON42_LINE" -lt "$CON41_LINE" ]; then
   ok "P actually reorders the tickets pane — Urgent (CON-42) renders ahead of None (CON-41) after the real keypress"
 else
