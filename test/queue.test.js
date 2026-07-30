@@ -5,8 +5,10 @@ const {
   createQueue, tick, isIdle, shouldTick, reconcileRestored, createRestoredQueue,
 } = require('../lib/ui/queue');
 
-function run(ticket, status) {
-  return { ticket, status };
+function run(ticket, status, endedAt) {
+  const r = { ticket, status };
+  if (endedAt !== undefined) r.endedAt = endedAt;
+  return r;
 }
 
 // --- respecting the cap -----------------------------------------------------
@@ -266,6 +268,67 @@ test('an in-flight id missing from the fleet snapshot entirely also frees its sl
   const record = { pending: [], inFlight: ['CON-1'] };
   const { inFlight } = reconcileRestored(record, []);
   assert.deepEqual(Array.from(inFlight), []);
+});
+
+// --- CON-37: completedDuringDowntime — a pending id that finished during
+// the downtime is dropped and reported distinctly from a plain "not live"
+// drop (design.md Decision 3).
+
+test('a pending id terminal with endedAt after writtenAt is dropped from pending and reported as completed during downtime', () => {
+  const record = { pending: ['CON-1', 'CON-2'], inFlight: [], writtenAt: 1000 };
+  const { pending, completedDuringDowntime } = reconcileRestored(record, [run('CON-1', 'done', 2000)]);
+  assert.deepEqual(pending, ['CON-2']);
+  assert.deepEqual(completedDuringDowntime, ['CON-1']);
+});
+
+test('a pending id terminal with endedAt at or before writtenAt survives into pending, not reported as completed during downtime', () => {
+  const atWrittenAt = { pending: ['CON-1'], inFlight: [], writtenAt: 1000 };
+  const equal = reconcileRestored(atWrittenAt, [run('CON-1', 'done', 1000)]);
+  assert.deepEqual(equal.pending, ['CON-1']);
+  assert.deepEqual(equal.completedDuringDowntime, []);
+
+  const before = { pending: ['CON-1'], inFlight: [], writtenAt: 1000 };
+  const stale = reconcileRestored(before, [run('CON-1', 'failed', 500)]);
+  assert.deepEqual(stale.pending, ['CON-1']);
+  assert.deepEqual(stale.completedDuringDowntime, []);
+});
+
+test('a pending id with no run object at all survives into pending — unaffected, still indistinguishable from never-started', () => {
+  const record = { pending: ['CON-1'], inFlight: [], writtenAt: 1000 };
+  const { pending, completedDuringDowntime } = reconcileRestored(record, []);
+  assert.deepEqual(pending, ['CON-1']);
+  assert.deepEqual(completedDuringDowntime, []);
+});
+
+test('a pending id with a terminal status but no endedAt (a dead window, no run.end) survives into pending', () => {
+  const record = { pending: ['CON-1'], inFlight: [], writtenAt: 1000 };
+  const { pending, completedDuringDowntime } = reconcileRestored(record, [run('CON-1', 'failed')]);
+  assert.deepEqual(pending, ['CON-1']);
+  assert.deepEqual(completedDuringDowntime, []);
+});
+
+test('createRestoredQueue returns null when every pending id is dropped via completedDuringDowntime and no in-flight id survives', () => {
+  const record = { pending: ['CON-1', 'CON-2'], inFlight: [], maxConcurrent: 1, sessionId: 's', writtenAt: 1000 };
+  const runs = [run('CON-1', 'done', 2000), run('CON-2', 'failed', 3000)];
+  const reconciled = reconcileRestored(record, runs);
+  assert.deepEqual(reconciled.completedDuringDowntime, ['CON-1', 'CON-2']);
+  assert.deepEqual(reconciled.pending, []);
+  const restored = createRestoredQueue(record, runs);
+  assert.equal(restored, null);
+});
+
+test('createRestoredQueue accepts a pre-computed reconciled result (the single-reconciliation-pass path watch.js uses) and agrees with the two-arg form', () => {
+  const record = {
+    pending: ['CON-1', 'CON-2'], inFlight: [], maxConcurrent: 1, sessionId: 's', writtenAt: 1000,
+  };
+  // CON-1 completed during the downtime (diverted to completedDuringDowntime);
+  // CON-2 has no run at all, so it genuinely survives into `pending`.
+  const runs = [run('CON-1', 'done', 2000)];
+  const reconciled = reconcileRestored(record, runs);
+  const viaReconciled = createRestoredQueue(record, runs, reconciled);
+  const viaRunsOnly = createRestoredQueue(record, runs);
+  assert.deepEqual(viaReconciled.pending, ['CON-2']);
+  assert.deepEqual(viaReconciled.pending, viaRunsOnly.pending);
 });
 
 // --- createRestoredQueue: the restore-time counterpart to createQueue ------
