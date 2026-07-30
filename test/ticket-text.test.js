@@ -4,7 +4,8 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { resolve } = require('../lib/ui/ticket-text');
+const { execFileSync } = require('node:child_process');
+const { resolve, persistedPath } = require('../lib/ui/ticket-text');
 
 // Builds a fresh temp "main checkout" root and writes a persisted ticket.md
 // at the exact deterministic path persist-evidence.sh uses:
@@ -150,4 +151,56 @@ test('an empty persisted file with no cache entry either returns null', () => {
   const root = withPersisted('CON-12', '\n\n');
   const result = resolve(root, 'CON-12', cacheWith([]));
   assert.equal(result, null);
+});
+
+// --- real persist-evidence.sh integration (CON-23 regression) --------------
+//
+// Every test above uses withPersisted(), which hand-places ticket.md at the
+// OLD flat `evidence/ticket.md` path — so it stays green regardless of what
+// persist-evidence.sh actually does, and would not have caught the CON-23
+// skeptic-final-1 regression: persist-evidence.sh's collision-safe
+// destination naming (fix-persist-evidence-path-collision) nests a real
+// ticket.md under its source's worktree-relative directory (e.g.
+// `openspec/changes/<change>/ticket.md`, never flat), which the old
+// hardcoded-flat-path persistedPath() could never find. This test invokes
+// the REAL script and feeds its REAL output into resolve(), so a future
+// change to either side's path convention is caught here instead of
+// silently degrading the drill-down to the launch pad cache.
+test('resolves a ticket.md persisted by the real persist-evidence.sh at its actual (nested) destination', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-ticket-text-real-'));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'init'], { cwd: repo });
+
+  // A real ticket.md's real SOURCE_PATH shape (orchestrator.md Phase 1):
+  // WORKTREE_PATH/<change-dir>/ticket.md — never the worktree root.
+  const changeDir = path.join(repo, 'openspec', 'changes', 'some-change');
+  fs.mkdirSync(changeDir, { recursive: true });
+  const content = [
+    '# CON-99: A real ticket',
+    '',
+    '## Description',
+    '',
+    'Body persisted by the real script under test.',
+  ].join('\n');
+  fs.writeFileSync(path.join(changeDir, 'ticket.md'), content, 'utf8');
+
+  const scriptPath = path.join(__dirname, '..', 'core', 'scripts', 'persist-evidence.sh');
+  const out = execFileSync(scriptPath, ['CON-99', path.join(changeDir, 'ticket.md')], {
+    cwd: repo,
+    encoding: 'utf8',
+  });
+  assert.match(out, /^READY ref=/);
+
+  // Prove this is genuinely exercising the nested case, not accidentally
+  // passing because the file happens to also exist at the old flat path.
+  const found = persistedPath(repo, 'CON-99');
+  assert.ok(found, 'persistedPath should have found the persisted file');
+  assert.notEqual(found, path.join(repo, '.concertino', 'runs', 'CON-99', 'evidence', 'ticket.md'));
+  assert.ok(fs.existsSync(found));
+
+  const result = resolve(repo, 'CON-99', cacheWith([]));
+  assert.deepEqual(result, {
+    title: 'A real ticket',
+    description: 'Body persisted by the real script under test.',
+  });
 });
