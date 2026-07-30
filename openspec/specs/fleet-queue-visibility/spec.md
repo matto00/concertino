@@ -120,13 +120,21 @@ concurrency reconstruction below for why this snapshot also governs
 bound SHALL have its `pending` list reconciled against that startup
 snapshot using the same live-run predicate `queue.tick()` uses
 (`queue.isRunLive`): any pending ticket id already live is dropped from the
-restored pending list. If any pending ticket ids remain after
-reconciliation, the dashboard SHALL restore them into `queueState` with an
-explicit `confirmed: false` flag; no restored queue SHALL ever begin
-ticking (and therefore SHALL never launch any ticket) until an operator
-explicitly confirms it. A record that is missing, malformed, or outside the
-staleness bound SHALL be treated as empty — no queue is restored, and no
-error is surfaced to the operator.
+restored pending list. Independently of liveness, a pending ticket id whose
+run in the startup snapshot has reached a terminal state (`done` or
+`failed`) with an end timestamp strictly after the record's own write
+timestamp SHALL also be dropped from the restored pending list — it
+completed during the downtime, not before this queue entry was written, and
+SHALL NOT be re-offered to the operator as if it had never started. Ticket
+ids dropped for this reason SHALL be reported separately (as
+`completedDuringDowntime`) from ticket ids that simply never appear in the
+restored queue for any other reason. If any pending ticket ids remain after
+both reconciliations, the dashboard SHALL restore them into `queueState`
+with an explicit `confirmed: false` flag; no restored queue SHALL ever
+begin ticking (and therefore SHALL never launch any ticket) until an
+operator explicitly confirms it. A record that is missing, malformed, or
+outside the staleness bound SHALL be treated as empty — no queue is
+restored, and no error is surfaced to the operator.
 
 #### Scenario: A fresh queue file restores as unconfirmed
 - **WHEN** the dashboard starts and finds a `queue.json` written within the
@@ -140,6 +148,24 @@ error is surfaced to the operator.
   dashboard during the downtime)
 - **THEN** that ticket is excluded from the restored `queueState.pending`,
   exactly as `queue.tick()` would drop it during normal operation
+
+#### Scenario: A pending ticket that completed during the downtime is dropped and reported distinctly
+- **WHEN** the dashboard restores a queue file naming a pending ticket whose
+  run in the startup fleet snapshot has status `done` or `failed` with an
+  end timestamp after the queue file's own write timestamp
+- **THEN** that ticket is excluded from the restored `queueState.pending`
+  and its id is included in `completedDuringDowntime`, distinct from a
+  ticket dropped for being already live
+
+#### Scenario: A pending ticket whose terminal run predates the queue file is not treated as completed during downtime
+- **WHEN** the dashboard restores a queue file naming a pending ticket whose
+  run in the startup fleet snapshot has a terminal status, but its end
+  timestamp is at or before the queue file's own write timestamp (e.g. an
+  earlier, unrelated run of the same ticket id that finished before this
+  queue entry was written)
+- **THEN** that ticket survives reconciliation into the restored
+  `queueState.pending`, exactly as it would if no run record existed for it
+  at all
 
 #### Scenario: A stale queue file is not restored
 - **WHEN** the dashboard starts and finds a `queue.json` whose write
@@ -216,4 +242,38 @@ a same-session queue would.
 - **THEN** `queueState.confirmed` becomes `true` with pending/in-flight
   contents unchanged, and the following poll's `queue.tick()` call proceeds
   normally against it
+
+### Requirement: The dashboard reports ticket ids that completed during the downtime independently of whether a queue is restored
+The dashboard SHALL surface a notice naming any pending ticket ids that
+startup restore reconciliation (see the companion requirement on restoring
+a fresh, non-stale queue file) dropped because their run completed during
+the downtime, regardless of whether any pending or in-flight ticket ids
+survive reconciliation to form a restorable queue. This notice SHALL NOT
+depend on `queueState` being non-null, and SHALL NOT be gated on the
+"resumed from a previous session" affordance being shown — the two are
+independent facts that happen to co-occur in the common case: one says what
+is still queued, the other says what already finished without the operator.
+When no ticket ids were dropped for this reason, no such notice is shown.
+
+#### Scenario: A completed-during-downtime notice accompanies a partially-restored queue
+- **WHEN** some (but not all) of a queue file's pending ticket ids are
+  dropped because their run completed during the downtime, and at least one
+  pending or in-flight ticket id survives reconciliation
+- **THEN** the dashboard restores a queue with the survivors, and
+  separately shows a notice naming the ticket ids that completed during the
+  downtime
+
+#### Scenario: A completed-during-downtime notice appears even when nothing is left to restore
+- **WHEN** every one of a queue file's pending ticket ids is dropped
+  because its run completed during the downtime, and no persisted in-flight
+  ticket id survives reconciliation either, so nothing is restored into
+  `queueState`
+- **THEN** the dashboard still shows a notice naming the completed-during-
+  downtime ticket ids, even though no "resumed from a previous session"
+  affordance is shown and no queue is restored
+
+#### Scenario: No notice when nothing completed during the downtime
+- **WHEN** startup restore reconciliation runs and no pending ticket id is
+  dropped for having completed during the downtime
+- **THEN** no completed-during-downtime notice is shown
 
