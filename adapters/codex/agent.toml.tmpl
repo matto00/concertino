@@ -2,6 +2,10 @@
 # or concertino.config.json, then re-sync. On Codex these are best-effort: the
 # orchestration runs sequentially (see AGENTS.md), and these agent definitions let
 # you optionally dispatch the executor/evaluator as workers where supported.
+#
+# IMPORTANT: If using worker-dispatch via .codex/agents/*.toml + spawn_agents_on_csv,
+# see the sub-agent-orphaning note in AGENTS.md: wait for report_agent_job_result
+# before ending your turn, or the dispatched worker is orphaned.
 name = "concertino-{{role}}"
 description = "{{description}}"
 model = "{{model}}"

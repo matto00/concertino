@@ -1,0 +1,1 @@
+- `adapters/codex/agent.toml.tmpl` — Added comment pointing at the sub-agent-orphaning caution in header.md for the optional worker-dispatch path
