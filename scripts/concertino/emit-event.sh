@@ -286,9 +286,17 @@ write_escalation_raised() {
   # leave FIELDS half-mutated. Named by raise time (not by kind/question) so
   # concurrent or successive escalations on the same ticket never collide or
   # overwrite each other's persisted context.
+  #
+  # Staged under ROOT (the main checkout), not mktemp's default /tmp:
+  # persist-evidence.sh now requires SOURCE_PATH to be inside SOME git working
+  # tree (it FAILs otherwise, by design — see persist-evidence.sh's header), and
+  # a bare /tmp directory never is one. ROOT is guaranteed to be a real git
+  # working tree — it was itself resolved via git above (`main_checkout()`) —
+  # so anchoring the temp dir there keeps this call compliant regardless of
+  # whether emit-event.sh is running from the main checkout or a worktree.
   local epoch tmp_dir src ref="" persist_out
   epoch="$(now_ms)"
-  tmp_dir="$(mktemp -d 2>/dev/null)" || tmp_dir=""
+  tmp_dir="$(mktemp -d "${ROOT}/.escalation-context-tmp.XXXXXX" 2>/dev/null)" || tmp_dir=""
   if [ -n "$tmp_dir" ]; then
     src="${tmp_dir}/escalation-context-${epoch}.txt"
     printf '%s' "$CONTEXT" > "$src" 2>/dev/null

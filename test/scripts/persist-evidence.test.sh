@@ -90,5 +90,41 @@ check "well-formed sibling ticket id ref exists" "$([ -f "$REF2" ] && echo yes |
 rm -f /tmp/persist-evidence-test-err
 rm -rf "$REPO"
 
+# --- two same-named artifacts from different directories don't collide -----
+REPO="$(new_repo)"
+git -C "$REPO" worktree add -q "$REPO/wt" -b feat 2>/dev/null
+mkdir -p "$REPO/wt/specs/ticket-id-path-safety" "$REPO/wt/specs/evidence-telemetry"
+printf 'ticket-id-path-safety delta\n' > "$REPO/wt/specs/ticket-id-path-safety/spec.md"
+printf 'evidence-telemetry delta\n' > "$REPO/wt/specs/evidence-telemetry/spec.md"
+OUT_A="$(cd "$REPO/wt" && "$SCRIPT" TICKET-5 "$REPO/wt/specs/ticket-id-path-safety/spec.md")"
+RC_A=$?
+REF_A="$(printf '%s' "$OUT_A" | sed -n 's/^READY ref=//p')"
+OUT_B="$(cd "$REPO/wt" && "$SCRIPT" TICKET-5 "$REPO/wt/specs/evidence-telemetry/spec.md")"
+RC_B=$?
+REF_B="$(printf '%s' "$OUT_B" | sed -n 's/^READY ref=//p')"
+check "collision case: first call exits 0"  "$RC_A" "0"
+check "collision case: second call exits 0" "$RC_B" "0"
+check "collision case: refs are distinct" "$([ "$REF_A" != "$REF_B" ] && echo yes || echo no)" "yes"
+check "collision case: first ref exists"  "$([ -f "$REF_A" ] && echo yes || echo no)" "yes"
+check "collision case: second ref exists" "$([ -f "$REF_B" ] && echo yes || echo no)" "yes"
+check "collision case: first ref has its own content"  "$(cat "$REF_A")" "ticket-id-path-safety delta"
+check "collision case: second ref has its own content" "$(cat "$REF_B")" "evidence-telemetry delta"
+check "collision case: first ref matches worktree-relative path" \
+  "$REF_A" "$REPO/.concertino/runs/TICKET-5/evidence/specs/ticket-id-path-safety/spec.md"
+check "collision case: second ref matches worktree-relative path" \
+  "$REF_B" "$REPO/.concertino/runs/TICKET-5/evidence/specs/evidence-telemetry/spec.md"
+rm -rf "$REPO"
+
+# --- a source outside any git working tree fails rather than risking a collision --
+OUTSIDE="$(mktemp -d)"
+printf 'no repo here\n' > "$OUTSIDE/spec.md"
+OUT="$(cd "$OUTSIDE" && "$SCRIPT" TICKET-6 "$OUTSIDE/spec.md" 2>/tmp/persist-evidence-test-err)"
+RC=$?
+check "exit non-zero when source is outside any git working tree" "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
+check "no READY line when source is outside any git working tree" "$(printf '%s' "$OUT" | grep -c '^READY')" "0"
+check "FAIL printed to stderr when source is outside any git working tree" "$(grep -c '^FAIL' /tmp/persist-evidence-test-err)" "1"
+rm -f /tmp/persist-evidence-test-err
+rm -rf "$OUTSIDE"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
