@@ -82,6 +82,50 @@ test('a frame that grows (or stays the same height) blanks nothing', () => {
   assert.doesNotMatch(grown.bytes, /\x1b\[\d+;1H/);
 });
 
+// --- CON-26: trim phantom trailing blank row ------------------------------------
+// draw() appends a trailing '\n' to its content before calling buildFrame().
+// String.split('\n') on a trailing-newline-terminated string produces an extra
+// empty trailing element. This test verifies that buildFrame strips that phantom
+// row and does not count or write it.
+
+test('buildFrame does not write a phantom trailing blank row for a trailing-newline-terminated input', () => {
+  // A router.render()-shaped input: "line1\nline2\n" (like draw() always builds)
+  const trailingNewlineInput = 'content line 1\ncontent line 2\n';
+  const frame = buildFrame(trailingNewlineInput, 20, 0);
+
+  // The lineCount should be 2 (the actual content lines), not 3 (which would
+  // include the phantom empty line from the trailing '\n').
+  assert.equal(frame.lineCount, 2,
+    'lineCount must reflect only the actual rendered content, excluding the phantom row');
+
+  // The written bytes should contain exactly the content lines, no extra blank row.
+  // We can verify this by checking that there is no third line in the output.
+  const lines = frame.bytes.slice(CURSOR_HOME.length).split('\n');
+  // lines[0] and lines[1] are the real content (each padded), and there should
+  // be no lines[2] (which would be the phantom blank row).
+  assert.equal(lines.length, 2,
+    'written output should have exactly 2 lines, not 3 with a phantom blank row');
+});
+
+test('buildFrame strips exactly one trailing newline, preserving genuine blank content lines', () => {
+  // Content with a real blank line at the end, plus draw()'s synthetic trailing '\n'.
+  // This represents: "content\n" (real line) + "" (real blank line) + "\n" (synthetic from draw())
+  // After stripping exactly one '\n', should yield 2 lines: "content" + one blank line.
+  const contentWithBlankLineAndSyntheticNewline = 'content\n\n';
+  const frame = buildFrame(contentWithBlankLineAndSyntheticNewline, 10, 0);
+
+  // The lineCount should be 2: one real content line + one real blank line.
+  // Only the synthetic trailing '\n' is stripped; the genuine blank line remains.
+  assert.equal(frame.lineCount, 2,
+    'a genuine trailing blank content line must be preserved; only the synthetic trailing newline is stripped');
+
+  // Verify both lines are written and padded (even the blank one).
+  const lines = frame.bytes.slice(CURSOR_HOME.length).split('\n');
+  assert.equal(lines.length, 2, 'output should have 2 lines: content + blank');
+  assert.equal(lines[0], 'content   ', 'first line should be padded content');
+  assert.equal(lines[1], '          ', 'second line should be a blank line, padded to column width');
+});
+
 // --- alternate screen buffer constants --------------------------------------
 // The exact byte sequences watch.js writes at startup (once), from quit()
 // (once, on every exit path), and around attach (suspend/restore) — see
