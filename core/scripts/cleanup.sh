@@ -169,7 +169,16 @@ if [ "$FF_STATUS" = "dirty" ] || [ "$FF_STATUS" = "diverged" ] || [ "$FF_STATUS"
 
   if [ "$ANSWER" = "retry" ]; then
     attempt_fast_forward
-    if [ "$FF_STATUS" != "updated" ] && [ "$FF_STATUS" != "current" ]; then
+    if [ "$FF_STATUS" = "fetch-failed" ] || [ "$FF_STATUS" = "no-local-base" ]; then
+      # The retry itself never reached a local-vs-remote comparison (couldn't
+      # fetch the remote, or couldn't resolve the local base branch) — report
+      # that the base state is unknown, not that it is confirmed behind.
+      case "$FF_STATUS" in
+        fetch-failed) UNKNOWN_REASON="${FF_REASON:-fetch failed}" ;;
+        no-local-base) UNKNOWN_REASON="${FF_REASON:-no local ${BASE_BRANCH} branch}" ;;
+      esac
+      echo "note: could not determine whether local ${BASE_BRANCH} is behind ${BASE_REMOTE}/${BASE_BRANCH} after retry — ${UNKNOWN_REASON}" >&2
+    elif [ "$FF_STATUS" != "updated" ] && [ "$FF_STATUS" != "current" ]; then
       NOTE="note: local ${BASE_BRANCH} remains behind ${BASE_REMOTE}/${BASE_BRANCH} after retry"
       [ -n "${FF_REASON:-}" ] && NOTE="${NOTE} (${FF_REASON})"
       echo "${NOTE} — resolve manually" >&2

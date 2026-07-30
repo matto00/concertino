@@ -190,5 +190,51 @@ has "prints READY after a successful retry" "READY cleaned worktree=" "$OUT"
 hasnt "no 'remains behind' note after a successful retry" "remains behind" "$ERR"
 rm -rf "$BASE"
 
+# --- retry exhaustion, confirmed still-dirty: keeps "remains behind" wording -
+BASE="$(mktemp -d)"; new_pair "$BASE"
+advance_remote "$BASE/remote.git"
+echo "uncommitted local edit" >> "$BASE/primary/file.txt"
+BEFORE_MAIN="$(git -C "$BASE/primary" rev-parse main)"
+WT="$BASE/TICK-7"
+LOG="$BASE/primary/.concertino/runs/TICK-7/events.jsonl"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup "$BASE/primary" "$WT" "$OUT" "$ERR" &
+CPID=$!
+wait_for_escalation "$LOG" && ok "still-dirty retry: the first attempt raises an escalation" \
+  || bad "still-dirty retry: the first attempt raises an escalation" "escalation.raised never landed"
+# Answer retry WITHOUT clearing the uncommitted edit — the retry itself
+# completes its comparison and still finds the tree dirty.
+write_answer "$BASE/primary" TICK-7 retry
+wait "$CPID"; RC=$?
+check "exits 0 after a still-dirty retry exhaustion" "$RC" "0"
+AFTER_MAIN="$(git -C "$BASE/primary" rev-parse main)"
+check "local main is untouched (still-dirty retry)" "$AFTER_MAIN" "$BEFORE_MAIN"
+has "prints READY despite a still-dirty retry exhaustion" "READY cleaned worktree=" "$OUT"
+has "'remains behind' note after a still-dirty retry" "remains behind" "$ERR"
+hasnt "no 'could not determine' note after a still-dirty retry" "could not determine" "$ERR"
+rm -rf "$BASE"
+
+# --- retry exhaustion, retry's own fetch fails: reports unknown state -------
+BASE="$(mktemp -d)"; new_pair "$BASE"
+advance_remote "$BASE/remote.git"
+echo "uncommitted local edit" >> "$BASE/primary/file.txt"
+WT="$BASE/TICK-8"
+LOG="$BASE/primary/.concertino/runs/TICK-8/events.jsonl"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup "$BASE/primary" "$WT" "$OUT" "$ERR" &
+CPID=$!
+wait_for_escalation "$LOG" && ok "fetch-failed retry: the first attempt raises an escalation" \
+  || bad "fetch-failed retry: the first attempt raises an escalation" "escalation.raised never landed"
+# Point origin at an unreachable path so the RETRIED attempt's own `git
+# fetch` fails — it never reaches a local-vs-remote comparison.
+git -C "$BASE/primary" remote set-url origin "$BASE/no-such-remote.git"
+write_answer "$BASE/primary" TICK-8 retry
+wait "$CPID"; RC=$?
+check "exits 0 after a fetch-failed retry exhaustion" "$RC" "0"
+has "prints READY despite a fetch-failed retry exhaustion" "READY cleaned worktree=" "$OUT"
+has "'could not determine' note after a fetch-failed retry" "could not determine" "$ERR"
+hasnt "no 'remains behind' note after a fetch-failed retry" "remains behind" "$ERR"
+rm -rf "$BASE"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
