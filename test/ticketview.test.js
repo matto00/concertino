@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { renderTicketView, handleKey, render, findTicket } = require('../lib/ui/screens/ticketview');
+const { renderTicketView, handleKey, render, routeHandleKey, findTicket, computeViewportRows } = require('../lib/ui/screens/ticketview');
 
 // eslint-disable-next-line no-control-regex
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
@@ -167,4 +167,65 @@ test('no rendered line exceeds opts.cols even with a long description and commen
       assert.ok(visibleLength(line) <= cols, `cols:${cols} line is ${visibleLength(line)} wide: ${JSON.stringify(line)}`);
     }
   }
+});
+
+// --- CON-19: scrolling, delegated to docview.bodyBox ------------------------
+// design.md's own risk log: refactoring this screen's box call must not
+// change its visual output for the common case where content already fit —
+// a short ticket, rendered with no `rows` budget at all (this screen's own
+// pre-change, unbounded behaviour), must still be byte-identical.
+
+test('a short ticket description renders identically whether or not rows is supplied (no rows = unbounded, as before this change)', () => {
+  const short = ticket({});
+  const withoutRows = renderTicketView(short, { cols: 78 });
+  const withRows = renderTicketView(short, { cols: 78, rows: 40 });
+  assert.equal(withoutRows, withRows);
+});
+
+test('a description longer than one screen is now scrollable instead of overflowing off-screen', () => {
+  const long = ticket({ description: Array.from({ length: 60 }, (_, i) => 'paragraph line ' + i).join('\n\n') });
+  const rows = 20;
+  const unscrolled = plain(renderTicketView(long, { cols: 78, rows, scrollOffset: 0 }));
+  // Not every line fits — the tail of the description must not be visible
+  // in the first screenful.
+  assert.doesNotMatch(unscrolled, /paragraph line 59/);
+  assert.match(unscrolled, /showing/); // docview.bodyBox's own position indicator
+  // Scrolling reveals content that was hidden a moment ago.
+  const viewportRows = computeViewportRows(rows, !!long.url);
+  const { clampScroll } = require('../lib/ui/screens/docview');
+  const maxOffset = clampScroll(9999, viewportRows, 9999);
+  const scrolled = plain(renderTicketView(long, { cols: 78, rows, scrollOffset: maxOffset }));
+  assert.match(scrolled, /paragraph line 59/);
+});
+
+test('computeViewportRows is unbounded when rows is absent/0', () => {
+  assert.equal(computeViewportRows(0, false), Infinity);
+  assert.equal(computeViewportRows(undefined, true), Infinity);
+});
+
+test('computeViewportRows reserves one extra row when the ticket carries a URL, leaving one fewer for the box', () => {
+  const rows = 30;
+  assert.equal(computeViewportRows(rows, false) - 1, computeViewportRows(rows, true));
+});
+
+// --- CON-19: routeHandleKey scroll wiring ------------------------------
+
+test('routeHandleKey still dispatches back-to-launchpad on esc, taking priority over scroll handling', () => {
+  assert.deepEqual(routeHandleKey('\x1b', { ticketviewViewportRows: 10, ticketviewBodyLineCount: 50, ticketviewScroll: 5 }),
+    { type: 'back-to-launchpad' });
+});
+
+test('routeHandleKey returns a clamped ticketview-scroll action for a scroll key', () => {
+  const state = { ticketviewViewportRows: 10, ticketviewBodyLineCount: 50, ticketviewScroll: 5 };
+  assert.deepEqual(routeHandleKey('j', state), { type: 'ticketview-scroll', offset: 6 });
+});
+
+test('routeHandleKey clamps at the document\'s end rather than overscrolling', () => {
+  const state = { ticketviewViewportRows: 10, ticketviewBodyLineCount: 15, ticketviewScroll: 5 };
+  assert.deepEqual(routeHandleKey('\x1b[6~', state), { type: 'ticketview-scroll', offset: 5 });
+});
+
+test('routeHandleKey is a no-op for an unbound key', () => {
+  const state = { ticketviewViewportRows: 10, ticketviewBodyLineCount: 50, ticketviewScroll: 5 };
+  assert.equal(routeHandleKey('z', state), null);
 });

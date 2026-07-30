@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   renderDrillDown, handleKey, render, isLive, fmtGateDuration, phasePipeline,
-  ticketPanelLines,
+  ticketPanelLines, evidenceItems, evidenceLines, EVIDENCE_MAX_VISIBLE,
 } = require('../lib/ui/screens/drilldown');
 
 // eslint-disable-next-line no-control-regex
@@ -577,4 +577,147 @@ test('a pathologically long first_error still caps the gates column rather than 
   for (const line of out.split('\n')) {
     assert.ok(visibleLength(line) <= 78, `line exceeds cols: ${JSON.stringify(line)}`);
   }
+});
+
+// --- CON-19: EVIDENCE panel focus, selection, open, and its cap/scroll -----
+
+function evidenceEvents(n) {
+  return Array.from({ length: n }, (_, i) => ({
+    t: 1000 + i, kind: 'evidence', role: 'evaluator', label: 'evidence-' + i + '.md', ref: '/tmp/evidence-' + i + '.md',
+  }));
+}
+
+test('evidenceItems returns only evidence-kind events', () => {
+  const items = evidenceItems(run({ events: [
+    { t: 1, kind: 'run.start' },
+    { t: 2, kind: 'evidence', label: 'a.md' },
+    { t: 3, kind: 'evidence', label: 'b.md' },
+  ] }));
+  assert.equal(items.length, 2);
+});
+
+// --- focus toggle ----------------------------------------------------------
+
+test('\\t toggles EVIDENCE focus when there is at least one entry', () => {
+  assert.deepEqual(
+    handleKey('\t', { run: run({ events: evidenceEvents(1) }), drillFocus: null }),
+    { type: 'switch-drill-focus', focus: 'evidence' },
+  );
+  assert.deepEqual(
+    handleKey('\t', { run: run({ events: evidenceEvents(1) }), drillFocus: 'evidence' }),
+    { type: 'switch-drill-focus', focus: null },
+  );
+});
+
+test('\\t is inert (and thus never advertised) when there is no evidence to select', () => {
+  assert.equal(handleKey('\t', { run: run({ events: [] }), drillFocus: null }), null);
+});
+
+// --- footer hints per focus state -------------------------------------------
+
+test('default focus (no EVIDENCE focus): ↵ attach / k kill / r restart are advertised, evidence keys are not', () => {
+  const out = plain(renderDrillDown(run({ status: 'running', events: evidenceEvents(3) }), OPTS));
+  assert.match(out, /↵ attach/);
+  assert.match(out, /k kill/);
+  assert.match(out, /r restart/);
+  assert.doesNotMatch(out, /↵ open/);
+});
+
+test('EVIDENCE focused: selection/open keys are advertised, attach/kill/restart are not', () => {
+  const out = plain(renderDrillDown(run({ status: 'running', events: evidenceEvents(3) }),
+    Object.assign({}, OPTS, { drillFocus: 'evidence', drillEvidenceIndex: 0 })));
+  assert.match(out, /↵ open/);
+  assert.doesNotMatch(out, /↵ attach/);
+  assert.doesNotMatch(out, /k kill/);
+  assert.doesNotMatch(out, /r restart/);
+  assert.match(out, /esc back/);
+});
+
+// --- key handling while EVIDENCE is focused ---------------------------------
+
+test('j/k move the evidence selection while focused, clamped to the list\'s bounds', () => {
+  const state = { run: run({ events: evidenceEvents(3) }), drillFocus: 'evidence', drillEvidenceIndex: 0 };
+  assert.deepEqual(handleKey('j', state), { type: 'move-drill-evidence', delta: 1 });
+  assert.deepEqual(handleKey('k', state), { type: 'move-drill-evidence', delta: -1 });
+});
+
+test('r is inert (not "restart") while EVIDENCE is focused — only j/k/↵ are bound there', () => {
+  const state = { run: run({ status: 'running', events: evidenceEvents(3) }), drillFocus: 'evidence', drillEvidenceIndex: 0 };
+  assert.equal(handleKey('r', state), null);
+  // 'k' is bound while EVIDENCE is focused too — but to move-drill-evidence
+  // (selection up), never to 'confirm-action: kill' (see the test above).
+  assert.equal(handleKey('k', state).type, 'move-drill-evidence');
+});
+
+test('↵ opens the selected entry rather than attaching while EVIDENCE is focused', () => {
+  const state = { run: run({ status: 'running', events: evidenceEvents(3) }), drillFocus: 'evidence', drillEvidenceIndex: 0 };
+  const action = handleKey('\r', state);
+  assert.equal(action.type, 'open-evidence-doc');
+});
+
+test('↵ while EVIDENCE is focused with a selected entry opens it via open-evidence-doc', () => {
+  const r = run({ events: evidenceEvents(3) });
+  const action = handleKey('\r', { run: r, drillFocus: 'evidence', drillEvidenceIndex: 1 });
+  assert.deepEqual(action, {
+    type: 'open-evidence-doc', ticket: r.ticket, ref: '/tmp/evidence-1.md', label: 'evidence-1.md',
+  });
+});
+
+test('↵ while EVIDENCE is focused with no entries (defensive) is a no-op', () => {
+  const r = run({ events: evidenceEvents(1) });
+  assert.equal(handleKey('\r', { run: r, drillFocus: 'evidence', drillEvidenceIndex: 5 }), null);
+});
+
+// --- EVIDENCE cap and scroll-follows-selection ------------------------------
+
+test('an EVIDENCE list within the cap needs no windowing', () => {
+  const lines = evidenceLines(run({ events: evidenceEvents(EVIDENCE_MAX_VISIBLE) }), 40, { focused: false });
+  assert.equal(lines.length, EVIDENCE_MAX_VISIBLE);
+  assert.doesNotMatch(plain(lines.join('\n')), /more/);
+});
+
+test('an unfocused, over-cap EVIDENCE list shows only the leading entries plus a truncation count', () => {
+  const total = EVIDENCE_MAX_VISIBLE + 5;
+  const lines = evidenceLines(run({ events: evidenceEvents(total) }), 40, { focused: false, selectedIndex: 0 });
+  assert.equal(lines.length, EVIDENCE_MAX_VISIBLE + 1);
+  assert.match(plain(lines.join('\n')), /… 5 more/);
+  assert.match(plain(lines.join('\n')), /evidence-0\.md/);
+  assert.doesNotMatch(plain(lines.join('\n')), new RegExp('evidence-' + (EVIDENCE_MAX_VISIBLE) + '\\.md'));
+});
+
+test('moving the selection past the visible window scrolls it into view while focused', () => {
+  const total = EVIDENCE_MAX_VISIBLE + 5;
+  const r = run({ events: evidenceEvents(total) });
+  const farIndex = total - 1;
+  const lines = evidenceLines(r, 40, { focused: true, selectedIndex: farIndex });
+  const text = plain(lines.join('\n'));
+  assert.match(text, new RegExp('evidence-' + farIndex + '\\.md'));
+});
+
+test('the selected entry is visually marked while EVIDENCE is focused', () => {
+  const r = run({ events: evidenceEvents(3) });
+  const lines = evidenceLines(r, 40, { focused: true, selectedIndex: 1 });
+  assert.match(lines[1], /▸/);
+  assert.doesNotMatch(lines[0], /▸/);
+});
+
+test('the EVIDENCE panel renders with the focused border style when drillFocus is evidence', () => {
+  const focused = renderDrillDown(run({ events: evidenceEvents(3) }),
+    Object.assign({}, OPTS, { drillFocus: 'evidence', drillEvidenceIndex: 0 }));
+  const unfocused = renderDrillDown(run({ events: evidenceEvents(3) }), OPTS);
+  // The focused border set uses heavier box-drawing characters (┏┓┗┛━┃) —
+  // see layout.js's BORDERS.focused — which the unfocused render never emits.
+  assert.match(focused, /[┏┓┗┛]/);
+  assert.doesNotMatch(unfocused, /[┏┓┗┛]/);
+});
+
+// --- router seam -------------------------------------------------------
+
+test('render(state, opts) threads drillFocus/drillEvidenceIndex through to renderDrillDown', () => {
+  const state = {
+    runs: [run({ ticket: 'HEL-1', events: evidenceEvents(3) })], drillTicket: 'HEL-1',
+    drillFocus: 'evidence', drillEvidenceIndex: 1,
+  };
+  const out = plain(render(state, OPTS));
+  assert.match(out, /↵ open/);
 });
