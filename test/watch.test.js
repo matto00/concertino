@@ -775,3 +775,304 @@ test('scrolling back up with k brings a short RUNNING section back into view whe
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// --- CON-39: digit-key section jump, wired end to end through watch.js -----
+// A single digit press must reach the same scroll-into-view row a run of
+// repeated k presses would (see the two tests above): jumping directly to a
+// section currently scrolled entirely out of view must scroll it back into
+// the rendered window, with the marker on it.
+
+test('a digit press jumps directly to a scrolled-past section and scrolls it back into view', async () => {
+  const { EventEmitter } = require('node:events');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-jump-'));
+
+  const needsYouDir = path.join(root, '.concertino', 'runs', 'HEL-1');
+  fs.mkdirSync(needsYouDir, { recursive: true });
+  fs.writeFileSync(path.join(needsYouDir, 'events.jsonl'),
+    JSON.stringify({ t: 500, kind: 'run.start' }) + '\n' +
+    JSON.stringify({ t: 600, kind: 'escalation.raised', question: 'q', options: '' }) + '\n');
+
+  const runningDir = path.join(root, '.concertino', 'runs', 'HEL-2');
+  fs.mkdirSync(runningDir, { recursive: true });
+  fs.writeFileSync(path.join(runningDir, 'events.jsonl'),
+    JSON.stringify({ t: 700, kind: 'run.start' }) + '\n');
+
+  for (let i = 0; i < 10; i++) {
+    const ticket = 'HEL-' + (300 + i);
+    const runDir = path.join(root, '.concertino', 'runs', ticket);
+    fs.mkdirSync(runDir, { recursive: true });
+    const startT = 1000 - i * 10;
+    const endT = 1005 - i * 10;
+    fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+      JSON.stringify({ t: startT, kind: 'run.start' }) + '\n' +
+      JSON.stringify({ t: endT, kind: 'run.end', status: 'delivered' }) + '\n');
+  }
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return [{ ticket: 'HEL-2', alive: true, activity: null }]; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  // eslint-disable-next-line no-control-regex
+  const plainFrame = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root, config: {} });
+
+    // Scroll deep into DONE first, exactly as the sibling test above does —
+    // RUNNING's own row (HEL-2, index 1) scrolls entirely out of view.
+    for (let i = 0; i < 8; i++) fakeStdin.emit('data', 'j');
+    const scrolledFrame = plainFrame(written[written.length - 1]);
+    assert.doesNotMatch(scrolledFrame, /HEL-2\b/, 'HEL-2 should have scrolled out of view by this point');
+
+    // Sections on screen: NEEDS YOU (1), RUNNING (2), DONE (3). Digit 2
+    // jumps straight to RUNNING's first (only) row — one keypress, not
+    // seven k's.
+    fakeStdin.emit('data', '2');
+
+    const jumpedFrame = plainFrame(written[written.length - 1]);
+    const marked = jumpedFrame.split('\n').filter((l) => l.includes('▸'));
+    assert.equal(marked.length, 1, `expected exactly one marker after the jump, got ${marked.length}`);
+    assert.ok(marked[0].includes('HEL-2'),
+      `the marker should be on HEL-2 (RUNNING) after jumping to section 2; marked line was: ${marked[0] || '(none)'}`);
+  } finally {
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// --- CON-39: QUEUED-local focus round trip, wired end to end ---------------
+
+test('jumping into QUEUED focus, moving the cursor, and exiting leaves the run selection completely unchanged', async () => {
+  const { EventEmitter } = require('node:events');
+  const queueCache = require('../lib/ui/queue-cache');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-queuefocus-'));
+
+  for (const ticket of ['HEL-1', 'HEL-2']) {
+    const runDir = path.join(root, '.concertino', 'runs', ticket);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+      JSON.stringify({ t: ticket === 'HEL-1' ? 1000 : 900, kind: 'run.start' }) + '\n');
+  }
+
+  // Seed a restored (unconfirmed) queue tail — QUEUED renders purely off
+  // pending.length, regardless of confirmed (design.md Decision 4's own
+  // point), so this is sufficient to put a QUEUED section on screen.
+  queueCache.write(root, {
+    pending: ['CON-50', 'CON-51'], inFlight: new Set(), maxConcurrent: 1, launchCommand: null,
+  }, 'sess-1', Date.now());
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return [{ ticket: 'HEL-1', alive: true, activity: null }, { ticket: 'HEL-2', alive: true, activity: null }]; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  // eslint-disable-next-line no-control-regex
+  const plainFrame = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+  const markedTicket = (frame) => {
+    const line = frame.split('\n').find((l) => l.includes('▸'));
+    return line ? (line.match(/HEL-\d+/) || [null])[0] : null;
+  };
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root, config: {} });
+
+    // Move selection onto the SECOND running run first, so a stray reset to
+    // index 0 would be caught.
+    fakeStdin.emit('data', 'j');
+    const beforeFrame = plainFrame(written[written.length - 1]);
+    assert.equal(markedTicket(beforeFrame), 'HEL-2', 'sanity: selection is on HEL-2 before entering queue focus');
+
+    // Sections on screen: RUNNING (1), QUEUED (2). Digit 2 jumps INTO
+    // QUEUED focus without touching the run selection at all.
+    fakeStdin.emit('data', '2');
+    const inQueueFrame = plainFrame(written[written.length - 1]);
+    assert.match(inQueueFrame, /»/, 'the QUEUED-local cursor marker should now be on screen');
+    assert.equal(markedTicket(inQueueFrame), 'HEL-2', 'the run selection marker must be unaffected by entering queue focus');
+
+    // Move the QUEUED-local cursor — must still never touch the run selection.
+    fakeStdin.emit('data', 'j');
+    const movedFrame = plainFrame(written[written.length - 1]);
+    assert.equal(markedTicket(movedFrame), 'HEL-2');
+
+    // Escape back out — the run selection must resolve to the exact same run.
+    fakeStdin.emit('data', '\x1b');
+    const afterFrame = plainFrame(written[written.length - 1]);
+    assert.doesNotMatch(afterFrame, /»/, 'the QUEUED-local cursor marker should be gone after exiting queue focus');
+    assert.equal(markedTicket(afterFrame), 'HEL-2', 'the run selection must resolve to the same run after the round trip');
+  } finally {
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// --- CON-39: force-start confirm/cancel/confirm cycle, wired end to end ----
+
+test('force-start: f opens a confirmation, any key cancels, y actually starts the ticket and persists the queue', async () => {
+  const { EventEmitter } = require('node:events');
+  const queueCache = require('../lib/ui/queue-cache');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-forcestart-'));
+
+  queueCache.write(root, {
+    pending: ['CON-90'], inFlight: new Set(), maxConcurrent: 1, launchCommand: null,
+  }, 'sess-1', Date.now());
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+
+  const spawnCalls = [];
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return []; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn(ticket, cmd) { spawnCalls.push({ ticket, cmd }); },
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  // eslint-disable-next-line no-control-regex
+  const plainFrame = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root, config: {} });
+
+    // No runs at all — QUEUED is the ONLY section on screen, so digit 1
+    // jumps straight into queue focus on CON-90 (the sole pending ticket).
+    fakeStdin.emit('data', '1');
+    const focusedFrame = plainFrame(written[written.length - 1]);
+    assert.match(focusedFrame, /»/);
+
+    // f opens the confirmation — nothing has started yet.
+    fakeStdin.emit('data', 'f');
+    const confirmFrame = plainFrame(written[written.length - 1]);
+    assert.match(confirmFrame, /this will run 1 concurrently, exceeding your maxConcurrent:1 setting/);
+    assert.equal(spawnCalls.length, 0, 'nothing should be spawned until y is pressed');
+
+    // Any other key cancels — no spawn, queue unchanged on disk.
+    fakeStdin.emit('data', 'x');
+    const cancelledFrame = plainFrame(written[written.length - 1]);
+    assert.doesNotMatch(cancelledFrame, /this will run 1 concurrently/);
+    assert.equal(spawnCalls.length, 0);
+    const afterCancelRecord = queueCache.read(root);
+    assert.deepEqual(afterCancelRecord.pending, ['CON-90'], 'cancelling must never mutate the persisted queue');
+
+    // f again, then y — this time it actually starts.
+    fakeStdin.emit('data', 'f');
+    fakeStdin.emit('data', 'y');
+    const startedFrame = plainFrame(written[written.length - 1]);
+
+    assert.equal(spawnCalls.length, 1, 'exactly one spawn — the confirmed force-start');
+    assert.equal(spawnCalls[0].ticket, 'CON-90');
+
+    const afterStartRecord = queueCache.read(root);
+    assert.deepEqual(afterStartRecord.pending, [], 'CON-90 must have left pending');
+    assert.deepEqual(afterStartRecord.inFlight, ['CON-90'], 'CON-90 must persist as an ordinary in-flight entry');
+
+    // QUEUED is gone from the frame now that pending is empty.
+    assert.doesNotMatch(startedFrame, /QUEUED/);
+  } finally {
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

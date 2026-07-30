@@ -1,0 +1,54 @@
+## 1. `queue.js` — force-start bookkeeping
+
+- [x] 1.1 Add `forceStart(queue, ticket)`: if `ticket` is present in `queue.pending`, remove it from `pending`, add it to `inFlight`, and return `{ toLaunch: [ticket], queue: <next state> }`. The returned queue is shaped like `tick()`'s own return `queue` object (`launchCommand`, `restoredFrom` passthrough) with one deliberate difference: **`confirmed` is carried through unchanged from the input `queue.confirmed`, never hard-coded to `true`** — see design.md Decision 4's discussion of why copying `tick()`'s hard-coded `confirmed: true` here would silently reactivate auto-admission for the rest of a CON-29-restored, not-yet-confirmed queue off a single force-started ticket. If `ticket` is not in `queue.pending`, return `{ toLaunch: [], queue }` unchanged (no-op, matching the "no longer in the queue" spec requirement).
+- [x] 1.2 Unit tests: force-starting a pending ticket moves it pending -> inFlight and returns it in `toLaunch`; a force-started ticket is never re-admitted by a subsequent `tick()` call; `tick()` correctly withholds admission of other pending tickets once `inFlight.size` (including the force-started one) reaches `maxConcurrent`; force-start on a ticket not in `pending` is a no-op that changes nothing; **force-starting one ticket out of a queue with `confirmed: false` returns a queue whose `confirmed` is still `false`, and a subsequent `shouldTick()` check on that returned queue is still `false`** (i.e. force-starting one ticket does not silently reactivate `tick()`'s auto-admission for the rest of the batch); force-starting a ticket out of an already-`confirmed: true` queue returns `confirmed: true` unchanged.
+
+## 2. `launchplan.js` — shared launch-command parsing
+
+- [x] 2.1 Add `parseLaunchCommand(launchCommand)` returning `{ agentMerge: true | false | null, speed: 'fast' | 'slow' | 'default' }`, reading the exact token format `withAgentMergeFlag`/`withSpeedFlag` write (immediately after `{{TICKET}}`). `agentMerge: null` when no `--agent-merge`/`--no-agent-merge` token is present (e.g. a custom override with no `{{TICKET}}` placeholder).
+- [x] 2.2 Unit tests: parses a command with both flags, a command with only a speed token, a command with only an agent-merge token, a bare `{{TICKET}}` command (agentMerge: null, speed: 'default'), and a custom override with no `{{TICKET}}` placeholder at all (agentMerge: null, speed: 'default').
+- [x] 2.3 Export `parseLaunchCommand` from `launchplan.js`'s `module.exports`.
+
+## 3. `fleet.js` — section-jump numbering and `move`/`jump` scroll sharing
+
+- [x] 3.1 Factor the existing `'move'`-case scroll-into-view logic in `watch.js`'s `applyAction` into a small shared helper usable by both `'move'` (relative) and the new `'jump'` action (absolute target index) — see design.md Decision 2.
+- [x] 3.2 In `fleet.js`, compute the positionally-numbered list of sections rendered this frame (`buildSections(bucketRuns(runs), queueState)` filtered to `group.length > 0`, in existing render order) — reuse this exact call, do not re-derive section shape independently.
+- [x] 3.3 Bind digit keys `1`-`N` in `handleKey`: resolve the pressed digit against the visible-section list computed in 3.2. A runs-backed target section (NEEDS YOU/RUNNING/FAILED/DONE) emits `{ type: 'jump', index: <that section's first global row index> }`. QUEUED emits `{ type: 'focus-queue', index: 0 }` instead (see task group 4). An out-of-range digit returns `null`.
+- [x] 3.4 Wire `'jump'` into `watch.js`'s `applyAction`: set `selected` to `action.index` and apply the shared scroll-into-view helper from 3.1.
+- [x] 3.5 Unit tests (`fleet.test.js`): digit jump lands on the first row of the correct section when all sections are present; numbering skips empty sections (e.g. `2` reaches DONE when NEEDS YOU/FAILED are empty and RUNNING/DONE are not); an out-of-range digit is a no-op; jumping into a section whose target row is currently scrolled out of view scrolls it into the rendered window with the marker on it.
+
+## 4. `fleet.js`/`watch.js` — QUEUED-local focus cursor
+
+- [x] 4.1 Add `state.focus` (`'runs' | 'queue'`, default `'runs'`) and `state.queueFocus` (index into `queueState.pending`, default `null`) to `watch.js`'s tracked state and `currentState()`.
+- [x] 4.2 Wire `'focus-queue'` action: set `focus = 'queue'`, `queueFocus = action.index` (0), leave `selected`/`scrollOffset` untouched.
+- [x] 4.3 In `fleet.js`'s `handleKey`, branch on `state.focus === 'queue'`: `j`/`k` (and their existing arrow-key aliases `\x1b[B`/`\x1b[A`, matching how `move` already aliases them) move `queueFocus` by one, clamped to `[0, queueState.pending.length - 1]` (emit e.g. `{ type: 'move-queue-focus', delta }`, applied in `watch.js` against `queueFocus` only); a digit key re-resolves per task 3.3 (same section's digit re-focuses at index 0 as a no-op-equivalent, a different section's digit exits queue focus and jumps as normal); Escape (`key === '\x1b'`, bare — distinguished from the arrow-key aliases above, which are multi-byte) emits `{ type: 'exit-queue-focus' }`; `Enter`/`l`/`n`/`N` return `null` while `focus === 'queue'`; `q`/Ctrl-C keep behaving exactly as today, independent of focus.
+- [x] 4.4 Re-derive `queueFocus` clamping at the top of every `handleKey`/render call the same way `scrollOffset` is already re-clamped in `watch.js` (design.md's "Risks" note) — if `queueState.pending` is empty or `queueFocus` is out of range, reset to `focus: 'runs'`, `queueFocus: null`.
+- [x] 4.5 `render()`/`renderQueuedRow` draw a distinct marker (not `▸`) on the row at `queueFocus` when `state.focus === 'queue'`.
+- [x] 4.6 Unit tests: `j`/`k` (and arrow aliases) move `queueFocus` without touching `selected`/`scrollOffset`; Escape returns to `focus: 'runs'` with `selected` unchanged from before queue focus was entered; the focused queued row renders a distinct marker; `queueFocus` resets to `runs`/`null` when the queue empties out from under it; `runs[state.selected]` resolves to the same run before and after a round trip through queue focus (mirrors `fleet-queue-visibility`'s new added requirement).
+
+## 5. `fleet.js`/`watch.js` — force-start action and confirmation
+
+- [x] 5.1 Bind `f` in `handleKey` while `state.focus === 'queue'` and a pending ticket is focused: emit `{ type: 'open-force-start-confirm', ticket: queueState.pending[queueFocus] }`.
+- [x] 5.2 Add `state.forceStartConfirm` (`{ ticket } | null`) to `watch.js`'s tracked state; wire `'open-force-start-confirm'` to set it.
+- [x] 5.3 While `state.forceStartConfirm` is set, intercept keys the same way `quitConfirm` does today, and **checked before `quitConfirm`'s own interception** (so the two confirmation gates never both try to claim the same keypress — `forceStartConfirm` is the more recently opened, narrower gate, matching `handleKey`'s existing outermost-first ordering for `quitConfirm`/`prompt`): `y` emits `{ type: 'confirm-force-start', ticket }`; any other key (including `q`) emits `{ type: 'cancel-force-start' }` and does NOT fall through to `quitConfirm`'s own quit-key handling.
+- [x] 5.4 Render the confirmation warning text (naming the resulting concurrent count vs. `maxConcurrent`, per design.md Decision 3's exact wording) in `buildHeadTail`'s tail, following the existing `quitConfirm` rendering as a pattern.
+- [x] 5.5 Wire `'confirm-force-start'` in `watch.js`: call `queue.forceStart(queueState, ticket)`; if `toLaunch` is non-empty, call `submitTicket(ticket, queueState.launchCommand, session)` exactly as the existing `tick()`-driven launch path does, update `queueState` to the returned queue, persist via the existing `queue-cache.js` write path, and reset `forceStartConfirm`/`focus`/`queueFocus` to their defaults. If `toLaunch` is empty (ticket already left the queue), do nothing beyond clearing `forceStartConfirm`.
+- [x] 5.6 Wire `'cancel-force-start'`: clear `forceStartConfirm`, no other state change.
+- [x] 5.7 Unit tests: pressing `f` on a focused pending ticket shows the confirmation with the correct overage count; `y` starts the ticket (via a fake `submitTicket`), moves it pending -> inFlight, and persists the updated queue; any other key (including `q`) cancels without starting or mutating the queue and without triggering `quitConfirm`; confirming force-start on a ticket that left the queue between confirm-open and `y` is a no-op that does not call `submitTicket` a second time; force-starting a ticket out of an unconfirmed (CON-29-restored) queue starts that one ticket but leaves the returned `queueState.confirmed` `false` and the rest of `pending` un-admitted on the next simulated poll.
+
+## 6. QUEUED row speed/agent-merge display
+
+- [x] 6.1 In `fleet.js`, call `launchplan.parseLaunchCommand(queueState.launchCommand)` once per render (not per row) when a QUEUED section is being drawn.
+- [x] 6.2 Update `renderQueuedRow` (or its caller) to append the parsed speed and agent-merge fields to the existing position/ticket-id/title line, omitting the agent-merge field entirely when `agentMerge` is `null`.
+- [x] 6.3 Unit tests: a queued row shows speed + agent-merge when both are present in `launchCommand`; a queued row omits agent-merge when `launchCommand` carries no flag token; existing "queued row with/without cached title" tests still pass unchanged in shape (title still renders, now alongside the new fields).
+
+## 7. Footer discoverability
+
+- [x] 7.1 Update `buildHeadTail`'s ordinary footer hint line (`↵ attach   l details   j/k move   n new run   N launch pad   q quit`) to mention the new digit-jump keys, and — only when a QUEUED section is actually present this frame — the `f` force-start key, following this file's existing discipline of only advertising a key that currently does something (see the file's own comment on why kill/restart aren't hinted here).
+- [x] 7.2 Unit test: the footer hint text includes the new key hints under the conditions in 7.1.
+
+## 8. Verification
+
+- [x] 8.1 Run the full test suite and confirm all existing `fleet.js`/`queue.js`/`watch.js`/`launchplan.js` tests still pass unmodified in behavior (only new tests and the additive fields above).
+- [x] 8.2 Manually exercise (or script) a scenario with a launched batch queue: verify digit-jump across NEEDS YOU/RUNNING/FAILED/DONE, QUEUED-focus entry/exit leaving `selected` untouched, QUEUED rows showing speed/agent-merge, and a force-start confirm/cancel/confirm cycle against a real `maxConcurrent: 1` queue.
+- [x] 8.3 Update any relevant `lib/ui/screens/fleet.js`/`lib/ui/queue.js`/`lib/ui/watch.js`/`lib/ui/screens/launchplan.js` header comments to mention the new keys/behaviors where this file's existing commenting discipline already documents adjacent behavior (matching this file's own established style, not a new documentation pass).

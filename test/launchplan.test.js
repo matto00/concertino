@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   renderLaunchPlan, handleKey, render, derivePorts, deriveTicketNum, cycleConcurrency,
-  withAgentMergeFlag, withSpeedFlag,
+  withAgentMergeFlag, withSpeedFlag, parseLaunchCommand,
 } = require('../lib/ui/screens/launchplan');
 
 // eslint-disable-next-line no-control-regex
@@ -286,6 +286,55 @@ test('no rendered line exceeds opts.cols across widths', () => {
     const out = renderLaunchPlan(wide, 5, { cols });
     for (const line of out.split('\n')) {
       assert.ok(visibleLength(line) <= cols, `cols:${cols} line is ${visibleLength(line)} wide: ${JSON.stringify(line)}`);
+    }
+  }
+});
+
+// --- CON-39: parseLaunchCommand — the read-side counterpart to
+// withAgentMergeFlag/withSpeedFlag, used by fleet.js's QUEUED row rendering.
+
+test('parseLaunchCommand parses a command with both an agent-merge flag and a speed token', () => {
+  const cmd = 'claude "/concertino-deliver {{TICKET}} --agent-merge fast"';
+  assert.deepEqual(parseLaunchCommand(cmd), { agentMerge: true, speed: 'fast' });
+});
+
+test('parseLaunchCommand parses --no-agent-merge as agentMerge: false', () => {
+  const cmd = 'claude "/concertino-deliver {{TICKET}} --no-agent-merge slow"';
+  assert.deepEqual(parseLaunchCommand(cmd), { agentMerge: false, speed: 'slow' });
+});
+
+test('parseLaunchCommand parses a command with only a speed token — agentMerge is null, not false', () => {
+  const cmd = 'claude "/concertino-deliver {{TICKET}} fast"';
+  assert.deepEqual(parseLaunchCommand(cmd), { agentMerge: null, speed: 'fast' });
+});
+
+test('parseLaunchCommand parses a command with only an agent-merge token — speed is "default"', () => {
+  const cmd = 'claude "/concertino-deliver {{TICKET}} --agent-merge"';
+  assert.deepEqual(parseLaunchCommand(cmd), { agentMerge: true, speed: 'default' });
+});
+
+test('parseLaunchCommand on a bare {{TICKET}} command returns agentMerge: null, speed: "default"', () => {
+  const cmd = 'claude "/concertino-deliver {{TICKET}}"';
+  assert.deepEqual(parseLaunchCommand(cmd), { agentMerge: null, speed: 'default' });
+});
+
+test('parseLaunchCommand on a custom override with no {{TICKET}} placeholder at all returns agentMerge: null, speed: "default"', () => {
+  assert.deepEqual(parseLaunchCommand('echo "custom launcher, no placeholder"'), { agentMerge: null, speed: 'default' });
+});
+
+test('parseLaunchCommand handles null/undefined/empty launchCommand the same as a placeholder-less custom override', () => {
+  assert.deepEqual(parseLaunchCommand(null), { agentMerge: null, speed: 'default' });
+  assert.deepEqual(parseLaunchCommand(undefined), { agentMerge: null, speed: 'default' });
+  assert.deepEqual(parseLaunchCommand(''), { agentMerge: null, speed: 'default' });
+});
+
+test('parseLaunchCommand agrees with withAgentMergeFlag/withSpeedFlag round-tripped through every combination', () => {
+  for (const agentMerge of [true, false]) {
+    for (const speed of ['fast', 'slow', 'default']) {
+      let cmd = 'codex "/concertino-deliver {{TICKET}}"';
+      cmd = withAgentMergeFlag(cmd, agentMerge);
+      cmd = withSpeedFlag(cmd, speed);
+      assert.deepEqual(parseLaunchCommand(cmd), { agentMerge, speed });
     }
   }
 });
