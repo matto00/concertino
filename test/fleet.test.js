@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { renderFleet, handleKey, CONFIRM_RESTORED_QUEUE_KEY } = require('../lib/ui/screens/fleet');
+const { renderFleet, handleKey, CONFIRM_RESTORED_QUEUE_KEY, visibleWindow } = require('../lib/ui/screens/fleet');
 const { reduce } = require('../lib/ui/reducer');
 const f = require('../lib/ui/format');
 
@@ -609,6 +609,197 @@ test('the selection marker still points at the correct run when a non-empty QUEU
     // The marker must never land on a queued row either — those tickets
     // (CON-90/91/92) never appear in `runs`, so they should never be marked.
     assert.ok(!marked[0].includes('CON-9'), `selected:${n} marked a QUEUED row instead of a run: ${marked[0]}`);
+  }
+});
+
+// --- CON-6: scroll offset — the selection marker must stay aligned at every
+// scroll position, not just scrollOffset: 0, and NEEDS YOU must never move --
+
+// NEEDS YOU (1) + RUNNING (2) + FAILED (12, windowed at MAX_FINISHED=5 —
+// design.md Decision 1) + DONE (3): more than one page of FAILED alone, so
+// scrolling through it is unavoidable, and RUNNING/DONE give the walk in
+// design.md Decision 2 more than one section to cross.
+function scrollFixture() {
+  return [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'running' }),
+    run({ ticket: 'HEL-3', status: 'running' }),
+  ].concat(manyFinished(12, 'failed')).concat(manyFinished(3, 'done'));
+}
+
+// 3.1: extends "the selection marker points at reduce()'s run for every
+// index" (above) to scrolled offsets — not just scrollOffset: 0.
+test('the selection marker points at the correct run for every reachable scroll offset', () => {
+  const runs = scrollFixture();
+  const maxScrollOffset = visibleWindow(runs, { rows: 0, selected: 0, scrollOffset: 0 }).maxScrollOffset;
+  assert.ok(maxScrollOffset > 0, 'fixture must actually be scrollable for this test to mean anything');
+
+  for (let scrollOffset = 0; scrollOffset <= maxScrollOffset; scrollOffset++) {
+    const win = visibleWindow(runs, { rows: 0, selected: 0, scrollOffset });
+    // Exercise the two ends of whatever is actually visible at this offset —
+    // this is the acceptance criterion's "at every scroll offset", not a
+    // sample of a couple of arbitrary ones.
+    for (const n of new Set([win.firstVisibleIndex, win.lastVisibleIndex])) {
+      if (n < 0 || n >= runs.length) continue;
+      const out = plain(renderFleet(runs, { cols: 100, selected: n, scrollOffset }));
+      const marked = out.split('\n').filter((l) => l.includes('▸'));
+      assert.equal(marked.length, 1,
+        `scrollOffset:${scrollOffset} selected:${n} produced ${marked.length} markers`);
+      assert.ok(marked[0].includes(runs[n].ticket),
+        `scrollOffset:${scrollOffset} selected:${n} should mark ${runs[n].ticket}, marked line was: ${marked[0]}`);
+    }
+  }
+});
+
+// 3.1 (scrolling back to zero, byte-for-byte): the migration plan's own
+// guarantee — scrollOffset: 0 must render identically to scrollOffset
+// absent entirely.
+test('scrolling back to a zero offset renders byte-for-byte identically to no scroll offset at all', () => {
+  const runs = scrollFixture();
+  const withoutOffset = renderFleet(runs, { cols: 100, selected: 2 });
+  const withZeroOffset = renderFleet(runs, { cols: 100, selected: 2, scrollOffset: 0 });
+  assert.equal(withZeroOffset, withoutOffset);
+});
+
+// Regression (found during task 4.2's manual `concertino watch` exercise,
+// against a real tmux session): NEEDS YOU sits before the scrollable region
+// and is always fully visible, so a naive "first section with shown>0 ..
+// last section with shown>0" range wrongly treated the GAP between NEEDS
+// YOU and a scrolled-past RUNNING section as "visible" too. Concretely: a
+// 1-row RUNNING section scrolled entirely out of view by a deep scrollOffset
+// into DONE was reported as being inside [firstVisibleIndex,
+// lastVisibleIndex] purely because NEEDS YOU's own always-visible index (0)
+// sat below it and DONE's window sat above it — so watch.js's move handler
+// never scrolled back up when the selection reached RUNNING's own row, and
+// it rendered with no marker anywhere on screen. Root cause: NEEDS YOU (a
+// pinned section) must never contribute to firstVisibleIndex/
+// lastVisibleIndex — see visibleWindow's own comment on this exact point.
+test('a short RUNNING section scrolled entirely past NEEDS YOU is correctly reported as NOT visible, not folded into NEEDS YOU\'s always-visible range', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'running' }),
+  ].concat(manyFinished(12, 'done'));
+
+  // scrollOffset:3 = RUNNING's own single row, plus 2 rows into DONE —
+  // exactly the scrolled state the manual repro reached.
+  const win = visibleWindow(runs, { rows: 0, selected: 1, scrollOffset: 3 });
+  assert.ok(win.firstVisibleIndex > 1,
+    `RUNNING (index 1) is scrolled entirely past — firstVisibleIndex must be greater than it, got ${win.firstVisibleIndex}`);
+
+  // renderFleet itself never reads firstVisibleIndex/lastVisibleIndex (only
+  // watch.js's move handler does) — this just confirms the window helper's
+  // report matches what the renderer actually does: selecting the scrolled-
+  // past RUNNING row renders no marker anywhere.
+  const out = plain(renderFleet(runs, { cols: 100, selected: 1, scrollOffset: 3 }));
+  assert.doesNotMatch(out, /▸/,
+    'RUNNING is genuinely not rendered at this scroll offset — no marker should appear anywhere');
+});
+
+// 3.2
+test('NEEDS YOU renders in full at every scroll offset, even scrolled deep into FAILED/DONE', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q1', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'needs-you', escalation: { question: 'q2', options: [], raisedAt: 1 } }),
+  ].concat(manyFinished(15, 'failed')).concat(manyFinished(15, 'done'));
+
+  const maxScrollOffset = visibleWindow(runs, { rows: 0, selected: 0, scrollOffset: 0 }).maxScrollOffset;
+  assert.ok(maxScrollOffset > 0, 'fixture must actually be scrollable for this test to mean anything');
+
+  for (const scrollOffset of [0, 1, Math.floor(maxScrollOffset / 2), maxScrollOffset]) {
+    const out = plain(renderFleet(runs, { cols: 100, selected: 0, scrollOffset }));
+    assert.match(out, /HEL-1\b/, `scrollOffset:${scrollOffset} lost HEL-1 from NEEDS YOU`);
+    assert.match(out, /HEL-2\b/, `scrollOffset:${scrollOffset} lost HEL-2 from NEEDS YOU`);
+    assert.match(out, /q1/, `scrollOffset:${scrollOffset} lost HEL-1's escalation text`);
+    assert.match(out, /q2/, `scrollOffset:${scrollOffset} lost HEL-2's escalation text`);
+    // RUNNING is empty in this fixture, so NEEDS YOU sits directly above
+    // whichever of FAILED/DONE the scroll landed in — it must still be
+    // FIRST, never pushed down or off the top.
+    assert.ok(out.indexOf('HEL-1') < out.indexOf('HEL-2'));
+  }
+});
+
+// 3.3: the exported window helper's own return shape, at the boundaries.
+test('visibleWindow reports firstVisibleIndex/lastVisibleIndex/maxScrollOffset correctly at the boundaries', () => {
+  // A single scrollable section (FAILED, 12 rows, capped/windowed at 5) —
+  // deliberately no NEEDS YOU/RUNNING/DONE, so the arithmetic is easy to
+  // hand-verify against MAX_FINISHED directly.
+  const runs = manyFinished(12, 'failed');
+
+  const atZero = visibleWindow(runs, { rows: 0, selected: 0, scrollOffset: 0 });
+  assert.equal(atZero.firstVisibleIndex, 0);
+  assert.equal(atZero.lastVisibleIndex, 4);   // MAX_FINISHED=5 window: rows 0..4
+  assert.equal(atZero.maxScrollOffset, 7);    // 12 total - 5 shown at the end = 7
+
+  const atMax = visibleWindow(runs, { rows: 0, selected: 0, scrollOffset: atZero.maxScrollOffset });
+  assert.equal(atMax.firstVisibleIndex, 7);
+  assert.equal(atMax.lastVisibleIndex, 11);   // the very last row
+
+  // One past the structural maximum must not go OUT of bounds — nothing
+  // after the final row exists to reveal. (Clamping scrollOffset itself to
+  // maxScrollOffset is watch.js's job, on every draw(); visibleWindow just
+  // must never misbehave if asked for more anyway.)
+  const onePast = visibleWindow(runs, { rows: 0, selected: 0, scrollOffset: atZero.maxScrollOffset + 1 });
+  assert.equal(onePast.lastVisibleIndex, 11);
+  assert.ok(onePast.firstVisibleIndex >= 0 && onePast.firstVisibleIndex <= 11);
+});
+
+// 3.5: the combined scroll-plus-small-terminal case the design skeptic's
+// round-1 report called for (design.md Decision 3's selected-row protection
+// rule) — a non-zero scrollOffset windows FAILED to a mid-group slice with
+// `selected` sitting at the window's own tail, and then a `rows` budget
+// tight enough to force the whole-frame trim to shrink that very section
+// further. Without the protection rule, today's tail-first trim would evict
+// exactly the row scrolling just revealed.
+test('a scroll offset that lands mid-group survives a whole-frame height-budget trim without evicting the selected row', () => {
+  const runs = manyFinished(20, 'failed');
+  const scrollOffset = 10;
+  const selected = 14; // the lastVisibleIndex of the pre-trim [10, 15) window
+
+  const unbudgeted = visibleWindow(runs, { rows: 0, selected, scrollOffset });
+  assert.equal(unbudgeted.firstVisibleIndex, 10, 'sanity: the scroll really does land mid-group');
+  assert.equal(unbudgeted.lastVisibleIndex, 14, 'sanity: selected sits exactly at the window tail');
+
+  // rows: 14 forces the budget trim to shrink FAILED further (5 shown rows
+  // down to 3) — the exact scenario the protection rule exists for.
+  const out = plain(renderFleet(runs, { cols: 100, rows: 14, selected, scrollOffset }));
+  const marked = out.split('\n').filter((l) => l.includes('▸'));
+  assert.equal(marked.length, 1,
+    `expected exactly one marker after the height-budget trim, got ${marked.length}`);
+  assert.ok(marked[0].includes(runs[selected].ticket),
+    `the height-budget trim evicted the selected row instead of protecting it; marked line was: ${marked[0] || '(none)'}`);
+});
+
+// 3.4: small-terminal-height regression — rows smaller than the combined
+// height of all non-empty sections, at a non-zero scroll offset, still
+// renders the header + NEEDS YOU in full and collapses everything else it
+// cannot fit to a "… and N more" line rather than a partial/corrupted box.
+test('a small terminal at a non-zero scroll offset still renders the header + NEEDS YOU in full, collapsing what does not fit', () => {
+  // NEEDS YOU + FAILED + DONE only (no RUNNING) — selected stays on NEEDS
+  // YOU throughout, which is the row this test cares about protecting;
+  // design.md Decision 3's own selected-row protection for a *scrolled*
+  // section is covered separately, above.
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q1', options: [], raisedAt: 1 } }),
+  ].concat(manyFinished(10, 'failed')).concat(manyFinished(10, 'done'));
+
+  const maxScrollOffset = visibleWindow(runs, { rows: 0, selected: 0, scrollOffset: 0 }).maxScrollOffset;
+  const scrollOffset = Math.min(3, maxScrollOffset);
+  assert.ok(scrollOffset > 0, 'fixture must actually be scrollable for this test to mean anything');
+
+  // Three non-empty sections (NEEDS YOU + FAILED + DONE) each cost at least
+  // one line even fully collapsed, on top of the header/footer — rows:10 is
+  // this fixture's own structural floor (mirrors the existing "total-height
+  // cap" tests' own per-fixture floor, elsewhere in this file).
+  for (const rows of [10, 12, 14]) {
+    const out = renderFleet(runs, { cols: 78, rows, selected: 0, scrollOffset });
+    const lines = out.split('\n');
+    assert.ok(lines.length <= rows, `rows:${rows} rendered ${lines.length} lines`);
+    assert.match(out, /NEEDS YOU/, `rows:${rows} lost the NEEDS YOU heading`);
+    assert.match(out, /HEL-1\b/, `rows:${rows} lost the escalation itself`);
+    assert.match(out, /concertino/, `rows:${rows} lost the header`);
+    // Every section that cannot fit collapses to its "… and N more" line —
+    // no partially rendered box.
+    assert.match(out, /more/, `rows:${rows} lost the overflow accounting`);
   }
 });
 

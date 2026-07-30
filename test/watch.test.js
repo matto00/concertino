@@ -501,3 +501,233 @@ test('ticket-text.resolve runs once per draw() while mode is drilldown, and not 
     delete require.cache[ticketTextPath];
   }
 });
+
+// ===========================================================================
+// CON-6 (tasks.md 3.6): repeated 'j' past the visible window must actually
+// move watch.js's own scrollOffset and keep the marker aligned — exercised
+// against a real keypress sequence and a real event log (not a direct call
+// into fleet.js, which every other test in this suite already covers), the
+// same "fake session/stdin, real store/reduce" technique as the reap and
+// ticket-text tests above.
+// ===========================================================================
+
+test('repeated j past the visible window scrolls the fleet view and keeps the marker on the right run', async () => {
+  const { EventEmitter } = require('node:events');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-scroll-'));
+  // 8 delivered runs — more than one page of DONE (MAX_FINISHED = 5).
+  // `t` decreases as `i` increases, so lastActivity (reducer.js) sorts them
+  // HEL-200..HEL-207 in that exact order — index k in the rendered fleet is
+  // ticket HEL-(200+k), with no need to separately reduce()/re-derive the
+  // order this test asserts against.
+  for (let i = 0; i < 8; i++) {
+    const ticket = 'HEL-' + (200 + i);
+    const runDir = path.join(root, '.concertino', 'runs', ticket);
+    fs.mkdirSync(runDir, { recursive: true });
+    const startT = 1000 - i * 10;
+    const endT = 1005 - i * 10;
+    fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+      JSON.stringify({ t: startT, kind: 'run.start' }) + '\n' +
+      JSON.stringify({ t: endT, kind: 'run.end', status: 'delivered' }) + '\n');
+  }
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+
+  // No live windows at all: every run is already finished, so reap.js's
+  // real (unfaked) selectReapable never touches any of them (it requires
+  // `run.window` to be present AND dead — see reap.js's own header comment
+  // — and `run.window` is null here since none of these tickets appear in
+  // listWindows()).
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return []; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  // eslint-disable-next-line no-control-regex
+  const plainFrame = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+
+  try {
+    const watchModule = require('../lib/ui/watch');
+    const donePromise = watchModule.watch({ root, config: {} });
+
+    // The first draw() (synchronous, before `await new Promise(...)`) has
+    // already rendered index 0 (HEL-200) selected, unscrolled — sanity-check
+    // it before moving at all.
+    const firstFrame = plainFrame(written[written.length - 1]);
+    const firstMarked = firstFrame.split('\n').filter((l) => l.includes('▸'));
+    assert.equal(firstMarked.length, 1);
+    assert.ok(firstMarked[0].includes('HEL-200'));
+
+    // Six 'j' presses: index 0 -> 6. MAX_FINISHED = 5 means index 4 is the
+    // last row visible before any scrolling — the 5th and 6th presses (onto
+    // indices 5 and 6) are the ones that must scroll the view, not just move
+    // an now-invisible marker.
+    for (let i = 0; i < 6; i++) fakeStdin.emit('data', 'j');
+
+    const lastFrame = plainFrame(written[written.length - 1]);
+    const lastMarked = lastFrame.split('\n').filter((l) => l.includes('▸'));
+    assert.equal(lastMarked.length, 1,
+      `expected exactly one marker after scrolling, got ${lastMarked.length}`);
+    assert.ok(lastMarked[0].includes('HEL-206'),
+      `the marker should be on HEL-206 (index 6) after 6 downward moves; marked line was: ${lastMarked[0] || '(none)'}`);
+
+    // The rows scrolled past (index 0/1 — HEL-200/HEL-201) must no longer be
+    // rendered at all, not just unmarked — this is the scrolling itself, not
+    // merely "the marker followed the selection".
+    assert.doesNotMatch(lastFrame, /HEL-200\b/, 'HEL-200 should have scrolled out of view');
+    assert.doesNotMatch(lastFrame, /HEL-201\b/, 'HEL-201 should have scrolled out of view');
+
+    fakeStdin.emit('end');
+    await donePromise;
+  } finally {
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Regression (found during task 4.2's manual `concertino watch` exercise,
+// against a real tmux session — see fleet.test.js's own regression test for
+// the root-cause comment): scrolling deep into DONE and then scrolling back
+// UP with real 'k' presses must bring a short RUNNING section back into
+// view exactly when the selection reaches its own row, not leave it
+// unmarked because NEEDS YOU's always-visible index made the gap look
+// "in range".
+test('scrolling back up with k brings a short RUNNING section back into view when the selection reaches it', async () => {
+  const { EventEmitter } = require('node:events');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-scroll-up-'));
+
+  // One NEEDS YOU run (index 0), one RUNNING run (index 1, no run.end — a
+  // live window, per the fake session below), and 10 DONE runs (indices
+  // 2..11) — more than one page (MAX_FINISHED = 5), so scrolling down far
+  // enough scrolls RUNNING's own single row entirely out of view.
+  const needsYouDir = path.join(root, '.concertino', 'runs', 'HEL-1');
+  fs.mkdirSync(needsYouDir, { recursive: true });
+  fs.writeFileSync(path.join(needsYouDir, 'events.jsonl'),
+    JSON.stringify({ t: 500, kind: 'run.start' }) + '\n' +
+    JSON.stringify({ t: 600, kind: 'escalation.raised', question: 'q', options: '' }) + '\n');
+
+  const runningDir = path.join(root, '.concertino', 'runs', 'HEL-2');
+  fs.mkdirSync(runningDir, { recursive: true });
+  fs.writeFileSync(path.join(runningDir, 'events.jsonl'),
+    JSON.stringify({ t: 700, kind: 'run.start' }) + '\n');
+
+  for (let i = 0; i < 10; i++) {
+    const ticket = 'HEL-' + (300 + i);
+    const runDir = path.join(root, '.concertino', 'runs', ticket);
+    fs.mkdirSync(runDir, { recursive: true });
+    const startT = 1000 - i * 10;
+    const endT = 1005 - i * 10;
+    fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+      JSON.stringify({ t: startT, kind: 'run.start' }) + '\n' +
+      JSON.stringify({ t: endT, kind: 'run.end', status: 'delivered' }) + '\n');
+  }
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+
+  // HEL-2's window is alive (it is the only live one) — reap.js's real
+  // selectReapable never touches it (no run.end) or any of the DONE runs
+  // (window null, since they are not in this list at all).
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return [{ ticket: 'HEL-2', alive: true, activity: null }]; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  // eslint-disable-next-line no-control-regex
+  const plainFrame = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+
+  // Declared outside the try so `finally` can always tear the poll loop's
+  // real setInterval down, even if an assertion below throws — otherwise a
+  // failing assertion here would leak a live timer that keeps firing (and
+  // keeps writing to whatever `process.stdout.write` is hijacked to next)
+  // forever, hanging the whole suite instead of just failing this one test.
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root, config: {} });
+
+    // 8 'j' presses: index 0 (NEEDS YOU) -> 8 (deep into DONE), scrolling
+    // RUNNING's own row (index 1) entirely out of view along the way.
+    for (let i = 0; i < 8; i++) fakeStdin.emit('data', 'j');
+
+    const scrolledFrame = plainFrame(written[written.length - 1]);
+    // RUNNING has scrolled entirely past — its own collapse line names it
+    // (lowercase, matching the existing "… and N more <title>" wording),
+    // not the bordered section title.
+    assert.match(scrolledFrame, /and \d+ more running/, 'RUNNING should have collapsed to its own overflow line');
+    assert.doesNotMatch(scrolledFrame, /HEL-2\b/, 'HEL-2 should have scrolled out of view by this point');
+
+    // 7 'k' presses back: index 8 -> 1, landing exactly on HEL-2 (RUNNING).
+    for (let i = 0; i < 7; i++) fakeStdin.emit('data', 'k');
+
+    const backAtRunning = plainFrame(written[written.length - 1]);
+    const marked = backAtRunning.split('\n').filter((l) => l.includes('▸'));
+    assert.equal(marked.length, 1,
+      `expected exactly one marker once back at RUNNING, got ${marked.length}`);
+    assert.ok(marked[0].includes('HEL-2'),
+      `the marker should be on HEL-2 (RUNNING) once the selection reaches it again; marked line was: ${marked[0] || '(none)'}`);
+  } finally {
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
