@@ -283,6 +283,18 @@ test('r on a live run opens the restart confirmation', () => {
     { type: 'confirm-action', action: 'restart' });
 });
 
+test('k/r stay reachable regardless of TICKET/TIMELINE/GATES focus — only EVIDENCE focus blocks them', () => {
+  // lazygit-layout pass: TICKET/TIMELINE/GATES scroll via arrow/page keys
+  // only, deliberately never bare j/k, so k kill/r restart are never
+  // shadowed by scroll the way they would be if those panels also claimed
+  // j/k the way EVIDENCE does.
+  for (const focus of ['ticket', 'timeline', 'gates']) {
+    const r = run({ status: 'running' });
+    assert.deepEqual(handleKey('k', { run: r, drillFocus: focus }), { type: 'confirm-action', action: 'kill' });
+    assert.deepEqual(handleKey('r', { run: r, drillFocus: focus }), { type: 'confirm-action', action: 'restart' });
+  }
+});
+
 test('k on a finished run is refused outright, not just unadvertised', () => {
   assert.equal(handleKey('k', { run: run({ status: 'done' }) }), null);
   assert.equal(handleKey('k', { run: run({ status: 'failed' }) }), null);
@@ -599,21 +611,32 @@ test('evidenceItems returns only evidence-kind events', () => {
   assert.equal(items.length, 2);
 });
 
-// --- focus toggle ----------------------------------------------------------
+// --- lazygit-layout pass: four-panel focus (digit jump + tab cycle) --------
 
-test('\\t toggles EVIDENCE focus when there is at least one entry', () => {
-  assert.deepEqual(
-    handleKey('\t', { run: run({ events: evidenceEvents(1) }), drillFocus: null }),
-    { type: 'switch-drill-focus', focus: 'evidence' },
-  );
-  assert.deepEqual(
-    handleKey('\t', { run: run({ events: evidenceEvents(1) }), drillFocus: 'evidence' }),
-    { type: 'switch-drill-focus', focus: null },
-  );
+test('drillFocus defaults to ticket, the first panel, not evidence', () => {
+  const out = plain(renderDrillDown(run({ status: 'running' }), OPTS));
+  assert.match(out, /\[1\] TICKET/);
 });
 
-test('\\t is inert (and thus never advertised) when there is no evidence to select', () => {
-  assert.equal(handleKey('\t', { run: run({ events: [] }), drillFocus: null }), null);
+test('digit 1-4 jump directly to each panel', () => {
+  const r = run({ status: 'running' });
+  assert.deepEqual(handleKey('1', { run: r, drillFocus: 'evidence' }), { type: 'switch-drill-focus', focus: 'ticket' });
+  assert.deepEqual(handleKey('2', { run: r, drillFocus: 'ticket' }), { type: 'switch-drill-focus', focus: 'timeline' });
+  assert.deepEqual(handleKey('3', { run: r, drillFocus: 'ticket' }), { type: 'switch-drill-focus', focus: 'gates' });
+  assert.deepEqual(handleKey('4', { run: r, drillFocus: 'ticket' }), { type: 'switch-drill-focus', focus: 'evidence' });
+});
+
+test('tab cycles ticket -> timeline -> gates -> evidence -> ticket', () => {
+  const r = run({ status: 'running' });
+  assert.deepEqual(handleKey('\t', { run: r, drillFocus: 'ticket' }), { type: 'switch-drill-focus', focus: 'timeline' });
+  assert.deepEqual(handleKey('\t', { run: r, drillFocus: 'timeline' }), { type: 'switch-drill-focus', focus: 'gates' });
+  assert.deepEqual(handleKey('\t', { run: r, drillFocus: 'gates' }), { type: 'switch-drill-focus', focus: 'evidence' });
+  assert.deepEqual(handleKey('\t', { run: r, drillFocus: 'evidence' }), { type: 'switch-drill-focus', focus: 'ticket' });
+});
+
+test('tab cycles through an empty EVIDENCE panel too — every panel is a legitimate focus target now', () => {
+  const r = run({ events: [] });
+  assert.deepEqual(handleKey('\t', { run: r, drillFocus: 'gates' }), { type: 'switch-drill-focus', focus: 'evidence' });
 });
 
 // --- footer hints per focus state -------------------------------------------
@@ -704,14 +727,49 @@ test('the selected entry is visually marked while EVIDENCE is focused', () => {
   assert.doesNotMatch(lines[0], /▸/);
 });
 
-test('the EVIDENCE panel renders with the focused border style when drillFocus is evidence', () => {
-  const focused = renderDrillDown(run({ events: evidenceEvents(3) }),
+test('the EVIDENCE panel renders with the focused border style when drillFocus is evidence, and only EVIDENCE', () => {
+  const out = renderDrillDown(run({ events: evidenceEvents(3) }),
     Object.assign({}, OPTS, { drillFocus: 'evidence', drillEvidenceIndex: 0 }));
-  const unfocused = renderDrillDown(run({ events: evidenceEvents(3) }), OPTS);
-  // The focused border set uses heavier box-drawing characters (┏┓┗┛━┃) —
-  // see layout.js's BORDERS.focused — which the unfocused render never emits.
-  assert.match(focused, /[┏┓┗┛]/);
-  assert.doesNotMatch(unfocused, /[┏┓┗┛]/);
+  const lines = out.split('\n');
+  const evidenceTitleLine = lines.find((l) => l.includes('EVIDENCE'));
+  assert.match(evidenceTitleLine, /[┏┓┃]/);
+  const ticketTitleLine = lines.find((l) => l.includes('TICKET'));
+  const timelineTitleLine = lines.find((l) => l.includes('TIMELINE'));
+  const gatesTitleLine = lines.find((l) => l.includes('GATES'));
+  assert.doesNotMatch(ticketTitleLine, /[┏┓┃]/);
+  assert.doesNotMatch(timelineTitleLine, /[┏┓┃]/);
+  assert.doesNotMatch(gatesTitleLine, /[┏┓┃]/);
+});
+
+test('each of the four panels renders with the heavy border only when it individually holds focus', () => {
+  const r = run({ events: evidenceEvents(3) });
+  for (const [focus, titleFragment] of [['ticket', 'TICKET'], ['timeline', 'TIMELINE'], ['gates', 'GATES'], ['evidence', 'EVIDENCE']]) {
+    const out = renderDrillDown(r, Object.assign({}, OPTS, { drillFocus: focus }));
+    const lines = out.split('\n');
+    const focusedLine = lines.find((l) => l.includes(titleFragment));
+    assert.match(focusedLine, /[┏┓┃]/, `${focus} should be focused`);
+  }
+});
+
+test('arrow up/down emit drill-panel-scroll for whichever of TICKET/TIMELINE/GATES holds focus', () => {
+  const r = run({ status: 'running' });
+  for (const panel of ['ticket', 'timeline', 'gates']) {
+    assert.deepEqual(handleKey('\x1b[B', { run: r, drillFocus: panel }), { type: 'drill-panel-scroll', panel, delta: 1 });
+    assert.deepEqual(handleKey('\x1b[A', { run: r, drillFocus: panel }), { type: 'drill-panel-scroll', panel, delta: -1 });
+  }
+});
+
+test('page up/down emit a 5-line drill-panel-scroll jump', () => {
+  const r = run({ status: 'running' });
+  assert.deepEqual(handleKey('\x1b[5~', { run: r, drillFocus: 'timeline' }), { type: 'drill-panel-scroll', panel: 'timeline', delta: -5 });
+  assert.deepEqual(handleKey('\x1b[6~', { run: r, drillFocus: 'timeline' }), { type: 'drill-panel-scroll', panel: 'timeline', delta: 5 });
+});
+
+test('bare j/k are inert (not scroll) on TICKET/TIMELINE/GATES — reserved for kill/restart', () => {
+  const r = run({ status: 'done' }); // finished, so k/r's own kill/restart branch also declines — isolates this check
+  for (const panel of ['ticket', 'timeline', 'gates']) {
+    assert.equal(handleKey('j', { run: r, drillFocus: panel }), null);
+  }
 });
 
 // --- router seam -------------------------------------------------------
