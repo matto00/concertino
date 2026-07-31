@@ -1,7 +1,10 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { renderFleet, handleKey, CONFIRM_RESTORED_QUEUE_KEY, visibleWindow } = require('../lib/ui/screens/fleet');
+const {
+  renderFleet, handleKey, CONFIRM_RESTORED_QUEUE_KEY, visibleWindow,
+  sectionJumpTargets, buildSections, QUICK_START_COUNT, QUICK_START_TOGGLE_KEY,
+} = require('../lib/ui/screens/fleet');
 const { reduce } = require('../lib/ui/reducer');
 const f = require('../lib/ui/format');
 
@@ -1426,4 +1429,288 @@ test('the footer advertises f force-start only when a QUEUED section is actually
   const emptyQueue = plain(renderFleet([run({})],
     { ...OPTS, queueState: { pending: [], inFlight: new Set(), maxConcurrent: 1 } }));
   assert.doesNotMatch(emptyQueue, /f force-start/);
+});
+
+// ============================================================================
+// CON-40: QUICK START widget — build/render/height budget, focus, key handling
+// ============================================================================
+
+function qsTicket(over) {
+  return Object.assign({ identifier: 'CON-1', title: 'Some ticket', priority: 2 }, over);
+}
+
+// --- section presence/position ----------------------------------------------
+
+test('the QUICK START section only appears when quickStartVisible is true', () => {
+  const hidden = plain(renderFleet([run({})], OPTS));
+  assert.doesNotMatch(hidden, /QUICK START/);
+
+  const visible = plain(renderFleet([run({})],
+    { ...OPTS, quickStartVisible: true, quickStartTickets: [qsTicket({})] }));
+  assert.match(visible, /QUICK START/);
+});
+
+test('QUICK START renders between RUNNING and QUEUED', () => {
+  const queueState = { pending: ['CON-9'], inFlight: new Set(), maxConcurrent: 1 };
+  const out = plain(renderFleet([run({ status: 'running' })], {
+    ...OPTS, queueState, quickStartVisible: true, quickStartTickets: [qsTicket({ identifier: 'CON-5' })],
+  }));
+  const runningIdx = out.indexOf('RUNNING');
+  const quickStartIdx = out.indexOf('QUICK START');
+  const queuedIdx = out.indexOf('QUEUED');
+  assert.ok(runningIdx >= 0 && quickStartIdx > runningIdx && queuedIdx > quickStartIdx,
+    `expected RUNNING < QUICK START < QUEUED, got indices ${runningIdx}, ${quickStartIdx}, ${queuedIdx}`);
+});
+
+// --- empty/cold hint ---------------------------------------------------------
+
+test('a cold cache shows the fetch hint, distinct from the fully-filtered hint', () => {
+  const cold = plain(renderFleet([run({})],
+    { ...OPTS, quickStartVisible: true, quickStartTickets: [], quickStartCold: true }));
+  assert.match(cold, /no tickets cached yet — press N to fetch/);
+
+  const filtered = plain(renderFleet([run({})],
+    { ...OPTS, quickStartVisible: true, quickStartTickets: [], quickStartCold: false }));
+  assert.match(filtered, /nothing left to quick-start/);
+  assert.doesNotMatch(filtered, /no tickets cached yet/);
+});
+
+test('a populated QUICK START list never shows either empty hint', () => {
+  const out = plain(renderFleet([run({})],
+    { ...OPTS, quickStartVisible: true, quickStartTickets: [qsTicket({})] }));
+  assert.doesNotMatch(out, /no tickets cached yet/);
+  assert.doesNotMatch(out, /nothing left to quick-start/);
+});
+
+// --- sectionHeight / cap ------------------------------------------------------
+
+test('buildSections builds no QUICK START entry at all when quickStartVisible is falsy', () => {
+  const sections = buildSections({ needsYou: [], active: [run({})], failed: [], done: [] }, null, {});
+  assert.ok(!sections.some((s) => s.kind === 'quickstart'));
+});
+
+test('a forceRender-empty QUICK START section is flagged correctly by buildSections', () => {
+  const emptySections = buildSections(
+    { needsYou: [], active: [run({})], failed: [], done: [] }, null,
+    { quickStartVisible: true, quickStartTickets: [] });
+  const qs = emptySections.find((s) => s.kind === 'quickstart');
+  assert.equal(qs.forceRender, true);
+  assert.equal(qs.group.length, 0);
+});
+
+test('sectionHeight costs a forceRender-empty QUICK START exactly 3 rows — verified via renderFleet\'s own line-count delta', () => {
+  const withoutQuickStart = renderFleet([run({})], OPTS);
+  const withEmptyQuickStart = renderFleet([run({})],
+    { ...OPTS, quickStartVisible: true, quickStartTickets: [], quickStartCold: true });
+  const delta = withEmptyQuickStart.split('\n').length - withoutQuickStart.split('\n').length;
+  assert.equal(delta, 3, 'a forceRender-empty QUICK START box (1 hint line + 2-row border) must cost exactly 3 lines');
+});
+
+test('a hidden (quickStartVisible: false) QUICK START costs nothing — the frame is byte-identical either way', () => {
+  const without = renderFleet([run({})], OPTS);
+  const withHiddenFlagUnset = renderFleet([run({})], { ...OPTS, quickStartTickets: [] });
+  assert.equal(without, withHiddenFlagUnset);
+});
+
+test('a populated QUICK START section carries cap: QUICK_START_COUNT, not undefined/NaN', () => {
+  const sections = buildSections({ needsYou: [], active: [], failed: [], done: [] }, null,
+    { quickStartVisible: true, quickStartTickets: [qsTicket({})] });
+  const qs = sections.find((s) => s.kind === 'quickstart');
+  assert.equal(qs.cap, QUICK_START_COUNT);
+  assert.equal(Number.isNaN(qs.cap), false);
+});
+
+// --- sectionJumpTargets -------------------------------------------------------
+
+test('sectionJumpTargets includes a forceRender-empty QUICK START when visible', () => {
+  const targets = sectionJumpTargets([run({ status: 'running' })], null, true);
+  const kinds = targets.map((t) => t.section.kind);
+  assert.ok(kinds.includes('quickstart'), `expected 'quickstart' among ${kinds.join(',')}`);
+});
+
+test('sectionJumpTargets omits QUICK START entirely when quickStartVisible is false', () => {
+  const targets = sectionJumpTargets([run({ status: 'running' })], null, false);
+  const kinds = targets.map((t) => t.section.kind);
+  assert.ok(!kinds.includes('quickstart'));
+});
+
+// --- row rendering -------------------------------------------------------------
+
+test('a populated QUICK START row renders via the ticket-object row renderer, with the correct row focused', () => {
+  const out = plain(renderFleet([run({})], {
+    ...OPTS, quickStartVisible: true, focus: 'quickstart', quickStartFocus: 1,
+    quickStartTickets: [
+      qsTicket({ identifier: 'CON-10', title: 'First ticket', priority: 1 }),
+      qsTicket({ identifier: 'CON-11', title: 'Second ticket', priority: 2 }),
+    ],
+  }));
+  const lines = out.split('\n');
+  const firstLine = lines.find((l) => l.includes('CON-10'));
+  const secondLine = lines.find((l) => l.includes('CON-11'));
+  assert.ok(firstLine && secondLine);
+  assert.match(firstLine, /Urg/, 'priority label should render (reusing launchpad.js priorityLabel)');
+  assert.doesNotMatch(firstLine, /»/, 'the unfocused row must not carry the focus marker');
+  assert.match(secondLine, /»/, 'the focused row (quickStartFocus: 1) must carry the focus marker');
+  assert.doesNotMatch(secondLine, /▸/, 'the focus marker must never be the ordinary run-selection ▸');
+});
+
+test('a QUEUED row in the same frame still renders via the unchanged renderQueuedRow path', () => {
+  const queueState = { pending: ['CON-20'], inFlight: new Set(), maxConcurrent: 1 };
+  const queuedTitles = new Map([['CON-20', 'A queued ticket']]);
+  const out = plain(renderFleet([run({})], {
+    ...OPTS, queueState, queuedTitles,
+    quickStartVisible: true, quickStartTickets: [qsTicket({ identifier: 'CON-30', title: 'A quick-start ticket' })],
+  }));
+  assert.match(out, /1\. CON-20 {2}A queued ticket/);
+  assert.match(out, /CON-30/);
+  assert.match(out, /A quick-start ticket/);
+});
+
+// --- renderFleet actually draws the section (pins 2.10/2.11) -----------------
+
+test('renderFleet\'s own returned string actually contains a rendered QUICK START box/hint', () => {
+  const withTickets = renderFleet([run({})], {
+    ...OPTS, quickStartVisible: true, quickStartTickets: [qsTicket({ identifier: 'CON-40' })],
+  });
+  assert.match(plain(withTickets), /QUICK START/);
+  assert.match(plain(withTickets), /CON-40/);
+
+  const emptyForced = renderFleet([run({})], {
+    ...OPTS, quickStartVisible: true, quickStartTickets: [], quickStartCold: true,
+  });
+  assert.match(plain(emptyForced), /QUICK START/);
+  assert.match(plain(emptyForced), /no tickets cached yet/);
+});
+
+// --- row-index space is unaffected --------------------------------------------
+
+test('a visible QUICK START section never perturbs the run row-index space', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'running' }),
+    run({ ticket: 'HEL-2', status: 'failed', endStatus: 'escalated', endedAt: 100 }),
+  ];
+  const out = plain(renderFleet(runs, {
+    ...OPTS, selected: 1, quickStartVisible: true,
+    quickStartTickets: [qsTicket({}), qsTicket({ identifier: 'CON-2' })],
+  }));
+  const marked = out.split('\n').filter((l) => l.includes('▸'));
+  assert.equal(marked.length, 1);
+  assert.match(marked[0], /HEL-2/, 'selected=1 must still resolve to the second RUN, unaffected by QUICK START rows above it');
+});
+
+test('no QUICK START row is ever marked with the ordinary run-row ▸ selection marker', () => {
+  const out = plain(renderFleet([run({})], {
+    ...OPTS, selected: 0, quickStartVisible: true, quickStartTickets: [qsTicket({})],
+  }));
+  const quickStartLine = out.split('\n').find((l) => l.includes(qsTicket({}).identifier));
+  assert.ok(quickStartLine);
+  assert.doesNotMatch(quickStartLine, /▸/);
+});
+
+// --- height-budget trimming ----------------------------------------------------
+
+test('height-budget trimming accounts for QUICK START like any other non-pinned section', () => {
+  const manyRuns = [];
+  for (let i = 0; i < 10; i++) manyRuns.push(run({ ticket: 'HEL-' + i, status: 'done', endStatus: 'delivered', endedAt: 100 }));
+  const withoutQuickStart = visibleWindow(manyRuns, { rows: 12, selected: 0 });
+  const withQuickStart = visibleWindow(manyRuns, {
+    rows: 12, selected: 0, quickStartVisible: true, quickStartTickets: [qsTicket({})],
+  });
+  // Sanity: the two calls build a different number of sections (QUICK START
+  // adds one) — this alone shows the budget accounting is genuinely seeing it,
+  // rather than the extra opts fields being silently ignored.
+  assert.equal(withoutQuickStart.sections.length + 1, withQuickStart.sections.length);
+});
+
+// --- CON-40: Q toggle ----------------------------------------------------------
+
+test('Q returns the toggle-quickstart action regardless of current state — applyAction (watch.js) decides open vs close', () => {
+  assert.deepEqual(handleKey(QUICK_START_TOGGLE_KEY, state({ quickStartVisible: false })),
+    { type: 'toggle-quickstart' });
+  assert.deepEqual(handleKey(QUICK_START_TOGGLE_KEY, state({ quickStartVisible: true, focus: 'quickstart' })),
+    { type: 'toggle-quickstart' });
+});
+
+// --- CON-40: digit-jump discriminates quickstart vs queued vs ordinary -------
+
+test('digit-jump resolves to focus-quickstart when the target section is QUICK START', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' })];
+  // Sections: RUNNING (1), QUICK START (2) — quickStartVisible: true.
+  assert.deepEqual(
+    handleKey('2', state({ runs, quickStartVisible: true })),
+    { type: 'focus-quickstart', index: 0 },
+  );
+});
+
+test('digit-jump resolves to focus-queue (not focus-quickstart) when both QUICK START and QUEUED are on screen', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' })];
+  const queueState = { pending: ['CON-9'], inFlight: new Set(), maxConcurrent: 1 };
+  // Sections: RUNNING(1), QUICK START(2), QUEUED(3).
+  assert.deepEqual(
+    handleKey('3', state({ runs, queueState, quickStartVisible: true })),
+    { type: 'focus-queue', index: 0 },
+  );
+  assert.deepEqual(
+    handleKey('2', state({ runs, queueState, quickStartVisible: true })),
+    { type: 'focus-quickstart', index: 0 },
+  );
+});
+
+test('digit-jump against quickStartVisible: false never reaches QUICK START, even with runs present', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' })];
+  // Only RUNNING is on screen — digit 2 is out of range.
+  assert.equal(handleKey('2', state({ runs, quickStartVisible: false })), null);
+});
+
+// --- CON-40: the QUICK START-local focus cursor -------------------------------
+
+function quickStartFocusState(over) {
+  return state(Object.assign({ focus: 'quickstart', quickStartFocus: 0, quickStartVisible: true }, over));
+}
+
+test('j/k (and arrow aliases) move the QUICK START-local cursor while focused, never the ordinary move action', () => {
+  assert.deepEqual(handleKey('j', quickStartFocusState({})), { type: 'move-quickstart-focus', delta: 1 });
+  assert.deepEqual(handleKey('k', quickStartFocusState({})), { type: 'move-quickstart-focus', delta: -1 });
+  assert.deepEqual(handleKey('\x1b[B', quickStartFocusState({})), { type: 'move-quickstart-focus', delta: 1 });
+  assert.deepEqual(handleKey('\x1b[A', quickStartFocusState({})), { type: 'move-quickstart-focus', delta: -1 });
+});
+
+test('a emits quickstart-add unconditionally while focused, even with no ticket data in state', () => {
+  assert.deepEqual(handleKey('a', quickStartFocusState({ quickStartFocus: 3 })),
+    { type: 'quickstart-add', index: 3 });
+  // Still emitted even for an index that could not possibly resolve — handleKey
+  // has no ticket list to check against (design.md Decision 3).
+  assert.deepEqual(handleKey('a', quickStartFocusState({ quickStartFocus: 99 })),
+    { type: 'quickstart-add', index: 99 });
+});
+
+test('bare Escape exits QUICK START focus', () => {
+  assert.deepEqual(handleKey('\x1b', quickStartFocusState({})), { type: 'exit-quickstart-focus' });
+});
+
+test('Enter/l/n/N are suppressed (no-ops) while focus is quickstart', () => {
+  assert.equal(handleKey('\r', quickStartFocusState({})), null);
+  assert.equal(handleKey('l', quickStartFocusState({})), null);
+  assert.equal(handleKey('\x1b[C', quickStartFocusState({})), null);
+  assert.equal(handleKey('n', quickStartFocusState({})), null);
+  assert.equal(handleKey('N', quickStartFocusState({})), null);
+});
+
+test('forceStartConfirm/quitConfirm still short-circuit before Q/quickstart-focus handling', () => {
+  const withForceStart = state({ forceStartConfirm: { ticket: 'CON-1' }, quickStartVisible: true, focus: 'quickstart' });
+  assert.deepEqual(handleKey(QUICK_START_TOGGLE_KEY, withForceStart), { type: 'cancel-force-start' });
+  assert.deepEqual(handleKey('a', withForceStart), { type: 'cancel-force-start' });
+
+  const withQuitConfirm = state({ quitConfirm: true, quickStartVisible: true, focus: 'quickstart' });
+  assert.deepEqual(handleKey(QUICK_START_TOGGLE_KEY, withQuitConfirm), { type: 'cancel-quit' });
+});
+
+test('the footer always advertises the Q quick start hint', () => {
+  // A wider terminal than OPTS' 78 cols — the footer line is long enough
+  // (↵ attach / l details / j/k move / 1-9 jump / n new run / N launch pad /
+  // Q quick start / q quit) that OPTS' own width truncates it before this
+  // hint; this test is about the hint's PRESENCE in the built string, not
+  // about width truncation (already covered elsewhere).
+  const out = plain(renderFleet([run({})], { cols: 140, selected: 0 }));
+  assert.match(out, /Q quick start/);
 });

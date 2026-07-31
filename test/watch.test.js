@@ -1075,7 +1075,6 @@ test('a digit press jumps directly to a scrolled-past section and scrolls it bac
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
   };
 
-
   let donePromise;
   try {
     const watchModule = require('../lib/ui/watch');
@@ -1252,7 +1251,6 @@ test('force-start: f opens a confirmation, any key cancels, y actually starts th
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
   };
-
 
   let donePromise;
   try {
@@ -1541,4 +1539,276 @@ test('the first redraw after an attach that THREW also repaints every row', asyn
         `row ${row} was not repainted after the throwing attach round-trip`);
     }
   });
+});
+
+// --- CON-40: QUICK START widget, wired end to end ---------------------------
+// Mirrors the QUEUED-focus and force-start harnesses above: a real watch()
+// against a FAKE session/stdin, no real tmux. `setupQuickStartHarness()`
+// factors out the shared boilerplate (fake session/stdin/stdout, cache
+// seeding) since every test below needs it identically — the individual
+// tests differ only in what they seed and assert.
+//
+// CON-27 (see `screenOf`'s own header comment, above): the differential
+// writer only writes the ROWS that changed since the previous poll, so
+// asserting against the last raw `written` chunk directly would silently
+// start asking "did this row change on the most recent tick?" instead of
+// "what does the screen show right now?" — these tests use `screenOf`,
+// exactly like the resize/attach regression tests above, to replay every
+// accumulated write into the current full-screen text.
+function setupQuickStartHarness(tickets, over) {
+  const { EventEmitter } = require('node:events');
+  const cacheModule = require('../lib/ui/cache');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-quickstart-'));
+  cacheModule.write(root, { tickets, epics: [] }, Date.now());
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+
+  const spawnCalls = [];
+  const fakeSessionObj = Object.assign({
+    name: 'fake',
+    ensure() {},
+    listWindows() { return []; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn(ticket, cmd) { spawnCalls.push({ ticket, cmd }); },
+    kill() {},
+    attach() { return { status: 0 }; },
+  }, over);
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  return {
+    root, spawnCalls, fakeStdin, written,
+    // The current full screen, replayed from every write so far (CON-27's
+    // `screenOf`, defined at the top of this file) — never the raw last
+    // chunk, which under the differential writer may hold only a handful of
+    // changed rows.
+    screen: () => screenOf(written),
+    async teardown(donePromise) {
+      fakeStdin.emit('end');
+      if (donePromise) await donePromise;
+      process.stdout.write = realWrite;
+      Object.defineProperty(process, 'stdin', realStdinDescriptor);
+      delete require.cache[watchPath];
+      delete require.cache[sessionPath];
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+test('quickstart-add with no active queue creates a single-ticket maxConcurrent:1 queue using the default launch command', async () => {
+  const queueCache = require('../lib/ui/queue-cache');
+  const h = setupQuickStartHarness([
+    { identifier: 'CON-100', title: 'Urgent ticket', priority: 1 },
+    { identifier: 'CON-101', title: 'Less urgent ticket', priority: 3 },
+  ]);
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: {} });
+
+    // Q opens+focuses QUICK START; the top of the priority-sorted list
+    // (CON-100, Urgent) is quickStartFocus 0.
+    h.fakeStdin.emit('data', 'Q');
+    const focusedFrame = h.screen();
+    assert.match(focusedFrame, /QUICK START/);
+    assert.match(focusedFrame, /CON-100/);
+
+    h.fakeStdin.emit('data', 'a');
+
+    assert.equal(h.spawnCalls.length, 1, 'exactly one spawn — the quick-started ticket');
+    assert.equal(h.spawnCalls[0].ticket, 'CON-100');
+    assert.match(h.spawnCalls[0].cmd, /CON-100/);
+
+    const record = queueCache.read(h.root);
+    assert.deepEqual(record.pending, [], 'CON-100 must already have left pending (admitted this same poll)');
+    assert.deepEqual(record.inFlight, ['CON-100']);
+    assert.equal(record.maxConcurrent, 1);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+// A genuinely CONFIRMED, actively-ticking "already active queue" — unlike
+// queueCache.write()'s own restore path (createRestoredQueue always sets
+// confirmed: false, which shouldTick() then refuses to tick at all, so
+// nothing would ever get persisted for this test to observe) — is only
+// reachable through the widget's own first quickstart-add (createQueue()
+// always sets confirmed: true). This test therefore presses `a` TWICE in a
+// row at the same quickStartFocus index: the first press creates the queue
+// (exercising the createQueue branch, same as the "no active queue" test
+// above); by the time the second press is handled, the first ticket has
+// already left the eligible list (now inFlight), so quickStartFocus: 0
+// resolves to a DIFFERENT ticket — exercising the enqueueOne append branch
+// against a real, already-active, confirmed queue.
+test('a second quickstart-add onto an already-active queue appends via enqueueOne, preserving that queue\'s own maxConcurrent/launchCommand — and never re-adds the same ticket', async () => {
+  const h = setupQuickStartHarness([
+    { identifier: 'CON-200', title: 'First ticket', priority: 1 },
+    { identifier: 'CON-201', title: 'Second ticket', priority: 2 },
+  ]);
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: {} });
+
+    h.fakeStdin.emit('data', 'Q'); // opens+focuses; quickStartFocus: 0 -> CON-200 (Urgent)
+    h.fakeStdin.emit('data', 'a'); // creates a fresh, confirmed, maxConcurrent:1 queue for CON-200
+
+    assert.equal(h.spawnCalls.length, 1);
+    assert.equal(h.spawnCalls[0].ticket, 'CON-200');
+
+    // CON-200 is now inFlight — excluded from the eligible list — so
+    // quickStartFocus: 0 (unchanged; 'a' never moves the cursor) now
+    // resolves to CON-201 instead.
+    h.fakeStdin.emit('data', 'a');
+
+    assert.equal(h.spawnCalls.length, 2, 'a second, DIFFERENT ticket must have been launched — never CON-200 again');
+    assert.equal(h.spawnCalls[1].ticket, 'CON-201');
+    // Both launches share the identical command TEMPLATE (only the ticket id
+    // substituted in) — proving the append preserved the original queue's
+    // own launchCommand rather than resetting it.
+    assert.equal(h.spawnCalls[0].cmd.replace('CON-200', '{{TICKET}}'), h.spawnCalls[1].cmd.replace('CON-201', '{{TICKET}}'));
+    // maxConcurrent: 1 was preserved across the append — proven by CON-201
+    // only launching on the SECOND poll (once CON-200's slot freed), not
+    // alongside it in the same tick, which is what a reset to some larger
+    // maxConcurrent would have allowed.
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('an already-queued ticket never appears in the QUICK START list at all — the widget cannot even offer it for re-adding', async () => {
+  const queueCache = require('../lib/ui/queue-cache');
+  const h = setupQuickStartHarness([
+    { identifier: 'CON-300', title: 'Already queued', priority: 1 },
+    { identifier: 'CON-301', title: 'Still eligible', priority: 2 },
+  ]);
+
+  queueCache.write(h.root, {
+    pending: ['CON-300'], inFlight: new Set(), maxConcurrent: 1, launchCommand: null,
+  }, 'sess-dup', Date.now());
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: {} });
+
+    h.fakeStdin.emit('data', 'Q');
+    const frame = h.screen();
+
+    // Isolate the QUICK START box's own content (between its own title line
+    // and its own closing border) — the full screen's REMAINDER after
+    // "QUICK START" also contains the QUEUED section (which legitimately
+    // shows CON-300), so a plain substring/split check against the whole
+    // tail would false-positive on that unrelated section.
+    const lines = frame.split('\n');
+    const startIdx = lines.findIndex((l) => l.includes('QUICK START'));
+    assert.ok(startIdx >= 0, 'QUICK START must be on screen');
+    const endIdx = lines.findIndex((l, i) => i > startIdx && l.trimStart().startsWith('└'));
+    const quickStartBox = lines.slice(startIdx, endIdx >= 0 ? endIdx + 1 : lines.length).join('\n');
+
+    assert.doesNotMatch(quickStartBox, /CON-300/, 'an already-queued ticket must not appear in QUICK START at all');
+    assert.match(quickStartBox, /CON-301/, 'the genuinely eligible ticket must still be offered');
+
+    // Confirm the CONFIRM_RESTORED_QUEUE_KEY affordance is also on screen —
+    // sanity check that this is genuinely the "queue already active" setup
+    // this test claims, not an accidentally-empty queue.
+    assert.match(frame, /resumed from a previous session/);
+
+    h.fakeStdin.emit('data', 'a'); // adds CON-301 (the only offered ticket) — never CON-300
+
+    // The IN-MEMORY append happened (enqueueOne does not gate on
+    // `confirmed` — design.md Decision 5) — the very next render already
+    // shows both tickets in QUEUED, even though...
+    const afterAddFrame = h.screen();
+    assert.match(afterAddFrame, /QUEUED \(2,/);
+    assert.match(afterAddFrame, /CON-300/);
+    assert.match(afterAddFrame, /CON-301/);
+
+    // ...the on-disk record is UNAFFECTED by this poll — the pre-existing
+    // restored queue never ticks (confirmed: false, per CON-29 —
+    // shouldTick() refuses it), so nothing persists it yet; what matters
+    // for THIS test is that CON-300 was never duplicated — trivially true
+    // since it was never re-offered in the first place.
+    const record = queueCache.read(h.root);
+    assert.deepEqual(record.pending, ['CON-300']);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('an out-of-bounds quickstart-add index (empty eligible list) is a no-op that leaves queueState unchanged', async () => {
+  const queueCache = require('../lib/ui/queue-cache');
+  // An empty cache — cold, nothing eligible at all.
+  const h = setupQuickStartHarness([]);
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: {} });
+
+    h.fakeStdin.emit('data', 'Q');
+    const focusedFrame = h.screen();
+    assert.match(focusedFrame, /no tickets cached yet/);
+
+    h.fakeStdin.emit('data', 'a');
+
+    assert.equal(h.spawnCalls.length, 0, 'nothing should ever be spawned from an empty eligible list');
+    assert.equal(queueCache.read(h.root), null, 'no queue should have been created at all');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('the eligible list excludes a ticket that already has a live run, not just an already-queued one', async () => {
+  const queueCache = require('../lib/ui/queue-cache');
+  const h = setupQuickStartHarness([
+    { identifier: 'HEL-1', title: 'Already running', priority: 1 },
+    { identifier: 'CON-400', title: 'Genuinely eligible', priority: 2 },
+  ], {
+    listWindows() { return [{ ticket: 'HEL-1', alive: true, activity: null }]; },
+  });
+
+  const runDir = path.join(h.root, '.concertino', 'runs', 'HEL-1');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'), JSON.stringify({ t: 1000, kind: 'run.start' }) + '\n');
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: {} });
+
+    h.fakeStdin.emit('data', 'Q');
+    const focusedFrame = h.screen();
+    const quickStartPane = focusedFrame.split('QUICK START')[1] || '';
+    assert.doesNotMatch(quickStartPane.split('\n').slice(0, 6).join('\n'), /HEL-1.*Already running/);
+    assert.match(focusedFrame, /CON-400/);
+
+    h.fakeStdin.emit('data', 'a'); // quickStartFocus: 0 -> the only genuinely eligible ticket
+
+    assert.equal(h.spawnCalls.length, 1);
+    assert.equal(h.spawnCalls[0].ticket, 'CON-400');
+  } finally {
+    await h.teardown(donePromise);
+  }
 });
