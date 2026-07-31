@@ -479,6 +479,26 @@ test('NEEDS YOU and RUNNING rows are unaffected — still two lines', () => {
   assert.notEqual(nextLine.trim(), '');
 });
 
+// --- lazygit-layout pass: the last section grows to fill available height --
+
+test('with vertical space to spare, the last section grows to push the footer to the last row', () => {
+  const out = renderFleet([run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })],
+    { cols: 78, selected: 0, rows: 30 });
+  const lines = out.split('\n');
+  // rows: 30 reserves the trailing-newline row (fleet.js's existing `rows -
+  // 1` convention), so the footer must be the LAST line this frame emits.
+  assert.match(lines[lines.length - 1], /attach/);
+  assert.ok(lines.length <= 30, `expected at most 30 lines, got ${lines.length}`);
+  assert.ok(lines.length >= 25, `expected the frame to grow toward the 30-row budget, got only ${lines.length} lines`);
+});
+
+test('with no rows budget given (0/absent), rendering is unbounded exactly as before this change', () => {
+  const out = renderFleet([run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })],
+    { cols: 78, selected: 0 });
+  const lines = out.split('\n');
+  assert.ok(lines.length < 20, 'unbounded render must stay tight to content, not pad out to some default height');
+});
+
 test('an escalated run says so — the circuit breaker giving up is not a crash', () => {
   const out = renderFleet([
     run({ ticket: 'HEL-2', status: 'failed', endStatus: 'escalated', endedAt: 100, elapsedMs: 60000 }),
