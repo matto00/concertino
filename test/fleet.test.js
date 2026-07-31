@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const {
   renderFleet, handleKey, CONFIRM_RESTORED_QUEUE_KEY, visibleWindow,
   sectionJumpTargets, buildSections, QUICK_START_COUNT, QUICK_START_TOGGLE_KEY,
+  metricsFor,
 } = require('../lib/ui/screens/fleet');
 const { reduce } = require('../lib/ui/reducer');
 const f = require('../lib/ui/format');
@@ -499,6 +500,70 @@ test('with no rows budget given (0/absent), rendering is unbounded exactly as be
   assert.ok(lines.length < 20, 'unbounded render must stay tight to content, not pad out to some default height');
 });
 
+// --- lazygit-layout pass: fleet METRICS panel -------------------------------
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+test('metricsFor computes the average delivery time across done runs with elapsedMs', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', elapsedMs: 60000 }),
+    run({ ticket: 'HEL-2', status: 'done', elapsedMs: 120000 }),
+  ], 1000000);
+  assert.equal(m.avgMs, 90000);
+});
+
+test('metricsFor.avgMs is null with no done runs at all', () => {
+  const m = metricsFor([run({ ticket: 'HEL-1', status: 'running' })], 1000000);
+  assert.equal(m.avgMs, null);
+});
+
+test('metricsFor counts deliveries within today\'s UTC calendar day', () => {
+  const now = 10 * DAY_MS + 3600000; // 1h into day 10
+  const todayStart = 10 * DAY_MS;
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endedAt: todayStart + 1000, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-2', status: 'done', endedAt: todayStart - 1000, elapsedMs: 1000 }), // yesterday
+  ], now);
+  assert.equal(m.deliveredToday, 1);
+});
+
+test('metricsFor counts deliveries within the rolling 7-day window for "this week"', () => {
+  const now = 20 * DAY_MS;
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endedAt: now - 3 * DAY_MS, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-2', status: 'done', endedAt: now - 8 * DAY_MS, elapsedMs: 1000 }), // outside window
+  ], now);
+  assert.equal(m.deliveredWeek, 1);
+});
+
+test('metricsFor counts escalation.raised events across every run\'s own event log, today only', () => {
+  const now = 5 * DAY_MS + 1000;
+  const todayStart = 5 * DAY_MS;
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'needs-you', events: [
+      { kind: 'escalation.raised', t: todayStart + 10 },
+      { kind: 'escalation.raised', t: todayStart - 10 }, // yesterday
+    ] }),
+  ], now);
+  assert.equal(m.escalationsToday, 1);
+});
+
+test('the fleet view shows a METRICS section after DONE with real numbers', () => {
+  const out = plain(renderFleet([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+  ], { ...OPTS, now: 100000 }));
+  assert.match(out, /METRICS/);
+  assert.match(out, /avg delivery/);
+  assert.match(out, /delivered today/);
+});
+
+test('pressing the METRICS section\'s own digit is a no-op, not a broken jump', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
+  // DONE is [1], METRICS is [2] (both always render — DONE has one entry,
+  // METRICS is forceRender: true).
+  assert.equal(handleKey('2', state({ runs })), null);
+});
+
 test('an escalated run says so — the circuit breaker giving up is not a crash', () => {
   const out = renderFleet([
     run({ ticket: 'HEL-2', status: 'failed', endStatus: 'escalated', endedAt: 100, elapsedMs: 60000 }),
@@ -566,7 +631,13 @@ test('a tiny terminal still keeps every NEEDS YOU run', () => {
 // With all four sections populated that floor exceeded a short terminal and the
 // cap silently stopped capping — at rows:14 the screen rendered 16 lines and
 // scrolled the header and NEEDS YOU off the TOP.
-test('the total-height cap holds with all four sections populated', () => {
+//
+// The lazygit-layout pass's METRICS panel is unconditional (forceRender,
+// exactly like QUICK START's own untrimmable floor) — this fixture is now
+// really FIVE sections (NEEDS YOU/RUNNING/FAILED/DONE/METRICS), which shifts
+// the smallest terminal height it can hold everything in up accordingly
+// (rows:14, not rows:10).
+test('the total-height cap holds with all four sections populated (plus the always-on METRICS panel)', () => {
   const runs = [
     run({ ticket: 'HEL-338', status: 'needs-you',
           escalation: { question: 'add zod@3?', options: ['approve', 'deny'], raisedAt: 1 } }),
@@ -576,7 +647,7 @@ test('the total-height cap holds with all four sections populated', () => {
   ].concat(manyFinished(8, 'failed'))
    .concat(manyFinished(8, 'done'));
 
-  for (const rows of [10, 12, 14, 16, 20, 24]) {
+  for (const rows of [14, 16, 18, 20, 24, 28]) {
     const out = renderFleet(runs, { cols: 78, rows, selected: 0 });
     const lines = out.split('\n');
     assert.ok(lines.length <= rows,
@@ -598,7 +669,11 @@ test('the total-height cap holds with all four sections populated', () => {
 // different way. Five real sections' floor is one line taller than four's, so
 // the smallest terminal height this fixture can hold everything in also shifts
 // up accordingly (rows:12, not rows:10 — see the four-section test above).
-test('the total-height cap holds with all five sections (including a populated QUEUED) populated', () => {
+//
+// With the lazygit-layout pass's always-on METRICS panel this fixture is
+// really SIX sections (+ METRICS), shifting the floor up once more
+// (rows:16, not rows:12).
+test('the total-height cap holds with all five sections (including a populated QUEUED) populated, plus METRICS', () => {
   const runs = [
     run({ ticket: 'HEL-338', status: 'needs-you',
           escalation: { question: 'add zod@3?', options: ['approve', 'deny'], raisedAt: 1 } }),
@@ -609,7 +684,7 @@ test('the total-height cap holds with all five sections (including a populated Q
    .concat(manyFinished(8, 'done'));
   const queueState = { pending: manyQueued(20), inFlight: new Set(), maxConcurrent: 1 };
 
-  for (const rows of [12, 14, 16, 20, 24, 28]) {
+  for (const rows of [16, 18, 20, 24, 28, 32]) {
     const out = renderFleet(runs, { cols: 78, rows, selected: 0, queueState });
     const lines = out.split('\n');
     assert.ok(lines.length <= rows,
@@ -974,10 +1049,12 @@ test('a small terminal at a non-zero scroll offset still renders the header + NE
   assert.ok(scrollOffset > 0, 'fixture must actually be scrollable for this test to mean anything');
 
   // Three non-empty sections (NEEDS YOU + FAILED + DONE) each cost at least
-  // one line even fully collapsed, on top of the header/footer — rows:10 is
-  // this fixture's own structural floor (mirrors the existing "total-height
-  // cap" tests' own per-fixture floor, elsewhere in this file).
-  for (const rows of [10, 12, 14]) {
+  // one line even fully collapsed, on top of the header/footer, PLUS the
+  // lazygit-layout pass's always-on METRICS panel (a flat, untrimmable +3 —
+  // mirrors QUICK START's own identical floor cost) — rows:12 is this
+  // fixture's own structural floor (mirrors the existing "total-height cap"
+  // tests' own per-fixture floor, elsewhere in this file).
+  for (const rows of [12, 14, 16]) {
     const out = renderFleet(runs, { cols: 78, rows, selected: 0, scrollOffset });
     const lines = out.split('\n');
     assert.ok(lines.length <= rows, `rows:${rows} rendered ${lines.length} lines`);
