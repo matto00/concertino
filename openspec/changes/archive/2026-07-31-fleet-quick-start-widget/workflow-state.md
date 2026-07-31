@@ -6,6 +6,21 @@ WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/feature/f
 BRANCH: feature/fleet-quick-start-widget/CON-40
 PHASE: Delivery
 CYCLE: 1
+# PR #40: https://github.com/matto00/concertino/pull/40. First auditor run
+# ESCALATEd on a real merge conflict (test/watch.test.js vs. CON-27, which
+# landed on main after this branch's base) — conditions 1/3/4 all held.
+# Human approved rebasing + reconciling; executor (a1a7f0a11d64d9d75)
+# rebased onto origin/main (292e3c2), kept both CON-27's and CON-40's test
+# additions in test/watch.test.js, re-ran gates (851/851 passing). Human
+# ran the actual force-push directly (main session did the real permission
+# check after the executor correctly declined a peer-relayed authorization
+# claim). Orchestrator independently verified origin/feature/fleet-quick-
+# start-widget/CON-40 == e884ec391ef3410c3b31cbf6bfcdda0ca9901aa1 and
+# `gh pr view 40` reports mergeable=MERGEABLE/mergeStateStatus=CLEAN, and
+# re-ran npm test locally at that SHA (851/851 passing). Re-running the
+# auditor fresh once more now per the human's standing instruction: if it
+# CONFIRMs mergeable, merge + proceed straight to Post-merge cleanup
+# without pausing again.
 DEV_PORT: 5213
 BACKEND_PORT: 8120
 EXECUTOR_AGENT_ID: a1a7f0a11d64d9d75
