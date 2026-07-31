@@ -689,6 +689,26 @@ test('the detail pane renders at full height when the terminal is generously siz
   assert.match(out, /the-should-render-marker/);
 });
 
+// --- lazygit-layout pass: detail pane grows to fill available height ------
+
+test('with vertical space to spare, the detail pane grows to push the footer to the last row', () => {
+  const tickets = [ticket({ identifier: 'CON-1', description: 'short' })];
+  const state = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]) });
+  const out = plain(renderLaunchPad(state, [], { cols: 78, now: NOW, rows: 40 }));
+  const lines = out.split('\n');
+  assert.match(lines[lines.length - 1], /esc back/);
+  assert.ok(lines.length <= 40, `expected at most 40 lines, got ${lines.length}`);
+  assert.ok(lines.length >= 30, `expected the frame to grow toward the 40-row budget, got only ${lines.length} lines`);
+});
+
+test('with no rows budget given, the detail pane stays tight to content exactly as before this change', () => {
+  const tickets = [ticket({ identifier: 'CON-1', description: 'short' })];
+  const state = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]) });
+  const out = plain(renderLaunchPad(state, [], { cols: 78, now: NOW }));
+  const lines = out.split('\n');
+  assert.ok(lines.length < 25, 'unbounded render must stay tight to content, not pad out to some default height');
+});
+
 // --- CR2: epicRow/ticketRow direct tests for outer-bold removal ---
 
 test('epicRow selected+focused row is NOT wrapped in outer bold (Decision 4)', () => {
