@@ -208,6 +208,19 @@ test('computeViewportRows reserves one extra row when the ticket carries a URL, 
   assert.equal(computeViewportRows(rows, false) - 1, computeViewportRows(rows, true));
 });
 
+// --- lazygit-layout pass: the top bar's own reserved row flows through ----
+// watch.js's computeScreenRows() now subtracts one extra row for the
+// persistent top bar before it ever reaches this screen's `rows` — since
+// computeViewportRows is already a pure, monotonic function of `rows`, that
+// one-row reduction just flows through automatically. This pins the
+// property down rather than driving new code (ticketview.js/docview.js
+// needed no changes for this task).
+test('the top bar\'s reserved row shrinks the ticket viewport by exactly one row', () => {
+  const withoutTopBarRow = computeViewportRows(30, false);
+  const withTopBarRow = computeViewportRows(29, false);
+  assert.equal(withoutTopBarRow - withTopBarRow, 1);
+});
+
 // --- CON-19: routeHandleKey scroll wiring ------------------------------
 
 test('routeHandleKey still dispatches back-to-launchpad on esc, taking priority over scroll handling', () => {

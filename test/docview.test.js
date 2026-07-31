@@ -168,6 +168,18 @@ test('computeViewportRows reserves the doc reader\'s own chrome from the termina
   assert.ok(viewportRows > 0 && viewportRows < rows);
 });
 
+// --- lazygit-layout pass: the top bar's own reserved row flows through ----
+// watch.js's computeScreenRows() now subtracts one extra row for the
+// persistent top bar before it ever reaches this screen's `rows` — since
+// computeViewportRows is already a pure, monotonic function of `rows`, that
+// one-row reduction just flows through automatically (docview.js needed no
+// changes for this task).
+test('the top bar\'s reserved row shrinks the evidence-reader viewport by exactly one row', () => {
+  const withoutTopBarRow = computeViewportRows(30);
+  const withTopBarRow = computeViewportRows(29);
+  assert.equal(withoutTopBarRow - withTopBarRow, 1);
+});
+
 // --- handleKey (core, opaque back action) ---------------------------------
 
 test('esc returns the generic back action, opaque to this module', () => {
