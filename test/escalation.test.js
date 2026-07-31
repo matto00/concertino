@@ -120,6 +120,48 @@ test("a truncated context's screen note points at the full-text ref", () => {
   assert.match(out, /ec-1\.txt/);
 });
 
+// --- lazygit-layout pass: context wraps and scrolls instead of truncating -
+
+test('a long context line wraps across multiple rows instead of being hard-truncated with an ellipsis', () => {
+  const longLine = 'word '.repeat(60).trim(); // well over 74 visible columns (OPTS.cols - 4)
+  const out = plain(renderEscalation(run({
+    escalation: Object.assign({}, run({}).escalation, { context: longLine }),
+  }), OPTS));
+  // "[t]ype a reply…" carries its own, unrelated literal ellipsis — scope
+  // the check to the context block's own lines only.
+  const contextLines = out.split('\n').filter((l) => l.includes('word'));
+  assert.ok(contextLines.length > 1, 'a 60-word line at 74 columns must wrap onto more than one row');
+  for (const line of contextLines) assert.doesNotMatch(line, /…/);
+  assert.match(out, /word word word/);
+  // Every one of the 60 words survives the wrap, none dropped or cut off.
+  const wordCount = contextLines.join(' ').split(/\s+/).filter((w) => w === 'word').length;
+  assert.equal(wordCount, 60);
+});
+
+test('context longer than the viewport scrolls (docview windowing) instead of overflowing the box', () => {
+  const manyLines = Array.from({ length: 30 }, (_, i) => 'context line ' + i).join('\n');
+  const withoutScroll = plain(renderEscalation(run({
+    escalation: Object.assign({}, run({}).escalation, { context: manyLines }),
+  }), OPTS));
+  assert.match(withoutScroll, /context line 0/);
+  assert.doesNotMatch(withoutScroll, /context line 29\b/);
+  assert.match(withoutScroll, /showing/);
+});
+
+test('scrolling the context (opts.contextScroll) reveals later lines', () => {
+  const manyLines = Array.from({ length: 30 }, (_, i) => 'context line ' + i).join('\n');
+  const out = plain(renderEscalation(run({
+    escalation: Object.assign({}, run({}).escalation, { context: manyLines }),
+  }), Object.assign({}, OPTS, { contextScroll: 25 })));
+  assert.match(out, /context line 29\b/);
+});
+
+test('j/k/page keys scroll the context via scroll-escalation-context', () => {
+  const r = run({ escalation: Object.assign({}, run({}).escalation, { context: 'some context' }) });
+  assert.deepEqual(handleKey('j', { run: r }), { type: 'scroll-escalation-context', delta: 1 });
+  assert.deepEqual(handleKey('k', { run: r }), { type: 'scroll-escalation-context', delta: -1 });
+});
+
 test('an escalation with no context degrades honestly — no block, label, or empty frame', () => {
   const withContext = plain(renderEscalation(run({
     escalation: Object.assign({}, run({}).escalation, {
