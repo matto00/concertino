@@ -175,3 +175,47 @@ test('box() and hsplit() are pure: identical arguments produce identical output'
   const panes = [{ lines: a, width: 24 }, { lines: b, width: 24 }];
   assert.deepEqual(layout.hsplit(panes), layout.hsplit(panes));
 });
+
+// --- selectionWindow(): the one shared "keep a selection visible" scroll ---
+
+test('selectionWindow shows everything when total fits within maxVisible', () => {
+  const w = layout.selectionWindow(3, 0, 5, 0);
+  assert.deepEqual(w, { start: 0, count: 3, offset: 0 });
+});
+
+test('selectionWindow keeps offset 0 while the selection is still within the first window', () => {
+  const w = layout.selectionWindow(20, 4, 10, 0);
+  assert.deepEqual(w, { start: 0, count: 10, offset: 0 });
+});
+
+test('selectionWindow scrolls forward the minimum amount to keep a selection past the window visible', () => {
+  const w = layout.selectionWindow(20, 12, 10, 0);
+  // selectedIndex 12 must be the last visible row: start = 12 - 10 + 1 = 3
+  assert.deepEqual(w, { start: 3, count: 10, offset: 3 });
+});
+
+test('selectionWindow scrolls backward when the selection moves above the current window', () => {
+  const w = layout.selectionWindow(20, 2, 10, 8);
+  assert.deepEqual(w, { start: 2, count: 10, offset: 2 });
+});
+
+test('selectionWindow clamps offset so the window never runs past the end of the list', () => {
+  const w = layout.selectionWindow(12, 11, 10, 0);
+  // last possible start is 12 - 10 = 2
+  assert.deepEqual(w, { start: 2, count: 10, offset: 2 });
+});
+
+test('selectionWindow with a stale offset still resolves to a window containing the selection', () => {
+  const w = layout.selectionWindow(20, 0, 10, 15);
+  assert.deepEqual(w, { start: 0, count: 10, offset: 0 });
+});
+
+test('selectionWindow with zero total returns an empty window', () => {
+  const w = layout.selectionWindow(0, 0, 10, 0);
+  assert.deepEqual(w, { start: 0, count: 0, offset: 0 });
+});
+
+test('selectionWindow floors maxVisible at 1 to avoid a zero-row window with a non-empty list', () => {
+  const w = layout.selectionWindow(5, 2, 0, 0);
+  assert.deepEqual(w, { start: 2, count: 1, offset: 2 });
+});
