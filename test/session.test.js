@@ -107,3 +107,19 @@ test('capture, kill and attach also refuse a ticket containing `:` or `.`', skip
   assert.equal(s.capture('a.b'), '', 'capture of an unaddressable ticket is empty, not a throw');
   assert.doesNotThrow(() => s.kill('a.b'), 'kill of an unaddressable ticket is a silent no-op');
 });
+
+// A hard crash between new-window and respawn-window (dashboard killed,
+// terminal closed) skips the try/catch cleanup in spawn() entirely and
+// leaves the holder window alive forever under the ticket's name. Because
+// tmux allows duplicate window names, that orphan makes every later
+// target(ticket) — capture, attach, kill — ambiguous for a subsequent spawn
+// of the same ticket.
+test('spawn cleans up a pre-existing orphaned window under the same name', skip, () => {
+  require('child_process').execFileSync('tmux',
+    ['new-window', '-d', '-t', SESSION, '-n', 'HEL-7', 'while :; do sleep 3600; done']);
+  s.spawn('HEL-7', 'echo concertino-marker; sleep 300');
+  const matches = s.listWindows().filter((w) => w.ticket === 'HEL-7');
+  assert.equal(matches.length, 1, 'orphaned window must be cleaned up, not left alongside the new one');
+  require('child_process').execFileSync('sleep', ['1']);
+  assert.match(s.capture('HEL-7'), /concertino-marker/, 'target(ticket) must resolve to the live window, not the orphan');
+});
