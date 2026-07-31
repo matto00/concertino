@@ -62,12 +62,18 @@ test('an uninstrumented run reports no telemetry and its idle time', () => {
   assert.match(out, /idle 11m/);
 });
 
-test('a stale escalation on a dead run is labelled stale', () => {
+test('a stale escalation on a dead run renders safely — its question no longer surfaces on the dense FAILED row', () => {
+  // FAILED's own row is now single-line (lazygit-layout density pass) and no
+  // longer shows a live/stale escalation's question text at all — that
+  // level of detail belongs to drill-down now, not the summary row. With no
+  // endStatus/endedAt (this fixture never sets either), the row falls back
+  // to the same "window exited" the dead-window case already reads.
   const out = renderFleet([run({
     status: 'failed', escalationStale: true,
     escalation: { question: 'q', options: [], raisedAt: 1 },
   })], OPTS);
-  assert.match(out, /stale/);
+  assert.match(out, /window exited/);
+  assert.doesNotMatch(out, /\bq\b.*stale|stale.*\bq\b/);
 });
 
 test('malformed events are surfaced in the footer', () => {
@@ -398,11 +404,13 @@ test('a delivered run slower than the repo average gets a red up arrow', () => {
     run({ ticket: 'HEL-2', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
   ], OPTS);
   // Average of 120000 and 60000 is 90000: HEL-1 (120000, "2m") is above it —
-  // slower than average is bad news, so red.
+  // slower than average is bad news, so red. DONE rows are a single line
+  // (lazygit-layout density pass), so the arrow sits on the same line as
+  // the ticket id, not a second status line below it.
   const lines = out.split('\n');
-  const hel1Index = lines.findIndex((l) => l.includes('HEL-1'));
-  assert.match(lines[hel1Index + 1], /2m/);
-  assert.ok(plain(lines[hel1Index + 1]).includes('▲'), 'HEL-1 (2m, above the 90000ms average) should show ▲');
+  const hel1Line = lines.find((l) => l.includes('HEL-1'));
+  assert.match(hel1Line, /2m/);
+  assert.ok(plain(hel1Line).includes('▲'), 'HEL-1 (2m, above the 90000ms average) should show ▲');
 });
 
 test('a delivered run faster than the repo average gets a green down arrow', () => {
@@ -413,8 +421,8 @@ test('a delivered run faster than the repo average gets a green down arrow', () 
   // HEL-2 (60000) is below the 90000ms average — faster than average is
   // good news, so green.
   const lines = out.split('\n');
-  const hel2Index = lines.findIndex((l) => l.includes('HEL-2'));
-  assert.ok(plain(lines[hel2Index + 1]).includes('▼'), 'HEL-2 (1m, below the average) should show ▼');
+  const hel2Line = lines.find((l) => l.includes('HEL-2'));
+  assert.ok(plain(hel2Line).includes('▼'), 'HEL-2 (1m, below the average) should show ▼');
 });
 
 test('a single delivered run has no average to compare against, so no arrow renders', () => {
@@ -430,8 +438,45 @@ test('a failed run never shows a delivery-time arrow, even alongside delivered h
     run({ ticket: 'HEL-2', status: 'failed', endStatus: 'escalated', endedAt: 100, elapsedMs: 60000 }),
   ], OPTS);
   const lines = out.split('\n');
-  const hel2Index = lines.findIndex((l) => l.includes('HEL-2'));
-  assert.doesNotMatch(plain(lines[hel2Index + 1]), /[▲▼]/);
+  const hel2Line = lines.find((l) => l.includes('HEL-2'));
+  assert.doesNotMatch(plain(hel2Line), /[▲▼]/);
+});
+
+// --- lazygit-layout pass: DONE/FAILED rows collapse to one line ------------
+
+test('a DONE row renders as exactly one line', () => {
+  const out = renderFleet([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+  ], OPTS);
+  const lines = out.split('\n').filter((l) => /HEL-1/.test(l));
+  assert.equal(lines.length, 1);
+});
+
+test('a FAILED row renders as exactly one line', () => {
+  const out = renderFleet([
+    run({ ticket: 'HEL-2', status: 'failed', endStatus: 'escalated', endedAt: 100, elapsedMs: 60000 }),
+  ], OPTS);
+  const lines = out.split('\n').filter((l) => /HEL-2/.test(l));
+  assert.equal(lines.length, 1);
+});
+
+test('a DONE row names the ticket, branch, end status and elapsed time on its single line', () => {
+  const out = plain(renderFleet([
+    run({ ticket: 'HEL-1', changeName: 'add-retry', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+  ], OPTS));
+  assert.match(out, /HEL-1/);
+  assert.match(out, /add-retry/);
+  assert.match(out, /delivered/);
+  assert.match(out, /1m/);
+});
+
+test('NEEDS YOU and RUNNING rows are unaffected — still two lines', () => {
+  const out = renderFleet([run({ ticket: 'HEL-3', status: 'running' })], OPTS);
+  const lines = out.split('\n');
+  const ticketLine = lines.find((l) => l.includes('HEL-3'));
+  const idx = lines.indexOf(ticketLine);
+  const nextLine = lines[idx + 1];
+  assert.notEqual(nextLine.trim(), '');
 });
 
 test('an escalated run says so — the circuit breaker giving up is not a crash', () => {
@@ -1229,7 +1274,7 @@ test('an arrow key while prompting is ignored, not typed literally', () => {
 
 // --- Progress bar colour reflects the run's status (Task 7.10) ---
 
-test('the fleet screen renders status-coloured progress bars: running and done rows use STATUS_COLOUR', () => {
+test('the fleet screen renders status-coloured progress bars for RUNNING, and a status-coloured end label for DONE', () => {
   process.stdout.isTTY = true;
   delete process.env.TERM;
   delete process.env.COLORTERM;
@@ -1252,10 +1297,13 @@ test('the fleet screen renders status-coloured progress bars: running and done r
   assert.match(plainOut, /RUNNING/);
   assert.match(plainOut, /DONE/);
 
-  // The output should show that running uses STATUS_COLOUR (cyan) and done uses dim
-  // Find bar lines containing the bar characters preceded by colour escapes
+  // RUNNING still shows a live, cyan progress bar (STATUS_COLOUR.running) —
+  // unaffected by the lazygit-layout density pass, which only collapsed
+  // FAILED/DONE (no longer live) down to a single line with no bar at all.
   assert.match(out, /\x1b\[36m[▪░]/, 'running bar should be cyan (STATUS_COLOUR.running)');
-  assert.match(out, /\x1b\[2m[▪░]/, 'done bar should be dim (STATUS_COLOUR.done)');
+  // DONE's own end-status word ("delivered") still carries STATUS_COLOUR.done
+  // (dim) on its now-single line, even without a bar.
+  assert.match(out, /\x1b\[2mdelivered/, 'DONE\'s end status should be dim (STATUS_COLOUR.done)');
 
   process.stdout.isTTY = false;
   for (const m of ['../lib/ui/format', '../lib/ui/layout', '../lib/ui/screens/fleet']) {
