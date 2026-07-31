@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const {
   renderLaunchPad, handleKey, render, inlineStatus, ticketsForEpic, windowStart,
   isSelectable, selectableIdentifiers, currentTicket, priorityLabel, priorityRank, sortByPriority,
+  CLEAR_QUEUE_KEY,
 } = require('../lib/ui/screens/launchpad');
 
 // eslint-disable-next-line no-control-regex
@@ -244,6 +245,56 @@ test('L does nothing (and is not advertised) with nothing selected', () => {
 test('L opens the launch plan once something is selected', () => {
   const state = { lp: lp({ selected: new Set(['CON-1']) }), runs: [] };
   assert.deepEqual(handleKey('L', state), { type: 'open-launchplan' });
+});
+
+// --- Clear Queue: reachable here too, not just from the fleet view ---------
+
+test('C opens the clear-queue confirmation when a queue with pending tickets exists', () => {
+  const queueState = { pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1 };
+  const state = { lp: lp({}), runs: [], queueState };
+  assert.deepEqual(handleKey(CLEAR_QUEUE_KEY, state), { type: 'open-clear-queue-confirm' });
+});
+
+test('C is a no-op with no queue, or a queue with nothing pending', () => {
+  assert.equal(handleKey(CLEAR_QUEUE_KEY, { lp: lp({}), runs: [] }), null);
+  const emptyQueue = { pending: [], inFlight: new Set(['CON-1']), maxConcurrent: 1 };
+  assert.equal(handleKey(CLEAR_QUEUE_KEY, { lp: lp({}), runs: [], queueState: emptyQueue }), null);
+});
+
+test('y confirms clear-queue, even with lp absent', () => {
+  assert.deepEqual(handleKey('y', { lp: null, runs: [], clearQueueConfirm: true }), { type: 'confirm-clear-queue' });
+});
+
+test('any other key cancels clear-queue without navigating back', () => {
+  const state = { lp: lp({}), runs: [], clearQueueConfirm: true };
+  assert.deepEqual(handleKey('\x1b', state), { type: 'cancel-clear-queue' });
+  assert.deepEqual(handleKey('a', state), { type: 'cancel-clear-queue' });
+});
+
+test('the clear-queue confirmation names the exact pending count', () => {
+  const queueState = { pending: ['CON-2', 'CON-3'], inFlight: new Set(), maxConcurrent: 1 };
+  const out = plain(renderLaunchPad(lp({}), [], { ...OPTS, queueState, clearQueueConfirm: true }));
+  assert.match(out, /this will drop 2 queued tickets — they will never start\. proceed\?/);
+  assert.match(out, /y confirm clear/);
+});
+
+test('the footer advertises C clear queue only when a queue with pending tickets exists', () => {
+  const withoutQueue = plain(renderLaunchPad(lp({}), [], OPTS));
+  assert.doesNotMatch(withoutQueue, /C clear queue/);
+
+  const queueState = { pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1 };
+  const withQueue = plain(renderLaunchPad(lp({}), [], { ...OPTS, queueState }));
+  assert.match(withQueue, /C clear queue/);
+
+  const emptyQueue = { pending: [], inFlight: new Set(['CON-1']), maxConcurrent: 1 };
+  const withEmptyQueue = plain(renderLaunchPad(lp({}), [], { ...OPTS, queueState: emptyQueue }));
+  assert.doesNotMatch(withEmptyQueue, /C clear queue/);
+});
+
+test('render(state, opts) forwards queueState/clearQueueConfirm off the full state object', () => {
+  const queueState = { pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1 };
+  const out = plain(render({ launchPad: lp({}), runs: [], queueState, clearQueueConfirm: true }, OPTS));
+  assert.match(out, /this will drop 1 queued ticket — /);
 });
 
 // --- key handling -------------------------------------------------------------

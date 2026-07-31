@@ -2,7 +2,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const {
-  createQueue, tick, isIdle, shouldTick, reconcileRestored, createRestoredQueue, forceStart, enqueueOne,
+  createQueue, tick, isIdle, shouldTick, reconcileRestored, createRestoredQueue, forceStart,
+  enqueueOne, clearPending,
 } = require('../lib/ui/queue');
 
 function run(ticket, status, endedAt) {
@@ -202,6 +203,23 @@ test('a needs-you or unknown status also counts as live for admission — only d
 
 test('createQueue always sets confirmed: true explicitly', () => {
   const q = createQueue(['CON-1'], 1);
+  assert.equal(q.confirmed, true);
+});
+
+test('createQueue defaults confirmed to true when the 4th arg is omitted — every pre-existing call site', () => {
+  const q = createQueue(['CON-1'], 1, null);
+  assert.equal(q.confirmed, true);
+});
+
+test('createQueue with confirmed:false (the launch plan\'s "start now: no" toggle) builds a paused queue, refused by shouldTick', () => {
+  const q = createQueue(['CON-1', 'CON-2'], 2, null, false);
+  assert.equal(q.confirmed, false);
+  assert.equal(shouldTick(q), false);
+  assert.deepEqual(q.pending, ['CON-1', 'CON-2'], 'nothing is dropped or admitted — it is only paused');
+});
+
+test('createQueue with confirmed:true explicitly behaves identically to the default', () => {
+  const q = createQueue(['CON-1'], 1, null, true);
   assert.equal(q.confirmed, true);
 });
 
@@ -511,4 +529,55 @@ test('enqueueOne preserves maxConcurrent/launchCommand/confirmed unchanged on th
   assert.equal(next.maxConcurrent, 3);
   assert.equal(next.launchCommand, 'codex "/concertino-deliver {{TICKET}} fast"');
   assert.equal(next.confirmed, false);
+});
+
+// --- Clear Queue: clearPending — drop the not-yet-started tail -------------
+
+test('clearPending empties pending and leaves inFlight untouched', () => {
+  const q = createQueue(['CON-1', 'CON-2', 'CON-3'], 1);
+  const { queue: afterTick } = tick(q, []); // CON-1 admitted, CON-2/CON-3 stay pending
+  const cleared = clearPending(afterTick);
+  assert.deepEqual(cleared.pending, []);
+  assert.deepEqual(Array.from(cleared.inFlight), ['CON-1']);
+});
+
+test('clearPending on an already-empty pending list is a no-op shape-wise', () => {
+  const q = createQueue([], 1);
+  const cleared = clearPending(q);
+  assert.deepEqual(cleared.pending, []);
+  assert.equal(cleared.inFlight.size, 0);
+});
+
+test('clearPending leaves a cleared, all-inFlight queue non-idle — inFlight runs are still tracked', () => {
+  const q = createQueue(['CON-1'], 1);
+  const { queue: afterTick } = tick(q, []);
+  const cleared = clearPending(afterTick);
+  assert.equal(isIdle(cleared), false, 'CON-1 is still inFlight; the queue is not done yet');
+});
+
+test('clearPending on a queue with nothing ever admitted (all pending, none inFlight) leaves it idle', () => {
+  const q = createQueue(['CON-1', 'CON-2'], 0);
+  // maxConcurrent floors to 1, but no tick() was ever run, so nothing is inFlight.
+  const cleared = clearPending(q);
+  assert.equal(isIdle(cleared), true);
+});
+
+test('clearPending carries confirmed through unchanged, same as forceStart', () => {
+  const record = { pending: ['CON-1', 'CON-2'], inFlight: [], maxConcurrent: 1, sessionId: 's', writtenAt: 1 };
+  const restored = createRestoredQueue(record, []);
+  assert.equal(restored.confirmed, false);
+  const cleared = clearPending(restored);
+  assert.equal(cleared.confirmed, false,
+    'clearing the pending tail must never silently reactivate auto-admission');
+});
+
+test('clearPending carries launchCommand and restoredFrom through unchanged, same as forceStart', () => {
+  const record = {
+    pending: ['CON-1'], inFlight: [], maxConcurrent: 1,
+    launchCommand: 'codex "/concertino-deliver {{TICKET}}"', sessionId: 'sess-9', writtenAt: 42,
+  };
+  const restored = createRestoredQueue(record, []);
+  const cleared = clearPending(restored);
+  assert.equal(cleared.launchCommand, 'codex "/concertino-deliver {{TICKET}}"');
+  assert.deepEqual(cleared.restoredFrom, { sessionId: 'sess-9', writtenAt: 42 });
 });

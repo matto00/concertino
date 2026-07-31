@@ -101,6 +101,48 @@ test('parallel with cap 2: the first two start now, the third is queued — the 
   assert.match(lines[2], /queued/);
 });
 
+// --- start now: no — the whole batch held until a later, explicit confirm --
+
+test('startNow: false labels every ticket "held", not "start now"/"queued"', () => {
+  const out = plain(renderLaunchPlan(plan({ mode: 'parallel', concurrency: 2, startNow: false }), 0, OPTS));
+  const lines = out.split('\n').filter((l) => /^[│┃]\s+\d+\s+CON-3/.test(l));
+  assert.match(lines[0], /held/);
+  assert.match(lines[1], /held/);
+  assert.match(lines[2], /held/);
+  // "start now" still legitimately appears in the footer hint (naming what
+  // 'n' toggles TO) — the absence check is scoped to the ticket rows alone.
+  for (const line of lines) assert.doesNotMatch(line, /queued|start now/);
+});
+
+test('startNow: false shows "held until confirmed" on the summary line', () => {
+  const out = plain(renderLaunchPlan(plan({ startNow: false }), 0, OPTS));
+  assert.match(out, /held until confirmed/);
+});
+
+test('startNow (default, unset) never shows "held until confirmed" — unchanged pre-existing behaviour', () => {
+  const out = plain(renderLaunchPlan(plan({}), 0, OPTS));
+  assert.doesNotMatch(out, /held until confirmed/);
+});
+
+test('startNow: false suppresses the already-active warning — nothing becomes concurrent until the later confirm', () => {
+  const out = plain(renderLaunchPlan(plan({ concurrency: 2, startNow: false }), 2, OPTS));
+  assert.doesNotMatch(out, /already active/);
+});
+
+test('startNow: false changes the confirm hint to name the hold, not "& launch"', () => {
+  const out = plain(renderLaunchPlan(plan({ startNow: false }), 0, OPTS));
+  assert.match(out, /confirm \(held\)/);
+  assert.doesNotMatch(out, /confirm & launch/);
+});
+
+test('n toggles start-now, and is always advertised regardless of harness/agent-merge editability', () => {
+  assert.deepEqual(handleKey('n', { plan: plan({}) }), { type: 'toggle-start-now' });
+  const out = plain(renderLaunchPlan(plan({}), 0, OPTS));
+  assert.match(out, /n hold/);
+  const held = plain(renderLaunchPlan(plan({ startNow: false }), 0, OPTS));
+  assert.match(held, /n start now/);
+});
+
 // --- the fleet-wide warning, not just this batch ----------------------------
 
 test('no warning when nothing else is active', () => {

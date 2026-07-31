@@ -186,6 +186,7 @@ test('a queued row is never rendered with the ▸ selection marker, for any vali
 test('a restored, unconfirmed queue renders the resume affordance naming the confirm key', () => {
   const queueState = {
     pending: ['CON-2', 'CON-3'], inFlight: new Set(['CON-1']), maxConcurrent: 1, confirmed: false,
+    restoredFrom: { sessionId: 's', writtenAt: 1 },
   };
   const out = plain(renderFleet([run({ ticket: 'CON-1', status: 'running' })], { ...OPTS, queueState }));
   assert.match(out, /resumed from a previous session/);
@@ -210,8 +211,25 @@ test('a queueState with no `confirmed` field at all (pre-CON-29 shape) never sho
   assert.doesNotMatch(out, /resumed from a previous session/);
 });
 
+// --- launch plan's "start now: no" toggle: a held (not restored) queue -----
+
+test('a deliberately held queue (confirmed: false, no restoredFrom) says "held", not "resumed from a previous session"', () => {
+  const queueState = { pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1, confirmed: false };
+  const out = renderFleet([run({})], { ...OPTS, queueState });
+  assert.doesNotMatch(out, /resumed from a previous session/);
+  assert.match(out, new RegExp('held — press ' + CONFIRM_RESTORED_QUEUE_KEY + ' to start'));
+});
+
+test('the confirm key starts a held (not restored) queue exactly like a restored one', () => {
+  const s = state({ queueState: { pending: ['CON-2'], inFlight: new Set(), confirmed: false } });
+  assert.deepEqual(handleKey(CONFIRM_RESTORED_QUEUE_KEY, s), { type: 'confirm-restored-queue' });
+});
+
 test('an inFlight-only restored queue (pending already fully drained) still shows the resume affordance', () => {
-  const queueState = { pending: [], inFlight: new Set(['CON-1']), maxConcurrent: 1, confirmed: false };
+  const queueState = {
+    pending: [], inFlight: new Set(['CON-1']), maxConcurrent: 1, confirmed: false,
+    restoredFrom: { sessionId: 's', writtenAt: 1 },
+  };
   const out = plain(renderFleet([run({ ticket: 'CON-1', status: 'running' })], { ...OPTS, queueState }));
   assert.match(out, /resumed from a previous session/);
 });
@@ -244,14 +262,20 @@ test('a restoreNotice too long for the available width is truncated, same as que
 });
 
 test('a normal restored queue with no restoreNotice shows the resume affordance but no completed-during-downtime line', () => {
-  const queueState = { pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1, confirmed: false };
+  const queueState = {
+    pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1, confirmed: false,
+    restoredFrom: { sessionId: 's', writtenAt: 1 },
+  };
   const out = renderFleet([run({})], { ...OPTS, queueState });
   assert.match(out, /resumed from a previous session/);
   assert.doesNotMatch(out, /completed while you were away/);
 });
 
 test('a restoreNotice and the resume affordance both render together when a queue partially restores', () => {
-  const queueState = { pending: ['CON-3'], inFlight: new Set(), maxConcurrent: 1, confirmed: false };
+  const queueState = {
+    pending: ['CON-3'], inFlight: new Set(), maxConcurrent: 1, confirmed: false,
+    restoredFrom: { sessionId: 's', writtenAt: 1 },
+  };
   const out = renderFleet([run({})], {
     ...OPTS,
     queueState,
@@ -364,6 +388,50 @@ test('a delivered run and a failed run render under different headings', () => {
   assert.ok(out.indexOf('FAILED') < out.indexOf('HEL-2'), 'HEL-2 under FAILED');
   assert.ok(out.indexOf('HEL-2') < out.indexOf('DONE'), 'FAILED section comes first');
   assert.ok(out.indexOf('DONE') < out.indexOf('HEL-1'), 'HEL-1 under DONE');
+});
+
+// --- DONE rows compare delivery time against this repo's own average -------
+
+test('a delivered run slower than the repo average gets a red up arrow', () => {
+  const out = renderFleet([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 120000 }),
+    run({ ticket: 'HEL-2', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+  ], OPTS);
+  // Average of 120000 and 60000 is 90000: HEL-1 (120000, "2m") is above it —
+  // slower than average is bad news, so red.
+  const lines = out.split('\n');
+  const hel1Index = lines.findIndex((l) => l.includes('HEL-1'));
+  assert.match(lines[hel1Index + 1], /2m/);
+  assert.ok(plain(lines[hel1Index + 1]).includes('▲'), 'HEL-1 (2m, above the 90000ms average) should show ▲');
+});
+
+test('a delivered run faster than the repo average gets a green down arrow', () => {
+  const out = renderFleet([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 120000 }),
+    run({ ticket: 'HEL-2', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+  ], OPTS);
+  // HEL-2 (60000) is below the 90000ms average — faster than average is
+  // good news, so green.
+  const lines = out.split('\n');
+  const hel2Index = lines.findIndex((l) => l.includes('HEL-2'));
+  assert.ok(plain(lines[hel2Index + 1]).includes('▼'), 'HEL-2 (1m, below the average) should show ▼');
+});
+
+test('a single delivered run has no average to compare against, so no arrow renders', () => {
+  const out = renderFleet([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+  ], OPTS);
+  assert.doesNotMatch(plain(out), /[▲▼]/);
+});
+
+test('a failed run never shows a delivery-time arrow, even alongside delivered history', () => {
+  const out = renderFleet([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 120000 }),
+    run({ ticket: 'HEL-2', status: 'failed', endStatus: 'escalated', endedAt: 100, elapsedMs: 60000 }),
+  ], OPTS);
+  const lines = out.split('\n');
+  const hel2Index = lines.findIndex((l) => l.includes('HEL-2'));
+  assert.doesNotMatch(plain(lines[hel2Index + 1]), /[▲▼]/);
 });
 
 test('an escalated run says so — the circuit breaker giving up is not a crash', () => {
@@ -1338,6 +1406,56 @@ test('the force-start confirmation names the resulting concurrent count against 
     { ...OPTS, queueState, forceStartConfirm: { ticket: 'CON-2' } }));
   assert.match(out, /this will run 2 concurrently, exceeding your maxConcurrent:1 setting/);
   assert.match(out, /y confirm force-start/);
+});
+
+// --- Clear Queue: drops queueState.pending, never inFlight ------------------
+
+test('C opens the clear-queue confirmation when the QUEUED section has pending tickets', () => {
+  const queueState = { pending: ['CON-2', 'CON-3'], inFlight: new Set(), maxConcurrent: 1 };
+  assert.deepEqual(handleKey('C', state({ queueState })), { type: 'open-clear-queue-confirm' });
+});
+
+test('C is a no-op with no queue, or a queue with nothing pending', () => {
+  assert.equal(handleKey('C', state({})), null);
+  assert.equal(handleKey('C', state({ queueState: { pending: [], inFlight: new Set(['CON-1']), maxConcurrent: 1 } })), null);
+});
+
+test('y confirms clear-queue', () => {
+  const s = state({ clearQueueConfirm: true });
+  assert.deepEqual(handleKey('y', s), { type: 'confirm-clear-queue' });
+});
+
+test('any other key cancels clear-queue without dropping anything', () => {
+  const s = state({ clearQueueConfirm: true });
+  assert.deepEqual(handleKey('q', s), { type: 'cancel-clear-queue' });
+  assert.deepEqual(handleKey('j', s), { type: 'cancel-clear-queue' });
+  assert.deepEqual(handleKey('\x1b', s), { type: 'cancel-clear-queue' });
+});
+
+test('clearQueueConfirm is checked before forceStartConfirm and quitConfirm — the newest gate wins', () => {
+  const s = state({ clearQueueConfirm: true, forceStartConfirm: { ticket: 'CON-2' }, quitConfirm: true });
+  assert.deepEqual(handleKey('q', s), { type: 'cancel-clear-queue' });
+});
+
+test('the clear-queue confirmation names the exact pending count, and leaves inFlight unmentioned as at risk', () => {
+  const queueState = { pending: ['CON-2', 'CON-3'], inFlight: new Set(['CON-1']), maxConcurrent: 1 };
+  const out = plain(renderFleet([run({ ticket: 'CON-1', status: 'running' })],
+    { ...OPTS, queueState, clearQueueConfirm: true }));
+  assert.match(out, /this will drop 2 queued tickets — they will never start\. proceed\?/);
+  assert.match(out, /y confirm clear/);
+});
+
+test('the footer advertises C clear queue only when a QUEUED section is actually present this frame', () => {
+  const withoutQueue = plain(renderFleet([run({})], OPTS));
+  assert.doesNotMatch(withoutQueue, /C clear queue/);
+
+  const queueState = { pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1 };
+  const withQueue = plain(renderFleet([run({})], { ...OPTS, queueState }));
+  assert.match(withQueue, /C clear queue/);
+
+  const emptyQueue = plain(renderFleet([run({})],
+    { ...OPTS, queueState: { pending: [], inFlight: new Set(['CON-1']), maxConcurrent: 1 } }));
+  assert.doesNotMatch(emptyQueue, /C clear queue/);
 });
 
 // --- CON-39: QUEUED-local cursor's own marker, distinct from ▸ -------------

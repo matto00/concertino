@@ -1302,6 +1302,94 @@ test('force-start: f opens a confirmation, any key cancels, y actually starts th
   }
 });
 
+test('Clear Queue: C opens a confirmation, any key cancels, y drops pending and persists (or removes) the queue', async () => {
+  const { EventEmitter } = require('node:events');
+  const queueCache = require('../lib/ui/queue-cache');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-clearqueue-'));
+
+  queueCache.write(root, {
+    pending: ['CON-90', 'CON-91'], inFlight: new Set(), maxConcurrent: 1, launchCommand: null,
+  }, 'sess-1', Date.now());
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+
+  const spawnCalls = [];
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return []; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn(ticket, cmd) { spawnCalls.push({ ticket, cmd }); },
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root, config: {} });
+
+    const initialFrame = screenOf(written);
+    assert.match(initialFrame, /QUEUED \(2/);
+
+    // C opens the confirmation — nothing dropped yet.
+    fakeStdin.emit('data', 'C');
+    const confirmFrame = screenOf(written);
+    assert.match(confirmFrame, /this will drop 2 queued tickets — they will never start\. proceed\?/);
+
+    // Any other key cancels — the persisted queue is untouched.
+    fakeStdin.emit('data', 'x');
+    const cancelledFrame = screenOf(written);
+    assert.doesNotMatch(cancelledFrame, /this will drop 2 queued tickets/);
+    const afterCancelRecord = queueCache.read(root);
+    assert.deepEqual(afterCancelRecord.pending, ['CON-90', 'CON-91'],
+      'cancelling must never mutate the persisted queue');
+
+    // C again, then y — this time it actually clears.
+    fakeStdin.emit('data', 'C');
+    fakeStdin.emit('data', 'y');
+    const clearedFrame = screenOf(written);
+
+    assert.equal(spawnCalls.length, 0, 'Clear Queue must never spawn anything');
+    assert.doesNotMatch(clearedFrame, /QUEUED/);
+
+    // Nothing pending and nothing in flight — the queue is idle, so the
+    // cache file itself is removed (queueCache.clear), not just emptied,
+    // mirroring what a normal tick()-driven drain to empty already does.
+    assert.equal(queueCache.read(root), null);
+  } finally {
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ===========================================================================
 // CON-27 (skeptic-final-1b.md change requests 1 and 2): the two cache-
 // invalidation WIRING lines.
