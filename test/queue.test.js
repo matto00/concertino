@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const {
-  createQueue, tick, isIdle, shouldTick, reconcileRestored, createRestoredQueue, forceStart,
+  createQueue, tick, isIdle, shouldTick, reconcileRestored, createRestoredQueue, forceStart, enqueueOne,
 } = require('../lib/ui/queue');
 
 function run(ticket, status, endedAt) {
@@ -471,4 +471,44 @@ test('forceStart carries launchCommand and restoredFrom through unchanged, same 
   const { queue: next } = forceStart(restored, 'CON-1');
   assert.equal(next.launchCommand, 'codex "/concertino-deliver {{TICKET}}"');
   assert.deepEqual(next.restoredFrom, { sessionId: 'sess-9', writtenAt: 42 });
+});
+
+// --- CON-40: enqueueOne — the fleet QUICK START widget's shared append -----
+// primitive (design.md Decision 5) — appends onto an ALREADY-ACTIVE queue's
+// own pending list; a queue with nothing active at all is created via
+// createQueue() instead (this function returns null for that case).
+
+test('enqueueOne appends a new ticket to a plain queue\'s pending list', () => {
+  const q = createQueue(['CON-1'], 2, 'claude "/concertino-deliver {{TICKET}}"');
+  const next = enqueueOne(q, 'CON-2');
+  assert.deepEqual(next.pending, ['CON-1', 'CON-2']);
+});
+
+test('enqueueOne is a no-op (returns the same queue) when the ticket is already pending', () => {
+  const q = createQueue(['CON-1', 'CON-2'], 2);
+  const next = enqueueOne(q, 'CON-2');
+  assert.equal(next, q, 'must return the identical queue object, not a new one, when nothing changes');
+  assert.deepEqual(next.pending, ['CON-1', 'CON-2']);
+});
+
+test('enqueueOne is a no-op when the ticket is already inFlight', () => {
+  let q = createQueue(['CON-1', 'CON-2'], 2);
+  q = tick(q, []).queue; // both admitted into inFlight
+  assert.deepEqual(Array.from(q.inFlight).sort(), ['CON-1', 'CON-2']);
+  const next = enqueueOne(q, 'CON-1');
+  assert.equal(next, q);
+  assert.deepEqual(next.pending, []);
+});
+
+test('enqueueOne returns null for a null/undefined queue — the caller creates one fresh instead', () => {
+  assert.equal(enqueueOne(null, 'CON-1'), null);
+  assert.equal(enqueueOne(undefined, 'CON-1'), null);
+});
+
+test('enqueueOne preserves maxConcurrent/launchCommand/confirmed unchanged on the returned queue', () => {
+  const q = Object.assign(createQueue(['CON-1'], 3, 'codex "/concertino-deliver {{TICKET}} fast"'), { confirmed: false });
+  const next = enqueueOne(q, 'CON-2');
+  assert.equal(next.maxConcurrent, 3);
+  assert.equal(next.launchCommand, 'codex "/concertino-deliver {{TICKET}} fast"');
+  assert.equal(next.confirmed, false);
 });
