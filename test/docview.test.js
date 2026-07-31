@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   bodyBox, renderDocView, clampScroll, scrollDelta, handleKey, computeViewportRows,
-  render, routeHandleKey,
+  render, routeHandleKey, windowBody,
 } = require('../lib/ui/screens/docview');
 const { visibleLength } = require('../lib/ui/format');
 
@@ -51,6 +51,16 @@ test('scrollDelta recognises page up/down as one viewport of lines', () => {
 test('scrollDelta returns null for any other key', () => {
   assert.equal(scrollDelta('q', 10), null);
   assert.equal(scrollDelta('\x1b', 10), null);
+});
+
+// --- windowBody: exported for callers that need windowing without bodyBox's
+// own box chrome (drilldown.js's TICKET/TIMELINE/GATES panels, which need a
+// TITLED box via their own pane() helper, not bodyBox's title-less one) ----
+
+test('windowBody is exported and windows content to viewportRows, reserving one row for the position indicator', () => {
+  const out = windowBody(lines(20), 5, 0);
+  assert.equal(out.length, 5);
+  assert.match(plain(out[out.length - 1]), /showing 1-4 of 20/);
 });
 
 // --- bodyBox: short content, no windowing -------------------------------

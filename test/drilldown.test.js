@@ -525,15 +525,36 @@ test('the TICKET panel renders markdown-stripped plain text', () => {
   assert.doesNotMatch(panelText, /[#*`[\]()]/);
 });
 
-test('a description longer than the row cap is truncated with the correct "… N more lines" count', () => {
+test('a description longer than the viewport scrolls (docview windowing) instead of hard-truncating', () => {
   const longDescription = Array.from({ length: 20 }, (_, i) => 'line ' + i).join('\n');
   const out = plain(renderDrillDown(run({}), Object.assign({}, OPTS, {
     ticketText: { title: 'Long ticket', description: longDescription },
   })));
+  // TICKET_VIEWPORT_ROWS is 5 — one row is windowBody's own position
+  // indicator, leaving 4 content rows visible before scrolling.
   assert.match(out, /line 0/);
-  assert.match(out, /line 4/);
-  assert.doesNotMatch(out, /line 5\b/);
-  assert.match(out, /… 15 more lines/);
+  assert.match(out, /line 3/);
+  assert.doesNotMatch(out, /line 4\b/);
+  assert.match(out, /showing 1-4 of 20/);
+});
+
+test('scrolling the TICKET panel (drillTicketScroll/opts.ticketScroll) reveals later lines', () => {
+  const longDescription = Array.from({ length: 20 }, (_, i) => 'line ' + i).join('\n');
+  const out = plain(renderDrillDown(run({}), Object.assign({}, OPTS, {
+    ticketText: { title: 'Long ticket', description: longDescription },
+    ticketScroll: 10,
+  })));
+  assert.match(out, /line 10/);
+  assert.doesNotMatch(out, /line 0\b/);
+});
+
+test('scrolling the TIMELINE panel (drillTimelineScroll/opts.timelineScroll) reaches earlier events, no longer an unreachable "… N earlier events" dead end', () => {
+  const manyEvents = Array.from({ length: 30 }, (_, i) => ({ t: i, kind: 'note', msg: 'event-' + i, role: 'script' }));
+  const withoutScroll = plain(renderDrillDown(run({ events: manyEvents }), OPTS));
+  assert.doesNotMatch(withoutScroll, /event-0\b/, 'the oldest event is scrolled out of the initial viewport');
+  const withScroll = plain(renderDrillDown(run({ events: manyEvents }),
+    Object.assign({}, OPTS, { timelineScroll: 20 })));
+  assert.match(withScroll, /event-0\b/, 'scrolling back should reach the oldest event — no longer a dead end');
 });
 
 test('a short description renders in full with no truncation row', () => {
