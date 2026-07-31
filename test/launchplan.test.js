@@ -143,6 +143,40 @@ test('n toggles start-now, and is always advertised regardless of harness/agent-
   assert.match(held, /n start now/);
 });
 
+// --- lazygit-layout pass: the ticket list scrolls instead of being unbounded
+
+function ticketAt(n) {
+  return ticket('CON-' + (100 + n), 'ticket-' + n);
+}
+
+test('a batch larger than the terminal scrolls the ticket list instead of overflowing it', () => {
+  const bigPlan = plan({ tickets: Array.from({ length: 30 }, (_, i) => ticketAt(i)) });
+  const out = plain(renderLaunchPlan(bigPlan, 0, { cols: 78, rows: 25 }));
+  const lines = out.split('\n');
+  assert.ok(lines.length <= 25, `render must respect the row budget, got ${lines.length} lines`);
+  assert.match(out, /showing/);
+});
+
+test('scrolling the ticket list (opts.ticketListScroll) reveals later tickets', () => {
+  const bigPlan = plan({ tickets: Array.from({ length: 30 }, (_, i) => ticketAt(i)) });
+  const withoutScroll = plain(renderLaunchPlan(bigPlan, 0, { cols: 78, rows: 25 }));
+  assert.doesNotMatch(withoutScroll, /CON-129\b/);
+  const withScroll = plain(renderLaunchPlan(bigPlan, 0, { cols: 78, rows: 25, ticketListScroll: 25 }));
+  assert.match(withScroll, /CON-129\b/);
+});
+
+test('a small batch that fits is unaffected — no scroll indicator, every ticket shown', () => {
+  const out = plain(renderLaunchPlan(plan({}), 0, { cols: 78, rows: 25 }));
+  assert.doesNotMatch(out, /showing/);
+  assert.match(out, /CON-338/);
+  assert.match(out, /CON-349/);
+});
+
+test('j/k scroll keys emit scroll-launchplan-tickets', () => {
+  assert.deepEqual(handleKey('j', { plan: plan({}) }), { type: 'scroll-launchplan-tickets', delta: 1 });
+  assert.deepEqual(handleKey('k', { plan: plan({}) }), { type: 'scroll-launchplan-tickets', delta: -1 });
+});
+
 // --- the fleet-wide warning, not just this batch ----------------------------
 
 test('no warning when nothing else is active', () => {
