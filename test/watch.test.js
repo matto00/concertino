@@ -1390,6 +1390,58 @@ test('Clear Queue: C opens a confirmation, any key cancels, y drops pending and 
   }
 });
 
+test('every frame begins with the persistent top bar naming the project and current screen', async () => {
+  const { EventEmitter } = require('node:events');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-topbar-'));
+  const runDir = path.join(root, '.concertino', 'runs', 'HEL-1');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+    JSON.stringify({ kind: 'run.start', t: 1, project: 'helio', branch: 'feature/x/HEL-1' }) + '\n');
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const fakeSessionObj = {
+    name: 'fake', ensure() {}, listWindows() { return []; }, capture() { return ''; },
+    captureFull() { return ''; }, spawn() {}, kill() {}, attach() { return { status: 0 }; },
+  };
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root, config: {} });
+    const frame = screenOf(written);
+    const firstLine = frame.split('\n')[0];
+    assert.match(firstLine, /helio/);
+    assert.match(firstLine, /FLEET/);
+  } finally {
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ===========================================================================
 // CON-27 (skeptic-final-1b.md change requests 1 and 2): the two cache-
 // invalidation WIRING lines.
