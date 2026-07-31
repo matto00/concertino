@@ -1549,6 +1549,42 @@ test('the footer advertises f force-start only when a QUEUED section is actually
   assert.doesNotMatch(emptyQueue, /f force-start/);
 });
 
+// --- lazygit-layout pass: [N] panel-number labels ---------------------------
+
+test('a rendered section title is prefixed with its digit-jump number', () => {
+  const out = plain(renderFleet([
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'running' }),
+  ], OPTS));
+  assert.match(out, /\[1\] NEEDS YOU/);
+  assert.match(out, /\[2\] RUNNING/);
+});
+
+test('section numbering skips sections that are not on screen this frame, matching sectionJumpTargets', () => {
+  const out = plain(renderFleet([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+  ], OPTS));
+  // NEEDS YOU and RUNNING are both empty (never rendered) — DONE is the
+  // first (and only) section on screen, so it must be numbered [1], not
+  // whatever position it holds in buildSections' own full list.
+  assert.match(out, /\[1\] DONE/);
+});
+
+test('the [N] shown in a title always equals the digit that actually jumps to it', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'running' }),
+    run({ ticket: 'HEL-3', status: 'failed', endStatus: 'escalated', endedAt: 100, elapsedMs: 60000 }),
+    run({ ticket: 'HEL-4', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+  ];
+  const targets = sectionJumpTargets(runs, null, false);
+  const out = plain(renderFleet(runs, OPTS));
+  targets.forEach((t, i) => {
+    const n = i + 1;
+    assert.match(out, new RegExp(`\\[${n}\\] ${t.section.title.replace(/[[\]()]/g, '\\$&')}`));
+  });
+});
+
 // ============================================================================
 // CON-40: QUICK START widget — build/render/height budget, focus, key handling
 // ============================================================================
