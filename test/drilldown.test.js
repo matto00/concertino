@@ -557,6 +557,43 @@ test('scrolling the TIMELINE panel (drillTimelineScroll/opts.timelineScroll) rea
   assert.match(withScroll, /event-0\b/, 'scrolling back should reach the oldest event — no longer a dead end');
 });
 
+// --- lazygit-layout pass: GATES defensive scroll; TIMELINE outer flex -----
+
+test('a GATES panel with many gates scrolls (capped at GATES_VIEWPORT_ROWS) rather than growing the box to fit every gate', () => {
+  const manyGates = Array.from({ length: 20 }, (_, i) => ({ name: 'gate-' + i, status: 'pass', durationMs: 100 }));
+  const r = run({ status: 'running', gates: manyGates });
+  // Even unbounded (rows: 0/absent) — the GATES box itself is capped to its
+  // own fixed viewport now, unlike before this task (where it grew tall
+  // enough to show all 20 gates at once, unbounded).
+  const out = plain(renderDrillDown(r, Object.assign({}, OPTS, { cols: 100, drillFocus: 'gates' })));
+  assert.doesNotMatch(out, /gate-19\b/, 'the 20th gate must not be visible without scrolling');
+  assert.match(out, /showing 1-9 of 20/);
+});
+
+test('scrolling GATES (drillGatesScroll/opts.gatesScroll) reaches later gates', () => {
+  const manyGates = Array.from({ length: 20 }, (_, i) => ({ name: 'gate-' + i, status: 'pass', durationMs: 100 }));
+  const r = run({ status: 'running', gates: manyGates });
+  const withoutScroll = plain(renderDrillDown(r, Object.assign({}, OPTS, { cols: 100 })));
+  assert.doesNotMatch(withoutScroll, /gate-19\b/);
+  const withScroll = plain(renderDrillDown(r, Object.assign({}, OPTS, { cols: 100, gatesScroll: 15 })));
+  assert.match(withScroll, /gate-19\b/);
+});
+
+test('with vertical space to spare, TIMELINE/GATES/EVIDENCE grow to push the footer to the last row', () => {
+  const r = run({ status: 'running', gates: [{ name: 'test', status: 'pass', durationMs: 100 }] });
+  const out = renderDrillDown(r, Object.assign({}, OPTS, { cols: 100, rows: 35 }));
+  const lines = out.split('\n');
+  assert.match(lines[lines.length - 1], /attach|jump/);
+  assert.ok(lines.length <= 35, `expected at most 35 lines, got ${lines.length}`);
+});
+
+test('with no rows budget given, TIMELINE/GATES/EVIDENCE stay tight to content exactly as before this change', () => {
+  const r = run({ status: 'running', gates: [{ name: 'test', status: 'pass', durationMs: 100 }] });
+  const out = renderDrillDown(r, Object.assign({}, OPTS, { cols: 100 }));
+  const lines = out.split('\n');
+  assert.ok(lines.length < 25, 'unbounded render must stay tight to content, not pad out to some default height');
+});
+
 test('a short description renders in full with no truncation row', () => {
   const out = plain(renderDrillDown(run({}), Object.assign({}, OPTS, {
     ticketText: { title: 'Short ticket', description: 'just one short line' },
