@@ -596,6 +596,64 @@ test('metricsFor.throughput is seven zeroes with no delivery history', () => {
   assert.deepEqual(m.throughput, [0, 0, 0, 0, 0, 0, 0]);
 });
 
+test('metricsFor.throughput30d buckets done runs into the last 30 UTC days, oldest first', () => {
+  const now = 40 * DAY_MS;
+  const todayStart = 40 * DAY_MS;
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endedAt: todayStart, elapsedMs: 1000 }), // today
+    run({ ticket: 'HEL-2', status: 'done', endedAt: todayStart - 20 * DAY_MS, elapsedMs: 1000 }), // 20 days ago
+    run({ ticket: 'HEL-3', status: 'done', endedAt: todayStart - 31 * DAY_MS, elapsedMs: 1000 }), // outside the 30-day window
+  ], now);
+  assert.equal(m.throughput30d.length, 30);
+  assert.equal(m.throughput30d[29], 1, 'index 29 is today');
+  assert.equal(m.throughput30d[9], 1, 'index 9 is 20 days ago');
+  assert.equal(m.throughput30d.reduce((a, b) => a + b, 0), 2, 'the 31-day-old delivery must not be counted');
+});
+
+test('metricsFor.throughput30d is thirty zeroes with no delivery history', () => {
+  const m = metricsFor([], 1000000);
+  assert.deepEqual(m.throughput30d, new Array(30).fill(0));
+});
+
+test('metricsFor.durationBuckets counts done runs with a known elapsedMs into three ranges', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', elapsedMs: 5 * 60000 }),      // under10
+    run({ ticket: 'HEL-2', status: 'done', elapsedMs: 9 * 60000 + 59000 }), // under10 (just below 10m)
+    run({ ticket: 'HEL-3', status: 'done', elapsedMs: 10 * 60000 }),     // from10to30 (exactly 10m)
+    run({ ticket: 'HEL-4', status: 'done', elapsedMs: 25 * 60000 }),     // from10to30
+    run({ ticket: 'HEL-5', status: 'done', elapsedMs: 30 * 60000 }),     // over30 (exactly 30m)
+    run({ ticket: 'HEL-6', status: 'done', elapsedMs: 45 * 60000 }),     // over30
+    run({ ticket: 'HEL-7', status: 'running' }),                        // no elapsedMs to count — excluded
+  ], 1000000);
+  assert.deepEqual(m.durationBuckets, { under10: 2, from10to30: 2, over30: 2 });
+});
+
+test('metricsFor.durationBuckets is all zero with no done-run history', () => {
+  const m = metricsFor([run({ ticket: 'HEL-1', status: 'running' })], 1000000);
+  assert.deepEqual(m.durationBuckets, { under10: 0, from10to30: 0, over30: 0 });
+});
+
+test('metricsFor.recentEscalations collects every escalation.raised event across all runs, newest first', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', events: [
+      { kind: 'escalation.raised', t: 100, ticket: 'HEL-1', role: 'orchestrator', question: 'add zod?' },
+    ] }),
+    run({ ticket: 'HEL-2', events: [
+      { kind: 'escalation.raised', t: 300, ticket: 'HEL-2', role: 'evaluator', question: 'drop the column?' },
+      { kind: 'escalation.raised', t: 200, ticket: 'HEL-2', role: null, question: 'retry?' },
+    ] }),
+  ], 1000000);
+  assert.equal(m.recentEscalations.length, 3);
+  assert.deepEqual(m.recentEscalations.map((e) => e.raisedAt), [300, 200, 100], 'newest first');
+  assert.deepEqual(m.recentEscalations[0], { ticket: 'HEL-2', role: 'evaluator', question: 'drop the column?', raisedAt: 300 });
+  assert.equal(m.recentEscalations[1].role, null, 'a missing role stays null, not a made-up default');
+});
+
+test('metricsFor.recentEscalations is empty with no escalation history', () => {
+  const m = metricsFor([run({ ticket: 'HEL-1', status: 'done' })], 1000000);
+  assert.deepEqual(m.recentEscalations, []);
+});
+
 test('metricsFor.verdictRates computes each role\'s pass-rate from verdict events across all runs', () => {
   const m = metricsFor([
     run({ ticket: 'HEL-1', events: [
