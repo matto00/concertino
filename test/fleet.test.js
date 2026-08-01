@@ -317,9 +317,12 @@ test('the confirm key does nothing when there is no restored-unconfirmed queue o
 // skip it entirely (design.md Decision 1).
 
 test('inserting a non-empty QUEUED section never perturbs which run a FAILED/DONE row below it resolves to', () => {
+  // Array order mirrors the canonical section order (FAILED, RUNNING, DONE —
+  // NEEDS YOU is empty here) so `runs[selected]` lines up with the flat walk
+  // position `selected` renders at.
   const runs = [
-    run({ ticket: 'HEL-1', status: 'running' }),
     run({ ticket: 'HEL-2', status: 'failed', endStatus: 'escalated', endedAt: 100 }),
+    run({ ticket: 'HEL-1', status: 'running' }),
     run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered', endedAt: 100 }),
   ];
   const queueState = { pending: ['CON-9', 'CON-10'], inFlight: new Set(), maxConcurrent: 1 };
@@ -395,6 +398,16 @@ test('a delivered run and a failed run render under different headings', () => {
   assert.ok(out.indexOf('FAILED') < out.indexOf('HEL-2'), 'HEL-2 under FAILED');
   assert.ok(out.indexOf('HEL-2') < out.indexOf('DONE'), 'FAILED section comes first');
   assert.ok(out.indexOf('DONE') < out.indexOf('HEL-1'), 'HEL-1 under DONE');
+});
+
+test('buildSections lists FAILED right after NEEDS YOU, ahead of RUNNING — the canonical order every grid-mode task depends on', () => {
+  const sections = buildSections(
+    { needsYou: [], active: [run({ ticket: 'HEL-1', status: 'running' })], failed: [run({ ticket: 'HEL-2', status: 'failed' })], done: [] },
+    null,
+    {},
+  );
+  const kinds = sections.map((s) => s.kind);
+  assert.deepEqual(kinds, ['needs-you', 'failed', 'running', 'done']);
 });
 
 // --- DONE rows compare delivery time against this repo's own average -------
@@ -1120,16 +1133,21 @@ test('the selection marker still points at the correct run when a non-empty QUEU
 // --- CON-6: scroll offset — the selection marker must stay aligned at every
 // scroll position, not just scrollOffset: 0, and NEEDS YOU must never move --
 
-// NEEDS YOU (1) + RUNNING (2) + FAILED (12, windowed at MAX_FINISHED=5 —
-// design.md Decision 1) + DONE (3): more than one page of FAILED alone, so
-// scrolling through it is unavoidable, and RUNNING/DONE give the walk in
-// design.md Decision 2 more than one section to cross.
+// NEEDS YOU (1) + FAILED (12, windowed at MAX_FINISHED=5 — design.md
+// Decision 1) + RUNNING (2) + DONE (3): more than one page of FAILED alone,
+// so scrolling through it is unavoidable, and RUNNING/DONE give the walk in
+// design.md Decision 2 more than one section to cross. Array order mirrors
+// the canonical section order (NEEDS YOU, FAILED, RUNNING, DONE) so
+// `runs[n]` lines up with the flat walk position `selected: n` renders at
+// (see the reducer.js STATUS_ORDER comment for why this correspondence
+// matters).
 function scrollFixture() {
   return [
     run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+  ].concat(manyFinished(12, 'failed'), [
     run({ ticket: 'HEL-2', status: 'running' }),
     run({ ticket: 'HEL-3', status: 'running' }),
-  ].concat(manyFinished(12, 'failed')).concat(manyFinished(3, 'done'));
+  ]).concat(manyFinished(3, 'done'));
 }
 
 // 3.1: extends "the selection marker points at reduce()'s run for every
@@ -1706,9 +1724,10 @@ test('digit jump lands on the first row of the target section when NEEDS YOU/RUN
     run({ ticket: 'HEL-3', status: 'running' }),
     run({ ticket: 'HEL-4', status: 'failed', endStatus: 'escalated', endedAt: 100 }),
   ];
-  // Sections on screen: NEEDS YOU (1 row, index 0), RUNNING (2 rows, index
-  // 1-2), FAILED (1 row, index 3). Digit 3 -> FAILED's first row, index 3.
-  assert.deepEqual(handleKey('3', state({ runs })), { type: 'jump', index: 3 });
+  // Sections on screen (canonical order): NEEDS YOU (1 row, index 0), FAILED
+  // (1 row, index 1), RUNNING (2 rows, indices 2-3). Digit 2 -> FAILED's
+  // first row, index 1.
+  assert.deepEqual(handleKey('2', state({ runs })), { type: 'jump', index: 1 });
 });
 
 test('numbering skips empty sections — digit 2 reaches DONE when NEEDS YOU/FAILED are empty', () => {
@@ -2176,9 +2195,12 @@ test('renderFleet\'s own returned string actually contains a rendered QUICK STAR
 // --- row-index space is unaffected --------------------------------------------
 
 test('a visible QUICK START section never perturbs the run row-index space', () => {
+  // Array order mirrors the canonical section order (FAILED, then RUNNING)
+  // so `selected: 1` — the second runs-backed row — lands on HEL-1, not
+  // HEL-2.
   const runs = [
-    run({ ticket: 'HEL-1', status: 'running' }),
     run({ ticket: 'HEL-2', status: 'failed', endStatus: 'escalated', endedAt: 100 }),
+    run({ ticket: 'HEL-1', status: 'running' }),
   ];
   const out = plain(renderFleet(runs, {
     ...OPTS, selected: 1, quickStartVisible: true,
@@ -2186,7 +2208,7 @@ test('a visible QUICK START section never perturbs the run row-index space', () 
   }));
   const marked = out.split('\n').filter((l) => l.includes('▸'));
   assert.equal(marked.length, 1);
-  assert.match(marked[0], /HEL-2/, 'selected=1 must still resolve to the second RUN, unaffected by QUICK START rows above it');
+  assert.match(marked[0], /HEL-1/, 'selected=1 must still resolve to the second RUN, unaffected by QUICK START rows above it');
 });
 
 test('no QUICK START row is ever marked with the ordinary run-row ▸ selection marker', () => {
@@ -2360,8 +2382,9 @@ test('NEEDS YOU, RUNNING, FAILED, and DONE section headings carry no new icon �
     run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered' }),
   ], OPTS));
   // Exact, unprefixed section headings — no glyph inserted before them.
+  // Canonical order: NEEDS YOU, FAILED, RUNNING, DONE.
   assert.match(out, /\[1\] NEEDS YOU/);
-  assert.match(out, /\[2\] RUNNING/);
-  assert.match(out, /\[3\] FAILED/);
+  assert.match(out, /\[2\] FAILED/);
+  assert.match(out, /\[3\] RUNNING/);
   assert.match(out, /\[4\] DONE/);
 });
