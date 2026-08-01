@@ -74,5 +74,58 @@ node "$ROOT/bin/concertino" doctor --out="$PRIMARY" > "$OUT" 2>&1
 hasnt "an unreachable remote raises no error for this check" "commits behind" "$OUT"
 has   "doctor still runs its other checks when the fetch fails" "Rendered artifacts" "$OUT"
 
+# =============================================================================
+# CON-32: a configured non-default project.baseRemote — doctor and cleanup.sh
+# (via renderEnv's CONCERTINO_BASE_REMOTE) must resolve the same remote, not
+# hardcode `origin`. Uses its own throwaway project so it doesn't disturb the
+# remote-removal state PRIMARY is left in above.
+# =============================================================================
+write_config() {
+  # $1 = target dir. Copies generic.json and sets project.baseRemote="upstream".
+  node -e '
+    const fs = require("fs");
+    const base = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    base.project.baseRemote = "upstream";
+    fs.writeFileSync(process.argv[2], JSON.stringify(base, null, 2));
+  ' "$ROOT/config/examples/generic.json" "$1/concertino.config.json"
+}
+
+REMOTE2="$WORK/remote2.git"
+PRIMARY2="$WORK/primary2"
+git init -q --bare "$REMOTE2"
+git clone -q "$REMOTE2" "$PRIMARY2" 2>/dev/null
+write_config "$PRIMARY2"
+
+node "$ROOT/bin/concertino" sync --out="$PRIMARY2" --config="$PRIMARY2/concertino.config.json" > "$WORK/sync2.txt" 2>&1
+if [ $? -ne 0 ]; then
+  echo "  FAIL sync into the second throwaway project (configured baseRemote)"
+  tail -5 "$WORK/sync2.txt"
+  exit 1
+fi
+
+git -C "$PRIMARY2" add -A
+git -C "$PRIMARY2" -c user.email=t@t.com -c user.name=t commit -q -m init
+git -C "$PRIMARY2" branch -M main
+git -C "$PRIMARY2" remote rename origin upstream
+git -C "$PRIMARY2" push -q upstream main
+
+# --- 3.2: .concertino.env carries CONCERTINO_BASE_REMOTE from project.baseRemote --
+has "renderEnv writes CONCERTINO_BASE_REMOTE from project.baseRemote" \
+    "CONCERTINO_BASE_REMOTE='upstream'" "$PRIMARY2/scripts/concertino/.concertino.env"
+
+# --- 3.1: doctor's Git check reports against the configured remote, not origin ---
+OTHER2="$(mktemp -d)"
+git clone -q "$REMOTE2" "$OTHER2" 2>/dev/null
+git -C "$OTHER2" checkout -q main
+git -C "$OTHER2" -c user.email=t@t.com -c user.name=t commit -q --allow-empty -m "merged PR (configured upstream remote)"
+git -C "$OTHER2" push -q origin main
+rm -rf "$OTHER2"
+
+node "$ROOT/bin/concertino" doctor --out="$PRIMARY2" > "$OUT" 2>&1
+has "reports the commits-behind warning against the configured remote" \
+    "1 commit behind upstream/main" "$OUT"
+hasnt "does not fall back to origin when a non-default remote is configured" \
+    "behind origin/main" "$OUT"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

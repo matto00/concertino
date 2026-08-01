@@ -48,10 +48,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
-# `concertino sync`'s renderEnv only ever writes CONCERTINO_BASE_BRANCH today
-# (see bin/concertino) — CONCERTINO_BASE_REMOTE is not currently rendered.
-# Default both with ${VAR:-default}, matching setup-worktree.sh's own
-# fallback, so this is correct whether or not .concertino.env sets either one.
+# `concertino sync`'s renderEnv writes both CONCERTINO_BASE_BRANCH and
+# CONCERTINO_BASE_REMOTE (see bin/concertino), the latter from
+# project.baseRemote (defaulting to origin). Default both with
+# ${VAR:-default} anyway, matching setup-worktree.sh's own fallback, so this
+# is correct even against a stale .concertino.env rendered before this field
+# existed, or one that predates a `concertino sync` re-run.
 BASE_REMOTE="${CONCERTINO_BASE_REMOTE:-origin}"
 BASE_BRANCH="${CONCERTINO_BASE_BRANCH:-main}"
 

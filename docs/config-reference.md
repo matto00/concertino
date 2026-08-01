@@ -47,13 +47,14 @@ runtime with a harness-set environment variable when one is present
 ## `project`
 
 ```json
-"project": { "name": "helio", "baseBranch": "main" }
+"project": { "name": "helio", "baseBranch": "main", "baseRemote": "origin" }
 ```
 
 | Field | Type | Default | Purpose |
 | ----- | ---- | ------- | ------- |
 | `name` | string | — (required) | Human label used throughout agent prose. |
 | `baseBranch` | string | `"main"` | Branch PRs target and diffs compare against. |
+| `baseRemote` | string | `"origin"` | Remote PRs target and diffs/fast-forward compare against. |
 
 ## `ticketProvider`
 
