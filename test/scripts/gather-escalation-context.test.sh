@@ -62,6 +62,26 @@ check "contradiction exits 0"        "$RC" "0"
 check "contradiction mentions requirement A" "$(printf '%s' "$OUT" | grep -c 'always log in UTC')" "1"
 check "contradiction mentions requirement B" "$(printf '%s' "$OUT" | grep -c 'always log in local time')" "1"
 
+# --- ticket-ambiguity happy path --------------------------------------------
+OUT="$("$SCRIPT" ticket-ambiguity signal=scope-boundary detail="does X belong in this ticket or a follow-up" draft_excerpt="likely acceptable to leave X out for now")"
+RC=$?
+check "ticket-ambiguity exits 0"          "$RC" "0"
+check "ticket-ambiguity mentions signal"  "$(printf '%s' "$OUT" | grep -c 'scope-boundary')" "1"
+check "ticket-ambiguity mentions detail"  "$(printf '%s' "$OUT" | grep -c 'does X belong in this ticket or a follow-up')" "1"
+check "ticket-ambiguity mentions draft excerpt" \
+  "$(printf '%s' "$OUT" | grep -c 'likely acceptable to leave X out for now')" "1"
+
+# --- ticket-ambiguity: missing required fields fails without partial context
+OUT="$("$SCRIPT" ticket-ambiguity signal=hedge-phrase 2>/tmp/gec-err)"
+RC=$?
+check "ticket-ambiguity missing fields: exit non-zero" "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
+check "ticket-ambiguity missing fields: nothing on stdout" \
+  "$(printf '%s' "$OUT" | wc -c | tr -d ' ')" "0"
+check "ticket-ambiguity missing fields: FAIL on stderr" "$(grep -c '^FAIL' /tmp/gec-err)" "1"
+check "ticket-ambiguity missing fields: names the missing fields" \
+  "$(grep -c 'detail' /tmp/gec-err)" "1"
+rm -f /tmp/gec-err
+
 # --- missing required field fails without printing partial context ---------
 OUT="$("$SCRIPT" dependency package=zod 2>/tmp/gec-err)"
 RC=$?

@@ -14,6 +14,7 @@ The design rationale and full topology live in
 | ----------------------------------- | ------------------------------------------- | ---------------------------- |
 | `systematic-debugging.md`           | No fix without a probe-confirmed root cause | executor                     |
 | `verification-before-completion.md` | No completion claim without fresh evidence  | executor, evaluator, skeptic |
+| `ticket-drafting-escalation.md`     | No silently-resolved ambiguity in ticket-drafting text | orchestrator (and any future ticket-drafting flow, e.g. CON-21) |
 
 Two further canonical standards are **project-specific** (so they live in your
 repo, not here) and are bound the same way via `concertino.config.json →
@@ -40,8 +41,9 @@ docs, the config binds them to the right agents at the right phase.
 
 ## Acknowledgements
 
-These laws are **inspired by [obra/superpowers](https://github.com/obra/superpowers)**.
-Each law's frontmatter carries an `inspired_by` pointer. They were rewritten from
-scratch — there is **no runtime dependency** on superpowers. See the repo root
-[`README.md`](../../README.md) for the full attribution and the inspired-by /
+Some of these laws are **inspired by [obra/superpowers](https://github.com/obra/superpowers)**.
+Each law adapted from superpowers carries an `inspired_by` pointer in its frontmatter;
+laws with no superpowers precedent (e.g. `ticket-drafting-escalation.md`) omit it. They
+were rewritten from scratch — there is **no runtime dependency** on superpowers. See the
+repo root [`README.md`](../../README.md) for the full attribution and the inspired-by /
 original boundary.
