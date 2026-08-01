@@ -1,6 +1,6 @@
 # Fleet page METRICS section — charts and more metrics
 
-**Status:** design approved, not yet implemented
+**Status:** implemented
 **Date:** 2026-08-01
 
 Expands the fleet page's METRICS section (introduced by
@@ -65,14 +65,21 @@ Four new fields, added to the object this function already returns:
   'CONFIRM' | 'MERGE'` (the "good" outcome per role, per
   `core/roles/{evaluator,skeptic,auditor}.md`'s documented verdict values)
   as a pass. `null` when a role has zero verdict events anywhere in history.
-- **`gateRates: Record<gateName, rate>`** — for each of the 8 known gate
-  names (`phase:Setup`, `phase:Planning`, `phase:Execution`,
-  `phase:Evaluation`, `phase:Delivery`, `phase:Cleanup`, `server:backend`,
-  `server:frontend`), the fraction of runs whose `run.gates` array (already
-  deduped to the latest result per name per run, `reducer.js:116-127`)
-  records `status === 'pass'` for that name, among runs that reported it at
-  all. A gate name absent from every run's history is omitted from the map
-  entirely (not rendered as 0%).
+- **`gateRates: Record<gateName, rate>`** — the fraction of runs whose
+  `run.gates` array (already deduped to the latest result per name per run,
+  `reducer.js:116-127`) records `status === 'pass'` for that name, among runs
+  that reported it at all. **Implementation correction:** this doc originally
+  specified 8 candidate names built from `PHASE_ORDER` (`phase:Setup`,
+  `phase:Planning`, …) — that vocabulary is wrong (it's the `phase.enter`
+  event vocabulary, not gate names) and was caught by the final whole-branch
+  review. The real, complete vocabulary is 6 lowercase names —
+  `phase:setup`, `phase:servers`, `phase:delivery`, `phase:cleanup` (from
+  `core/scripts/assert-phase.sh`'s own `PHASE` argument) plus
+  `server:backend`, `server:frontend` — and the shipped implementation
+  derives `gateRates`' key set from the union of gate names actually present
+  across `runs` rather than a fixed candidate list, so it can never drift
+  from the real emitters again. A gate name absent from every run's history
+  is omitted from the map entirely (not rendered as 0%).
 
 All four are computed over **all** of `runs` (full on-disk history, same
 precedent as the existing `avgMs`), except `throughput`, which is explicitly
@@ -82,14 +89,15 @@ reasonable terminal width as a single-line sparkline.
 
 ### Rendering layer
 
-Two new small helpers, colocated with `format.js`'s existing `bar()` (the
-phase-progress bar already used on run rows), reusing its block-character
-style rather than inventing a new one:
+One new small helper, colocated with `format.js`'s existing `bar()` (the
+phase-progress bar already used on run rows):
 
-- **`microBar(fraction, width = 10)`** — same fill logic as `bar()`, but
-  sized for an inline `label ██████░░░░ XX%` segment rather than a full-row
-  progress bar. 10 chars matches the widths used in this doc's mockup below
-  and reads clearly at any terminal width `fitSegments` will actually try.
+- **Inline percentage bars reuse `bar()` directly** — the implementation
+  calls `f.bar(rate, 10)` at every `label XX%` segment rather than adding a
+  separate `microBar` wrapper as originally planned here; a wrapper with
+  identical fill logic would just be a second copy of `bar()`'s own code, so
+  the plan that turned this design into tasks simplified it away. Behavior
+  is unchanged from what's described below — 10-char bars, same glyphs.
 - **`sparkline(values)`** — maps each of the 7 throughput values to one of
   `▁▂▃▄▅▆▇█` scaled against the max value in the array (an all-zero array
   renders as 7 `▁`, not a divide-by-zero).
@@ -126,31 +134,35 @@ This is generalized to an `emptyLines: string[]` field:
 
 ```
 ◫ METRICS ─────────────────────────────────────────────────────────────────
- avg delivery 12m · delivered today 5 · this week 22
- success  today ██████░░░░ 80% (4/5) · week ████████░░ 86% (19/22) · escalations today 3
+ avg delivery 12m · delivered today 5 · this week 22 · escalations today 3
+ success  today ██████░░░░ 80% (4/5) · week ████████░░ 86% (19/22)
  throughput (7d)  ▂▄▁▇▅▃▂  avg 3.4/day · peak 7
  verdicts  evaluator ████████░░ 84% · skeptic █████████░ 91% · auditor ██████████ 100%
- gates  Setup 100% · Planning 95% · Execution 88% · Evaluation 92% · Delivery 100% · Cleanup 100% · backend 100% · frontend 98%
+ gates  setup 100% · servers 100% · delivery 92% · cleanup 100% · backend 100% · frontend 98%
 ─────────────────────────────────────────────────────────────────────────────
 ```
 
-1. Unchanged from today (`avg delivery`, `delivered today/this week`).
-2. New — `successRate.today`/`.week` as `microBar` segments, joined via
-   `fitSegments`; `escalations today` (today's existing count, unchanged
-   value) appended as a trailing plain segment, dropped first if the line
-   doesn't fit.
+1. Unchanged from today (`avg delivery`, `delivered today/this week`), plus
+   `escalations today` (today's existing count, unchanged value) — kept here
+   rather than moved to line 2 as originally planned in this doc: moving it
+   made it the first segment `fitSegments` drops, so it went invisible at the
+   standard 80-column terminal width. Caught by the final whole-branch
+   review; fixed by leaving it exactly where it always lived.
+2. New — `successRate.today`/`.week` as inline `f.bar()` segments, joined via
+   `fitSegments`.
 3. New — `sparkline(throughput)` plus `avg X.X/day` (mean of the 7 values)
    and `peak N` (max of the 7 values).
-4. New — `verdictRates` as three `microBar` segments via `fitSegments`.
-5. New — `gateRates` as up to 8 plain `name XX%` segments (no bar — 8 bars
-   would not fit any realistic terminal width) via `fitSegments`.
+4. New — `verdictRates` as three `f.bar()` segments via `fitSegments`.
+5. New — `gateRates` (the real 6-name vocabulary — see the data-layer
+   correction above) as plain `name XX%` segments (no bar) via `fitSegments`.
 
 ### Edge cases
 
 - **No run history at all**: line 1 already degrades to `avg delivery n/a`
-  (existing behavior). Lines 2-5 degrade the same way: `success  today n/a ·
-  week n/a · escalations today 0`, `throughput (7d)  ▁▁▁▁▁▁▁  avg 0.0/day ·
-  peak 0`, `verdicts  no data yet`, `gates  no data yet`.
+  (existing behavior; `escalations today 0` stays visible on the same line).
+  Lines 2-5 degrade the same way: `success  today n/a · week n/a`,
+  `throughput (7d)  ▁▁▁▁▁▁▁  avg 0.0/day · peak 0`, `verdicts  no data yet`,
+  `gates  no data yet`.
 - **Some roles/gates never reported** (e.g. a project that's never used
   agent-merge, so no `auditor` verdicts exist): that segment is omitted from
   its line, not rendered as `n/a` or `0%` (a role that's never run is
@@ -158,6 +170,18 @@ This is generalized to an `emptyLines: string[]` field:
 - **Narrow terminal**: `fitSegments` drops trailing segments with `…`;
   verified down to 80 cols in tests. Box borders and line count are
   unaffected by width — only segment count within lines 2/4/5 changes.
+- **Short terminal (few rows)**: METRICS' box is `forceRender`, so its cost
+  (5 content lines + 2-row border = 7 rows) is fixed and cannot be trimmed
+  the way ordinary sections shrink under height pressure — growing from the
+  old 1-line box (3 rows) raises the fleet page's practical minimum terminal
+  height by the same +4 rows, to roughly 18-20 rows depending on what else
+  is showing. Flagged by the final whole-branch review as a real, not
+  hypothetical, regression for terminals in the 14-17 row range that
+  rendered fine before this change. Decision: accept the new floor rather
+  than add trimming logic — this doc's own scope was charts and metrics, not
+  a height-adaptive METRICS box, and modern terminal usage rarely goes below
+  that; the affected existing tests were updated to the new true floors
+  rather than papered over (`test/fleet.test.js`'s height-budget tests).
 
 ## Testing
 
@@ -168,11 +192,12 @@ This is generalized to an `emptyLines: string[]` field:
   reports (omitted, not zeroed), and the 7-day throughput bucketing crossing
   a UTC day boundary (mirroring how `deliveredToday`/`deliveredWeek` are
   already tested against day-boundary edge cases).
-- `microBar`/`sparkline`/`fitSegments`: pure unit tests in
-  `test/format.test.js` (or a new `test/layout.test.js` section, matching
-  wherever `bar()`'s own tests live) — bar fill rounding at fraction
-  boundaries, sparkline's all-zero case, `fitSegments` dropping trailing
-  segments and never emitting a partially-rendered one.
+- `sparkline`/`fitSegments`: pure unit tests in `test/format.test.js` and
+  `test/layout.test.js` respectively — sparkline's all-zero case and
+  length-invariant, `fitSegments` dropping trailing segments and never
+  emitting a partially-rendered one, plus a null/undefined-input guard added
+  during the final review. (`bar()` itself already had its own tests before
+  this design; reused as-is, not re-tested.)
 - Render-level test in `test/fleet.test.js`/`test/watch.test.js`: the METRICS
   box renders exactly 5 content lines (7 total with borders) at a normal
   width, and degrades to fewer segments (not fewer lines, not crashed
@@ -184,7 +209,8 @@ This is generalized to an `emptyLines: string[]` field:
 - `lib/ui/screens/fleet.js` — `metricsFor` (new fields), `buildSections`
   (emptyLines instead of emptyHint for METRICS), `visibleWindow`/render
   height and content logic (generalized to N lines).
-- `lib/ui/format.js` — `microBar`, `sparkline` helpers alongside `bar()`.
+- `lib/ui/format.js` — `sparkline` helper alongside `bar()` (reused directly
+  for inline percentage bars, no separate `microBar` wrapper).
 - `lib/ui/layout.js` (or `format.js`, wherever fits existing conventions
   best) — `fitSegments` helper.
 - `test/fleet.test.js` — new fixtures/assertions for the above.
