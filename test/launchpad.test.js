@@ -84,6 +84,41 @@ test('r is the only bound key against a cold cache', () => {
   assert.equal(handleKey('L', state), null);
 });
 
+// --- CON-20: a zero-ticket fetch with an error must not be swallowed by the
+// cold-cache hint. `cache.isCold` treats "zero tickets" and "never fetched"
+// identically (cache.js's own comment) — exactly right for a genuinely
+// empty team, but a team-not-found refresh ALSO leaves the cache at zero
+// tickets, and unlike the never-fetched case it has an lp.error that must
+// reach the screen.
+
+test('a zero-ticket cache WITH an error shows the error, not "press r to fetch"', () => {
+  const out = plain(renderLaunchPad(lp({
+    cache: { fetchedAt: NOW, tickets: [], epics: [], teamKey: 'ABC' },
+    error: 'no team with key "ABC" — check ticketProvider.teamKey',
+  }), [], OPTS));
+  assert.match(out, /no team with key "ABC"/);
+  assert.doesNotMatch(out, /press r to fetch/);
+});
+
+test('keys are not locked to r-only when a zero-ticket cache carries an error', () => {
+  const state = {
+    lp: lp({
+      cache: { fetchedAt: NOW, tickets: [], epics: [], teamKey: 'ABC' },
+      error: 'no team with key "ABC" — check ticketProvider.teamKey',
+    }),
+    runs: [],
+  };
+  assert.deepEqual(handleKey('\x1b', state), { type: 'back' });
+  assert.deepEqual(handleKey('r', state), { type: 'refresh-launchpad' });
+});
+
+test('a genuinely cold cache (no error) is unaffected by the error gate', () => {
+  // Same assertion as the sibling test above, just re-confirming the
+  // pre-CON-20 case (no lp.error at all) still takes the cold-cache branch.
+  const out = plain(renderLaunchPad(lp({ cache: { fetchedAt: null, tickets: [], epics: [] }, error: null }), [], OPTS));
+  assert.match(out, /press r to fetch/);
+});
+
 // --- inline status column: all three states ---------------------------------
 
 test('a ticket unstarted in Linear with no live run reads its Linear state name', () => {
@@ -354,6 +389,61 @@ test('the header shows total open count and cache age', () => {
   const out = plain(renderLaunchPad(lp({}), [], OPTS));
   assert.match(out, /1 open/);
   assert.match(out, /fetched 12m ago/);
+});
+
+// --- CON-20: header distinguishes a real-but-empty team from a not-found one
+
+test('a real team with zero open tickets says so by name in the header', () => {
+  const out = plain(renderLaunchPad(lp({
+    cache: { fetchedAt: NOW, tickets: [], epics: [], teamKey: 'CON' },
+    error: null,
+  }), [], OPTS));
+  assert.match(out, /no open tickets in CON/);
+  assert.doesNotMatch(out, /\b0 open\b/);
+});
+
+// Evaluator (evaluation-1.md) Change Request 1/2: `cache.isCold` treats
+// "fetchedAt set, zero tickets" identically to "never fetched" BY DESIGN
+// (cache.js's own comment), so the cold-cache branch used to ALSO fire for
+// this exact state — a real fetch that confirmed the team and legitimately
+// found nothing — rendering "no tickets cached yet — press r to fetch"
+// directly under a header that already said `fetched 0s ago`, a visible
+// self-contradiction. Gating on `lp.cache.fetchedAt == null` instead fixes
+// it: this state falls through to the normal render, where the header's own
+// "no open tickets in CON" (asserted in the sibling test above) is the only
+// thing said about it.
+test('a real, confirmed-empty team does NOT also show "press r to fetch" under its header', () => {
+  const out = plain(renderLaunchPad(lp({
+    cache: { fetchedAt: NOW, tickets: [], epics: [], teamKey: 'CON' },
+    error: null,
+  }), [], OPTS));
+  assert.doesNotMatch(out, /press r to fetch/);
+  assert.doesNotMatch(out, /no tickets cached yet/);
+});
+
+test('keys are not locked to r-only for a real, confirmed-empty team — only a genuinely never-fetched cache locks the keymap', () => {
+  const confirmedEmpty = { lp: lp({ cache: { fetchedAt: NOW, tickets: [], epics: [], teamKey: 'CON' }, error: null }), runs: [] };
+  assert.deepEqual(handleKey('\t', confirmedEmpty), { type: 'switch-pane', pane: 'epics' },
+    'a key other than r/esc must reach the ordinary handlers once a real fetch confirmed the team');
+  assert.deepEqual(handleKey('r', confirmedEmpty), { type: 'refresh-launchpad' });
+
+  const neverFetched = { lp: lp({ cache: { fetchedAt: null, tickets: [], epics: [] } }), runs: [] };
+  assert.equal(handleKey('\t', neverFetched), null, 'a genuinely cold cache still locks the keymap to r-only');
+});
+
+test('a team-not-found error keeps the header\'s default count — the error line explains it', () => {
+  const out = plain(renderLaunchPad(lp({
+    cache: { fetchedAt: NOW, tickets: [], epics: [], teamKey: 'ABC' },
+    error: 'no team with key "ABC" — check ticketProvider.teamKey',
+  }), [], OPTS));
+  // Never claims a team key that did not resolve is real.
+  assert.doesNotMatch(out, /no open tickets in ABC/);
+  assert.match(out, /no team with key "ABC" — check ticketProvider\.teamKey/);
+});
+
+test('a non-empty fetch always shows the numeric count, never the team message', () => {
+  const out = plain(renderLaunchPad(lp({}), [], OPTS));
+  assert.doesNotMatch(out, /no open tickets in/);
 });
 
 test('a checked ticket renders [x], an unchecked one [ ]', () => {

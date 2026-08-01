@@ -2266,3 +2266,297 @@ test('a ticket that becomes queued (via q) before L is pressed is excluded from 
     await h.teardown(donePromise);
   }
 });
+
+// --- CON-20: launch pad refresh distinguishes an empty team from a
+// not-found team key ---------------------------------------------------------
+// `refreshLaunchPad` is a private closure inside watch(opts) (same
+// constraint as the 'q' add-to-queue tests above), so the only way to prove
+// the new resolveTeam() branching actually wires up is end to end. This
+// harness mirrors setupLaunchPadHarness's fake session/stdin exactly, but
+// additionally replaces lib/ui/linear's require.cache entry so fetchTickets
+// and resolveTeam are test doubles instead of real network calls — the
+// non-network functions (launchPadStatus, teamKeyFromConfig,
+// stateTypesFromConfig) are the REAL implementation (spread from the actual
+// module) so the gate and team-key resolution behave exactly as in
+// production.
+function setupLaunchPadRefreshHarness(linearOverrides) {
+  const { EventEmitter } = require('node:events');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-launchpad-refresh-'));
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const linearPath = require.resolve('../lib/ui/linear');
+  const realLinear = require('../lib/ui/linear');
+
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return []; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = true;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  const prevKey = process.env.LINEAR_API_KEY;
+  process.env.LINEAR_API_KEY = 'dummy-not-a-real-key';
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+  require.cache[linearPath] = {
+    id: linearPath, filename: linearPath, loaded: true,
+    exports: Object.assign({}, realLinear, linearOverrides),
+  };
+
+  return {
+    root, fakeStdin, written,
+    screen: () => screenOf(written),
+    async teardown(donePromise) {
+      fakeStdin.emit('end');
+      if (donePromise) await donePromise;
+      process.stdout.write = realWrite;
+      Object.defineProperty(process, 'stdin', realStdinDescriptor);
+      if (prevKey === undefined) delete process.env.LINEAR_API_KEY;
+      else process.env.LINEAR_API_KEY = prevKey;
+      delete require.cache[watchPath];
+      delete require.cache[sessionPath];
+      delete require.cache[linearPath];
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+// refreshLaunchPad is fire-and-forget (its own comment: "the 1-second poll
+// timer picks up the result on its own; nothing here needs to force an extra
+// redraw") — nothing here awaits its promise chain directly, and this
+// harness's fake fetchTickets/resolveTeam never touch the real network, so
+// the whole chain settles on the microtask queue with no real I/O in it.
+// Flushing microtasks is therefore enough to observe it — repeated so it
+// doesn't matter how many `await`s are chained inside refreshLaunchPad.
+//
+// Deliberately NOT `setImmediate`/any macrotask boundary, and deliberately
+// NOT a real wall-clock wait for watch.js's own POLL_MS timer: both were
+// tried and BOTH corrupt node:test's own pass/fail accounting for an
+// ADJACENT test in this file — reproduced in isolation down to a two-line
+// repro (override process.stdout.write, cross a macrotask boundary, restore)
+// — while process.stdout.write is the wrapper this file's own harnesses
+// install to capture frames. A pure microtask flush (no macrotask boundary
+// at all) does not exhibit this. Because of the same corruption risk, these
+// tests deliberately do NOT try to force a fresh keypress-triggered redraw
+// after settling either (that would need a macrotask boundary too, or
+// `resize`, which was also confirmed to corrupt reporting even with a pure
+// microtask wait around it) — they assert the settled OUTCOME through the
+// on-disk cache and the fake fetchTickets/resolveTeam's own call-tracking
+// arrays instead, which need no redraw at all. The actual rendered TEXT
+// ("no open tickets in CON" / "no team with key ..." / the cold-cache gate
+// bypass) is covered directly against renderLaunchPad/headerLine in
+// launchpad.test.js, where no terminal-emulation timing is involved.
+async function flushRefresh() {
+  for (let i = 0; i < 25; i++) await Promise.resolve();
+}
+
+const LAUNCHPAD_CONFIG_BAD_TEAM = {
+  dashboard: { launchPad: { enabled: true } },
+  ticketProvider: { kind: 'linear', teamKey: 'ABC', idExample: 'ABC-123' },
+};
+
+test('a real team with zero open tickets resolves the team and writes an empty-but-real cache, no error', async () => {
+  const resolveTeamCalls = [];
+  const h = setupLaunchPadRefreshHarness({
+    fetchTickets: async (opts) => ({ teamKey: opts.teamKey, tickets: [], epics: [], pages: 1, truncated: false }),
+    resolveTeam: async (transport, apiKey, teamKey) => { resolveTeamCalls.push(teamKey); return { found: true }; },
+  });
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    h.fakeStdin.emit('data', 'N'); // open the launch pad
+    h.fakeStdin.emit('data', 'r'); // trigger refreshLaunchPad
+    await flushRefresh();
+
+    assert.deepEqual(resolveTeamCalls, ['CON'], 'resolveTeam is called with the same team key the fetch used');
+
+    const cacheModule = require('../lib/ui/cache');
+    const onDisk = cacheModule.read(h.root);
+    assert.deepEqual(onDisk.tickets, [], 'a real, empty team still writes its zero-ticket result to the cache');
+    assert.equal(onDisk.teamKey, 'CON');
+    // CON-20 (skeptic-final-1.md): persisted, not just held in lp.error —
+    // openLaunchPad rebuilds the initial error from exactly this field on a
+    // fresh process, so it has to survive on disk, not just in memory.
+    assert.strictEqual(onDisk.teamFound, true);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('a team key that matches no team resolves found:false and never writes a stray success', async () => {
+  const resolveTeamCalls = [];
+  const h = setupLaunchPadRefreshHarness({
+    fetchTickets: async (opts) => ({ teamKey: opts.teamKey, tickets: [], epics: [], pages: 1, truncated: false }),
+    resolveTeam: async (transport, apiKey, teamKey) => { resolveTeamCalls.push(teamKey); return { found: false }; },
+  });
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG_BAD_TEAM });
+
+    h.fakeStdin.emit('data', 'N');
+    h.fakeStdin.emit('data', 'r');
+    await flushRefresh();
+
+    assert.deepEqual(resolveTeamCalls, ['ABC']);
+
+    // refreshLaunchPad still writes the (empty) fetch result to the cache
+    // regardless of whether the team resolved — `teamFound: false` is what
+    // tells this case apart from a confirmed-empty team ON DISK (CON-20,
+    // skeptic-final-1.md: this used to live only in the in-memory lp.error,
+    // which did not survive a process restart — see the dedicated
+    // "restart" test below for the end-to-end proof of THAT).
+    const cacheModule = require('../lib/ui/cache');
+    const onDisk = cacheModule.read(h.root);
+    assert.deepEqual(onDisk.tickets, []);
+    assert.strictEqual(onDisk.teamFound, false);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('a non-empty fetch never triggers a team-resolution lookup', async () => {
+  const resolveTeamCalls = [];
+  const h = setupLaunchPadRefreshHarness({
+    fetchTickets: async (opts) => ({
+      teamKey: opts.teamKey,
+      tickets: [{ identifier: 'CON-1', title: 'Has tickets', epicId: null, state: { name: 'Todo', type: 'unstarted' } }],
+      epics: [{ id: null, name: null, openCount: 1 }],
+      pages: 1,
+      truncated: false,
+    }),
+    resolveTeam: async (transport, apiKey, teamKey) => { resolveTeamCalls.push(teamKey); return { found: true }; },
+  });
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    h.fakeStdin.emit('data', 'N');
+    h.fakeStdin.emit('data', 'r');
+    await flushRefresh();
+
+    assert.deepEqual(resolveTeamCalls, [], 'a non-empty result already proves the team exists — no lookup needed');
+
+    const cacheModule = require('../lib/ui/cache');
+    const onDisk = cacheModule.read(h.root);
+    assert.deepEqual(onDisk.tickets.map((t) => t.identifier), ['CON-1']);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+// CON-20 (skeptic-final-1.md, Change Request 2): the exact restart scenario
+// the skeptic's own repro exercised — a PRIOR process's team-not-found
+// refresh persisted `teamFound: false` to disk; a fresh process (fresh `lp`,
+// no refresh performed at all) must derive the same error from that
+// persisted row, not from anything held in memory (there is none — this is
+// a brand-new `launchPad` object). fetchTickets/resolveTeam both throw if
+// called, to prove the error comes straight from the stale cache, exactly
+// like the sibling "cold cache performs no ticket fetch" test just below
+// proves the cold-cache path never touches the network.
+test('a stale team-not-found cache renders the error on a fresh process, before any refresh', async () => {
+  const h = setupLaunchPadRefreshHarness({
+    fetchTickets: async () => { throw new Error('must not fetch — no refresh was requested'); },
+    resolveTeam: async () => { throw new Error('must not resolve — no refresh was requested'); },
+  });
+
+  // A PRIOR process's team-not-found refresh, written directly — this test
+  // never presses 'r' at all, so this is the only way the cache reaches
+  // this state.
+  const cacheModule = require('../lib/ui/cache');
+  cacheModule.write(h.root, { teamKey: 'ABC', tickets: [], epics: [], teamFound: false }, Date.now());
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG_BAD_TEAM });
+
+    h.fakeStdin.emit('data', 'N'); // open the launch pad — a fresh lp, no refresh
+
+    const frame = h.screen();
+    assert.match(frame, /no team with key "ABC" — check ticketProvider\.teamKey/);
+    assert.doesNotMatch(frame, /no open tickets in ABC/, 'a persisted not-found team must never render as if it were confirmed real');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+// Companion to the above: a PRIOR process's confirmed-empty (real team)
+// refresh must NOT be misread as an error on a fresh process either —
+// `teamFound: true` round-trips through openLaunchPad exactly like `false`
+// does, just to the opposite (no-error) conclusion.
+test('a stale confirmed-empty-team cache renders the header message, not an error, on a fresh process', async () => {
+  const h = setupLaunchPadRefreshHarness({
+    fetchTickets: async () => { throw new Error('must not fetch — no refresh was requested'); },
+    resolveTeam: async () => { throw new Error('must not resolve — no refresh was requested'); },
+  });
+
+  const cacheModule = require('../lib/ui/cache');
+  cacheModule.write(h.root, { teamKey: 'CON', tickets: [], epics: [], teamFound: true }, Date.now());
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    h.fakeStdin.emit('data', 'N');
+
+    const frame = h.screen();
+    assert.match(frame, /no open tickets in CON/);
+    assert.doesNotMatch(frame, /no team with key/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('a cold cache performs no ticket fetch and no team-resolution lookup until r is pressed', async () => {
+  const fetchTicketsCalls = [];
+  const resolveTeamCalls = [];
+  const h = setupLaunchPadRefreshHarness({
+    fetchTickets: async (opts) => { fetchTicketsCalls.push(opts.teamKey); return { teamKey: opts.teamKey, tickets: [], epics: [], pages: 1, truncated: false }; },
+    resolveTeam: async (transport, apiKey, teamKey) => { resolveTeamCalls.push(teamKey); return { found: true }; },
+  });
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    h.fakeStdin.emit('data', 'N'); // open the launch pad — no cache on disk yet
+    await flushRefresh();
+
+    assert.deepEqual(fetchTicketsCalls, [], 'opening the launch pad must never fetch on its own');
+    assert.deepEqual(resolveTeamCalls, [], 'opening the launch pad must never resolve the team on its own');
+    assert.match(h.screen(), /press r to fetch/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
