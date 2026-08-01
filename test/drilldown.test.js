@@ -197,11 +197,12 @@ test('a failed run\'s drill-down header status is coloured the same red the flee
   // Same colour the fleet view's FAILED section heading uses, for the exact
   // same run's status — this is the "same colour everywhere" scenario, not
   // just "some colour appears somewhere." The heading now carries a
-  // lazygit-layout digit-jump number ("[1] FAILED") as the single, sole
-  // section this fixture renders — the numbering is inside the same colour
-  // wrap, not a separate un-coloured prefix.
+  // lazygit-layout digit-jump number ("[2] FAILED" — CON-56: QUICK START is
+  // always on screen too and renders first, claiming [1]) as the single,
+  // sole populated section this fixture renders — the numbering is inside
+  // the same colour wrap, not a separate un-coloured prefix.
   const fleetOut = renderFleet([failedRun], { cols: 78, selected: 0 });
-  const escapedFailedHeading = f.STATUS_COLOUR.failed('[1] FAILED').replace(/[[\]()]/g, '\\$&');
+  const escapedFailedHeading = f.STATUS_COLOUR.failed('[2] FAILED').replace(/[[\]()]/g, '\\$&');
   assert.match(fleetOut, new RegExp(escapedFailedHeading));
 
   // A dead window with no endStatus ("window exited") is also a failed-run

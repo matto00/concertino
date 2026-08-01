@@ -1178,9 +1178,10 @@ test('jumping into QUEUED focus, moving the cursor, and exiting leaves the run s
     const beforeFrame = screenOf(written);
     assert.equal(markedTicket(beforeFrame), 'HEL-2', 'sanity: selection is on HEL-2 before entering queue focus');
 
-    // Sections on screen: RUNNING (1), QUEUED (2). Digit 2 jumps INTO
-    // QUEUED focus without touching the run selection at all.
-    fakeStdin.emit('data', '2');
+    // Sections on screen: RUNNING (1), QUICK START (2, always on screen —
+    // CON-56), QUEUED (3). Digit 3 jumps INTO QUEUED focus without touching
+    // the run selection at all.
+    fakeStdin.emit('data', '3');
     const inQueueFrame = screenOf(written);
     assert.match(inQueueFrame, /»/, 'the QUEUED-local cursor marker should now be on screen');
     assert.equal(markedTicket(inQueueFrame), 'HEL-2', 'the run selection marker must be unaffected by entering queue focus');
@@ -1257,9 +1258,10 @@ test('force-start: f opens a confirmation, any key cancels, y actually starts th
     const watchModule = require('../lib/ui/watch');
     donePromise = watchModule.watch({ root, config: {} });
 
-    // No runs at all — QUEUED is the ONLY section on screen, so digit 1
-    // jumps straight into queue focus on CON-90 (the sole pending ticket).
-    fakeStdin.emit('data', '1');
+    // No runs at all — QUICK START (always on screen — CON-56) is digit 1,
+    // QUEUED is digit 2, jumping straight into queue focus on CON-90 (the
+    // sole pending ticket).
+    fakeStdin.emit('data', '2');
     const focusedFrame = screenOf(written);
     assert.match(focusedFrame, /»/);
 
@@ -1766,9 +1768,11 @@ test('quickstart-add with no active queue creates a single-ticket maxConcurrent:
     const watchModule = require('../lib/ui/watch');
     donePromise = watchModule.watch({ root: h.root, config: {} });
 
-    // Q opens+focuses QUICK START; the top of the priority-sorted list
-    // (CON-100, Urgent) is quickStartFocus 0.
-    h.fakeStdin.emit('data', 'Q');
+    // CON-56: QUICK START is always shown (no toggle) — digit-jump into it
+    // instead (it's the only forceRender-eligible section on screen here, so
+    // it's digit 1). The top of the priority-sorted list (CON-100, Urgent)
+    // is quickStartFocus 0.
+    h.fakeStdin.emit('data', '1');
     const focusedFrame = h.screen();
     assert.match(focusedFrame, /QUICK START/);
     assert.match(focusedFrame, /CON-100/);
@@ -1811,7 +1815,9 @@ test('a second quickstart-add onto an already-active queue appends via enqueueOn
     const watchModule = require('../lib/ui/watch');
     donePromise = watchModule.watch({ root: h.root, config: {} });
 
-    h.fakeStdin.emit('data', 'Q'); // opens+focuses; quickStartFocus: 0 -> CON-200 (Urgent)
+    // CON-56: digit-jump into QUICK START (always shown, no toggle) —
+    // focuses it with quickStartFocus: 0 -> CON-200 (Urgent).
+    h.fakeStdin.emit('data', '1');
     h.fakeStdin.emit('data', 'a'); // creates a fresh, confirmed, maxConcurrent:1 queue for CON-200
 
     assert.equal(h.spawnCalls.length, 1);
@@ -1853,7 +1859,11 @@ test('an already-queued ticket never appears in the QUICK START list at all — 
     const watchModule = require('../lib/ui/watch');
     donePromise = watchModule.watch({ root: h.root, config: {} });
 
-    h.fakeStdin.emit('data', 'Q');
+    // CON-56: digit-jump into QUICK START (always shown, no toggle) — it is
+    // still digit 1 here even with a restored QUEUED section also on
+    // screen, since QUICK START renders before QUEUED (buildSections'
+    // render order).
+    h.fakeStdin.emit('data', '1');
     const frame = h.screen();
 
     // Isolate the QUICK START box's own content (between its own title line
@@ -1907,7 +1917,8 @@ test('an out-of-bounds quickstart-add index (empty eligible list) is a no-op tha
     const watchModule = require('../lib/ui/watch');
     donePromise = watchModule.watch({ root: h.root, config: {} });
 
-    h.fakeStdin.emit('data', 'Q');
+    // CON-56: digit-jump into QUICK START (always shown, no toggle).
+    h.fakeStdin.emit('data', '1');
     const focusedFrame = h.screen();
     assert.match(focusedFrame, /no tickets cached yet/);
 
@@ -1938,7 +1949,11 @@ test('the eligible list excludes a ticket that already has a live run, not just 
     const watchModule = require('../lib/ui/watch');
     donePromise = watchModule.watch({ root: h.root, config: {} });
 
-    h.fakeStdin.emit('data', 'Q');
+    // CON-56: digit-jump into QUICK START (always shown, no toggle) — HEL-1
+    // has a live run here, so RUNNING is non-empty and renders first,
+    // pushing QUICK START to digit 2 (unlike the other harness tests in this
+    // file, which have no runs at all and so land QUICK START on digit 1).
+    h.fakeStdin.emit('data', '2');
     const focusedFrame = h.screen();
     const quickStartPane = focusedFrame.split('QUICK START')[1] || '';
     assert.doesNotMatch(quickStartPane.split('\n').slice(0, 6).join('\n'), /HEL-1.*Already running/);
