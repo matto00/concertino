@@ -165,6 +165,141 @@ test('space does not select a ticket already running — toggle-select is refuse
   assert.equal(isSelectable(t, runs), false, 'watch.js must refuse to add CON-9 to lp.selected');
 });
 
+// --- CON-41: inline "⏳ queued" status ---------------------------------------
+// inlineStatus(ticket, runs, queueState) now also consults the active queue —
+// a ticket present in queueState.pending/inFlight, with no live run yet,
+// must render distinctly from both "▲ running" and its plain Linear state.
+
+test('a ticket present in queueState.pending (no live run) reads "⏳ queued"', () => {
+  const t = ticket({ identifier: 'CON-9', state: { name: 'Todo', type: 'unstarted' } });
+  const queueState = { pending: ['CON-9'], inFlight: new Set() };
+  assert.equal(inlineStatus(t, [], queueState), '⏳ queued');
+});
+
+test('a ticket present in queueState.inFlight but with no matching entry in runs yet still reads "⏳ queued"', () => {
+  const t = ticket({ identifier: 'CON-9', state: { name: 'Todo', type: 'unstarted' } });
+  const queueState = { pending: [], inFlight: new Set(['CON-9']) };
+  assert.equal(inlineStatus(t, [], queueState), '⏳ queued');
+});
+
+test('a ticket with a live run AND present in queueState.inFlight reads "▲ running" — a live run always wins', () => {
+  const t = ticket({ identifier: 'CON-9', state: { name: 'Todo', type: 'unstarted' } });
+  const runs = [{ ticket: 'CON-9', status: 'running' }];
+  const queueState = { pending: [], inFlight: new Set(['CON-9']) };
+  assert.equal(inlineStatus(t, runs, queueState), '▲ running');
+});
+
+test('a ticket absent from the queue is computed exactly as before — live run, then Linear state', () => {
+  const t = ticket({ identifier: 'CON-9', state: { name: 'In Progress', type: 'started' } });
+  const queueState = { pending: ['CON-1', 'CON-2'], inFlight: new Set(['CON-3']) };
+  assert.equal(inlineStatus(t, [], queueState), 'In Progress');
+  assert.equal(inlineStatus(t, [], null), 'In Progress', 'no queue at all behaves identically to the pre-CON-41 two-arg call');
+});
+
+test('ticketRow renders "⏳ queued" using STATUS_COLOUR.queued (dim), distinct from "▲ running"\'s cyan', () => {
+  withColour(({ renderLaunchPad: renderColoured }) => {
+    const tickets = [ticket({ identifier: 'CON-1', state: { name: 'Todo', type: 'unstarted' }, priority: 2 })];
+    const state = lp({
+      pane: 'tickets',
+      ticketIndex: 0,
+      cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]),
+    });
+    const queueState = { pending: ['CON-1'], inFlight: new Set() };
+    const out = renderColoured(state, [], Object.assign({}, OPTS, { queueState }));
+    const plainOut = plain(out);
+    assert.match(plainOut, /⏳ queued/);
+    // dim (2), never cyan (36 basic / 38;5;80 256-colour) — "queued" must be
+    // visually distinct from "▲ running" (STATUS_COLOUR.running).
+    assert.match(out, /\x1b\[2m⏳ queued/, 'queued status should be dim (STATUS_COLOUR.queued)');
+    assert.doesNotMatch(out, /\x1b\[(36m|38;5;80m)⏳ queued/, 'queued status should not be cyan (that is running\'s colour)');
+  });
+});
+
+// --- CON-41: an already-queued ticket cannot be (re-)selected --------------
+// Mirrors the pre-existing "▲ running" refusal tests above exactly —
+// isSelectable(ticket, runs, queueState) extends the same refusal to a
+// ticket already present in queueState.pending/inFlight.
+
+test('isSelectable is false for a ticket already present in queueState.pending', () => {
+  const t = ticket({ identifier: 'CON-9' });
+  const queueState = { pending: ['CON-9'], inFlight: new Set() };
+  assert.equal(isSelectable(t, [], queueState), false);
+});
+
+test('isSelectable is false for a ticket already present in queueState.inFlight', () => {
+  const t = ticket({ identifier: 'CON-9' });
+  const queueState = { pending: [], inFlight: new Set(['CON-9']) };
+  assert.equal(isSelectable(t, [], queueState), false);
+});
+
+test('isSelectable ignores queueState entirely when the third argument is omitted — every pre-CON-41 two-arg call site is unaffected', () => {
+  const t = ticket({ identifier: 'CON-9' });
+  assert.equal(isSelectable(t, []), true);
+});
+
+test('selectableIdentifiers drops an already-queued ticket, exactly as it already drops an already-running one', () => {
+  const tickets = [
+    ticket({ identifier: 'CON-1' }),
+    ticket({ identifier: 'CON-9' }),  // queued
+    ticket({ identifier: 'CON-2' }),
+    ticket({ identifier: 'CON-3' }),  // running
+  ];
+  const runs = [{ ticket: 'CON-3', status: 'running' }];
+  const queueState = { pending: ['CON-9'], inFlight: new Set() };
+  assert.deepEqual(selectableIdentifiers(tickets, runs, queueState), ['CON-1', 'CON-2']);
+});
+
+// --- CON-41: 'q' add-to-queue key ------------------------------------------
+
+test('q on the tickets pane returns the add-to-queue action', () => {
+  const state = { lp: lp({ pane: 'tickets' }), runs: [] };
+  assert.deepEqual(handleKey('q', state), { type: 'add-to-queue' });
+});
+
+test('q is not bound while the epics pane has focus', () => {
+  const state = { lp: lp({ pane: 'epics' }), runs: [] };
+  assert.equal(handleKey('q', state), null);
+});
+
+// --- CON-41: hints line advertises 'q add to queue' only when it would do
+// something, matching the existing "only hint a key that currently does
+// something" discipline the L/clear-queue hints already follow -------------
+
+test('the hints line shows "q add to queue" when the highlighted ticket is eligible', () => {
+  const t = ticket({ identifier: 'CON-1', state: { name: 'Todo', type: 'unstarted' } });
+  const state = lp({
+    cache: cacheWith([t], [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]),
+    pane: 'tickets',
+    ticketIndex: 0,
+  });
+  const out = plain(renderLaunchPad(state, [], OPTS));
+  assert.match(out, /q add to queue/);
+});
+
+test('the hints line omits "q add to queue" when the highlighted ticket is already "▲ running"', () => {
+  const t = ticket({ identifier: 'CON-1', state: { name: 'Todo', type: 'unstarted' } });
+  const state = lp({
+    cache: cacheWith([t], [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]),
+    pane: 'tickets',
+    ticketIndex: 0,
+  });
+  const runs = [{ ticket: 'CON-1', status: 'running' }];
+  const out = plain(renderLaunchPad(state, runs, OPTS));
+  assert.doesNotMatch(out, /q add to queue/);
+});
+
+test('the hints line omits "q add to queue" when the highlighted ticket is already "⏳ queued"', () => {
+  const t = ticket({ identifier: 'CON-1', state: { name: 'Todo', type: 'unstarted' } });
+  const state = lp({
+    cache: cacheWith([t], [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]),
+    pane: 'tickets',
+    ticketIndex: 0,
+  });
+  const out = plain(renderLaunchPad(state, [], Object.assign({}, OPTS, { queueState: { pending: ['CON-1'], inFlight: new Set() } })));
+  assert.match(out, /⏳ queued/, 'sanity: the row itself must show queued');
+  assert.doesNotMatch(out, /q add to queue/);
+});
+
 // --- hostile Linear free text: OSC/CSI/control bytes never reach the render -
 // launchpad.js renders every visible ticket TITLE straight from Linear —
 // editable by anyone with tracker write access. See lib/ui/format.js's
@@ -712,7 +847,13 @@ test('the detail pane renders at full height when the terminal is generously siz
 test('with vertical space to spare, the detail pane grows to push the footer to the last row', () => {
   const tickets = [ticket({ identifier: 'CON-1', description: 'short' })];
   const state = lp({ cache: cacheWith(tickets, [{ id: 'p1', name: 'Pipeline v2', openCount: 1 }]) });
-  const out = plain(renderLaunchPad(state, [], { cols: 78, now: NOW, rows: 40 }));
+  // cols widened from the file's usual 78 to 100 (CON-41): this test's own
+  // concern is purely VERTICAL (the footer's row position), and the tickets
+  // pane's own eligible ticket now legitimately adds a 'q add to queue' hint
+  // to that footer's single line — 78 cols was already tight enough that a
+  // fully-eligible, unqueued, unselected ticket's hints line would truncate
+  // 'esc back' off the end regardless of this test's own intent.
+  const out = plain(renderLaunchPad(state, [], { cols: 100, now: NOW, rows: 40 }));
   const lines = out.split('\n');
   assert.match(lines[lines.length - 1], /esc back/);
   assert.ok(lines.length <= 40, `expected at most 40 lines, got ${lines.length}`);
@@ -748,7 +889,7 @@ test('ticketRow selected+focused row is NOT wrapped in outer bold (Decision 4)',
     const { ticketRow } = require('../lib/ui/screens/launchpad');
     const ticketObj = { identifier: 'CON-1', title: 'test', priority: 2, state: { name: 'Todo', type: 'unstarted' } };
     // Call ticketRow directly
-    const row = ticketRow(ticketObj, false, true, true, [], 50); // checked, selected, paneFocused, runs, width
+    const row = ticketRow(ticketObj, false, true, true, [], null, 50); // checked, selected, paneFocused, runs, queueState, width
     // CR2: The row should NOT have outer bold (fill is applied by box(), not here)
     assert.doesNotMatch(row, /^\x1b\[1m/, 'ticketRow selected+focused should not have outer bold');
   });
