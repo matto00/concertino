@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { dur, truncate, padTo, bar, visibleLength, stripUnsafeControls } = require('../lib/ui/format');
+const { dur, truncate, padTo, bar, sparkline, visibleLength, stripUnsafeControls } = require('../lib/ui/format');
 
 test('dur renders seconds, minutes, and hours', () => {
   assert.equal(dur(0), '0s');
@@ -121,4 +121,19 @@ test('bar renders a proportional progress bar', () => {
   assert.equal(bar(1, 4), '▪▪▪▪');
   assert.equal(bar(0.5, 4), '▪▪░░');
   assert.equal(bar(2, 4), '▪▪▪▪');
+});
+
+test('sparkline maps each value to a block character scaled against the max', () => {
+  assert.equal(sparkline([0, 7]), '▁█');
+  assert.equal(sparkline([1, 2, 3, 4, 5, 6, 7]), '▂▃▄▅▆▇█');
+});
+
+test('sparkline renders an all-minimum line for an all-zero array, without dividing by zero', () => {
+  assert.equal(sparkline([0, 0, 0, 0, 0, 0, 0]), '▁▁▁▁▁▁▁');
+});
+
+test('sparkline\'s output length always equals the input length', () => {
+  assert.equal(sparkline([]).length, 0);
+  assert.equal(sparkline([3]).length, 1);
+  assert.equal(sparkline([3, 1, 4, 1, 5, 9, 2, 6]).length, 8);
 });
