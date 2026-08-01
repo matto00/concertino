@@ -1952,3 +1952,317 @@ test('the eligible list excludes a ticket that already has a live run, not just 
     await h.teardown(donePromise);
   }
 });
+
+// --- CON-41: launch pad IN QUEUE status + 'q' add-to-queue action, wired
+// end to end -----------------------------------------------------------------
+// The launch pad screen itself (unlike CON-40's QUICK START widget on the
+// fleet view) is gated behind `dashboard.launchPad.enabled` + a "linear"
+// ticketProvider + LINEAR_API_KEY (linear.js's launchPadStatus) — this
+// harness mirrors setupQuickStartHarness() above (same fake session/stdin,
+// no real tmux) but also supplies that config and a dummy env key, restored
+// in teardown() so it never leaks into a later test. `applyAction`/
+// `openLaunchPad` are private closures inside watch(opts) (see watch.js's
+// own header comment above module.exports), so — exactly like the P-key
+// smoke-test regression's own comment explains — the only way to prove a
+// real 'q' keypress reaches queueState is end to end, against a real running
+// dashboard (a fake session, not real tmux).
+function setupLaunchPadHarness(tickets, epics, over) {
+  const { EventEmitter } = require('node:events');
+  const cacheModule = require('../lib/ui/cache');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-launchpad-'));
+  cacheModule.write(root, { tickets, epics }, Date.now());
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+
+  const spawnCalls = [];
+  const fakeSessionObj = Object.assign({
+    name: 'fake',
+    ensure() {},
+    listWindows() { return []; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn(ticket, cmd) { spawnCalls.push({ ticket, cmd }); },
+    kill() {},
+    attach() { return { status: 0 }; },
+  }, over);
+
+  const fakeStdin = new EventEmitter();
+  // isTTY true so the 'data' handler does NOT strip a trailing '\r' (the
+  // launch plan's own confirm key, emitted standalone by several tests
+  // below) as it does for piped stdin — see watch.js's own comment there,
+  // and withWatchHarness's identical setting above for the same reason.
+  fakeStdin.isTTY = true;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  // The launch pad gate's third condition (linear.js's launchPadStatus) —
+  // never a real key, and never left set after this harness tears down.
+  const prevKey = process.env.LINEAR_API_KEY;
+  process.env.LINEAR_API_KEY = 'dummy-not-a-real-key';
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  return {
+    root, spawnCalls, fakeStdin, written,
+    screen: () => screenOf(written),
+    async teardown(donePromise) {
+      fakeStdin.emit('end');
+      if (donePromise) await donePromise;
+      process.stdout.write = realWrite;
+      Object.defineProperty(process, 'stdin', realStdinDescriptor);
+      if (prevKey === undefined) delete process.env.LINEAR_API_KEY;
+      else process.env.LINEAR_API_KEY = prevKey;
+      delete require.cache[watchPath];
+      delete require.cache[sessionPath];
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+const LAUNCHPAD_CONFIG = { dashboard: { launchPad: { enabled: true } }, ticketProvider: { kind: 'linear', idExample: 'CON-1' } };
+
+test('add-to-queue (q) with no active queue creates a single-ticket maxConcurrent:1 queue, keyed by the ticket\'s identifier string', async () => {
+  const queueCache = require('../lib/ui/queue-cache');
+  const h = setupLaunchPadHarness(
+    [{ identifier: 'CON-50', title: 'Solo ticket', epicId: 'e1', state: { name: 'Todo', type: 'unstarted' } }],
+    [{ id: 'e1', name: 'Epic', openCount: 1 }],
+  );
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    h.fakeStdin.emit('data', 'N');   // open the launch pad
+    h.fakeStdin.emit('data', '\t');  // switch focus to the tickets pane
+    h.fakeStdin.emit('data', 'q');   // add the highlighted ticket to the queue
+
+    // A queue with maxConcurrent:1 admits CON-50 on this same poll, and
+    // submitTicket only ever spawns given a STRING it can validate
+    // (prompt.js's parseTicketInput rejects anything that is not typeof
+    // 'string' outright) — so a passing assertion here also proves the
+    // ticket's identifier, not the ticket object, reached queue.createQueue.
+    assert.equal(h.spawnCalls.length, 1, 'exactly one spawn — the queued ticket');
+    assert.equal(h.spawnCalls[0].ticket, 'CON-50');
+    assert.match(h.spawnCalls[0].cmd, /CON-50/);
+
+    const record = queueCache.read(h.root);
+    assert.deepEqual(record.pending, [], 'CON-50 must already have left pending (admitted this same poll)');
+    assert.deepEqual(record.inFlight, ['CON-50']);
+    assert.equal(record.maxConcurrent, 1);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+// Mirrors the sibling 'a second quickstart-add onto an already-active queue'
+// test above exactly, including its own reasoning: this fake harness's
+// session never reports a spawned ticket as a live tmux window, so
+// queue.tick()'s own inFlight re-check (queue.js: a ticket only keeps its
+// concurrency slot for as long as `runs` still shows it live) drops CON-60
+// again the very next poll and frees the slot — CON-61 is admitted moments
+// later, on a LATER poll, not instantly alongside CON-60. What this proves
+// is not "CON-61 waits forever" but that the SECOND 'q' went through
+// enqueueOne's append (preserving the original queue's maxConcurrent/
+// launchCommand) rather than a second, competing createQueue() call.
+test('a second add-to-queue (q) onto an already-active queue appends via enqueueOne, preserving that queue\'s own maxConcurrent/launchCommand — and never re-adds the same ticket', async () => {
+  const h = setupLaunchPadHarness(
+    [
+      { identifier: 'CON-60', title: 'First ticket', epicId: 'e1', state: { name: 'Todo', type: 'unstarted' } },
+      { identifier: 'CON-61', title: 'Second ticket', epicId: 'e1', state: { name: 'Todo', type: 'unstarted' } },
+    ],
+    [{ id: 'e1', name: 'Epic', openCount: 2 }],
+  );
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    h.fakeStdin.emit('data', 'N');   // open
+    h.fakeStdin.emit('data', '\t');  // tickets pane; ticketIndex 0 -> CON-60
+    h.fakeStdin.emit('data', 'q');   // creates a maxConcurrent:1 queue for CON-60, admitted immediately
+
+    assert.equal(h.spawnCalls.length, 1);
+    assert.equal(h.spawnCalls[0].ticket, 'CON-60');
+
+    h.fakeStdin.emit('data', 'j');   // move down to CON-61
+    h.fakeStdin.emit('data', 'q');   // active queue exists -> enqueueOne appends CON-61 (never a second createQueue)
+
+    assert.equal(h.spawnCalls.length, 2, 'a second, DIFFERENT ticket must eventually have been launched — never CON-60 again');
+    assert.equal(h.spawnCalls[1].ticket, 'CON-61');
+    // Both launches share the identical command TEMPLATE (only the ticket id
+    // substituted in) — proving the append preserved the original queue's
+    // own launchCommand rather than resetting it.
+    assert.equal(h.spawnCalls[0].cmd.replace('CON-60', '{{TICKET}}'), h.spawnCalls[1].cmd.replace('CON-61', '{{TICKET}}'));
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('add-to-queue (q) on an already-`▲ running` ticket is a no-op — the same refusal isSelectable already applies to selection', async () => {
+  const queueCache = require('../lib/ui/queue-cache');
+  const h = setupLaunchPadHarness(
+    [{ identifier: 'CON-70', title: 'Already running', epicId: 'e1', state: { name: 'Todo', type: 'unstarted' } }],
+    [{ id: 'e1', name: 'Epic', openCount: 1 }],
+    { listWindows() { return [{ ticket: 'CON-70', alive: true, activity: null }]; } },
+  );
+
+  const runDir = path.join(h.root, '.concertino', 'runs', 'CON-70');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'), JSON.stringify({ t: 1000, kind: 'run.start' }) + '\n');
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    h.fakeStdin.emit('data', 'N');
+    h.fakeStdin.emit('data', '\t');
+    const frame = h.screen();
+    assert.match(frame, /▲ running/, 'CON-70 must already show as running before q is even pressed');
+
+    h.fakeStdin.emit('data', 'q');
+
+    assert.equal(h.spawnCalls.length, 0, 'nothing new should ever be spawned — q must have been a no-op');
+    assert.equal(queueCache.read(h.root), null, 'no queue should have been created at all');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('add-to-queue (q) on an already-`⏳ queued` ticket is a no-op — it is not appended a second time', async () => {
+  const queueCache = require('../lib/ui/queue-cache');
+  const h = setupLaunchPadHarness(
+    [
+      { identifier: 'CON-80', title: 'Already queued', epicId: 'e1', state: { name: 'Todo', type: 'unstarted' } },
+      { identifier: 'CON-81', title: 'Occupying the one slot', epicId: 'e1', state: { name: 'Todo', type: 'unstarted' } },
+    ],
+    [{ id: 'e1', name: 'Epic', openCount: 2 }],
+  );
+
+  // Seed an already-active, confirmed, maxConcurrent:1 queue with CON-81
+  // inFlight (occupying the only slot) and CON-80 pending — exactly the
+  // shape `q`'s own isSelectable refusal must recognise as "already queued".
+  queueCache.write(h.root, {
+    pending: ['CON-80'], inFlight: new Set(['CON-81']), maxConcurrent: 1, launchCommand: null,
+  }, 'sess-preexisting', Date.now());
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    h.fakeStdin.emit('data', 'N');
+    h.fakeStdin.emit('data', '\t'); // ticketIndex 0 -> CON-80 (already pending)
+    const frame = h.screen();
+    assert.match(frame, /⏳ queued/, 'CON-80 must already show as queued before q is pressed');
+
+    h.fakeStdin.emit('data', 'q'); // must be a no-op — CON-80 is not selectable
+
+    const record = queueCache.read(h.root);
+    assert.deepEqual(record.pending, ['CON-80'], 'CON-80 must not have been appended a second time');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+// `queueState` is a plain in-memory variable inside watch(opts)'s own
+// closure — it is only ever mutated by applyAction (a keypress) or by
+// queue.tick()'s own admission/drop bookkeeping, and is read back from disk
+// only once, at process startup (see the `queueCache.read` call site in
+// watch.js). Nothing re-reads it mid-session. That means the literal
+// "becomes queued in the few seconds between L and Enter" race
+// design.md Decision 4 describes cannot be reproduced against a single
+// dashboard process purely by driving keys — while the launch plan screen
+// is on top, `mode === 'launchplan'` routes every keypress to
+// launchplan.js's own handleKey, not launchpad.js's 'q'/'toggle-select'.
+// The reachable, equally load-bearing form of the same guarantee is
+// queuing the ticket BEFORE 'L' is pressed: open-launchplan's own re-check
+// (also threaded with `queueState` by this change) then excludes it from
+// `plan.tickets` outright, so confirm-launch's OWN "third and final
+// refusal" (same isSelectable(t, runs, queueState) expression, now also
+// threaded) never even has a chance to re-admit it — proving end to end
+// that no path through this flow can ever queue the same ticket twice,
+// regardless of which of the two re-checks is the one that actually catches
+// it for a given timing.
+//
+// The pre-existing (confirmed: false, never-ticks-until-explicitly-
+// confirmed) RESTORED queue shape is used here — exactly the same pattern
+// the "already-`⏳ queued`" no-op test above relies on — rather than a
+// fresh, actively-ticking queue: this fake harness's session never reports
+// a spawned ticket as a live tmux window, so an actively-ticking queue's
+// own inFlight bookkeeping would silently forget an admitted ticket the
+// very next poll (nothing marks it "still live"), making CON-90's queued
+// status impossible to hold in place for the several keypresses this test
+// needs. A restored-but-unconfirmed queue's pending list is untouched by
+// tick() (shouldTick() refuses it) no matter how many polls elapse, so
+// CON-90 stays genuinely, stably `⏳ queued` for the whole test.
+test('a ticket that becomes queued (via q) before L is pressed is excluded from the launch plan, and confirming never duplicates it into a second queue entry', async () => {
+  const queueCache = require('../lib/ui/queue-cache');
+  const h = setupLaunchPadHarness(
+    [
+      { identifier: 'CON-90', title: 'Selected then queued via q', epicId: 'e1', state: { name: 'Todo', type: 'unstarted' } },
+      { identifier: 'CON-91', title: 'Selected, never touched again', epicId: 'e1', state: { name: 'Todo', type: 'unstarted' } },
+    ],
+    [{ id: 'e1', name: 'Epic', openCount: 2 }],
+  );
+
+  // A restored, unconfirmed, maxConcurrent:1 queue already occupying its one
+  // slot with an unrelated ticket — 'q' on CON-90 (below) can only APPEND to
+  // its `pending`, never admit anything, since shouldTick() refuses to tick
+  // an unconfirmed queue at all.
+  queueCache.write(h.root, {
+    pending: ['CON-89'], inFlight: new Set(), maxConcurrent: 1, launchCommand: null,
+  }, 'sess-preexisting', Date.now());
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    h.fakeStdin.emit('data', 'N');    // open
+    h.fakeStdin.emit('data', '\t');   // tickets pane, ticketIndex 0 -> CON-90
+    h.fakeStdin.emit('data', ' ');    // select CON-90 (checkbox)
+    h.fakeStdin.emit('data', 'q');    // CON-90 (still highlighted) also queued via q -> enqueueOne appends to the restored queue's pending
+    h.fakeStdin.emit('data', 'j');    // move to CON-91
+    h.fakeStdin.emit('data', ' ');    // select CON-91 (checkbox) — CON-90's own checkbox is untouched, still checked
+
+    assert.equal(h.spawnCalls.length, 0, 'the restored queue never ticks — q only appended CON-90, nothing was spawned');
+    const midRecord = queueCache.read(h.root);
+    assert.deepEqual(midRecord.pending, ['CON-89'], 'the in-memory append never persists on its own — no tick() call site ran to write it back to disk');
+
+    h.fakeStdin.emit('data', 'L');    // open-launchplan re-check: CON-90 is now already-queued -> excluded
+    const planFrame = h.screen();
+    assert.match(planFrame, /LAUNCH PLAN/);
+    assert.doesNotMatch(planFrame, /CON-90/, 'the already-queued CON-90 must never reach the launch plan\'s own ticket list');
+    assert.match(planFrame, /CON-91/);
+
+    h.fakeStdin.emit('data', '\r');   // confirm-launch's own re-check: nothing left to additionally exclude, only CON-91 queues
+
+    // confirm-launch's own queue.createQueue() call is built only from
+    // `startable` (plan.tickets filtered by isSelectable) — CON-90 was
+    // already excluded from plan.tickets by open-launchplan above, so it
+    // can never be spawned by confirm-launch, nor appear in the fresh
+    // queue's own pending list.
+    assert.equal(h.spawnCalls.length, 1, 'exactly one spawn — CON-91 only, from the freshly confirmed queue');
+    assert.equal(h.spawnCalls[0].ticket, 'CON-91');
+    const record = queueCache.read(h.root);
+    assert.ok(!(record.pending || []).includes('CON-90'), 'CON-90 must never appear in the confirmed queue\'s pending list');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
