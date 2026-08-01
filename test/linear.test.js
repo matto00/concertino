@@ -569,3 +569,91 @@ test('resolveTeam propagates a transport error identically to fetchTickets', asy
 test('the team query filters on key, independent of the issues query', () => {
   assert.match(linear.TEAM_QUERY, /teams\(filter:\s*{\s*key:\s*{\s*eq:\s*\$teamKey\s*}\s*}\)/);
 });
+
+// --- createTicket (CON-21) --------------------------------------------------
+// The TUI's first write to Linear — deliberately narrow (issueCreate only,
+// never a status-transition mutation). Two round trips: resolve the team key
+// to a team UUID, then create — see linear.js's own comment on `createTicket`
+// for why a single request cannot do both.
+
+function issueCreatePage(issue) {
+  return {
+    status: 200,
+    body: JSON.stringify({ data: { issueCreate: { success: true, issue } } }),
+  };
+}
+
+test('createTicket resolves the team key then issues the creation mutation, returning the new issue', async () => {
+  const transport = fakeTransport([
+    teamsPage([{ id: 'team-uuid-1', key: 'CON' }]),
+    issueCreatePage({ id: 'issue-uuid-1', identifier: 'CON-99', url: 'https://linear.app/x/issue/CON-99' }),
+  ]);
+
+  const result = await linear.createTicket({
+    apiKey: 'k', teamKey: 'CON', title: 'Add a share button', description: 'body text', transport,
+  });
+
+  assert.deepEqual(result, { id: 'issue-uuid-1', identifier: 'CON-99', url: 'https://linear.app/x/issue/CON-99' });
+  assert.equal(transport.calls.length, 2);
+  assert.equal(transport.calls[0].variables.teamKey, 'CON');
+  assert.deepEqual(transport.calls[1].variables, {
+    teamId: 'team-uuid-1', title: 'Add a share button', description: 'body text',
+  });
+  assert.match(transport.calls[1].query, /issueCreate\(input:/);
+});
+
+test('createTicket never calls issueCreate when the team key does not resolve', async () => {
+  let calls = 0;
+  const transport = fakeTransport([teamsPage([])]);
+  const wrapped = (req) => { calls++; return transport(req); };
+  await assert.rejects(
+    () => linear.createTicket({ apiKey: 'k', teamKey: 'GHOST', title: 't', description: 'd', transport: wrapped }),
+    /team "GHOST" was not found/,
+  );
+  assert.equal(calls, 1, 'issueCreate must never be attempted against an unresolved team');
+});
+
+test('createTicket propagates a GraphQL error from the issueCreate mutation itself', async () => {
+  const transport = fakeTransport([
+    teamsPage([{ id: 'team-uuid-1', key: 'CON' }]),
+    { status: 200, body: JSON.stringify({ errors: [{ message: 'title cannot be blank' }] }) },
+  ]);
+  await assert.rejects(
+    () => linear.createTicket({ apiKey: 'k', teamKey: 'CON', title: 't', description: 'd', transport }),
+    /title cannot be blank/,
+  );
+});
+
+test('createTicket propagates a network/transport error the same way fetchTickets does', async () => {
+  const transport = () => Promise.reject(new Error('ECONNRESET'));
+  await assert.rejects(
+    () => linear.createTicket({ apiKey: 'k', teamKey: 'CON', title: 't', description: 'd', transport }),
+    /ECONNRESET/,
+  );
+});
+
+test('createTicket treats a non-success issueCreate response as a failure', async () => {
+  const transport = fakeTransport([
+    teamsPage([{ id: 'team-uuid-1', key: 'CON' }]),
+    { status: 200, body: JSON.stringify({ data: { issueCreate: { success: false, issue: null } } }) },
+  ]);
+  await assert.rejects(
+    () => linear.createTicket({ apiKey: 'k', teamKey: 'CON', title: 't', description: 'd', transport }),
+    /did not report success/,
+  );
+});
+
+test('createTicket requires teamKey, apiKey and title before ever calling the transport', async () => {
+  await assert.rejects(() => linear.createTicket({ apiKey: 'k', title: 't' }), /teamKey is required/);
+  await assert.rejects(() => linear.createTicket({ teamKey: 'CON', title: 't' }), /LINEAR_API_KEY is not set/);
+  await assert.rejects(() => linear.createTicket({ apiKey: 'k', teamKey: 'CON' }), /title is required/);
+});
+
+test('createTicket defaults description to an empty string rather than sending undefined', async () => {
+  const transport = fakeTransport([
+    teamsPage([{ id: 'team-uuid-1', key: 'CON' }]),
+    issueCreatePage({ id: 'i1', identifier: 'CON-1', url: 'u' }),
+  ]);
+  await linear.createTicket({ apiKey: 'k', teamKey: 'CON', title: 't', transport });
+  assert.equal(transport.calls[1].variables.description, '');
+});

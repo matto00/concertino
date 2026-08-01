@@ -104,7 +104,7 @@ TIMELINE already uses for events beyond its own cap (`… N earlier events`).
 | --- | --- |
 | `↵` | Attach to the selected run — or, on a row with a live escalation, open the escalation screen. `Ctrl-b d` detaches back to the dashboard |
 | `j` / `k` | Move the selection |
-| `n` | Start a new run — type a ticket id, `↵` to launch, `esc` to cancel |
+| `n` | Start a new run — type a ticket id and `↵` to launch, or type free text and `↵` to draft a new ticket first (Linear only — see "Starting a run from an intention" below); `esc` to cancel |
 | `N` | Open the launch pad — browse epics/tickets, pick a batch, launch it. Always bound; if the feature gate is off it explains why rather than doing nothing (see below) |
 | `g` | Reply to the oldest live escalation across the whole fleet, from **whatever screen you're on** — see "The cross-screen escalation banner" below |
 | `q` | Quit the dashboard (runs keep going) |
@@ -122,6 +122,26 @@ A run only appears here if it lives in the dashboard's tmux session. Launching
 cannot see or attach to — so start runs with `n`, which opens the window inside
 the session for you. If the launch fails, the prompt says so and stays open
 rather than taking the dashboard down with it.
+
+### Starting a run from an intention
+
+`n` also accepts free text instead of a ticket id — an intention like "add a
+share button to dashboards" rather than an id you already have. Submitting
+free text (anything the `n` prompt does not recognise as a ticket id, with or
+without a trailing `fast`/`slow`/`--agent-merge` token) opens a headless
+drafting invocation: an agent turns it into a title, description and
+acceptance criteria, shown on a review screen where each field is editable
+(`t`/`d`/`a` to edit a field, `esc` to save a field you're editing). Confirm
+(`c`) creates the ticket in the configured provider and immediately launches
+the run against the real, provider-issued id — the same launch path as
+typing a ticket id directly. `esc` from the review screen abandons the draft
+with nothing created.
+
+This is the dashboard's only write to the ticket provider — issue creation
+only, never a status transition (the orchestrator's runs still own those).
+It is only available when `ticketProvider.kind` is `linear`; any other
+provider shows an inline message explaining why rather than opening the
+draft flow.
 
 ## What it knows, and how much to trust it
 
