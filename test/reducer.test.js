@@ -228,6 +228,48 @@ test('an unrecognised phase value does not set run.phase and increments run.malf
   assert.equal(run.malformed, 1);
 });
 
+// --- CON-48: a live escalation raised after run.end is not stale, and wins
+// the needs-you status over the endStatus done/failed short-circuit, for as
+// long as the window is confirmed alive. ------------------------------------
+
+test('run.end (delivered) followed by a live escalation, window alive: not stale, needs-you', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'delivered' },
+    { t: 10, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator',
+      question: 'Want a follow-up ticket for the sync drift, or leave it for now?',
+      options: 'open-ticket,leave-it' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+
+  assert.equal(run.escalationStale, false);
+  assert.equal(run.status, 'needs-you');
+});
+
+test('once that same follow-up escalation is answered, status reverts to done', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'delivered' },
+    { t: 10, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator',
+      question: 'Want a follow-up ticket for the sync drift, or leave it for now?',
+      options: 'open-ticket,leave-it' },
+    { t: 20, kind: 'escalation.answered', ticket: 'HEL-1', role: 'human', answer: 'leave-it' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+
+  assert.equal(run.escalation, null);
+  assert.equal(run.status, 'done');
+});
+
+test('run.end followed by escalation.raised with no window data at all is still stale (regression guard)', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'delivered' },
+    { t: 10, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator', question: 'q' },
+  ]), [], NOW);
+
+  assert.equal(run.escalationStale, true);
+  assert.equal(run.status, 'done');
+});
+
 test('a valid phase.enter following an unrecognised one still applies correctly', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'phase.enter', ticket: 'HEL-1', role: 'orchestrator', phase: 'Phase 2', cycle: 1 },
