@@ -6,7 +6,11 @@ The request may also carry a trailing `fast` or `slow` speed token (e.g.
 means `default`. Pass it as `setup-worktree.sh`'s third argument in step 1
 below — this resolves the run's budgets (execution cycles, skeptic rounds,
 debug attempts) at runtime exactly like Claude Code does, read from
-`workflow-state.md` throughout. **The model each role runs on is fixed at the
+`workflow-state.md` throughout. The request may also carry a trailing
+`--inline` flag (Claude Code's flag to skip spawning a `concertino-orchestrator`
+subagent) — accept it, but it has no effect here: this session already runs the
+orchestrator role directly, sequentially, in this one thread, with no
+subagent-spawn step to skip. **The model each role runs on is fixed at the
 last `concertino sync`, not re-resolved per invocation** — Codex's
 orchestration is sequential in a single thread with no per-spawn model
 override the way Claude Code's `Agent` tool has, so `models.codex.<role>` /

@@ -35,6 +35,21 @@ The orchestrator runs as a coordinator agent and:
 
 This is the topology the design assumes; nothing is approximated.
 
+`/concertino-deliver <TICKET_ID> --inline` collapses one hop out of this
+topology: the calling session skips spawning `concertino-orchestrator` as a
+subagent and instead reads `.claude/agents/concertino-orchestrator.md` and
+plays the role itself, in its own turn, still spawning the
+executor/evaluator/skeptic/auditor sub-agents directly. This is the one-off,
+single-ticket-per-session path — it trades away the cold orchestrator
+subagent's context isolation, which buys nothing when the calling session was
+already started fresh for exactly one ticket. The default (`--inline` absent)
+remains the cold-spawn topology above, unchanged — `--inline` is additive, not
+a default-behavior change. See `adapters/claude-code/command.md`'s inline-mode
+branch for the exact instructions, including the self-imposed tool-scope
+guardrail (the calling session's own tool set may be broader than
+`concertino-orchestrator`'s frontmatter-scoped list; inline mode instructs it
+to use only that list anyway).
+
 ### Codex (degraded — sequential single-thread)
 
 Codex has no programmatic multi-tier dispatch and no warm-resume routing, so the
@@ -66,6 +81,10 @@ The `.codex/agents/*.toml` definitions are provided for environments where Codex
 limited worker spawning *is* available — you can optionally dispatch the executor,
 evaluator, or auditor as a worker — but the default and recommended Codex path is
 the sequential single-thread flow in `AGENTS.md`.
+
+Codex accepts `--inline` too (e.g. copy-pasted from a Claude Code invocation)
+but it is a documented no-op here: Codex already plays the orchestrator role
+directly in this one thread, with no subagent-spawn step to skip.
 
 ### Everything that stays identical
 
