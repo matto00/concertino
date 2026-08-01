@@ -548,6 +548,85 @@ test('metricsFor counts escalation.raised events across every run\'s own event l
   assert.equal(m.escalationsToday, 1);
 });
 
+test('metricsFor.successRate.today is the done/(done+failed) ratio for terminal runs ending today', () => {
+  const now = 10 * DAY_MS + 3600000; // 1h into day 10
+  const todayStart = 10 * DAY_MS;
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endedAt: todayStart + 1000, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-2', status: 'done', endedAt: todayStart + 2000, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-3', status: 'failed', endedAt: todayStart + 3000 }),
+    run({ ticket: 'HEL-4', status: 'done', endedAt: todayStart - 1000, elapsedMs: 1000 }), // yesterday, excluded
+    run({ ticket: 'HEL-5', status: 'running' }), // in flight, excluded (no endedAt)
+  ], now);
+  assert.deepEqual(m.successRate.today, { rate: 2 / 3, done: 2, total: 3 });
+});
+
+test('metricsFor.successRate.today.rate is null with no terminal runs today', () => {
+  const m = metricsFor([run({ ticket: 'HEL-1', status: 'running' })], 1000000);
+  assert.equal(m.successRate.today.rate, null);
+  assert.equal(m.successRate.today.total, 0);
+  assert.equal(m.successRate.today.done, 0);
+});
+
+test('metricsFor.successRate.week uses the same rolling 7-day window as deliveredWeek', () => {
+  const now = 20 * DAY_MS;
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endedAt: now - 3 * DAY_MS, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-2', status: 'failed', endedAt: now - 8 * DAY_MS }), // outside window
+  ], now);
+  assert.deepEqual(m.successRate.week, { rate: 1, done: 1, total: 1 });
+});
+
+test('metricsFor.throughput buckets done runs into the last 7 UTC days, oldest first', () => {
+  const now = 20 * DAY_MS;
+  const todayStart = 20 * DAY_MS;
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endedAt: todayStart, elapsedMs: 1000 }), // today
+    run({ ticket: 'HEL-2', status: 'done', endedAt: todayStart - 3 * DAY_MS, elapsedMs: 1000 }), // 3 days ago
+    run({ ticket: 'HEL-3', status: 'done', endedAt: todayStart - 8 * DAY_MS, elapsedMs: 1000 }), // outside the 7-day window
+  ], now);
+  assert.equal(m.throughput.length, 7);
+  assert.equal(m.throughput[6], 1, 'index 6 is today');
+  assert.equal(m.throughput[3], 1, 'index 3 is 3 days ago');
+  assert.equal(m.throughput.reduce((a, b) => a + b, 0), 2, 'the 8-day-old delivery must not be counted');
+});
+
+test('metricsFor.throughput is seven zeroes with no delivery history', () => {
+  const m = metricsFor([], 1000000);
+  assert.deepEqual(m.throughput, [0, 0, 0, 0, 0, 0, 0]);
+});
+
+test('metricsFor.verdictRates computes each role\'s pass-rate from verdict events across all runs', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', events: [
+      { kind: 'verdict', role: 'evaluator', verdict: 'PASS' },
+      { kind: 'verdict', role: 'evaluator', verdict: 'FAIL' },
+      { kind: 'verdict', role: 'skeptic', verdict: 'CONFIRM' },
+    ] }),
+    run({ ticket: 'HEL-2', events: [
+      { kind: 'verdict', role: 'evaluator', verdict: 'PASS' },
+    ] }),
+  ], 1000000);
+  assert.equal(m.verdictRates.evaluator, 2 / 3);
+  assert.equal(m.verdictRates.skeptic, 1);
+  assert.equal(m.verdictRates.auditor, null, 'a role with zero verdict events must be null, not 0');
+});
+
+test('metricsFor.gateRates computes each gate\'s pass-rate from the latest per-run result, omitting gates no run has ever reported', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', gates: [
+      { name: 'phase:Setup', status: 'pass' },
+      { name: 'server:backend', status: 'fail' },
+    ] }),
+    run({ ticket: 'HEL-2', gates: [
+      { name: 'phase:Setup', status: 'pass' },
+    ] }),
+  ], 1000000);
+  assert.equal(m.gateRates['phase:Setup'], 1);
+  assert.equal(m.gateRates['server:backend'], 0);
+  assert.ok(!('phase:Planning' in m.gateRates), 'a gate no run ever reported must be omitted, not 0%');
+});
+
 test('the fleet view shows a METRICS section after DONE with real numbers', () => {
   const out = plain(renderFleet([
     run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
