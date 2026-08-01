@@ -2044,3 +2044,32 @@ test('a run.end-then-live-escalation run lands in NEEDS YOU, not DONE', () => {
   assert.ok(ticketIdx > needsYouIdx, 'HEL-16 should render under the NEEDS YOU section');
   assert.ok(doneIdx === -1 || ticketIdx < doneIdx, 'HEL-16 must not fall under DONE');
 });
+
+// --- CON-42: icon vocabulary -------------------------------------------------
+
+test('QUICK START, QUEUED, and METRICS section titles are each prefixed with their own icon', () => {
+  const icons = require('../lib/ui/icons');
+  const queueState = { pending: ['CON-9'], inFlight: new Set(), maxConcurrent: 1 };
+  const out = plain(renderFleet([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+  ], {
+    ...OPTS, now: 100000, queueState, quickStartVisible: true, quickStartTickets: [qsTicket({ identifier: 'CON-5' })],
+  }));
+  assert.match(out, new RegExp(icons.quickStart + ' QUICK START'));
+  assert.match(out, new RegExp(icons.queue + ' QUEUED'));
+  assert.match(out, new RegExp(icons.metrics + ' METRICS'));
+});
+
+test('NEEDS YOU, RUNNING, FAILED, and DONE section headings carry no new icon — STATUS_COLOUR already governs them', () => {
+  const out = plain(renderFleet([
+    run({ ticket: 'HEL-338', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-1', status: 'running' }),
+    run({ ticket: 'HEL-2', status: 'failed' }),
+    run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered' }),
+  ], OPTS));
+  // Exact, unprefixed section headings — no glyph inserted before them.
+  assert.match(out, /\[1\] NEEDS YOU/);
+  assert.match(out, /\[2\] RUNNING/);
+  assert.match(out, /\[3\] FAILED/);
+  assert.match(out, /\[4\] DONE/);
+});

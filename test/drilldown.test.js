@@ -5,6 +5,7 @@ const {
   renderDrillDown, handleKey, render, isLive, fmtGateDuration, phasePipeline,
   ticketPanelLines, evidenceItems, evidenceLines, EVIDENCE_MAX_VISIBLE,
 } = require('../lib/ui/screens/drilldown');
+const icons = require('../lib/ui/icons');
 
 // eslint-disable-next-line no-control-regex
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
@@ -84,6 +85,41 @@ test('renders TIMELINE, GATES and EVIDENCE section headers', () => {
   assert.match(out, /TIMELINE/);
   assert.match(out, /GATES/);
   assert.match(out, /EVIDENCE/);
+});
+
+// --- CON-42: icon vocabulary ------------------------------------------------
+
+test('the branch row is prefixed with the branch icon, and the branch text is unchanged', () => {
+  const out = plain(renderDrillDown(run({ branch: 'feature/panel-resize-handles/HEL-334' }), OPTS));
+  assert.match(out, new RegExp(icons.branch + ' feature/panel-resize-handles/HEL-334'));
+});
+
+test('a run with no branch still renders its "(no branch yet)" fallback, prefixed with the branch icon', () => {
+  const out = plain(renderDrillDown(run({ branch: null }), OPTS));
+  assert.match(out, new RegExp(icons.branch + ' \\(no branch yet\\)'));
+});
+
+test('the TICKET/TIMELINE/GATES/EVIDENCE panel titles are each prefixed with their own icon', () => {
+  const out = plain(renderDrillDown(run({}), OPTS));
+  assert.match(out, new RegExp(icons.ticket + ' \\[1\\] TICKET'));
+  assert.match(out, new RegExp(icons.timeline + ' \\[2\\] TIMELINE'));
+  assert.match(out, new RegExp(icons.gates + ' \\[3\\] GATES'));
+  assert.match(out, new RegExp(icons.evidence + ' \\[4\\] EVIDENCE'));
+});
+
+test('no rendered line exceeds cols even with the new icon prefixes', () => {
+  const out = plain(renderDrillDown(run({}), OPTS)).split('\n');
+  const f = require('../lib/ui/format');
+  for (const line of out) assert.ok(f.visibleLength(line) <= OPTS.cols, `line exceeds cols: ${JSON.stringify(line)}`);
+});
+
+test('the gate-status and phase-pipeline markers stay untouched — no new icon added to them', () => {
+  const out = plain(renderDrillDown(run({}), OPTS));
+  // gateLine's ✓/✗/○ and the phase pipeline's ✓/●/○ are pre-existing,
+  // STATUS_COLOUR-governed markers this change deliberately does not touch
+  // (design.md Decision 4) — spot-check the phase pipeline is exactly as
+  // before, with no new glyph inserted next to it.
+  assert.match(out, /Setup ✓─ Planning ✓─ Execution ✓─ Evaluation ●─ Delivery ○─ Cleanup ○/);
 });
 
 // --- slice-2b Important 3: this run's own malformed events must be visible ---

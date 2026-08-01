@@ -155,6 +155,31 @@ test('no rendered line exceeds opts.cols', () => {
   }
 });
 
+// --- CON-42: icon vocabulary ------------------------------------------------
+// renderDocView itself stays generic (no reference to "evidence" in its own
+// source — see the "generic/reusable" test below); the evidence reader's own
+// caller (watch.js's 'open-evidence-doc' handler) prefixes icons.evidence
+// onto the title BEFORE calling renderDocView, so the icon rides through the
+// same `title` string renderDocView already truncates as a whole.
+
+test('an icon-prefixed title (as the evidence reader\'s caller supplies it) renders with the icon and the label both, verbatim', () => {
+  const icons = require('../lib/ui/icons');
+  const out = plain(renderDocView({ title: icons.evidence + ' eval-report.md', body: lines(3) }, { cols: 40, rows: 20 }));
+  assert.match(out, new RegExp(icons.evidence + ' eval-report\\.md'));
+});
+
+test('an icon-prefixed title that overflows is truncated with the icon still inside the existing f.truncate budget', () => {
+  const icons = require('../lib/ui/icons');
+  // renderDocView clamps cols to a minimum of 40 (Math.max(40, o.cols || 80)),
+  // so the narrowest budget it will ever actually render against is 40.
+  const longTitle = icons.evidence + ' ' + 'a-very-long-evidence-filename-that-will-not-fit-in-forty-columns.md';
+  const out = plain(renderDocView({ title: longTitle, body: lines(3) }, { cols: 40, rows: 20 }));
+  const titleLine = out.split('\n')[0];
+  assert.equal(visibleLength(titleLine), 40);
+  assert.match(titleLine, /…/);
+  assert.ok(titleLine.startsWith(icons.evidence), 'the icon must survive truncation as the leading character');
+});
+
 // --- computeViewportRows --------------------------------------------------
 
 test('computeViewportRows is unbounded when rows is absent/0', () => {
