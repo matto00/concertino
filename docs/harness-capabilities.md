@@ -122,3 +122,50 @@ above) is used: a dispatching thread that returns before a dispatched worker
 calls `report_agent_job_result` orphans that worker exactly as an unresumed
 Claude Code sub-agent would be. `adapters/codex/header.md` documents this same
 caution so the two stay in agreement.
+
+## Harness-behavior fact: a lingering post-completion turn is invisible to the dashboard (CON-48)
+
+This is the mirror image of the fact above — recorded here for the same
+reason: it's a fact about how these harnesses and the dashboard behave, not
+just an instruction inside `core/roles/orchestrator.md`.
+
+Where the fact above is about a turn ending *too early*, this one is about a
+turn that never ends at all once the orchestrator's real work is genuinely
+done. CON-16's orchestrator ran Phase 4 to completion — `cleanup.sh
+--phase4` removed the worktree and emitted `run.end` (status=`delivered`),
+the ticket was set to Done with a closing comment, and the hygiene check was
+reported — and then, in plain chat, asked a genuine follow-up question with
+**zero telemetry**: no `escalation.raised`, nothing any dashboard poll could
+ever surface. The tmux window and the underlying process were both still
+alive over an hour later, sitting at that unanswered chat prompt.
+
+Why this is invisible from *both* directions at once:
+
+- **The dashboard's own terminal signal already fired.** `run.end` had
+  already been logged with `status=delivered`, so `deriveStatus`
+  (`lib/ui/reducer.js`) correctly, unavoidably rendered the row as `DONE` —
+  a human watching the dashboard has no reason to suspect anything is still
+  waiting on them behind a row that reads as finished.
+- **`window-reaping`'s conservative rule protects the very session stuck in
+  this bug.** Reaping intentionally refuses to touch a live tmux window even
+  after `run.end` has fired (CON-25/CON-34) — correct in isolation, since an
+  orchestrator legitimately finishing Phase 4's tail (ticket Done + hygiene,
+  which run *after* `run.end`) must not be killed mid-cleanup. But that same
+  rule cannot distinguish "still legitimately finishing up" from "done with
+  everything and stuck on an unstructured question" — both are just "a live
+  window past `run.end`" from the reaper's point of view. A session stuck in
+  this bug is therefore never reaped either, and persists indefinitely with
+  no distinguishing signal.
+
+The mitigation (see `core/roles/orchestrator.md`'s Phase 4, "genuinely
+complete" + the escalation/end-of-turn steps that follow it): define
+precisely when the orchestrator's own work is done, route anything left to
+say through `emit-event.sh escalation --await` (which *does* emit telemetry —
+`escalation.raised`, rendered as `NEEDS YOU`, not a falsely-idle `DONE` row —
+see `post-completion-escalation-visibility` in `lib/ui/reducer.js`), and then
+actually end the turn once that one-shot escalation resolves. No config or
+harness capability can make an LLM literally terminate a process — this is a
+behavioral instruction, unenforceable at the code level, exactly like the
+"never end early" mitigation above — but giving the leftover suggestion a
+durable, dashboard-visible event trail is what turns an invisible stuck
+session into a visible `NEEDS YOU` row instead.

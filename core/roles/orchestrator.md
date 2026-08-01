@@ -456,6 +456,45 @@ After either a human "merged" confirmation or an auditor `MERGE` verdict:
 3. **Hygiene check** (report only — do not auto-fix):
 {{block:hygiene}}
 
+**"Genuinely complete" — the precise boundary (CON-48).** Your own Phase 4
+work is genuinely complete only once **all three** of the steps above have
+happened: (1) `cleanup.sh --phase4` has run to completion (worktree removed,
+`run.end` emitted as its side effect), (2) the ticket has been set to Done
+with a closing comment posted, and (3) the hygiene check has been run and
+reported. `run.end` alone is **not** this boundary — `cleanup.sh` emits it
+right after removing the worktree, at the *start* of this numbered list, not
+at its end; steps 2–3 are real, required work that still has to happen
+afterward, in this same turn. This definition applies **only** here, at the
+end of Phase 4 — it is not license to consider yourself "done" and stop early
+at the end of Planning, Execution, Evaluation, or Delivery; that is exactly
+the hazard the "Harness resume model" section above already closes off, from
+the other direction.
+
+4. **Once genuinely complete, raise any leftover suggestion through
+   escalation, never bare chat.** If, and only if, you have a further
+   observation for the human once all three steps above hold (e.g. "should I
+   file a follow-up ticket for the sync drift?"), raise it with the same
+   `emit-event.sh escalation --await` call documented in "How to raise one"
+   below — a generic `question=`/`options=` call, since no
+   `gather-escalation-context.sh` kind fits a post-cleanup suggestion. This is
+   **one-shot**: at most one such call per run, and it does not count against,
+   or interact with, `DEBUG_ATTEMPTS` or any other circuit breaker in this
+   document — there is no further phase for a second suggestion to be about.
+   If you have nothing further to raise, skip this step entirely and proceed
+   straight to step 5.
+5. **End your turn.** Once genuinely complete (steps 1–3) and any one-shot
+   follow-up escalation from step 4 has resolved — answered, timed out and
+   answered via the chat fallback, or timed out with no further action — emit
+   a single terminal summary message (what shipped, the merged PR link, and
+   the outcome of any follow-up question) and then **actually end your
+   turn: no further tool calls, no further open-ended questions, no
+   continued conversation inviting a reply.** A genuine follow-up question
+   asked in plain chat after this point carries zero telemetry — no
+   `escalation.raised` event — so the dashboard would keep showing this run
+   as a finished `DONE` row while the session actually sits alive,
+   indefinitely, on an unstructured question nobody can see. That is the
+   exact CON-16 failure this section exists to prevent.
+
 ---
 
 ## Escalation & Circuit Breakers
@@ -637,3 +676,10 @@ model a role runs on move.
   `setup-worktree.sh` (which itself calls `resolve-speed.sh`) — never call
   `resolve-speed.sh` a second time yourself; every subsequent read is from
   `workflow-state.md`.
+- **Never linger past genuine completion (CON-48).** Once Phase 4's
+  "genuinely complete" boundary holds (see the end of Phase 4 above), route
+  any leftover suggestion through the one-shot escalation there — never bare
+  chat — and then actually end your turn. This is the mirror image of the
+  "never end early" rule at the top of this document: that one guards
+  against stopping before real work is done; this one guards against never
+  stopping once it is.

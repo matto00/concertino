@@ -2013,3 +2013,34 @@ test('the footer always advertises the Q quick start hint', () => {
   const out = plain(renderFleet([run({})], { cols: 140, selected: 0 }));
   assert.match(out, /Q quick start/);
 });
+
+// --- CON-48: a live post-run.end escalation buckets under NEEDS YOU --------
+// Drives the actual reducer output (not a hand-built Run) through the real
+// fleet screen, so a regression in either reducer.js's precedence or fleet's
+// own bucketing would fail here even if each were unit-tested in isolation.
+
+test('a run.end-then-live-escalation run lands in NEEDS YOU, not DONE', () => {
+  const events = new Map([
+    ['HEL-16', { malformed: 0, events: [
+      ev(100, 'run.start', 'HEL-16', { branch: 'task/sync-drift-cleanup/HEL-16' }),
+      ev(200, 'run.end', 'HEL-16', { status: 'delivered' }),
+      ev(210, 'escalation.raised', 'HEL-16', {
+        question: 'Want me to open a follow-up ticket for the sync drift, or leave it for now?',
+        options: 'open-ticket,leave-it',
+      }),
+    ] }],
+  ]);
+  const windows = [{ ticket: 'HEL-16', alive: true, idleMs: 0 }];
+  const runs = reduce(events, windows, 2000);
+
+  assert.equal(runs[0].status, 'needs-you');
+  assert.equal(runs[0].escalationStale, false);
+
+  const out = plain(renderFleet(runs, { cols: 100, selected: 0 }));
+  assert.match(out, /NEEDS YOU/);
+  const needsYouIdx = out.indexOf('NEEDS YOU');
+  const doneIdx = out.indexOf('DONE');
+  const ticketIdx = out.indexOf('HEL-16');
+  assert.ok(ticketIdx > needsYouIdx, 'HEL-16 should render under the NEEDS YOU section');
+  assert.ok(doneIdx === -1 || ticketIdx < doneIdx, 'HEL-16 must not fall under DONE');
+});
