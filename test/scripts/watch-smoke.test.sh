@@ -191,7 +191,7 @@ LP2_SESSION="concertino-smoke-$$-lp2"
 LP2_WORK="$(mktemp -d)"
 tmux new-session -d -s "$LP2_SESSION" -n CON-9 'sleep 300'
 mkdir -p "$LP2_WORK/.concertino/cache"
-printf '{"schemaVersion":2,"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-9","title":"already-running-ticket","epicId":"e1","epicName":"Epic","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e1","name":"Epic","openCount":1}]}' \
+printf '{"schemaVersion":3,"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-9","title":"already-running-ticket","epicId":"e1","epicName":"Epic","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e1","name":"Epic","openCount":1}]}' \
   "$(($(date +%s) * 1000))" > "$LP2_WORK/.concertino/cache/linear.json"
 cat > "$LP2_WORK/concertino.config.json" <<EOF
 {"dashboard":{"tmuxSession":"$LP2_SESSION","launchPad":{"enabled":true}},"ticketProvider":{"kind":"linear","idExample":"CON-1"}}
@@ -217,7 +217,7 @@ rm -rf "$LP2_WORK"
 Q_SESSION="concertino-smoke-$$-queue"
 Q_WORK="$(mktemp -d)"
 mkdir -p "$Q_WORK/.concertino/cache"
-printf '{"schemaVersion":2,"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-21","title":"batch-one","epicId":"e2","epicName":"Batch","state":{"name":"Todo","type":"unstarted"}},{"identifier":"CON-22","title":"batch-two","epicId":"e2","epicName":"Batch","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e2","name":"Batch","openCount":2}]}' \
+printf '{"schemaVersion":3,"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-21","title":"batch-one","epicId":"e2","epicName":"Batch","state":{"name":"Todo","type":"unstarted"}},{"identifier":"CON-22","title":"batch-two","epicId":"e2","epicName":"Batch","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e2","name":"Batch","openCount":2}]}' \
   "$(($(date +%s) * 1000))" > "$Q_WORK/.concertino/cache/linear.json"
 cat > "$Q_WORK/concertino.config.json" <<EOF
 {"dashboard":{"tmuxSession":"$Q_SESSION","launchPad":{"enabled":true},"launchCommand":"sleep 60 # {{TICKET}}"},"ticketProvider":{"kind":"linear","idExample":"CON-1"}}
@@ -251,7 +251,7 @@ rm -rf "$Q_WORK"
 H_SESSION="concertino-smoke-$$-harness"
 H_WORK="$(mktemp -d)"
 mkdir -p "$H_WORK/.concertino/cache"
-printf '{"schemaVersion":2,"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-31","title":"harness-check","epicId":"e3","epicName":"Epic3","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e3","name":"Epic3","openCount":1}]}' \
+printf '{"schemaVersion":3,"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-31","title":"harness-check","epicId":"e3","epicName":"Epic3","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e3","name":"Epic3","openCount":1}]}' \
   "$(($(date +%s) * 1000))" > "$H_WORK/.concertino/cache/linear.json"
 cat > "$H_WORK/concertino.config.json" <<EOF
 {"dashboard":{"tmuxSession":"$H_SESSION","launchPad":{"enabled":true},"launchCommand":"sleep 60 # {{TICKET}}"},"harnesses":["claude","codex"],"ticketProvider":{"kind":"linear","idExample":"CON-1"}}
@@ -284,7 +284,7 @@ LP3_SESSION="concertino-smoke-$$-lp3"
 LP3_WORK="$(mktemp -d)"
 mkdir -p "$LP3_WORK/.concertino/cache"
 tmux new-session -d -s "$LP3_SESSION" -n LP3-WINDOW 'sleep 300'
-printf '{"schemaVersion":2,"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-41","title":"none-priority-ticket","priority":0,"epicId":"e4","epicName":"Priorities","state":{"name":"Todo","type":"unstarted"}},{"identifier":"CON-42","title":"urgent-priority-ticket","priority":1,"epicId":"e4","epicName":"Priorities","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e4","name":"Priorities","openCount":2}]}' \
+printf '{"schemaVersion":3,"fetchedAt":%s,"teamKey":"CON","tickets":[{"identifier":"CON-41","title":"none-priority-ticket","priority":0,"epicId":"e4","epicName":"Priorities","state":{"name":"Todo","type":"unstarted"}},{"identifier":"CON-42","title":"urgent-priority-ticket","priority":1,"epicId":"e4","epicName":"Priorities","state":{"name":"Todo","type":"unstarted"}}],"epics":[{"id":"e4","name":"Priorities","openCount":2}]}' \
   "$(($(date +%s) * 1000))" > "$LP3_WORK/.concertino/cache/linear.json"
 cat > "$LP3_WORK/concertino.config.json" <<EOF
 {"dashboard":{"tmuxSession":"$LP3_SESSION","launchPad":{"enabled":true}},"ticketProvider":{"kind":"linear","idExample":"CON-1"}}

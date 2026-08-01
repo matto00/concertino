@@ -60,16 +60,17 @@ test('JSON null reads as empty', () => {
 });
 
 test('a cache with no tickets array reads as empty', () => {
-  assert.deepEqual(cache.read(seed(tmpRoot(), '{"schemaVersion":2,"fetchedAt":1}')), { fetchedAt: null, tickets: [], epics: [] });
+  const raw = `{"schemaVersion":${cache.CACHE_SCHEMA_VERSION},"fetchedAt":1}`;
+  assert.deepEqual(cache.read(seed(tmpRoot(), raw)), { fetchedAt: null, tickets: [], epics: [] });
 });
 
 test('a non-numeric fetchedAt degrades to null rather than rendering NaN', () => {
-  const root = seed(tmpRoot(), '{"schemaVersion":2,"fetchedAt":"2026-07-27T00:00:00Z","tickets":[]}');
+  const root = seed(tmpRoot(), `{"schemaVersion":${cache.CACHE_SCHEMA_VERSION},"fetchedAt":"2026-07-27T00:00:00Z","tickets":[]}`);
   assert.equal(cache.read(root).fetchedAt, null);
 });
 
 test('a missing epics array degrades to empty without losing the tickets', () => {
-  const root = seed(tmpRoot(), '{"schemaVersion":2,"fetchedAt":5,"tickets":[{"identifier":"CON-1"}]}');
+  const root = seed(tmpRoot(), `{"schemaVersion":${cache.CACHE_SCHEMA_VERSION},"fetchedAt":5,"tickets":[{"identifier":"CON-1"}]}`);
   const c = cache.read(root);
   assert.equal(c.tickets.length, 1);
   assert.deepEqual(c.epics, []);
@@ -165,7 +166,7 @@ test('a second write replaces the first', () => {
 test('write of an empty result is legal — a team can have no open tickets', () => {
   const root = tmpRoot();
   cache.write(root, {}, 9);
-  assert.deepEqual(cache.read(root), { fetchedAt: 9, tickets: [], epics: [], teamKey: null, truncated: false });
+  assert.deepEqual(cache.read(root), { fetchedAt: 9, tickets: [], epics: [], teamKey: null, truncated: false, teamFound: null });
 });
 
 // --- truncated ---------------------------------------------------------------
@@ -191,6 +192,45 @@ test('a pre-existing cache file with no truncated field reads as false', () => {
     JSON.stringify(Object.assign({ schemaVersion: cache.CACHE_SCHEMA_VERSION, fetchedAt: 1 }, SAMPLE)),
   );
   assert.equal(cache.read(root).truncated, false);
+});
+
+// --- teamFound (CON-20, skeptic-final-1.md) ---------------------------------
+// The team-not-found distinction has to survive a process restart — the
+// distinguishing signal (refreshLaunchPad's lp.error) lives only in the
+// process that performed the refresh, so it has to be persisted alongside
+// the ticket data itself, not just held in memory.
+
+test('write then read round-trips teamFound: true', () => {
+  const root = tmpRoot();
+  cache.write(root, Object.assign({}, SAMPLE, { teamFound: true }), 1);
+  assert.strictEqual(cache.read(root).teamFound, true);
+});
+
+test('write then read round-trips teamFound: false — must never collapse to null via a falsy default', () => {
+  const root = tmpRoot();
+  cache.write(root, Object.assign({}, SAMPLE, { teamFound: false }), 1);
+  assert.strictEqual(cache.read(root).teamFound, false);
+});
+
+test('write without teamFound defaults to null (unknown), not true or false', () => {
+  const root = tmpRoot();
+  cache.write(root, SAMPLE, 1);
+  assert.strictEqual(cache.read(root).teamFound, null);
+});
+
+test('a non-boolean teamFound on disk degrades to null rather than passing through', () => {
+  const root = seed(
+    tmpRoot(),
+    JSON.stringify(Object.assign({ schemaVersion: cache.CACHE_SCHEMA_VERSION, fetchedAt: 1, teamFound: 'nope' }, SAMPLE)),
+  );
+  assert.strictEqual(cache.read(root).teamFound, null);
+});
+
+test('a cache file at the previous schemaVersion (pre-teamFound) reads as empty, not teamFound: null on stale data', () => {
+  // The schema bump itself is what protects against misreading a
+  // pre-teamFound row — it never reaches a per-field default at all.
+  const root = seed(tmpRoot(), JSON.stringify(Object.assign({ schemaVersion: cache.CACHE_SCHEMA_VERSION - 1 }, SAMPLE)));
+  assert.deepEqual(cache.read(root), { fetchedAt: null, tickets: [], epics: [] });
 });
 
 // --- age -------------------------------------------------------------------

@@ -1448,6 +1448,17 @@ function cmdValidate(args) {
   ['linear', 'github', 'manual'].includes(tp.kind)
     ? ok('ticketProvider', tp.kind + (tp.idExample ? dim('  e.g. ' + tp.idExample) : ''))
     : fail(`ticketProvider.kind must be linear|github|manual (got: ${JSON.stringify(tp.kind)})`);
+  // CON-20: the launch pad's derived-fallback team key (teamKeyFromConfig's
+  // last resort — guessed from ticketProvider.idExample, a value documented
+  // as a sample id, not a real team key) is exactly how the shipped `ABC`
+  // placeholder produced a silently-empty launch pad. Catching the absence
+  // here, at config-check time, is one step earlier than the launch pad's
+  // own zero-ticket-vs-team-not-found distinction — before the feature is
+  // ever opened at all.
+  if (cfg.dashboard && cfg.dashboard.launchPad && cfg.dashboard.launchPad.enabled === true && !tp.teamKey) {
+    warn('ticketProvider.teamKey not set — dashboard.launchPad.enabled is true, so the launch pad will fall back ' +
+      'to a guess derived from ticketProvider.idExample, which is a sample id, not a real team key');
+  }
 
   const sp = cfg.specProvider || {};
   if (!['openspec', 'none'].includes(sp.kind)) {

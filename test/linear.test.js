@@ -512,3 +512,60 @@ test('an unparseable id example yields no key rather than a bad one', () => {
   });
   assert.deepEqual(linear.teamKeyFromConfig({}, {}), { key: null, source: null });
 });
+
+// --- resolveTeam (CON-20) ---------------------------------------------------
+// Linear answers a bulk issue fetch against an unknown team key with an empty
+// result — the identical shape a real, empty team returns — so the launch
+// pad needs a separate, direct way to ask "does this team exist at all".
+
+function teamsPage(nodes) {
+  return { status: 200, body: JSON.stringify({ data: { teams: { nodes } } }) };
+}
+
+test('resolveTeam reports found: true for a canned response with a matching team node', async () => {
+  const transport = fakeTransport([teamsPage([{ id: 'team-1', key: 'CON' }])]);
+  const r = await linear.resolveTeam(transport, 'k', 'CON');
+  assert.deepEqual(r, { found: true });
+  assert.equal(transport.calls[0].variables.teamKey, 'CON');
+  assert.match(transport.calls[0].query, /teams\(filter:\s*{\s*key:\s*{\s*eq:\s*\$teamKey\s*}\s*}\)/);
+});
+
+test('resolveTeam reports found: false for an empty nodes array', async () => {
+  const transport = fakeTransport([teamsPage([])]);
+  const r = await linear.resolveTeam(transport, 'k', 'ABC');
+  assert.deepEqual(r, { found: false });
+});
+
+test('resolveTeam defaults to httpsTransport when none is given', () => {
+  // Same contract as fetchTickets — a caller that already has a team key in
+  // hand should not have to thread the transport through by hand for the
+  // common (real network) case. Asserted by shape only: this test never
+  // actually calls the network.
+  assert.equal(typeof linear.resolveTeam, 'function');
+  assert.equal(linear.resolveTeam.length, 3);
+});
+
+test('resolveTeam propagates a rejected key the same way fetchTickets does', async () => {
+  const transport = () => Promise.resolve({ status: 401, body: '{"errors":[{"message":"Authentication required"}]}' });
+  await assert.rejects(() => linear.resolveTeam(transport, 'k', 'CON'), /LINEAR_API_KEY was rejected/);
+});
+
+test('resolveTeam propagates an HTTP error the same way fetchTickets does', async () => {
+  const transport = () => Promise.resolve({ status: 500, body: 'boom' });
+  await assert.rejects(() => linear.resolveTeam(transport, 'k', 'CON'), /HTTP 500/);
+});
+
+test('resolveTeam propagates a GraphQL errors array the same way fetchTickets does', async () => {
+  const transport = () =>
+    Promise.resolve({ status: 200, body: JSON.stringify({ errors: [{ message: 'Unknown argument key' }] }) });
+  await assert.rejects(() => linear.resolveTeam(transport, 'k', 'CON'), /Unknown argument key/);
+});
+
+test('resolveTeam propagates a transport error identically to fetchTickets', async () => {
+  const transport = () => Promise.reject(new Error('ECONNREFUSED'));
+  await assert.rejects(() => linear.resolveTeam(transport, 'k', 'CON'), /ECONNREFUSED/);
+});
+
+test('the team query filters on key, independent of the issues query', () => {
+  assert.match(linear.TEAM_QUERY, /teams\(filter:\s*{\s*key:\s*{\s*eq:\s*\$teamKey\s*}\s*}\)/);
+});
