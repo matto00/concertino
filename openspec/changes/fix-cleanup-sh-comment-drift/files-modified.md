@@ -1,2 +1,0 @@
-- `core/scripts/cleanup.sh` — corrected the stale `CONCERTINO_BASE_REMOTE` comment (canonical template; source of truth) to match the fix CON-32 already applied to the rendered copy.
-- `scripts/concertino/cleanup.sh` — re-rendered from the corrected template via `concertino sync` (no manual edit); confirms the fix now survives sync and is durable.
