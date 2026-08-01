@@ -57,6 +57,62 @@ test('names who raised it and mentions where the answer goes', () => {
   assert.match(out, /agent is polling/);
 });
 
+// --- lazygit-layout pass: grow-to-fill (design.md Decision 2) -------------
+
+test('with vertical space to spare, the content box grows to push the footer to the last row', () => {
+  const out = plain(renderEscalation(run({}), Object.assign({}, OPTS, { rows: 30 })));
+  const lines = out.split('\n');
+  // rows: 30 reserves the trailing-newline row (the same `rows - 1`
+  // convention fleet.js's grow-to-fill computation already uses), so the
+  // footer must be the LAST line this frame emits, and the frame should
+  // reach (not merely approach) that budget.
+  assert.match(lines[lines.length - 1], /a approve   d deny   t reply   ↵ attach   esc back/);
+  assert.equal(lines.length, 29, `expected the frame to grow to fill the 30-row budget, got ${lines.length} lines`);
+});
+
+test('with no rows budget given (0/absent), rendering is unaffected by this change', () => {
+  const out = plain(renderEscalation(run({}), OPTS));
+  const lines = out.split('\n');
+  assert.ok(lines.length < 20, 'unbounded render must stay tight to content, not pad out to some default height');
+});
+
+test('a tight budget below the content\'s natural height still shrinks the box exactly as before', () => {
+  const outTight = plain(renderEscalation(run({}), Object.assign({}, OPTS, { rows: 8 })));
+  const outUnbounded = plain(renderEscalation(run({}), OPTS));
+  // A budget below the natural height must not grow anything — the frame is
+  // identical to the unbounded render (no regression to the existing
+  // narrow-terminal degrade behaviour).
+  assert.equal(outTight, outUnbounded);
+});
+
+test('a stale escalation (fewer trailing rows) still grows to fill the budget, footer last', () => {
+  const out = plain(renderEscalation(run({ status: 'failed', escalationStale: true }), Object.assign({}, OPTS, { rows: 30 })));
+  const lines = out.split('\n');
+  assert.match(lines[lines.length - 1], /↵ attach   esc back/);
+  assert.equal(lines.length, 29);
+});
+
+test('an open reply (extra trailing rows) still grows to fill the budget, footer last', () => {
+  const out = plain(renderEscalation(run({}), Object.assign({}, OPTS, { rows: 30, reply: { value: 'hello' } })));
+  const lines = out.split('\n');
+  assert.match(lines[lines.length - 1], /↵ send   esc cancel/);
+  assert.equal(lines.length, 29);
+});
+
+test('a reply with a validation error (one more trailing row) still grows to fill the budget', () => {
+  const out = plain(renderEscalation(run({}), Object.assign({}, OPTS, { rows: 30, reply: { value: 'hello', error: 'bad value' } })));
+  const lines = out.split('\n');
+  assert.match(lines[lines.length - 1], /↵ send   esc cancel/);
+  assert.equal(lines.length, 29);
+});
+
+test('a notice (extra trailing rows) still grows to fill the budget', () => {
+  const out = plain(renderEscalation(run({}), Object.assign({}, OPTS, { rows: 30, notice: 'something went wrong' })));
+  const lines = out.split('\n');
+  assert.match(lines[lines.length - 1], /a approve   d deny   t reply   ↵ attach   esc back/);
+  assert.equal(lines.length, 29);
+});
+
 // --- staleness: visible, and not answerable -----------------------------
 
 test('a stale escalation is visibly stale', () => {

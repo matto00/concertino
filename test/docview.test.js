@@ -74,12 +74,38 @@ test('content that fits the viewport renders in full, unscrolled', () => {
   assert.doesNotMatch(text, /more/);
 });
 
-test('a short body sizes the box to its own content, not the full viewport budget', () => {
+// --- lazygit-layout pass: bodyBox grows to fill a finite viewport
+// (design.md Decision 4) ---------------------------------------------------
+
+test('content shorter than a finite viewport grows the box to fill it', () => {
   const out = bodyBox(lines(3), { width: 20, viewportRows: 10, scrollOffset: 0 });
-  // top border + 3 content rows + bottom border, never padded out to
-  // viewportRows + 2 — the same "byte-identical to the unbounded case"
-  // property ticketview.js's own pre-change output relied on.
+  // top border + viewportRows content rows (padded, not the content's own
+  // shorter natural height) + bottom border.
+  assert.equal(out.length, 12);
+  const text = plain(out.join('\n'));
+  assert.match(text, /line 0/);
+  assert.match(text, /line 1/);
+  assert.match(text, /line 2/);
+  assert.doesNotMatch(text, /showing/);
+});
+
+test('an unbounded viewport (Infinity) does not grow the box — natural height, unchanged', () => {
+  const out = bodyBox(lines(3), { width: 20, viewportRows: Infinity, scrollOffset: 0 });
+  // top border + 3 content rows + bottom border — byte-identical to this
+  // function's pre-change behaviour when no finite viewport is given.
   assert.equal(out.length, 5);
+});
+
+test('content exactly filling the viewport is unaffected by growth', () => {
+  const out = bodyBox(lines(10), { width: 20, viewportRows: 10, scrollOffset: 0 });
+  assert.equal(out.length, 12);
+});
+
+test('content taller than the viewport still windows, never grows past the viewport budget', () => {
+  const out = bodyBox(lines(50), { width: 30, viewportRows: 10, scrollOffset: 0 });
+  // Growth (Math.max(content.length, viewportRows)) is a no-op here since
+  // the already-windowed content is exactly viewportRows long.
+  assert.equal(out.length, 12); // top border + 10 content rows + bottom border
 });
 
 // --- bodyBox: overflow, windowed -----------------------------------------
@@ -137,6 +163,13 @@ test('renderDocView with no rows given renders the whole document unbounded (tes
   assert.match(out, /line 0/);
   assert.match(out, /line 4/);
   assert.doesNotMatch(out, /more/);
+});
+
+test('renderDocView grows the box to fill the terminal, footer as the last line', () => {
+  const out = plain(renderDocView({ title: 't', body: lines(3) }, { cols: 40, rows: 20 }));
+  const outLines = out.split('\n');
+  assert.match(outLines[outLines.length - 1], /esc back/);
+  assert.equal(outLines.length, 19, `expected the frame to grow to fill the 20-row budget, got ${outLines.length} lines`);
 });
 
 test('the footer shows a position indicator only once the document is windowed', () => {

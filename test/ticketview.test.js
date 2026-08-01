@@ -172,14 +172,55 @@ test('no rendered line exceeds opts.cols even with a long description and commen
 // --- CON-19: scrolling, delegated to docview.bodyBox ------------------------
 // design.md's own risk log: refactoring this screen's box call must not
 // change its visual output for the common case where content already fit —
-// a short ticket, rendered with no `rows` budget at all (this screen's own
+// a short ticket, rendered with NO `rows` budget at all (this screen's own
 // pre-change, unbounded behaviour), must still be byte-identical.
 
-test('a short ticket description renders identically whether or not rows is supplied (no rows = unbounded, as before this change)', () => {
+test('a short ticket description with no rows budget (unbounded) is unaffected by this change', () => {
   const short = ticket({});
   const withoutRows = renderTicketView(short, { cols: 78 });
-  const withRows = renderTicketView(short, { cols: 78, rows: 40 });
-  assert.equal(withoutRows, withRows);
+  const withZeroRows = renderTicketView(short, { cols: 78, rows: 0 });
+  assert.equal(withoutRows, withZeroRows);
+});
+
+// --- CON-43: bodyBox's grow-to-fill (design.md Decision 4) now reaches
+// ticketview.js as a consumer, with no change to this screen's own logic
+// (design.md's Impact section) ----------------------------------------------
+
+test('with a finite rows budget, a short ticket now grows the box to fill it, footer as the last line', () => {
+  const short = ticket({});
+  const out = plain(renderTicketView(short, { cols: 78, rows: 30 }));
+  const lines = out.split('\n');
+  assert.match(lines[lines.length - 1], /esc back/);
+  // rows: 30 reserves the trailing-newline row (the same `rows - 1`
+  // convention the other two screens' grow-to-fill computations already
+  // use) — the frame must reach it, not stop short at the content's own
+  // natural height as it did before this change.
+  assert.equal(lines.length, 29, `expected the frame to grow to fill the 30-row budget, got ${lines.length} lines`);
+});
+
+test('growth never exceeds the reserved-last-row budget across a range of realistic terminal heights', () => {
+  const short = ticket({});
+  for (const rows of [15, 18, 20, 24, 25, 29, 30, 40, 60]) {
+    const out = renderTicketView(short, { cols: 78, rows });
+    const lines = out.split('\n');
+    assert.ok(lines.length <= rows - 1, `rows:${rows} produced ${lines.length} lines, expected <= ${rows - 1}`);
+  }
+});
+
+// Regression: computeViewportRows must reserve the box's own two border
+// rows (docview.bodyBox always adds them on top of viewportRows) as well as
+// this screen's non-box chrome — omitting them under-reserved by exactly 2,
+// a latent bug that pre-dates the grow-to-fill change (only ever exercised
+// when a long description needed windowing) but is exercised on EVERY
+// finite-`rows` render now that bodyBox always grows to fill viewportRows.
+// Without the border rows reserved, this would overflow the `rows - 1`
+// budget by exactly 2 lines.
+test('computeViewportRows reserves the box border rows, not just the surrounding chrome', () => {
+  const long = ticket({ description: Array.from({ length: 60 }, (_, i) => 'paragraph line ' + i).join('\n\n') });
+  const rows = 20;
+  const out = renderTicketView(long, { cols: 78, rows, scrollOffset: 0 });
+  const lines = out.split('\n');
+  assert.ok(lines.length <= rows - 1, `expected the windowed frame to respect the rows - 1 budget, got ${lines.length} lines`);
 });
 
 test('a description longer than one screen is now scrollable instead of overflowing off-screen', () => {

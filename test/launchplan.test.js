@@ -177,6 +177,43 @@ test('j/k scroll keys emit scroll-launchplan-tickets', () => {
   assert.deepEqual(handleKey('k', { plan: plan({}) }), { type: 'scroll-launchplan-tickets', delta: -1 });
 });
 
+// --- lazygit-layout pass: the ticket-list box grows to fill available height
+// (design.md Decision 3) ------------------------------------------------
+
+test('a small batch grows the ticket-list box to fill available height, footer last', () => {
+  const out = plain(renderLaunchPlan(plan({}), 0, { cols: 78, rows: 30 }));
+  const lines = out.split('\n');
+  // rows: 30 reserves the trailing-newline row (the same `rows - 1`
+  // convention fleet.js's grow-to-fill computation already uses).
+  assert.match(lines[lines.length - 1], /↵ confirm & launch   c concurrency   s speed   n hold   esc cancel/);
+  assert.equal(lines.length, 29, `expected the frame to grow to fill the 30-row budget, got ${lines.length} lines`);
+});
+
+test('a small batch with the already-active warning (extra trailing rows) still grows to fill the budget', () => {
+  const out = plain(renderLaunchPlan(plan({}), 3, { cols: 78, rows: 30 }));
+  const lines = out.split('\n');
+  assert.match(lines[lines.length - 1], /↵ confirm & launch   c concurrency   s speed   n hold   esc cancel/);
+  assert.equal(lines.length, 29);
+});
+
+test('a large batch still windows/scrolls exactly as before growth was added — same lines visible', () => {
+  const bigPlan = plan({ tickets: Array.from({ length: 30 }, (_, i) => ticketAt(i)) });
+  const withoutScroll = plain(renderLaunchPlan(bigPlan, 0, { cols: 78, rows: 25 }));
+  const lines = withoutScroll.split('\n');
+  assert.ok(lines.length <= 24, `render must respect the row budget, got ${lines.length} lines`);
+  assert.match(withoutScroll, /showing/);
+  assert.match(withoutScroll, /CON-100\b/);
+  assert.doesNotMatch(withoutScroll, /CON-129\b/);
+});
+
+test('with no rows budget given (0/absent), the ticket-list box is unaffected by growth', () => {
+  const out = plain(renderLaunchPlan(plan({}), 0, OPTS));
+  const withRows = plain(renderLaunchPlan(plan({}), 0, { cols: 78, rows: 8 }));
+  // A budget below the natural height must not grow anything — same as the
+  // fully-unbounded render (no regression to the existing behaviour).
+  assert.equal(out, withRows);
+});
+
 // --- the fleet-wide warning, not just this batch ----------------------------
 
 test('no warning when nothing else is active', () => {
