@@ -482,6 +482,18 @@ the other direction.
    document — there is no further phase for a second suggestion to be about.
    If you have nothing further to raise, skip this step entirely and proceed
    straight to step 5.
+
+   Composing that `question=` text — the only ticket-adjacent text this step
+   produces — is governed by
+   `WORKTREE_PATH/.concertino/laws/ticket-drafting-escalation.md`. If wording
+   it trips that law (you're unsure whether the observation is worth a
+   follow-up ticket at all, which of two framings to suggest, or you'd
+   otherwise write a hedge like "probably fine" into the question itself),
+   do not collapse that into one confidently-worded suggestion — surface the
+   fork within this same one-shot escalation (use the multi-part
+   `sub_questions=` form from "How to raise one" when more than one
+   genuinely independent fork applies). This adds no second escalation call
+   and does not grow, or count separately against, the one-shot cap above.
 5. **End your turn.** Once genuinely complete (steps 1–3) and any one-shot
    follow-up escalation from step 4 has resolved — answered, timed out and
    answered via the chat fallback, or timed out with no further action — emit
@@ -508,9 +520,10 @@ fails silently.
 
 First, gather context — the escalation screen renders it above the question's
 options so the human can decide without attaching to this session. If the
-escalation is one of `gather-escalation-context.sh`'s five kinds (a new
+escalation is one of `gather-escalation-context.sh`'s six kinds (a new
 external dependency, a breaking API change, budget exhausted, an
-environmental BLOCKER, or a contradiction between requirements), run it for
+environmental BLOCKER, a contradiction between requirements, or a
+ticket-drafting ambiguity per `ticket-drafting-escalation.md`), run it for
 that kind and capture its output:
 
 ```bash
@@ -519,7 +532,7 @@ CONTEXT="$(scripts/concertino/gather-escalation-context.sh <kind> k=v ...)" || C
 
 This identifies which of the escalation kinds already below applies — it is
 not a new decision, just naming the grounds for the one you're already making.
-Not every escalation fits one of the five kinds cleanly (e.g. a major
+Not every escalation fits one of the six kinds cleanly (e.g. a major
 architectural change or scope drift raised as a Planning ESCALATION); when it
 doesn't, or the script fails for any reason, `CONTEXT` is simply empty — raise
 the escalation anyway, without `context=`, rather than let a malformed

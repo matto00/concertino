@@ -3,14 +3,15 @@ set -uo pipefail
 
 # ===========================================================================
 # gather-escalation-context.sh — format a structured context block for one of
-# the five escalation kinds CON-11 enumerates, so the context an escalation
-# carries is a committed procedure rather than prose the orchestrator
-# improvises at raise time.
+# the six escalation kinds CON-11 (and CON-50's ticket-ambiguity addition)
+# enumerate, so the context an escalation carries is a committed procedure
+# rather than prose the orchestrator improvises at raise time.
 #
 # Usage: gather-escalation-context.sh <KIND> [k=v ...]
 #
-# KIND is one of: dependency, api-change, budget, blocker, contradiction.
-# Each kind requires specific k=v fields (see the case block below). On
+# KIND is one of: dependency, api-change, budget, blocker, contradiction,
+# ticket-ambiguity. Each kind requires specific k=v fields (see the case
+# block below). On
 # success, prints a structured, human-readable plain-text block to stdout and
 # exits 0 — the caller passes that block through as `context=` on the
 # `emit-event.sh escalation --await` call that follows it.
@@ -28,7 +29,7 @@ set -uo pipefail
 # budget/persistence logic stays in the one place that already owns it.
 # ===========================================================================
 
-VALID_KINDS="dependency api-change budget blocker contradiction"
+VALID_KINDS="dependency api-change budget blocker contradiction ticket-ambiguity"
 
 fail() {
   echo "FAIL $1" >&2
@@ -120,6 +121,16 @@ EOF
 Contradiction — these two requirements cannot both hold
   requirement A: ${F[requirement_a]}
   requirement B: ${F[requirement_b]}
+EOF
+    ;;
+
+  ticket-ambiguity)
+    require signal detail draft_excerpt
+    cat <<EOF
+Ticket-drafting ambiguity — an unresolved fork was about to be finalized
+  signal:        ${F[signal]}
+  detail:        ${F[detail]}
+  draft excerpt: ${F[draft_excerpt]}
 EOF
     ;;
 esac
