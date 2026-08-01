@@ -19,7 +19,8 @@
       "additionalProperties": false,
       "properties": {
         "name": { "type": "string", "description": "Human label used in agent prose." },
-        "baseBranch": { "type": "string", "default": "main", "description": "Branch PRs target and diffs compare against." }
+        "baseBranch": { "type": "string", "default": "main", "description": "Branch PRs target and diffs compare against." },
+        "baseRemote": { "type": "string", "default": "origin", "description": "Remote PRs target and diffs/fast-forward compare against." }
       }
     },
     "ticketProvider": {

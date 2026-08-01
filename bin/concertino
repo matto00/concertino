@@ -331,6 +331,7 @@ function withModelDefaults(c) {
 function withDefaults(c) {
   c.harnesses = c.harnesses || ['claude-code', 'codex'];
   c.project.baseBranch = c.project.baseBranch || 'main';
+  c.project.baseRemote = c.project.baseRemote || 'origin';
   c.ticketProvider.idExample = c.ticketProvider.idExample || 'TICKET-123';
   const sp = c.specProvider || (c.specProvider = { kind: 'none' });
   if (!sp.changeDir) sp.changeDir = sp.kind === 'openspec'
@@ -548,6 +549,7 @@ function renderEnv(c) {
   const L = [];
   L.push('# concertino:sync v' + VERSION + ' — do not edit by hand.');
   L.push('CONCERTINO_BASE_BRANCH=' + envValue(c.project.baseBranch || 'main'));
+  L.push('CONCERTINO_BASE_REMOTE=' + envValue(c.project.baseRemote || 'origin'));
   L.push('CONCERTINO_WORKTREE_BASE=' + envValue(c.worktree.base));
   L.push('CONCERTINO_FRONTEND_PORT_BASE=' + c.worktree.ports.frontendBase);
   L.push('CONCERTINO_BACKEND_PORT_BASE=' + c.worktree.ports.backendBase);
@@ -1012,7 +1014,7 @@ function checkArtifacts(out, core, coreForced, harnesses, r) {
 // it just skips this one check silently, exactly like cleanup.sh's own
 // fast-forward step does for the same reason.
 function checkBaseBranch(out, cfg, r) {
-  const remote = 'origin';
+  const remote = (cfg.project && cfg.project.baseRemote) || 'origin';
   const branch = (cfg.project && cfg.project.baseBranch) || 'main';
   section('Git');
 
@@ -1426,6 +1428,7 @@ function cmdValidate(args) {
   const p = cfg.project || {};
   p.name ? ok('name', p.name) : fail('project.name is required');
   ok('baseBranch', p.baseBranch || dim('(defaults to main)'));
+  ok('baseRemote', p.baseRemote || dim('(defaults to origin)'));
 
   // ── Integrations ─────────────────────────────────────────────────────────
   section('Integrations');

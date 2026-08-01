@@ -1,0 +1,7 @@
+# Files modified
+
+- `bin/concertino` — added `project.baseRemote` default (`withDefaults()`), emitted `CONCERTINO_BASE_REMOTE` from it (`renderEnv()`), replaced `checkBaseBranch()`'s hardcoded `const remote = 'origin'` with a read of `cfg.project.baseRemote || 'origin'`, and surfaced the resolved value in `concertino validate`'s `Project` section (`ok('baseRemote', ...)`).
+- `config/concertino.schema.json` — added the `project.baseRemote` schema property (string, default `origin`), alongside the existing `baseBranch` property.
+- `docs/config-reference.md` — documented `baseRemote` in the `project` table and example, mirroring `baseBranch`.
+- `scripts/concertino/cleanup.sh` — corrected the stale comment above `BASE_REMOTE="${CONCERTINO_BASE_REMOTE:-origin}"` that said `CONCERTINO_BASE_REMOTE` was "not currently rendered" — it now is, from `project.baseRemote`. No functional change to the fallback logic.
+- `test/scripts/doctor-base-branch.test.sh` — added a self-contained regression case (its own throwaway remote/project pair) that configures `project.baseRemote: "upstream"`, renames the git remote to `upstream`, re-runs `concertino sync`, and asserts (a) `.concertino.env` carries `CONCERTINO_BASE_REMOTE='upstream'` and (b) `concertino doctor`'s `Git` check reports the commits-behind warning against `upstream/main`, not `origin/main`. Confirmed the new assertion fails (catches the regression) when `checkBaseBranch()`'s remote resolution is reverted to the hardcoded `'origin'` literal, then confirmed it passes again with the fix restored.
