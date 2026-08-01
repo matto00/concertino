@@ -240,3 +240,36 @@ test('selectionWindow floors maxVisible at 1 to avoid a zero-row window with a n
   const w = layout.selectionWindow(5, 2, 0, 0);
   assert.deepEqual(w, { start: 2, count: 1, offset: 2 });
 });
+
+// --- fitSegments(): pack whole segments, never truncate mid-bar -----------
+
+test('fitSegments joins every segment when they all fit', () => {
+  assert.equal(layout.fitSegments(['a 10%', 'b 20%'], 20), 'a 10% · b 20%');
+});
+
+test('fitSegments drops trailing segments and appends an ellipsis when they do not all fit', () => {
+  const result = layout.fitSegments(['aaaa 10%', 'bbbb 20%', 'cccc 30%'], 12);
+  assert.equal(result, 'aaaa 10% …');
+});
+
+test('fitSegments never returns a partial segment — a segment that cannot fit at all becomes a bare ellipsis', () => {
+  const result = layout.fitSegments(['aaaaaaaaaaaaaaaaaaaa'], 5);
+  assert.equal(result, '…');
+});
+
+test('fitSegments respects a custom separator', () => {
+  assert.equal(layout.fitSegments(['a', 'b'], 10, ' | '), 'a | b');
+});
+
+test('fitSegments returns an empty string for a non-positive max width', () => {
+  assert.equal(layout.fitSegments(['a'], 0), '');
+});
+
+test('fitSegments returns an empty string for an empty segments array', () => {
+  assert.equal(layout.fitSegments([], 10), '');
+});
+
+test('fitSegments degrades to the empty-array behaviour for null/undefined segments, instead of throwing', () => {
+  assert.equal(layout.fitSegments(null, 10), '');
+  assert.equal(layout.fitSegments(undefined, 10), '');
+});
