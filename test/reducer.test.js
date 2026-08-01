@@ -131,6 +131,48 @@ test('an escalation.raised with no context yields context: null and no truncatio
   assert.equal(run.escalation.contextRef, null);
 });
 
+// --- CON-46: multi-part sub_questions ---------------------------------
+
+test('an escalation.raised with sub_questions parses it into run.escalation.subQuestions', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator',
+      sub_questions: JSON.stringify([
+        { question: 'Keep foo?', options: ['yes', 'no'] },
+        { question: 'Rename bar?', options: ['rename', 'keep'] },
+      ]) },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.deepEqual(run.escalation.subQuestions, [
+    { question: 'Keep foo?', options: ['yes', 'no'] },
+    { question: 'Rename bar?', options: ['rename', 'keep'] },
+  ]);
+});
+
+test('an escalation.raised with a malformed sub_questions degrades to absent, never throws', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator',
+      question: 'q', options: 'approve,deny', sub_questions: 'not valid json' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.equal(run.escalation.subQuestions, undefined);
+  assert.equal(run.escalation.question, 'q');
+});
+
+test('an escalation.raised with no sub_questions at all leaves run.escalation.subQuestions undefined', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator',
+      question: 'q', options: 'approve,deny' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.equal(run.escalation.subQuestions, undefined);
+});
+
+test('an escalation.answered clears run.escalation for a multi-part escalation exactly as it does for single-question', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator',
+      sub_questions: JSON.stringify([{ question: 'Keep foo?', options: ['yes', 'no'] }]) },
+    { t: 2, kind: 'escalation.answered', ticket: 'HEL-1', role: 'orchestrator', sub_answers: '["yes"]' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.equal(run.escalation, null);
+});
+
 test('an answered escalation clears it', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator', question: 'q' },

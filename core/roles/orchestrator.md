@@ -540,6 +540,33 @@ ARGS=(ticket=$TICKET_ID role=orchestrator \
 scripts/concertino/emit-event.sh escalation --await "${ARGS[@]}"
 ```
 
+**Several genuinely independent sub-questions at once?** Use the multi-part
+form instead of synthesizing them into one combined question/options list —
+pass an ordered `sub_questions=` JSON array (each item `{question, options}`)
+alongside `ticket=`/`role=` (and `context=`, exactly as above); omit the
+top-level `question=`/`options=` entirely, since `sub_questions` replaces them
+for this call, not the other way around:
+
+```bash
+scripts/concertino/emit-event.sh escalation --await \
+  ticket=$TICKET_ID role=orchestrator \
+  sub_questions='[
+    {"question":"Keep REFUTE item 1'"'"'s foo?","options":["yes","no"]},
+    {"question":"Rename REFUTE item 2'"'"'s bar?","options":["rename","keep"]}
+  ]'
+```
+
+The dashboard renders this as a step-through wizard, one sub-question at a
+time. On exit 0, stdout carries one line per sub-answer, in the same order as
+`sub_questions` — read them positionally, paired with the sub-questions you
+sent. Everything else about this call — the required per-call timeout below,
+`escalation.answered` already being recorded on success, the non-zero-exit/
+timeout fallback, and the off-ramp rules — applies identically to this form;
+this is purely a wire-shape choice on the same blocking call, not a different
+resolution mechanism. This is informational only: no existing circuit breaker
+below is changed to use it — adopting multi-part for a specific one is a
+separate decision.
+
 **This call must set an explicit per-call timeout, or the harness will kill it
 long before `--await` ever times out on its own.** Claude Code's Bash tool
 defaults to a 120000 ms (two minute) timeout — nowhere near `--await`'s own
