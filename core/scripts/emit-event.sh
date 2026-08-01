@@ -186,6 +186,14 @@ FIELDS=""
 # never includes context, so that function can rebuild the line without it.
 CONTEXT=""
 OTHER_FIELDS=""
+# `sub_questions` (multi-part escalation only, CON-46) is likewise captured
+# raw — analogous to CONTEXT — so --await can JSON.parse it up front to learn
+# `total` (design.md Decision 1's "capture a raw value" task) and so
+# write_escalation_raised() can guard its size independently of whether
+# `context` is present (design.md Decision 4). Still folded into
+# FIELDS/OTHER_FIELDS exactly like any other caller field for the write
+# itself — this needs no new encoding path, only the extra raw copy.
+SUB_QUESTIONS=""
 
 for kv in ${ARGS+"${ARGS[@]}"}; do
   key="${kv%%=*}"
@@ -211,6 +219,18 @@ for kv in ${ARGS+"${ARGS[@]}"}; do
       # needs if that candidate line turns out to be too long.
       CONTEXT="$val"
       FIELDS="${FIELDS},\"context\":$(json_value "$val")"
+      ;;
+    sub_questions)
+      # Raised alongside (never instead of) question/options — CON-46's
+      # multi-part shape. Travels as an ordinary JSON-string-encoded field
+      # (design.md Decision 1: no new raw-JSON embedding code path), so this
+      # still folds into FIELDS/OTHER_FIELDS exactly like the `*)` case below.
+      # SUB_QUESTIONS is the extra raw copy write_escalation_raised()'s
+      # oversized-payload guard and --await's own up-front `total` parse
+      # both need.
+      SUB_QUESTIONS="$val"
+      FIELDS="${FIELDS},\"sub_questions\":$(json_value "$val")"
+      OTHER_FIELDS="${OTHER_FIELDS},\"sub_questions\":$(json_value "$val")"
       ;;
     *)       FIELDS="${FIELDS},\"$(json_escape "$key")\":$(json_value "$val")"
              OTHER_FIELDS="${OTHER_FIELDS},\"$(json_escape "$key")\":$(json_value "$val")"
@@ -272,6 +292,28 @@ write_escalation_raised() {
   if [ "$(LC_ALL=C; echo ${#line})" -le "$MAX_LINE" ]; then
     printf '%s\n' "$line" >> "$LOG" 2>/dev/null || return 1
     return 0
+  fi
+
+  # design.md Decision 4: an oversized `sub_questions` payload must fail the
+  # raise outright, never reaching either of the two lossy fallbacks below —
+  # not the "no context to blame" branch just under this, and not the
+  # binary-search truncation loop further down, which would otherwise let a
+  # small, legitimately-truncatable `context` mask an oversized
+  # `sub_questions` array sneaking through as `{"truncated":true}`. So this
+  # check runs BEFORE either fallback, and is independent of whether `context`
+  # is present: rebuild the candidate line from OTHER_FIELDS (which never
+  # includes `context` by construction) and see whether it still doesn't fit
+  # with `context` entirely out of the picture. If `sub_questions` (or some
+  # other non-context field) is unfittable on its own, bail now — same exit-1
+  # contract the pre-existing "no context to blame" branch already has.
+  if [ -n "$SUB_QUESTIONS" ]; then
+    local saved_fields="$FIELDS" no_context_line
+    FIELDS="$OTHER_FIELDS"
+    no_context_line="$(build_line escalation.raised)"
+    FIELDS="$saved_fields"
+    if [ "$(LC_ALL=C; echo ${#no_context_line})" -gt "$MAX_LINE" ]; then
+      return 1
+    fi
   fi
 
   # Too long, and there's no context to blame — this is the pre-existing
@@ -378,6 +420,28 @@ if ! write_escalation_raised; then
   exit 1
 fi
 
+# design.md Decision 1/2: when raised with `sub_questions`, --await is in
+# multi-part mode. Learn `total` (the sub-question count) up front, before
+# entering the poll loop, so the completeness check below never has to
+# re-derive it from `answer.json` itself (a stale/mismatched `total` inside
+# that file is exactly the kind of divergence the explicit `complete` field —
+# not `subAnswers.length` — is meant to catch structurally). A malformed
+# `sub_questions` value degrades to `total=0`, which simply never matches any
+# real `answer.json`'s `complete:true` and so never resolves — the caller
+# already gets nothing usable from a malformed payload either way.
+MULTI_PART=0
+TOTAL=0
+if [ -n "$SUB_QUESTIONS" ]; then
+  MULTI_PART=1
+  TOTAL="$(printf '%s' "$SUB_QUESTIONS" | node -e '
+    try {
+      const arr = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      process.stdout.write(String(Array.isArray(arr) ? arr.length : 0));
+    } catch { process.stdout.write("0"); }
+  ' 2>/dev/null)"
+  [ -z "$TOTAL" ] && TOTAL=0
+fi
+
 # A harness-imposed call timeout (Claude Code's Bash tool defaults to 120000ms
 # — well inside this script's own default wait) kills the process with SIGTERM
 # (Ctrl-C sends SIGINT), not by letting this script's own deadline elapse. With
@@ -425,7 +489,46 @@ TIMEOUT_MIN="${CONCERTINO_ESCALATION_TIMEOUT_MIN:-60}"
 DEADLINE=$(( $(date +%s) + TIMEOUT_MIN * 60 ))
 
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-  if [ -f "$ANSWER_FILE" ]; then
+  if [ "$MULTI_PART" -eq 1 ]; then
+    # design.md Decision 2/spec.md: resolved ONLY when the file parses AND
+    # `complete === true` — never on file-presence alone, and never by
+    # independently re-deriving completeness from `subAnswers.length`. A
+    # parseable file with `complete: false` (or missing/malformed) is treated
+    # identically to the file not existing yet: keep polling.
+    if [ -f "$ANSWER_FILE" ]; then
+      SUB_ANSWERS_JSON="$(node -e '
+        try {
+          const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+          if (a && a.complete === true) {
+            process.stdout.write(JSON.stringify(Array.isArray(a.subAnswers) ? a.subAnswers : []));
+          }
+        } catch { /* not resolved yet — keep polling */ }
+      ' "$ANSWER_FILE" 2>/dev/null)"
+      if [ -n "$SUB_ANSWERS_JSON" ]; then
+        # Disarm before the final write — same reasoning as the
+        # single-question path just below.
+        trap - TERM INT
+        # `sub_answers` mirrors the existing singular `answer` field — a
+        # JSON-string-encoded value through the same generic mechanism
+        # `sub_questions` itself uses (design.md Decision 5).
+        FIELDS=",\"sub_answers\":$(json_value "$SUB_ANSWERS_JSON")"
+        write_line escalation.answered
+        # One sub-answer per line, in sub-question order — --await's stdout
+        # contract stays "read stdout, get the answer(s)" without inventing a
+        # second output channel (design.md Decision 5).
+        printf '%s' "$SUB_ANSWERS_JSON" | node -e '
+          let s = "";
+          process.stdin.on("data", (d) => { s += d; });
+          process.stdin.on("end", () => {
+            let arr;
+            try { arr = JSON.parse(s); } catch { arr = []; }
+            for (const a of arr) process.stdout.write(String(a == null ? "" : a) + "\n");
+          });
+        '
+        exit 0
+      fi
+    fi
+  elif [ -f "$ANSWER_FILE" ]; then
     ANSWER="$(node -e '
       try {
         const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));

@@ -1,7 +1,13 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { renderEscalation, handleKey, render, optionKeys } = require('../lib/ui/screens/escalation');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const {
+  renderEscalation, handleKey, render, optionKeys, resumeSubIndex,
+} = require('../lib/ui/screens/escalation');
+const store = require('../lib/ui/store');
 
 // eslint-disable-next-line no-control-regex
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
@@ -279,4 +285,205 @@ test('render(state, opts) picks the run out by ticket', () => {
   const state = { runs: [run({ ticket: 'HEL-1' }), run({ ticket: 'HEL-2' })], escalationTicket: 'HEL-2' };
   const out = plain(render(state, { cols: 78, now: 1000 }));
   assert.match(out, /HEL-2/);
+});
+
+// =====================================================================
+// CON-46: multi-part escalation wizard
+// =====================================================================
+
+function tmpRoot() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-escalation-'));
+}
+
+function wizardRun(over) {
+  return Object.assign({
+    ticket: 'HEL-400', project: 'helio', changeName: 'multi-part-escalation', branch: null,
+    phase: 'Planning', cycle: null, telemetry: 'full', status: 'needs-you',
+    escalation: {
+      question: '', options: [],
+      subQuestions: [
+        { question: 'Keep foo?', options: ['yes', 'no'] },
+        { question: 'Rename bar?', options: ['rename', 'keep'] },
+        { question: 'Ship it?', options: ['ship', 'hold'] },
+      ],
+      raisedAt: 1000, role: 'orchestrator',
+    },
+    escalationStale: false,
+  }, over);
+}
+
+// --- render: the wizard shows exactly one step, never any other ------------
+
+test('the wizard shows only the first sub-question, none of the others', () => {
+  const out = plain(renderEscalation(wizardRun({}), Object.assign({}, OPTS, { subIndex: 0 })));
+  assert.match(out, /Keep foo\?/);
+  assert.doesNotMatch(out, /Rename bar\?/);
+  assert.doesNotMatch(out, /Ship it\?/);
+});
+
+test('a later subIndex renders that step only, not the ones before or after it', () => {
+  const out = plain(renderEscalation(wizardRun({}), Object.assign({}, OPTS, { subIndex: 1 })));
+  assert.match(out, /Rename bar\?/);
+  assert.doesNotMatch(out, /Keep foo\?/);
+  assert.doesNotMatch(out, /Ship it\?/);
+});
+
+test('the wizard shows a step indicator', () => {
+  const out = plain(renderEscalation(wizardRun({}), Object.assign({}, OPTS, { subIndex: 1 })));
+  assert.match(out, /2 of 3/);
+});
+
+test('a single-question escalation renders with no wizard step indicator at all', () => {
+  const out = plain(renderEscalation(run({}), OPTS));
+  assert.doesNotMatch(out, /sub-question/i);
+});
+
+// --- handleKey: step-through, no jump-ahead, free text ----------------------
+
+test('answering the current step by option key returns answer-sub (not answer)', () => {
+  const action = handleKey('y', { run: wizardRun({}), subIndex: 0 });
+  assert.deepEqual(action, { type: 'answer-sub', ticket: 'HEL-400', index: 0, value: 'yes', total: 3 });
+});
+
+test('a key that only belongs to a LATER step is a no-op from an earlier one (no jump-ahead)', () => {
+  // Step 0's options are yes/no ([y]/[n]); step 1's ('rename'/'keep') keys
+  // are r/k. Pressing 'r' while on step 0 must do nothing — there is no
+  // action type that names an arbitrary target step (Decision 6).
+  assert.equal(handleKey('r', { run: wizardRun({}), subIndex: 0 }), null);
+});
+
+test('answering the final step also answers via answer-sub — watch.js decides completion from the write result', () => {
+  const action = handleKey('s', { run: wizardRun({}), subIndex: 2 });
+  assert.deepEqual(action, { type: 'answer-sub', ticket: 'HEL-400', index: 2, value: 'ship', total: 3 });
+});
+
+test('t opens the reply prompt on a wizard step exactly like the single-question path', () => {
+  assert.deepEqual(handleKey('t', { run: wizardRun({}), subIndex: 0 }), { type: 'open-reply' });
+});
+
+test('confirming a free-text reply on a wizard step answers via answer-sub, for the CURRENT step', () => {
+  const action = handleKey('\r', {
+    run: wizardRun({}), subIndex: 1, reply: { value: ' rename it please ', error: null },
+  });
+  assert.deepEqual(action, { type: 'answer-sub', ticket: 'HEL-400', index: 1, value: 'rename it please', total: 3 });
+});
+
+test('an empty free-text reply on a wizard step still cancels rather than submitting blank', () => {
+  const action = handleKey('\r', { run: wizardRun({}), subIndex: 1, reply: { value: '   ', error: null } });
+  assert.deepEqual(action, { type: 'cancel-reply' });
+});
+
+test('render(state, opts) threads escalationSubIndex through to the wizard render', () => {
+  const state = { runs: [wizardRun({})], escalationTicket: 'HEL-400', escalationSubIndex: 1 };
+  const out = plain(render(state, { cols: 78, now: 1000 }));
+  assert.match(out, /Rename bar\?/);
+});
+
+test('routeHandleKey threads escalationSubIndex through to handleKey', () => {
+  const state = { runs: [wizardRun({})], escalationTicket: 'HEL-400', escalationSubIndex: 2 };
+  const action = require('../lib/ui/screens/escalation').routeHandleKey('s', state);
+  assert.deepEqual(action, { type: 'answer-sub', ticket: 'HEL-400', index: 2, value: 'ship', total: 3 });
+});
+
+// --- store.writeSubAnswer / readSubAnswers: incremental completeness -------
+
+test('writeSubAnswer starts from `total` nulls and stays complete:false until every slot is filled', () => {
+  const root = tmpRoot();
+  const r1 = store.writeSubAnswer(root, 'HEL-401', 0, 'yes', 3);
+  assert.equal(r1.ok, true);
+  assert.equal(r1.complete, false);
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(store.answerPath(root, 'HEL-401'), 'utf8')),
+    { subAnswers: ['yes', null, null], total: 3, complete: false },
+  );
+
+  const r2 = store.writeSubAnswer(root, 'HEL-401', 2, 'ship', 3);
+  assert.equal(r2.ok, true);
+  assert.equal(r2.complete, false);
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(store.answerPath(root, 'HEL-401'), 'utf8')),
+    { subAnswers: ['yes', null, 'ship'], total: 3, complete: false },
+  );
+});
+
+test('writeSubAnswer marks complete:true only once every slot is non-null', () => {
+  const root = tmpRoot();
+  store.writeSubAnswer(root, 'HEL-402', 0, 'yes', 2);
+  const r = store.writeSubAnswer(root, 'HEL-402', 1, 'rename', 2);
+  assert.equal(r.ok, true);
+  assert.equal(r.complete, true);
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(store.answerPath(root, 'HEL-402'), 'utf8')),
+    { subAnswers: ['yes', 'rename'], total: 2, complete: true },
+  );
+});
+
+test('writeSubAnswer refuses to overwrite an already-answered slot ("already answered" race)', () => {
+  const root = tmpRoot();
+  store.writeSubAnswer(root, 'HEL-403', 0, 'yes', 2);
+  const second = store.writeSubAnswer(root, 'HEL-403', 0, 'no', 2);
+  assert.equal(second.ok, false);
+  assert.equal(second.reason, 'answered');
+  assert.match(second.error, /already answered/);
+  const written = JSON.parse(fs.readFileSync(store.answerPath(root, 'HEL-403'), 'utf8'));
+  assert.equal(written.subAnswers[0], 'yes');
+});
+
+test('writeSubAnswer refuses an out-of-range index rather than corrupting the file', () => {
+  const root = tmpRoot();
+  const result = store.writeSubAnswer(root, 'HEL-408', 5, 'yes', 3);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'error');
+});
+
+test('readSubAnswers returns null when no answer.json exists yet', () => {
+  const root = tmpRoot();
+  assert.equal(store.readSubAnswers(root, 'HEL-404'), null);
+});
+
+test('readSubAnswers returns null on the single-question shape (no subAnswers/total)', () => {
+  const root = tmpRoot();
+  store.writeAnswer(root, 'HEL-405', 'approve');
+  assert.equal(store.readSubAnswers(root, 'HEL-405'), null);
+});
+
+test('readSubAnswers reflects an incrementally-written multi-part answer, 2 of 3 filled', () => {
+  const root = tmpRoot();
+  store.writeSubAnswer(root, 'HEL-406', 0, 'yes', 3);
+  store.writeSubAnswer(root, 'HEL-406', 2, 'ship', 3);
+  assert.deepEqual(
+    store.readSubAnswers(root, 'HEL-406'),
+    { subAnswers: ['yes', null, 'ship'], total: 3, complete: false },
+  );
+});
+
+test('readSubAnswers reflects complete:true once every slot is filled', () => {
+  const root = tmpRoot();
+  store.writeSubAnswer(root, 'HEL-409', 0, 'yes', 2);
+  store.writeSubAnswer(root, 'HEL-409', 1, 'rename', 2);
+  assert.deepEqual(
+    store.readSubAnswers(root, 'HEL-409'),
+    { subAnswers: ['yes', 'rename'], total: 2, complete: true },
+  );
+});
+
+// --- resumeSubIndex: reopening a partially-answered wizard (Decision 7) ----
+
+test('resumeSubIndex starts at step 0 when nothing has been recorded yet', () => {
+  assert.equal(resumeSubIndex(null, 3), 0);
+});
+
+test('resumeSubIndex resumes at the first unanswered step', () => {
+  assert.equal(resumeSubIndex({ subAnswers: ['yes', null, null], total: 3, complete: false }, 3), 1);
+});
+
+test('resumeSubIndex lands on the last step once every slot is already answered', () => {
+  assert.equal(resumeSubIndex({ subAnswers: ['yes', 'rename', 'ship'], total: 3, complete: true }, 3), 2);
+});
+
+test('reopening after backing out resumes at the correct step, read back from disk', () => {
+  const root = tmpRoot();
+  store.writeSubAnswer(root, 'HEL-407', 0, 'yes', 3);
+  const recorded = store.readSubAnswers(root, 'HEL-407');
+  assert.equal(resumeSubIndex(recorded, 3), 1);
 });
