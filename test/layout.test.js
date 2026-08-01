@@ -92,6 +92,27 @@ test('a wide CJK title is truncated to the border width', () => {
   assert.equal(f.visibleLength(out[0]), 16);
 });
 
+// --- box(): CON-42 icon-prefixed titles ------------------------------------
+// The dashboard-iconography-pass change prefixes several box titles with a
+// named glyph from lib/ui/icons.js (e.g. icons.ticket + ' [1] TICKET'). Those
+// titles must degrade through box()'s existing truncation contract exactly
+// like any other title — no new truncation logic was added for them.
+
+test('an icon-prefixed title narrower than its own icon+label still truncates to the border width', () => {
+  const icons = require('../lib/ui/icons');
+  const title = icons.ticket + ' [1] TICKET — a much longer label than this narrow box can hold';
+  const out = layout.box(['x'], { width: 16, title });
+  assert.equal(f.visibleLength(out[0]), 16);
+  assert.match(plain(out[0]), /…/);
+});
+
+test('an icon-prefixed title that fits renders the icon and the label both, verbatim', () => {
+  const icons = require('../lib/ui/icons');
+  const title = icons.gates + ' [3] GATES';
+  const out = layout.box(['x'], { width: 30, title });
+  assert.match(plain(out[0]), /◆ \[3\] GATES/);
+});
+
 // --- box(): focused vs unfocused character sets ---------------------------
 
 test('an unfocused box uses the plain border character set', () => {

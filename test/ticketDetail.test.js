@@ -72,3 +72,26 @@ test('wrap keeps lines within budget', () => {
   const lines = wrap('one two three four five six seven eight nine ten', 20);
   for (const l of lines) assert.ok(l.length <= 20);
 });
+
+// --- CON-42: icon vocabulary ------------------------------------------------
+
+test('the DESCRIPTION header is prefixed with the description icon', () => {
+  const icons = require('../lib/ui/icons');
+  const lines = buildDetailLines(ticket({}), 70).map(plain);
+  assert.ok(lines.some((l) => l === icons.description + ' DESCRIPTION'));
+});
+
+test('the COMMENTS header, including its (N) count suffix, is prefixed with the comments icon', () => {
+  const icons = require('../lib/ui/icons');
+  const lines = buildDetailLines(ticket({
+    comments: [{ author: 'matt', body: 'PR opened', createdAt: 1000 }],
+    commentCount: 3,
+  }), 70).map(plain);
+  assert.ok(lines.some((l) => l === icons.comments + ' COMMENTS  (3)'));
+});
+
+test('a zero-comment COMMENTS header (no count suffix) still carries the comments icon', () => {
+  const icons = require('../lib/ui/icons');
+  const lines = buildDetailLines(ticket({ comments: [], commentCount: 0 }), 70).map(plain);
+  assert.ok(lines.some((l) => l === icons.comments + ' COMMENTS'));
+});

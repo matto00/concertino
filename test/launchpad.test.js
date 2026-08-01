@@ -383,6 +383,24 @@ test('focus distinction survives a colourless terminal — different characters,
   assert.match(epicsFocused, /┏/);
 });
 
+// --- CON-42: icon vocabulary ------------------------------------------------
+
+test('the EPICS pane title is prefixed with the epics icon', () => {
+  const icons = require('../lib/ui/icons');
+  const out = plain(renderLaunchPad(lp({ pane: 'tickets' }), [], OPTS));
+  assert.match(out, new RegExp(icons.epics + ' EPICS'));
+});
+
+test('the right (tickets) pane title carries no new icon — it renders the current epic\'s name, not a static "tickets" label', () => {
+  const icons = require('../lib/ui/icons');
+  const out = plain(renderLaunchPad(lp({ pane: 'tickets' }), [], OPTS));
+  assert.match(out, /Pipeline v2/);
+  // None of this change's icons should prefix the epic-name title.
+  for (const glyph of Object.values(icons)) {
+    assert.doesNotMatch(out, new RegExp(glyph + ' Pipeline v2'));
+  }
+});
+
 // --- selected row recedes (dims) in the unfocused pane, never disappears ---
 
 // bold/dim are no-ops under `!isTTY` (see format.js's `wrap`), so these three
