@@ -268,3 +268,8 @@ test('fitSegments returns an empty string for a non-positive max width', () => {
 test('fitSegments returns an empty string for an empty segments array', () => {
   assert.equal(layout.fitSegments([], 10), '');
 });
+
+test('fitSegments degrades to the empty-array behaviour for null/undefined segments, instead of throwing', () => {
+  assert.equal(layout.fitSegments(null, 10), '');
+  assert.equal(layout.fitSegments(undefined, 10), '');
+});

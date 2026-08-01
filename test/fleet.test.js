@@ -613,18 +613,24 @@ test('metricsFor.verdictRates computes each role\'s pass-rate from verdict event
 });
 
 test('metricsFor.gateRates computes each gate\'s pass-rate from the latest per-run result, omitting gates no run has ever reported', () => {
+  // Real gate-name vocabulary only: `phase:setup`/`phase:servers`/etc, the
+  // lowercase names assert-phase.sh's own PHASE argument actually emits —
+  // NOT PHASE_ORDER's 'Setup'/'Planning'/... phase.enter-event vocabulary,
+  // a completely different thing (see GATE_NAME_ORDER's header comment in
+  // fleet.js). A test built on the wrong vocabulary would pass even if
+  // gateRates could never match a single real gate.result event.
   const m = metricsFor([
     run({ ticket: 'HEL-1', gates: [
-      { name: 'phase:Setup', status: 'pass' },
+      { name: 'phase:setup', status: 'pass' },
       { name: 'server:backend', status: 'fail' },
     ] }),
     run({ ticket: 'HEL-2', gates: [
-      { name: 'phase:Setup', status: 'pass' },
+      { name: 'phase:setup', status: 'pass' },
     ] }),
   ], 1000000);
-  assert.equal(m.gateRates['phase:Setup'], 1);
+  assert.equal(m.gateRates['phase:setup'], 1);
   assert.equal(m.gateRates['server:backend'], 0);
-  assert.ok(!('phase:Planning' in m.gateRates), 'a gate no run ever reported must be omitted, not 0%');
+  assert.ok(!('phase:servers' in m.gateRates), 'a gate no run ever reported must be omitted, not 0%');
 });
 
 test('the fleet view shows a METRICS section after DONE with real numbers', () => {
@@ -636,19 +642,35 @@ test('the fleet view shows a METRICS section after DONE with real numbers', () =
   assert.match(out, /delivered today/);
 });
 
+test('escalations today renders on line 1 (with avg delivery/delivered today/this week), always visible at a default 80-column terminal width — not packed into line 2\'s fitSegments, where it would be the first thing dropped', () => {
+  const now = 5 * DAY_MS + 1000;
+  const todayStart = 5 * DAY_MS;
+  const out = plain(renderFleet([
+    run({ ticket: 'HEL-1', status: 'needs-you', events: [
+      { kind: 'escalation.raised', t: todayStart + 10 },
+    ] }),
+  ], { ...OPTS, cols: 80, now }));
+  const line1 = out.split('\n').find((l) => l.includes('avg delivery'));
+  assert.ok(line1, 'line 1 must render');
+  assert.match(line1, /escalations today 1/);
+  const successLine = out.split('\n').find((l) => l.includes('success'));
+  assert.ok(successLine, 'the success-rate line must render');
+  assert.doesNotMatch(successLine, /escalations/, 'escalations must not be packed into the success-rate line');
+});
+
 test('the METRICS box renders five content lines with real numbers', () => {
   const now = 100000;
   const out = plain(renderFleet([
     run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000,
       events: [{ kind: 'verdict', role: 'evaluator', verdict: 'PASS' }],
-      gates: [{ name: 'phase:Setup', status: 'pass' }] }),
+      gates: [{ name: 'phase:setup', status: 'pass' }] }),
   ], { ...OPTS, now }));
   assert.match(out, /METRICS/);
   assert.match(out, /avg delivery/);
   assert.match(out, /success\s+today/);
   assert.match(out, /throughput \(7d\)/);
   assert.match(out, /verdicts\s+evaluator/);
-  assert.match(out, /gates\s+Setup/);
+  assert.match(out, /gates\s+setup/);
 });
 
 test('the METRICS verdicts and gates lines say "no data yet" with no verdict/gate history', () => {
@@ -662,18 +684,44 @@ test('the METRICS verdicts and gates lines say "no data yet" with no verdict/gat
 
 test('the METRICS gates line drops trailing segments (with an ellipsis) instead of corrupting the box at a narrow width', () => {
   const now = 100000;
-  const manyGates = PHASE_ORDER.map((p) => ({ name: `phase:${p}`, status: 'pass' }))
-    .concat([{ name: 'server:backend', status: 'pass' }, { name: 'server:frontend', status: 'pass' }]);
+  // The real 6-name gate vocabulary (assert-phase.sh's phase:setup/servers/
+  // delivery/cleanup plus start-servers.sh's server:backend/frontend) — NOT
+  // PHASE_ORDER's phase.enter-event vocabulary, a different thing entirely.
+  const manyGates = ['phase:setup', 'phase:servers', 'phase:delivery', 'phase:cleanup', 'server:backend', 'server:frontend']
+    .map((name) => ({ name, status: 'pass' }));
   const out = plain(renderFleet([
     run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000, gates: manyGates }),
   ], { ...OPTS, cols: 40, now }));
   const gatesLine = out.split('\n').find((l) => l.includes('gates'));
   assert.ok(gatesLine, 'a gates line must render');
   assert.match(gatesLine, /…/);
-  const labels = ['Setup', 'Planning', 'Execution', 'Evaluation', 'Delivery', 'Cleanup', 'backend', 'frontend'];
+  const labels = ['setup', 'servers', 'delivery', 'cleanup', 'backend', 'frontend'];
   const presentCount = labels.filter((l) => gatesLine.includes(l)).length;
   assert.ok(presentCount < labels.length, 'not every gate label should fit at 40 cols');
   assert.ok(f.visibleLength(gatesLine) <= 40, 'the rendered line must not exceed the box width');
+});
+
+test('the METRICS gates line uses the real gate-name vocabulary (phase:setup/servers/delivery/cleanup, server:backend/frontend) — not PHASE_ORDER\'s phase.enter vocabulary', () => {
+  const now = 100000;
+  const gates = [
+    { name: 'phase:setup', status: 'pass' },
+    { name: 'phase:servers', status: 'pass' },
+    { name: 'phase:delivery', status: 'fail' },
+    { name: 'phase:cleanup', status: 'pass' },
+    { name: 'server:backend', status: 'pass' },
+    { name: 'server:frontend', status: 'pass' },
+  ];
+  const out = plain(renderFleet([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000, gates }),
+  ], { ...OPTS, cols: 120, now }));
+  const gatesLine = out.split('\n').find((l) => l.includes('gates'));
+  assert.ok(gatesLine, 'a gates line must render');
+  assert.match(gatesLine, /setup 100%/);
+  assert.match(gatesLine, /servers 100%/);
+  assert.match(gatesLine, /delivery 0%/);
+  assert.match(gatesLine, /cleanup 100%/);
+  assert.match(gatesLine, /backend 100%/);
+  assert.match(gatesLine, /frontend 100%/);
 });
 
 test('pressing the METRICS section\'s own digit is a no-op, not a broken jump', () => {
