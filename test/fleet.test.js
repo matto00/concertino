@@ -6,7 +6,7 @@ const {
   sectionJumpTargets, buildSections, QUICK_START_COUNT, QUICK_START_TOGGLE_KEY,
   metricsFor,
 } = require('../lib/ui/screens/fleet');
-const { reduce } = require('../lib/ui/reducer');
+const { reduce, PHASE_ORDER } = require('../lib/ui/reducer');
 const f = require('../lib/ui/format');
 
 // eslint-disable-next-line no-control-regex
@@ -636,6 +636,46 @@ test('the fleet view shows a METRICS section after DONE with real numbers', () =
   assert.match(out, /delivered today/);
 });
 
+test('the METRICS box renders five content lines with real numbers', () => {
+  const now = 100000;
+  const out = plain(renderFleet([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000,
+      events: [{ kind: 'verdict', role: 'evaluator', verdict: 'PASS' }],
+      gates: [{ name: 'phase:Setup', status: 'pass' }] }),
+  ], { ...OPTS, now }));
+  assert.match(out, /METRICS/);
+  assert.match(out, /avg delivery/);
+  assert.match(out, /success\s+today/);
+  assert.match(out, /throughput \(7d\)/);
+  assert.match(out, /verdicts\s+evaluator/);
+  assert.match(out, /gates\s+Setup/);
+});
+
+test('the METRICS verdicts and gates lines say "no data yet" with no verdict/gate history', () => {
+  const now = 100000;
+  const out = plain(renderFleet([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+  ], { ...OPTS, now }));
+  assert.match(out, /verdicts\s+no data yet/);
+  assert.match(out, /gates\s+no data yet/);
+});
+
+test('the METRICS gates line drops trailing segments (with an ellipsis) instead of corrupting the box at a narrow width', () => {
+  const now = 100000;
+  const manyGates = PHASE_ORDER.map((p) => ({ name: `phase:${p}`, status: 'pass' }))
+    .concat([{ name: 'server:backend', status: 'pass' }, { name: 'server:frontend', status: 'pass' }]);
+  const out = plain(renderFleet([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000, gates: manyGates }),
+  ], { ...OPTS, cols: 40, now }));
+  const gatesLine = out.split('\n').find((l) => l.includes('gates'));
+  assert.ok(gatesLine, 'a gates line must render');
+  assert.match(gatesLine, /…/);
+  const labels = ['Setup', 'Planning', 'Execution', 'Evaluation', 'Delivery', 'Cleanup', 'backend', 'frontend'];
+  const presentCount = labels.filter((l) => gatesLine.includes(l)).length;
+  assert.ok(presentCount < labels.length, 'not every gate label should fit at 40 cols');
+  assert.ok(f.visibleLength(gatesLine) <= 40, 'the rendered line must not exceed the box width');
+});
+
 test('pressing the METRICS section\'s own digit is a no-op, not a broken jump', () => {
   const runs = [run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
   // DONE is [1], METRICS is [2] (both always render — DONE has one entry,
@@ -682,9 +722,12 @@ test('NEEDS YOU survives when finished runs would otherwise fill the screen', ()
           escalation: { question: 'add zod@3?', options: ['approve', 'deny'], raisedAt: 1 } }),
   ].concat(manyFinished(50, 'done'));
 
-  const out = renderFleet(runs, { cols: 78, rows: 12, selected: 0 });
+  // rows:12 was this fixture's floor before METRICS grew from a 3-row to a
+  // 7-row untrimmable panel (this task, 2026-08-01); the +4 rows shifts the
+  // floor here too — verified empirically (rows:14 still renders 15 lines).
+  const out = renderFleet(runs, { cols: 78, rows: 15, selected: 0 });
   const lines = out.split('\n');
-  assert.ok(lines.length <= 12, `output is ${lines.length} lines, terminal is 12`);
+  assert.ok(lines.length <= 15, `output is ${lines.length} lines, terminal is 15`);
   assert.match(out, /NEEDS YOU/);
   assert.match(out, /HEL-338/);
   assert.match(out, /add zod@3\?/);
@@ -698,10 +741,13 @@ test('a tiny terminal still keeps every NEEDS YOU run', () => {
     run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q1', options: [], raisedAt: 1 } }),
     run({ ticket: 'HEL-2', status: 'needs-you', escalation: { question: 'q2', options: [], raisedAt: 1 } }),
   ].concat(manyFinished(20, 'failed'));
-  const out = renderFleet(runs, { cols: 78, rows: 14, selected: 0 });
+  // rows:14 was this fixture's floor before METRICS grew from a 3-row to a
+  // 7-row untrimmable panel (this task, 2026-08-01); verified empirically
+  // that rows:17 is the new floor (rows:16 still renders 17 lines).
+  const out = renderFleet(runs, { cols: 78, rows: 17, selected: 0 });
   assert.match(out, /HEL-1/);
   assert.match(out, /HEL-2/);
-  assert.ok(out.split('\n').length <= 14);
+  assert.ok(out.split('\n').length <= 17);
 });
 
 // Two populated sections were never enough to catch this: a section trimmed to
@@ -714,8 +760,13 @@ test('a tiny terminal still keeps every NEEDS YOU run', () => {
 // The lazygit-layout pass's METRICS panel is unconditional (forceRender,
 // exactly like QUICK START's own untrimmable floor) — this fixture is now
 // really FIVE sections (NEEDS YOU/RUNNING/FAILED/DONE/METRICS), which shifts
-// the smallest terminal height it can hold everything in up accordingly
-// (rows:14, not rows:10).
+// the smallest terminal height it can hold everything in up accordingly.
+// The METRICS charts pass (2026-08-01) grew METRICS' own untrimmable floor
+// from 3 rows (1 emptyHint line + 2-row border) to 7 rows (5 emptyLines +
+// 2-row border) — even with RUNNING/FAILED/DONE each collapsed to their own
+// 1-row floor, the combined untrimmable minimum is now head+tail(3) +
+// NEEDS YOU(4) + RUNNING(1) + FAILED(1) + DONE(1) + METRICS(7) = 17 rows,
+// so the smallest `rows` that can hold it is 18 (rows - 1 == 17), not 14.
 test('the total-height cap holds with all four sections populated (plus the always-on METRICS panel)', () => {
   const runs = [
     run({ ticket: 'HEL-338', status: 'needs-you',
@@ -726,7 +777,7 @@ test('the total-height cap holds with all four sections populated (plus the alwa
   ].concat(manyFinished(8, 'failed'))
    .concat(manyFinished(8, 'done'));
 
-  for (const rows of [14, 16, 18, 20, 24, 28]) {
+  for (const rows of [18, 20, 24, 28]) {
     const out = renderFleet(runs, { cols: 78, rows, selected: 0 });
     const lines = out.split('\n');
     assert.ok(lines.length <= rows,
@@ -752,6 +803,13 @@ test('the total-height cap holds with all four sections populated (plus the alwa
 // With the lazygit-layout pass's always-on METRICS panel this fixture is
 // really SIX sections (+ METRICS), shifting the floor up once more
 // (rows:16, not rows:12).
+//
+// The METRICS charts pass (2026-08-01) grew METRICS' own untrimmable floor
+// from 3 rows to 7 rows (see the four-section test above for the exact
+// breakdown), pushing this fixture's own floor up again — verified
+// empirically: rows:19 is the smallest terminal that still fits (rows:18
+// renders 19 lines, over budget), so the smallest scheduled value in the
+// list below that clears it is 20, not 16.
 test('the total-height cap holds with all five sections (including a populated QUEUED) populated, plus METRICS', () => {
   const runs = [
     run({ ticket: 'HEL-338', status: 'needs-you',
@@ -763,7 +821,7 @@ test('the total-height cap holds with all five sections (including a populated Q
    .concat(manyFinished(8, 'done'));
   const queueState = { pending: manyQueued(20), inFlight: new Set(), maxConcurrent: 1 };
 
-  for (const rows of [16, 18, 20, 24, 28, 32]) {
+  for (const rows of [20, 24, 28, 32]) {
     const out = renderFleet(runs, { cols: 78, rows, selected: 0, queueState });
     const lines = out.split('\n');
     assert.ok(lines.length <= rows,
@@ -1100,9 +1158,11 @@ test('a scroll offset that lands mid-group survives a whole-frame height-budget 
   assert.equal(unbudgeted.firstVisibleIndex, 10, 'sanity: the scroll really does land mid-group');
   assert.equal(unbudgeted.lastVisibleIndex, 14, 'sanity: selected sits exactly at the window tail');
 
-  // rows: 14 forces the budget trim to shrink FAILED further (5 shown rows
-  // down to 3) — the exact scenario the protection rule exists for.
-  const out = plain(renderFleet(runs, { cols: 100, rows: 14, selected, scrollOffset }));
+  // rows: 18 forces the budget trim to shrink FAILED further (5 shown rows
+  // down to 4) — the exact scenario the protection rule exists for. (Was
+  // rows: 14 before METRICS grew from a 3-row to a 7-row untrimmable panel,
+  // this task, 2026-08-01 — the same trim outcome now needs +4 rows.)
+  const out = plain(renderFleet(runs, { cols: 100, rows: 18, selected, scrollOffset }));
   const marked = out.split('\n').filter((l) => l.includes('▸'));
   assert.equal(marked.length, 1,
     `expected exactly one marker after the height-budget trim, got ${marked.length}`);
@@ -1129,11 +1189,15 @@ test('a small terminal at a non-zero scroll offset still renders the header + NE
 
   // Three non-empty sections (NEEDS YOU + FAILED + DONE) each cost at least
   // one line even fully collapsed, on top of the header/footer, PLUS the
-  // lazygit-layout pass's always-on METRICS panel (a flat, untrimmable +3 —
-  // mirrors QUICK START's own identical floor cost) — rows:12 is this
+  // lazygit-layout pass's always-on METRICS panel — rows:12 was this
   // fixture's own structural floor (mirrors the existing "total-height cap"
   // tests' own per-fixture floor, elsewhere in this file).
-  for (const rows of [12, 14, 16]) {
+  //
+  // The METRICS charts pass (2026-08-01) grew METRICS' own untrimmable floor
+  // from 3 rows to 7 rows (see the four-section "total-height cap" test
+  // above for the exact breakdown), shifting this fixture's floor up by the
+  // same +4 — verified empirically (rows:16 is the new floor).
+  for (const rows of [16, 18, 20]) {
     const out = renderFleet(runs, { cols: 78, rows, selected: 0, scrollOffset });
     const lines = out.split('\n');
     assert.ok(lines.length <= rows, `rows:${rows} rendered ${lines.length} lines`);
@@ -1941,6 +2005,12 @@ test('sectionJumpTargets includes a forceRender-empty QUICK START when visible',
   const targets = sectionJumpTargets([run({ status: 'running' })], null, true);
   const kinds = targets.map((t) => t.section.kind);
   assert.ok(kinds.includes('quickstart'), `expected 'quickstart' among ${kinds.join(',')}`);
+});
+
+test('sectionJumpTargets never throws when metricsVisible passes the bare {} stand-in buildSections only checks for truthiness', () => {
+  const targets = sectionJumpTargets([run({ status: 'running' })], null, false, true);
+  const kinds = targets.map((t) => t.section.kind);
+  assert.ok(kinds.includes('metrics'), `expected 'metrics' among ${kinds.join(',')}`);
 });
 
 test('sectionJumpTargets omits QUICK START entirely when quickStartVisible is false', () => {
