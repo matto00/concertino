@@ -33,7 +33,7 @@ The fleet view (`lib/ui/screens/fleet.js`) SHALL render a `QUICK START` section 
 
 ## MODIFIED Requirements
 
-### Requirement: QUICK START has its own focus cursor, entered via digit-jump
+### Requirement: QUICK START has its own focus cursor, entered via digit-jump or the Q toggle
 Since `QUICK START` is now always visible, `QUICK START` SHALL be reachable via the existing digit-key section-jump (numbered positionally over sections actually rendered this frame, per `fleet-section-jump`), emitting a focus action that sets `focus` to `'quickstart'` without altering `state.selected` or `state.scrollOffset`. While `focus` is `'quickstart'`: `j`/`k` (and their arrow-key aliases) SHALL move a local cursor (`quickStartFocus`) over the section's own rendered rows, clamped to their bounds, and the row currently under `quickStartFocus` SHALL render with a visual marker distinguishing it from the section's other rows (analogous to `QUEUED`'s own focused-row marker); bare Escape SHALL exit quickstart focus back to `'runs'`; `Enter`, `l`/right-arrow, `n`, and `N` SHALL be suppressed (no-ops) while this focus is active, exactly as they already are while `focus === 'queue'`.
 
 #### Scenario: Digit-jump enters QUICK START focus without touching run selection
