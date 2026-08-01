@@ -2195,20 +2195,37 @@ test('renderFleet\'s own returned string actually contains a rendered QUICK STAR
 // --- row-index space is unaffected --------------------------------------------
 
 test('a visible QUICK START section never perturbs the run row-index space', () => {
-  // Array order mirrors the canonical section order (FAILED, then RUNNING)
-  // so `selected: 1` — the second runs-backed row — lands on HEL-1, not
-  // HEL-2.
+  // Array order mirrors the canonical section order (FAILED, RUNNING, then
+  // DONE) so `selected: n` lines up with the flat walk position `n` renders
+  // at. DONE matters here specifically: QUICK START renders AFTER RUNNING
+  // and BEFORE DONE in the canonical order (NEEDS YOU, FAILED, RUNNING,
+  // QUICK START, QUEUED, DONE), so a DONE row is the only runs-backed row in
+  // this fixture that actually sits BELOW QUICK START on screen. Without it,
+  // this test could pass even if QUICK START's rows wrongly consumed a slot
+  // in the selectable-index space, because both FAILED and RUNNING render
+  // above QUICK START regardless.
   const runs = [
     run({ ticket: 'HEL-2', status: 'failed', endStatus: 'escalated', endedAt: 100 }),
     run({ ticket: 'HEL-1', status: 'running' }),
+    run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered', endedAt: 100 }),
   ];
-  const out = plain(renderFleet(runs, {
-    ...OPTS, selected: 1, quickStartVisible: true,
+  const opts = {
+    ...OPTS, quickStartVisible: true,
     quickStartTickets: [qsTicket({}), qsTicket({ identifier: 'CON-2' })],
-  }));
-  const marked = out.split('\n').filter((l) => l.includes('▸'));
-  assert.equal(marked.length, 1);
-  assert.match(marked[0], /HEL-1/, 'selected=1 must still resolve to the second RUN, unaffected by QUICK START rows above it');
+  };
+
+  const outSecond = plain(renderFleet(runs, { ...opts, selected: 1 }));
+  const markedSecond = outSecond.split('\n').filter((l) => l.includes('▸'));
+  assert.equal(markedSecond.length, 1);
+  assert.match(markedSecond[0], /HEL-1/, 'selected=1 must still resolve to the second RUN, unaffected by QUICK START rows above it');
+
+  // The real regression case: DONE renders below QUICK START, so this only
+  // stays correct if QUICK START's (unselectable) rows never consumed a
+  // slot in the shared index space.
+  const outThird = plain(renderFleet(runs, { ...opts, selected: 2 }));
+  const markedThird = outThird.split('\n').filter((l) => l.includes('▸'));
+  assert.equal(markedThird.length, 1);
+  assert.match(markedThird[0], /HEL-3/, 'selected=2 must resolve to the DONE run, which renders below QUICK START — this is what would break if QUICK START rows perturbed the index space');
 });
 
 test('no QUICK START row is ever marked with the ordinary run-row ▸ selection marker', () => {

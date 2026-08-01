@@ -78,10 +78,12 @@ better than interleaving one of them into the two-column area below.
 ### Sizing thresholds
 
 - **Two-column mode requires the terminal to be ≥ 110 columns wide.** Below
-  that, the page renders exactly as it does today: one vertical stack, in
-  section order NEEDS YOU → RUNNING → QUICK START → QUEUED → FAILED → DONE
-  → METRICS (compact 5-line box) — the existing, already-tested code path,
-  completely unchanged.
+  that, the page renders one vertical stack, in the canonical section order
+  NEEDS YOU → FAILED → RUNNING → QUICK START → QUEUED → DONE → METRICS
+  (compact 5-line box) — the same canonical order the grid layout above
+  also builds on (see Task 2 of the implementation plan, which moved FAILED
+  ahead of RUNNING for exactly this reason), rendered through the existing,
+  already-tested single-column code path.
 - **Column 1 is a fixed 70 columns wide** in two-column mode, regardless of
   total terminal width — the same width run rows already render
   comfortably narrower than today's typical 80+ column terminal, so ticket
