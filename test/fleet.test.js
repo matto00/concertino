@@ -1352,6 +1352,43 @@ test('enter on a non-empty value submits it, trimmed', () => {
     { type: 'submit-prompt', value: 'CON-1' });
 });
 
+// --- CON-21: `n` branches on parseTicketInput, not raw looksLikeTicket -----
+// design.md Decision 4: parseTicketInput tolerates the trailing speed/
+// agent-merge token forms that a bare looksLikeTicket(value) call (whole-
+// string match, no whitespace) would misroute into the draft flow.
+
+test('enter on "CON-21 fast" still submits — parseTicketInput accepts the trailing speed token', () => {
+  assert.deepEqual(handleKey('\r', promptState({ value: 'CON-21 fast', error: null })),
+    { type: 'submit-prompt', value: 'CON-21 fast' });
+});
+
+test('enter on "CON-21 --agent-merge" still submits — parseTicketInput accepts the trailing flag', () => {
+  assert.deepEqual(handleKey('\r', promptState({ value: 'CON-21 --agent-merge', error: null })),
+    { type: 'submit-prompt', value: 'CON-21 --agent-merge' });
+});
+
+test('enter on free text opens the ticket-draft flow with the raw text as the seed', () => {
+  assert.deepEqual(
+    handleKey('\r', promptState({ value: 'add a share button to dashboards', error: null })),
+    { type: 'open-ticket-draft', seed: 'add a share button to dashboards' },
+  );
+});
+
+test('enter on a ticket-adjacent-but-invalid value falls through to open-ticket-draft like any other rejected input', () => {
+  assert.deepEqual(
+    handleKey('\r', promptState({ value: 'CON-21 nonsense', error: null })),
+    { type: 'open-ticket-draft', seed: 'CON-21 nonsense' },
+  );
+});
+
+test('while drafting, every key except escape is a no-op', () => {
+  const drafting = promptState({ value: 'add a share button', error: null, drafting: true });
+  assert.equal(handleKey('C', drafting), null);
+  assert.equal(handleKey('\x7f', drafting), null);
+  assert.equal(handleKey('\r', drafting), null);
+  assert.deepEqual(handleKey('\x1b', drafting), { type: 'cancel-prompt' });
+});
+
 test('enter on an empty (or whitespace-only) value cancels rather than submits blank', () => {
   assert.deepEqual(handleKey('\r', promptState({ value: '', error: null })), { type: 'cancel-prompt' });
   assert.deepEqual(handleKey('\r', promptState({ value: '   ', error: null })), { type: 'cancel-prompt' });

@@ -2560,3 +2560,296 @@ test('a cold cache performs no ticket fetch and no team-resolution lookup until 
     await h.teardown(donePromise);
   }
 });
+
+// =============================================================================
+// CON-21: the ticket-draft flow — `n` with free text opens a headless
+// drafting invocation, the draft-review screen, and (on confirm) creates the
+// ticket, launches it, and refreshes the launch pad's cache. `linear.js` and
+// `draft.js` are both faked via require.cache substitution — the exact same
+// technique setupLaunchPadRefreshHarness already uses for `linear` — so
+// nothing here ever spawns a real `claude` process or touches the network.
+// =============================================================================
+
+function setupTicketDraftHarness(overrides) {
+  const { EventEmitter } = require('node:events');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-ticketdraft-'));
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const linearPath = require.resolve('../lib/ui/linear');
+  const draftPath = require.resolve('../lib/ui/draft');
+  const realLinear = require('../lib/ui/linear');
+  const realDraft = require('../lib/ui/draft');
+
+  const spawnCalls = [];
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return []; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn(ticket, cmd) { spawnCalls.push({ ticket, cmd }); },
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = true;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  const prevKey = process.env.LINEAR_API_KEY;
+  process.env.LINEAR_API_KEY = 'dummy-not-a-real-key';
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+  require.cache[linearPath] = {
+    id: linearPath, filename: linearPath, loaded: true,
+    exports: Object.assign({}, realLinear, overrides && overrides.linear),
+  };
+  require.cache[draftPath] = {
+    id: draftPath, filename: draftPath, loaded: true,
+    exports: Object.assign({}, realDraft, overrides && overrides.draft),
+  };
+
+  return {
+    root, spawnCalls, fakeStdin, written,
+    screen: () => screenOf(written),
+    async teardown(donePromise) {
+      fakeStdin.emit('end');
+      if (donePromise) await donePromise;
+      process.stdout.write = realWrite;
+      Object.defineProperty(process, 'stdin', realStdinDescriptor);
+      if (prevKey === undefined) delete process.env.LINEAR_API_KEY;
+      else process.env.LINEAR_API_KEY = prevKey;
+      delete require.cache[watchPath];
+      delete require.cache[sessionPath];
+      delete require.cache[linearPath];
+      delete require.cache[draftPath];
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+const TICKETDRAFT_CONFIG = { ticketProvider: { kind: 'linear', teamKey: 'CON', idExample: 'CON-1' } };
+
+function typeText(fakeStdin, text) {
+  for (const ch of text) fakeStdin.emit('data', ch);
+}
+
+test('CON-21: free text opens the draft flow; confirming creates the ticket, composes the body, and launches it', async () => {
+  const createCalls = [];
+  const draftCalls = [];
+  const h = setupTicketDraftHarness({
+    draft: {
+      draftTicket: (seed) => {
+        draftCalls.push(seed);
+        return {
+          promise: Promise.resolve({
+            title: 'Add a share button', description: 'Dashboards need a share action.', acceptanceCriteria: '- a share button appears',
+          }),
+          cancel() {},
+        };
+      },
+    },
+    linear: {
+      createTicket: async (args) => {
+        createCalls.push(args);
+        return { id: 'issue-uuid', identifier: 'CON-99', url: 'https://linear.app/x/issue/CON-99' };
+      },
+    },
+  });
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: TICKETDRAFT_CONFIG });
+
+    h.fakeStdin.emit('data', 'n');
+    typeText(h.fakeStdin, 'add a share button to dashboards');
+    h.fakeStdin.emit('data', '\r'); // not ticket-shaped -> open-ticket-draft
+    await flushRefresh();
+
+    assert.deepEqual(draftCalls, ['add a share button to dashboards']);
+
+    // 'c' both confirms AND forces the next real redraw — proving the draft
+    // screen actually opened, populated, BEFORE the creation call it kicks
+    // off has had a chance to settle (draft.creating is set synchronously,
+    // in the same applyAction call that fires the async createTicket).
+    h.fakeStdin.emit('data', 'c');
+    const midFrame = h.screen();
+    assert.match(midFrame, /NEW TICKET/);
+    assert.match(midFrame, /Add a share button/);
+    assert.match(midFrame, /creating…/);
+
+    await flushRefresh();
+
+    assert.equal(createCalls.length, 1);
+    assert.equal(createCalls[0].teamKey, 'CON');
+    assert.equal(createCalls[0].title, 'Add a share button');
+    // design.md Decision 1: composed once, at confirm time — description +
+    // the "## Acceptance Criteria" heading + the acceptance-criteria field.
+    assert.match(createCalls[0].description, /Dashboards need a share action\./);
+    assert.match(createCalls[0].description, /## Acceptance Criteria/);
+    assert.match(createCalls[0].description, /- a share button appears/);
+
+    // The run launches against the REAL, provider-issued id — same
+    // submitTicket path, same {{TICKET}} substitution, unchanged.
+    assert.equal(h.spawnCalls.length, 1);
+    assert.equal(h.spawnCalls[0].ticket, 'CON-99');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-21: a non-Linear provider shows the gated message inline and never starts drafting', async () => {
+  const draftCalls = [];
+  const h = setupTicketDraftHarness({
+    draft: { draftTicket: (seed) => { draftCalls.push(seed); return { promise: new Promise(() => {}), cancel() {} }; } },
+  });
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: { ticketProvider: { kind: 'github' } } });
+
+    h.fakeStdin.emit('data', 'n');
+    typeText(h.fakeStdin, 'add a share button');
+    h.fakeStdin.emit('data', '\r');
+
+    assert.deepEqual(draftCalls, [], 'a non-Linear provider must never start the drafting invocation');
+    assert.match(h.screen(), /ticket drafting needs ticketProvider\.kind "linear"/);
+    assert.match(h.screen(), /"git…/); // narrow-terminal truncation of "github" — the provider name is still visible
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-21: a creation failure keeps the draft screen open with the edited content and shows an inline error — no run is launched', async () => {
+  const h = setupTicketDraftHarness({
+    draft: {
+      draftTicket: () => ({
+        promise: Promise.resolve({ title: 'T', description: 'D', acceptanceCriteria: 'A' }),
+        cancel() {},
+      }),
+    },
+    linear: {
+      createTicket: async () => { throw new Error('linear: HTTP 500 — boom'); },
+    },
+  });
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: TICKETDRAFT_CONFIG });
+
+    h.fakeStdin.emit('data', 'n');
+    typeText(h.fakeStdin, 'free text seed');
+    h.fakeStdin.emit('data', '\r');
+    await flushRefresh();
+
+    h.fakeStdin.emit('data', 'c'); // confirm — createTicket will reject
+    await flushRefresh();
+
+    // Nothing is bound on the ticketdraft screen while draft.creating is
+    // true (see ticketdraft.js's handleKey), so no keypress could have
+    // forced a redraw until AFTER the rejection above reset it back to
+    // false — this 't' keypress is what actually reveals the settled
+    // (failed) state; it also proves the screen still accepts ordinary
+    // field-edit input rather than being stuck in some half-failed mode.
+    h.fakeStdin.emit('data', 't');
+    const frame = h.screen();
+    assert.match(frame, /NEW TICKET/, 'the draft screen must still be open, not discarded');
+    assert.match(frame, /could not create ticket/);
+    assert.match(frame, /HTTP 500/);
+    assert.equal(h.spawnCalls.length, 0, 'nothing may be launched off a failed creation');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-21: abandoning the draft-review screen creates nothing and returns to the fleet', async () => {
+  const createCalls = [];
+  const h = setupTicketDraftHarness({
+    draft: {
+      draftTicket: () => ({
+        promise: Promise.resolve({ title: 'T', description: 'D', acceptanceCriteria: 'A' }),
+        cancel() {},
+      }),
+    },
+    linear: { createTicket: async (args) => { createCalls.push(args); return { id: 'i', identifier: 'CON-1', url: 'u' }; } },
+  });
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: TICKETDRAFT_CONFIG });
+
+    h.fakeStdin.emit('data', 'n');
+    typeText(h.fakeStdin, 'free text seed');
+    h.fakeStdin.emit('data', '\r');
+    await flushRefresh();
+
+    h.fakeStdin.emit('data', '\x1b'); // abandon from the overview
+    const frame = h.screen();
+    assert.doesNotMatch(frame, /NEW TICKET/);
+    assert.equal(createCalls.length, 0, 'abandoning must never call the provider');
+    assert.equal(h.spawnCalls.length, 0);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-21: cancelling while drafting kills the in-flight child process and returns to the fleet with no draft screen opened', async () => {
+  let cancelled = false;
+  let settle;
+  const h = setupTicketDraftHarness({
+    draft: {
+      draftTicket: () => ({
+        // Never resolves within this test — proves the cancel path does not
+        // depend on the invocation ever actually settling.
+        promise: new Promise((resolve) => { settle = resolve; }),
+        cancel() { cancelled = true; },
+      }),
+    },
+  });
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: TICKETDRAFT_CONFIG });
+
+    h.fakeStdin.emit('data', 'n');
+    typeText(h.fakeStdin, 'free text seed');
+    h.fakeStdin.emit('data', '\r');
+    const draftingFrame = h.screen();
+    assert.match(draftingFrame, /drafting…/);
+
+    h.fakeStdin.emit('data', '\x1b'); // cancel while drafting
+    assert.equal(cancelled, true, 'the in-flight child process must have been killed');
+
+    const frame = h.screen();
+    assert.doesNotMatch(frame, /drafting…/);
+    assert.doesNotMatch(frame, /NEW TICKET/, 'no draft screen may open for a cancelled invocation');
+
+    // A late resolution (the "child" finishing after all) must still not
+    // resurrect the draft screen — the sequence-number guard is what makes
+    // this a no-op rather than a race.
+    settle({ title: 'T', description: 'D', acceptanceCriteria: 'A' });
+    await flushRefresh();
+    assert.doesNotMatch(h.screen(), /NEW TICKET/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});

@@ -352,6 +352,14 @@ grep -q 'could not start CON-778' "$OUT" \
 # — the moment `session.spawn` handed the built string to `tmux
 # respawn-window`. This drives the real prompt -> session.spawn -> tmux path
 # (not a mock) with that payload and asserts the marker file never appears.
+#
+# CON-21: `$(touch <path>)` is not ticket-shaped (parseTicketInput rejects
+# it), so it no longer reaches submitTicket/session.spawn at all — it now
+# takes the SAME path any other free text takes, into the ticket-draft flow.
+# This config carries no ticketProvider, so that flow's own provider gate
+# refuses it inline before any drafting invocation (a real network/subprocess
+# call) is ever started — a different message than before, but the same
+# "the payload is neither executed nor silently swallowed" property.
 MARK="$WORK/injection-mark"
 rm -f "$MARK"
 printf 'n$(touch %s)\rq' "$MARK" | timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" > "$OUT" 2>&1
@@ -360,9 +368,10 @@ check "exits 0 after a shell-injection payload as the ticket" "$STATUS" "0"
 [ -e "$MARK" ] \
   && bad "rejects the \$(touch ...) payload without executing it" "marker file was created: $MARK" \
   || ok "rejects the \$(touch ...) payload without executing it"
-grep -q 'not a ticket id' "$OUT" \
-  && ok "reports the validation error on the prompt" \
-  || bad "reports the validation error on the prompt" "no 'not a ticket id' in output"
+grep -q 'ticket drafting needs ticketProvider.kind' "$OUT" \
+  && ok "reports the ticket-draft provider gate on the prompt" \
+  || bad "reports the ticket-draft provider gate on the prompt" \
+       "no 'ticket drafting needs ticketProvider.kind' in output"
 
 # --- k/r/y from the drill-down (slice-2b Important 1 & 2 regressions) ------
 # The unit tests (test/control.test.js) already drive this against a fake
