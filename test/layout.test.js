@@ -264,3 +264,7 @@ test('fitSegments respects a custom separator', () => {
 test('fitSegments returns an empty string for a non-positive max width', () => {
   assert.equal(layout.fitSegments(['a'], 0), '');
 });
+
+test('fitSegments returns an empty string for an empty segments array', () => {
+  assert.equal(layout.fitSegments([], 10), '');
+});
