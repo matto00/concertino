@@ -379,6 +379,149 @@ stated, documented limit of this feature on Codex, not a silent gap — see
 
 ---
 
+## Triaging a suggested follow-up
+
+A single named sub-procedure (the `followup-triage` capability), invoked by
+name from both of the workflow's existing follow-up-surfacing points — Phase
+3 Delivery's non-blocking evaluator/skeptic suggestions (below) and Phase 4
+step 4's post-cleanup observation (below) — rather than reimplemented at
+either call site. Its job is to turn a bare suggestion into a stated
+recommendation ("high file overlap + small effort → recommend fold-in") the
+human approves against, and to make sure a `fold-in` answer is actually acted
+on, not just recorded — the direct fix for CON-30, where a recorded fold-in
+decision never led to the plan actually being revised.
+
+1. **Identify `description`/`files`.** At the Phase 3 call site: from the
+   evaluator/skeptic report's non-blocking suggestion text, for any
+   suggestion that names discrete additional work (skip a one-line style nit
+   — present that as-is, no triage needed). At the Phase 4 call site: from
+   your own observation. `files=` is a comma-separated list of paths the
+   suggested work would touch, or the literal `unknown` when none can be
+   named yet.
+2. **State your own `ac_relevant`/`effort` judgment.** `ac_relevant=yes`
+   means the suggestion is actually required to satisfy the current ticket's
+   acceptance criteria (it was never really "follow-up" at all);
+   `ac_relevant=no` means it's a genuine adjacent enhancement.
+   `effort=small` means no new design-gate-worthy decisions; `effort=large`
+   means it would need its own design/skeptic pass. These are exactly the
+   calls you, reading the ticket and the change's diff, are positioned to
+   make explicitly — `triage-followup.sh` computes only the one mechanical
+   signal (file overlap), never these two.
+3. **Run the triage script, capturing its stdout:**
+
+   ```bash
+   TRIAGE_CONTEXT="$(scripts/concertino/triage-followup.sh \
+     description="<one-line description>" \
+     files="<comma-separated files, or unknown>" \
+     ac_relevant=<yes|no> \
+     effort=<small|large> \
+     worktree="$WORKTREE_PATH")" || TRIAGE_CONTEXT=""
+   ```
+
+   On `FAIL` (or any script failure), `TRIAGE_CONTEXT` is simply empty —
+   proceed to the escalation below anyway, without `context=`, exactly like
+   `gather-escalation-context.sh`'s existing fallback rule ("How to raise
+   one" below). Never let a malformed triage call block the escalation
+   itself.
+4. **Raise the escalation:**
+
+   ```bash
+   ARGS=(ticket=$TICKET_ID role=orchestrator \
+     question="How should this suggested follow-up be handled: '<description>'?" \
+     options=fold-in,standalone,discard)
+   [ -n "$TRIAGE_CONTEXT" ] && ARGS+=(context="$TRIAGE_CONTEXT")
+   scripts/concertino/emit-event.sh escalation --await "${ARGS[@]}"
+   ```
+
+   Same blocking-call, per-call timeout, and off-ramp rules as "How to raise
+   one" below apply unchanged — this is that same mechanism, with
+   `triage-followup.sh`'s output standing in for a
+   `gather-escalation-context.sh` kind block as `context=`.
+5. **Branch on the answer:**
+   - **`discard`** — no further action beyond noting it in the run's
+     summary. No ticket filed, no plan revision.
+   - **`standalone`** — file a new Linear ticket (`mcp__linear__save_issue`,
+     no `id`) summarizing `description` and linking back to the current
+     ticket (`$TICKET_ID`); note the new ticket's identifier in your summary
+     to the human. No re-planning, no scope change to the current run.
+   - **`fold-in`** — the CON-30 fix: a recorded `escalation.answered` of
+     `fold-in` alone is **not** sufficient. Before proceeding past this point
+     (into/back through Execution at the Phase 3 call site; before Phase 4
+     cleanup at the Phase 4 call site), all of the following must hold:
+     1. **Make the change directory editable again.** Both call sites reach
+        this step *after* Phase 3 step 2 has already archived the change
+        (`openspec archive <CHANGE_NAME> --yes` has already moved
+        `ticket.md`/`proposal.md`/`design.md`/`tasks.md` out of
+        `openspec/changes/<CHANGE_NAME>/` into its archive location, and
+        merged its `specs/` delta files into the canonical
+        `openspec/specs/`). `openspec validate` cannot operate on an
+        archived change directory, so move the directory back to
+        `openspec/changes/<CHANGE_NAME>/` first — required, not optional.
+     2. **Revise the plan for real.** At that now-restored path, extend
+        `ticket.md`'s acceptance criteria to state the added scope
+        explicitly (this is what the evaluator and the final-gate skeptic
+        trace acceptance criteria from — an extended `tasks.md` with no
+        corresponding `ticket.md` change is unverifiable downstream), plus
+        `proposal.md` (What Changes/Capabilities), `design.md` (if the added
+        scope needs its own decisions), and `tasks.md` for the added scope —
+        a real edit, not a comment recording the decision.
+     3. **Re-validate.** Re-run `openspec validate --change <CHANGE_NAME>`
+        clean.
+     4. **Re-run the design gate.** Fresh skeptic spawn (cold), `GATE=design`,
+        on the revised plan — same procedure as Phase 1 step 5, bounded by
+        the same `SKEPTIC_DESIGN_ROUNDS` already resolved for this run.
+        `REFUTE` is handled exactly as in Phase 1 (revise → re-run fresh,
+        escalate immediately if the same change request survives a round, or
+        on budget exhaustion); only a `CONFIRM` satisfies this step.
+     5. **Execute the added scope.** At the **Phase 3 call site**, the
+        worktree is still live (Delivery hasn't merged or cleaned up yet) —
+        proceed into (or back through) Execution for the added scope,
+        through Evaluation and the final gate, before Delivery resumes. At
+        the **Phase 4 call site**, the original worktree no longer exists
+        (the `cleanup.sh --phase4` call in step 1 already removed it, as
+        part of what made Phase 4 "genuinely complete") — re-create one via
+        `setup-worktree.sh` (the same script Setup itself uses) to actually
+        execute the added scope through Execution → Evaluation → final gate
+        → Delivery, ending with that new worktree's own
+        `cleanup.sh --phase4`. Either way, **do not end your turn** (Phase 4
+        step 5) until this step has completed — a `fold-in` answer reopens
+        Execution, it does not end the run.
+     6. **Re-archive — but resolve the `specs/` delta collision first.**
+        Re-archiving is part of this same `fold-in` obligation, not a
+        separate step to skip once the added scope has shipped — but a naive
+        `openspec archive <CHANGE_NAME> --yes` at this point aborts
+        (`"<header> ... - already exists"` / `Aborted. No files were
+        changed.`), because the change's `specs/<capability>/spec.md` delta
+        files still contain the `## ADDED Requirements` blocks the *first*
+        archive pass (Phase 3 step 2, before this fold-in was even
+        triaged) already merged into the canonical `openspec/specs/` — this
+        is reproducible on essentially every real fold-in that reaches this
+        point, not an edge case. Before calling `openspec archive` again,
+        state explicitly which of the following two applies, tied to
+        whether step 2's `design.md` revision introduced any new/modified
+        spec requirement for the added scope:
+        - **No new/modified spec requirement was introduced in step 2:**
+          re-archive with `openspec archive <CHANGE_NAME> --yes
+          --skip-specs` — there is nothing new for the canonical specs to
+          receive, so skipping spec processing is correct here, not a
+          shortcut.
+        - **A new/modified spec requirement *was* introduced in step 2:**
+          first reset the change's `specs/<capability>/spec.md` delta
+          file(s) to contain *only* the deltas for the newly-added scope
+          (remove or rewrite the entries the first archive pass already
+          merged — those are now stale duplicates that will collide), then
+          re-archive normally (without `--skip-specs`), so the genuinely new
+          requirement still reaches the canonical specs. Never default to
+          `--skip-specs` unconditionally here — doing so would silently
+          drop that new requirement, the same "recorded intent, no durable
+          spec change" gap CON-30 was about, just relocated to the spec
+          layer instead of the plan layer.
+
+Both existing follow-up-surfacing points below invoke this procedure by name
+rather than repeating its steps.
+
+---
+
 ## Phase 3: Delivery
 
 Run directly (no subagent).
@@ -397,11 +540,16 @@ Run directly (no subagent).
 5. **Post the PR link back to the ticket.**
 6. **Branch on `AGENT_MERGE`** (resolved once at Setup — see above):
 
-   - **`AGENT_MERGE = false`** (today's behavior, unchanged): **present to
-     human:** PR URL, brief summary, and any non-blocking evaluator
-     suggestions (read them from the final evaluation report now — the only
-     time a PASS report is read). Wait for a "merged" confirmation before
-     Phase 4.
+   - **`AGENT_MERGE = false`** (today's behavior, unchanged): read the final
+     evaluation report now (the only time a PASS report is read). For each
+     non-blocking evaluator/skeptic suggestion that names discrete additional
+     work (not a one-line style nit), run the **"Triaging a suggested
+     follow-up"** sub-procedure (above) before presenting it. **Present to
+     human:** PR URL, brief summary, and those suggestions — each with its
+     triage recommendation, not the bare suggestion alone. Wait for a
+     "merged" confirmation before Phase 4. (A `fold-in` answer here is
+     handled per that sub-procedure's step 5, above, before Delivery
+     resumes.)
    - **`AGENT_MERGE = true`:** spawn the **auditor fresh** (cold — never
      resumed, matching the skeptic's pattern) with `WORKTREE_PATH,
      CHANGE_NAME, TICKET_ID, BRANCH, PR_URL`. Emit
@@ -470,25 +618,35 @@ at the end of Planning, Execution, Evaluation, or Delivery; that is exactly
 the hazard the "Harness resume model" section above already closes off, from
 the other direction.
 
-4. **Once genuinely complete, raise any leftover suggestion through
-   escalation, never bare chat.** If, and only if, you have a further
-   observation for the human once all three steps above hold (e.g. "should I
-   file a follow-up ticket for the sync drift?"), raise it with the same
-   `emit-event.sh escalation --await` call documented in "How to raise one"
-   below — a generic `question=`/`options=` call, since no
-   `gather-escalation-context.sh` kind fits a post-cleanup suggestion. This is
-   **one-shot**: at most one such call per run, and it does not count against,
-   or interact with, `DEBUG_ATTEMPTS` or any other circuit breaker in this
-   document — there is no further phase for a second suggestion to be about.
-   If you have nothing further to raise, skip this step entirely and proceed
-   straight to step 5.
+4. **Once genuinely complete, triage any leftover suggestion before raising
+   it — never bare chat.** If, and only if, you have a further observation
+   for the human once all three steps above hold (e.g. "should I file a
+   follow-up ticket for the sync drift?"), run the **"Triaging a suggested
+   follow-up"** sub-procedure (above): it raises the resulting escalation
+   itself (`context=` carrying `triage-followup.sh`'s recommendation when
+   available, `options=fold-in,standalone,discard`), replacing today's
+   generic `question=`/`options=` call and the "no
+   `gather-escalation-context.sh` kind fits this case" reasoning it was built
+   on. This is **one-shot**: at most one such call per run, and it does not
+   count against, or interact with, `DEBUG_ATTEMPTS` or any other circuit
+   breaker in this document — there is no further phase for a second
+   suggestion to be about. If you have nothing further to raise, skip this
+   step entirely and proceed straight to step 5.
 
-   Composing that `question=` text — the only ticket-adjacent text this step
-   produces — is governed by
+   A **`fold-in`** answer here is handled per that sub-procedure's step 5,
+   above: it reopens Execution for the added scope (via a freshly re-created
+   worktree, since `cleanup.sh --phase4` already removed the original one in
+   step 1) rather than ending the run — do not proceed to step 5 below until
+   that added scope's own Execution → Evaluation → final gate → Delivery →
+   Cleanup cycle has completed. A **`standalone`** or **`discard`** answer
+   does not reopen anything; proceed to step 5 once it resolves.
+
+   Composing the suggestion's `description` — the only ticket-adjacent text
+   this step produces — is governed by
    `WORKTREE_PATH/.concertino/laws/ticket-drafting-escalation.md`. If wording
    it trips that law (you're unsure whether the observation is worth a
    follow-up ticket at all, which of two framings to suggest, or you'd
-   otherwise write a hedge like "probably fine" into the question itself),
+   otherwise write a hedge like "probably fine" into the description itself),
    do not collapse that into one confidently-worded suggestion — surface the
    fork within this same one-shot escalation (use the multi-part
    `sub_questions=` form from "How to raise one" when more than one
@@ -500,12 +658,14 @@ the other direction.
    a single terminal summary message (what shipped, the merged PR link, and
    the outcome of any follow-up question) and then **actually end your
    turn: no further tool calls, no further open-ended questions, no
-   continued conversation inviting a reply.** A genuine follow-up question
-   asked in plain chat after this point carries zero telemetry — no
-   `escalation.raised` event — so the dashboard would keep showing this run
-   as a finished `DONE` row while the session actually sits alive,
-   indefinitely, on an unstructured question nobody can see. That is the
-   exact CON-16 failure this section exists to prevent.
+   continued conversation inviting a reply.** ("Resolved" for a `fold-in`
+   answer means the added scope's own delivery and cleanup have completed,
+   per step 4 above — not merely that the escalation was answered.) A
+   genuine follow-up question asked in plain chat after this point carries
+   zero telemetry — no `escalation.raised` event — so the dashboard would
+   keep showing this run as a finished `DONE` row while the session actually
+   sits alive, indefinitely, on an unstructured question nobody can see.
+   That is the exact CON-16 failure this section exists to prevent.
 
 ---
 

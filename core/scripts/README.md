@@ -54,6 +54,7 @@ file — so they stay generic and the config is the single source of truth.
 | `emit-event.sh`     | Append a dashboard event; `--await` blocks for an answer   | `<kind> [--await] k=v ...`                                  |
 | `persist-evidence.sh` | Copy an artifact into the main checkout, print a durable ref | `<TICKET_ID> <SOURCE_PATH>`                               |
 | `gather-escalation-context.sh` | Format a structured context block for an escalation kind | `<dependency\|api-change\|budget\|blocker\|contradiction\|ticket-ambiguity> k=v ...` |
+| `triage-followup.sh` | Classify a suggested follow-up as fold-in/standalone from file overlap + caller-supplied judgment | `description=... files=... ac_relevant=<yes\|no> effort=<small\|large> worktree=... [base=...]` |
 
 `resolve-speed.sh` reads `scripts/concertino/speeds.json` (rendered by
 `concertino sync` alongside `.concertino.env`, from the config's `budgets`/
