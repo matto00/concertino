@@ -1288,6 +1288,57 @@ test('no rendered line exceeds the terminal width', () => {
   }
 });
 
+// --- CON-53: the escalation question wraps instead of being hard-truncated -
+
+test('a long escalation question wraps onto additional lines instead of being clipped with an ellipsis', () => {
+  const longQuestion = 'word '.repeat(40).trim(); // well over cols - 8 at 80 columns
+  const out = renderFleet([
+    run({ ticket: 'HEL-338', status: 'needs-you',
+          escalation: { question: longQuestion, options: ['approve', 'deny'], raisedAt: 1 } }),
+  ], { cols: 80, selected: 0 });
+  const plainOut = plain(out);
+  const questionLines = plainOut.split('\n').filter((l) => l.includes('word'));
+  assert.ok(questionLines.length > 1, 'a 40-word question at 80 columns must wrap onto more than one row');
+  for (const line of questionLines) assert.doesNotMatch(line, /…/);
+  const wordCount = questionLines.join(' ').split(/\s+/).filter((w) => w === 'word').length;
+  assert.equal(wordCount, 40, 'every word must survive the wrap, none dropped or cut off');
+});
+
+test('a wrapped escalation question keeps the stale marker/options on its last line, and box borders stay intact', () => {
+  const longQuestion = 'word '.repeat(40).trim();
+  const out = renderFleet([
+    run({ ticket: 'HEL-338', status: 'needs-you',
+          escalation: { question: longQuestion, options: ['approve', 'deny'], raisedAt: 1 } }),
+    run({ ticket: 'HEL-331', status: 'running' }),
+  ], { cols: 80, selected: 0 });
+  const plainOut = plain(out);
+  assert.match(plainOut, /approve \/ deny/, 'the options hint must still render, appended to the wrapped block\'s last line');
+  // No rendered line — border or content — may exceed the terminal's column
+  // budget, and every top/bottom border line (all `─`/corner characters) must
+  // be the same width as every other one: a wrapped multi-line row that threw
+  // off the box's own border bookkeeping would either overflow a line or
+  // produce a mismatched border width.
+  const lines = plainOut.split('\n');
+  const borderWidths = new Set();
+  for (const line of lines) {
+    assert.ok(line.length <= 80, `line exceeds terminal width (${line.length}): ${line}`);
+    if (/^[┌┐└┘─]+$/.test(line)) borderWidths.add(line.length);
+  }
+  assert.equal(borderWidths.size, 1, `expected every border line to share one width, got: ${[...borderWidths]}`);
+  assert.match(plainOut, /RUNNING/, 'the RUNNING section below NEEDS YOU must still render, not be corrupted/overwritten');
+  assert.match(plainOut, /HEL-331/, 'the RUNNING run below the wrapped question must still render');
+});
+
+test('a short escalation question (fits on one line) renders identically to before this change', () => {
+  const out = plain(renderFleet([
+    run({ ticket: 'HEL-338', status: 'needs-you',
+          escalation: { question: 'add zod@3?', options: ['approve', 'deny'], raisedAt: 1 } }),
+  ], { cols: 80, selected: 0 }));
+  const questionLines = out.split('\n').filter((l) => l.includes('add zod@3?'));
+  assert.equal(questionLines.length, 1, 'a short question must render on exactly one line, unchanged');
+  assert.match(questionLines[0], /approve \/ deny/);
+});
+
 // --- snapshot widths, wide characters, borders + colour together (task 6.2) -
 // isTTY forced (format-colour.test.js's pattern) so both the section boxes'
 // border colour AND STATUS_COLOUR are actually exercised, not just their
