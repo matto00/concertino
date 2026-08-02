@@ -10,7 +10,7 @@
     "harnesses": {
       "type": "array",
       "description": "Which harness adapters to render on sync. Also drives the static CONCERTINO_HARNESS default written to .concertino.env: the single value when exactly one harness is configured, else empty (setup-worktree.sh resolves the actual value at runtime).",
-      "items": { "enum": ["claude-code", "codex"] },
+      "items": { "enum": ["claude-code", "codex", "opencode"] },
       "default": ["claude-code", "codex"]
     },
     "project": {
@@ -151,16 +151,45 @@
       "description": "Explicit per-harness, per-role model overrides (design.md Decision 1 of delivery-speed-presets). Sparse by design — a role absent here falls back to the active speed's roleTiers entry resolved through modelTiers.<harness>. Only roles a project has deliberately pinned should appear; withDefaults() never invents an entry here (unlike modelTiers, which IS defaulted), since presence here means 'explicit override, ignore the speed'.",
       "properties": {
         "claude-code": { "$ref": "#/$defs/roleModelMap" },
-        "codex":       { "$ref": "#/$defs/roleModelMap" }
+        "codex":       { "$ref": "#/$defs/roleModelMap" },
+        "opencode":    { "$ref": "#/$defs/roleModelMap" }
       }
     },
     "modelTiers": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Per-harness tier -> concrete model. A speed's roleTiers names a tier (cheap/standard/capable); this is what resolves that tier to an actual model string for the harness in play. withDefaults() fills in both harnesses' tiers when a project doesn't set them, so an unconfigured project resolves identically to today's sonnet-everywhere/codex-mini-latest-everywhere behavior at the standard tier.",
+      "description": "Per-harness tier -> concrete model. A speed's roleTiers names a tier (cheap/standard/capable); this is what resolves that tier to an actual model string for the harness in play. withDefaults() fills in every harness's tiers when a project doesn't set them, so an unconfigured project resolves identically to today's sonnet-everywhere/codex-mini-latest-everywhere behavior at the standard tier.",
       "properties": {
         "claude-code": { "$ref": "#/$defs/tierMap" },
-        "codex":       { "$ref": "#/$defs/tierMap" }
+        "codex":       { "$ref": "#/$defs/tierMap" },
+        "opencode":    { "$ref": "#/$defs/tierMap" }
+      }
+    },
+    "providers": {
+      "type": "object",
+      "description": "Provider-aware model configuration, distinct from harnesses (the three tools that render). Scoped today to a single named provider, ollama. A project with no providers key behaves identically to a project that never configured it.",
+      "additionalProperties": false,
+      "properties": {
+        "ollama": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Points a subset of this project's configured harnesses at a locally-hosted Ollama instance.",
+          "properties": {
+            "baseUrl": { "type": "string", "default": "http://localhost:11434", "description": "Ollama's own API endpoint (not the OpenAI-compatible /v1 suffix — each harness's adapter appends what it needs)." },
+            "apiKeyEnv": { "type": "string", "description": "Name of the environment variable holding a credential for baseUrl, if Ollama is behind auth — never the credential value itself." },
+            "harnesses": { "type": "array", "items": { "enum": ["claude-code", "codex", "opencode"] }, "description": "Subset of this project's configured harnesses that should route through Ollama. Not inferred from model-id strings — provider and harness are independent dimensions." },
+            "models": { "$ref": "#/$defs/roleModelMap", "description": "Per-role fallback model id, used when a harness is Ollama-routed and models.<harness>.<role> has no explicit override." },
+            "gateway": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Anthropic-compatible proxy (e.g. LiteLLM) Claude Code requires to reach Ollama. Required when claude-code appears in providers.ollama.harnesses.",
+              "properties": {
+                "baseUrl": { "type": "string", "description": "The gateway's Anthropic-compatible base URL." },
+                "apiKeyEnv": { "type": "string", "description": "Name of the environment variable holding the gateway credential — never the credential value itself." }
+              }
+            }
+          }
+        }
       }
     },
     "speeds": {

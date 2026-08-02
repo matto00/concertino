@@ -42,8 +42,9 @@ set -euo pipefail
 # The harness recorded on the run.start event is resolved in this order:
 #   1. Runtime signal read directly from the process environment — CLAUDECODE
 #      set non-empty means claude-code; CODEX_SANDBOX or
-#      CODEX_SANDBOX_NETWORK_DISABLED set non-empty means codex (checked in
-#      that order, so CLAUDECODE wins if somehow both are set).
+#      CODEX_SANDBOX_NETWORK_DISABLED set non-empty means codex; OPENCODE set
+#      non-empty means opencode (checked in that order, so CLAUDECODE wins if
+#      somehow more than one is set).
 #   2. The static CONCERTINO_HARNESS default sourced from .concertino.env,
 #      when no runtime signal is present.
 #   3. The literal string "unknown", when neither resolves a value.
@@ -70,14 +71,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "${SCRIPT_DIR}/.concertino.env" ] && source "${SCRIPT_DIR}/.concertino.env"
 
 # Detect the harness actually running this script from real, harness-set
-# process environment variables — never a guess. Neither variable is a
-# documented public contract, so only presence is relied on, not any
+# process environment variables — never a guess. None of these variables is
+# a documented public contract, so only presence is relied on, not any
 # particular value/format; the static CONCERTINO_HARNESS default and the
 # literal "unknown" remain the fallback chain if detection ever stops
 # working. See docs/config-reference.md for the full resolution order.
+#
+# OPENCODE: confirmed (not guessed) against the sst/opencode source —
+# packages/opencode/src/index.ts's CLI entrypoint unconditionally sets
+# `process.env.OPENCODE = "1"` before dispatching any subcommand, and the
+# bash tool spawns child processes with the inherited environment, so this
+# is present, non-empty, in any shell command an OpenCode agent runs.
+# Checked last (lowest precedence) per design.md Decision 6.
 detect_harness() {
   if [ -n "${CLAUDECODE:-}" ]; then echo "claude-code"; return; fi
   if [ -n "${CODEX_SANDBOX:-}" ] || [ -n "${CODEX_SANDBOX_NETWORK_DISABLED:-}" ]; then echo "codex"; return; fi
+  if [ -n "${OPENCODE:-}" ]; then echo "opencode"; return; fi
   echo ""
 }
 RUNTIME_HARNESS="$(detect_harness)"

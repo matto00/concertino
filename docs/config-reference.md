@@ -18,7 +18,7 @@ After any edit, run `concertino sync` to re-render.
 
 | Field | Type | Default | Purpose |
 | ----- | ---- | ------- | ------- |
-| `harnesses` | `string[]` | `["claude-code","codex"]` | Which adapters `sync` renders. Drop `"codex"` if you only target Claude Code. Also drives the static `CONCERTINO_HARNESS` default in `.concertino.env` — see below. |
+| `harnesses` | `string[]` | `["claude-code","codex"]` | Which adapters `sync` renders — `"claude-code"`, `"codex"`, and/or `"opencode"`. Also drives the static `CONCERTINO_HARNESS` default in `.concertino.env` — see below. |
 | `project` | object | — (required) | Identity + base branch. |
 | `ticketProvider` | object | — (required) | Where tickets come from and how status is set. |
 | `specProvider` | object | — (required) | How planning artifacts are scaffolded/archived. |
@@ -28,6 +28,7 @@ After any edit, run `concertino sync` to re-render.
 | `canonicalDocs` | array | `[]` | Your standards, bound to specific agents. **Highest-leverage field.** |
 | `ui` | object | `{enabled:false}` | Browser-review config (Playwright). |
 | `budgets` | object | see below | Circuit-breaker bounds. |
+| `providers` | object | `{}` | Provider-aware model configuration (currently just `ollama`) — see below. |
 | `commitTrailer` | string | `""` | Trailer appended to commits. |
 
 `harnesses` also drives the `CONCERTINO_HARNESS` value `sync` writes into
@@ -38,9 +39,10 @@ at render time which one a given run will use, so it writes an empty string
 rather than guessing. `setup-worktree.sh` then overrides that static default at
 runtime with a harness-set environment variable when one is present
 (`CLAUDECODE` → `claude-code`, `CODEX_SANDBOX`/`CODEX_SANDBOX_NETWORK_DISABLED`
-→ `codex`), falling back to the static default and then to the literal
-`unknown` if neither resolves. `concertino validate` reports which mode
-(static vs. runtime-detected) a project's configured `harnesses` will use.
+→ `codex`, `OPENCODE` → `opencode`, checked in that order), falling back to the
+static default and then to the literal `unknown` if none resolves.
+`concertino validate` reports which mode (static vs. runtime-detected) a
+project's configured `harnesses` will use.
 
 ---
 
@@ -202,6 +204,61 @@ human instead of thrashing.
 | `skepticDesignRounds` | `3` | Design-gate REFUTE rounds. |
 | `skepticFinalRounds` | `2` | Final-gate REFUTE rounds. |
 | `debugAttempts` | `2` | Executor root-cause attempts per symptom. |
+
+## `providers`
+
+```json
+"providers": {
+  "ollama": {
+    "baseUrl": "http://localhost:11434",
+    "apiKeyEnv": "OLLAMA_API_KEY",
+    "harnesses": ["codex", "opencode"],
+    "models": { "executor": "llama3.1:70b", "evaluator": "llama3.1:70b" },
+    "gateway": { "baseUrl": "http://localhost:4000", "apiKeyEnv": "LITELLM_API_KEY" }
+  }
+}
+```
+
+Provider-aware model configuration — distinct from `harnesses` (the three tools
+that render). Scoped today to a single named provider, `ollama`, which points a
+subset of this project's configured `harnesses` at a locally-hosted Ollama
+instance. Omit `providers` entirely (the default) to leave every harness on its
+existing hosted-model behavior — nothing here is inferred from a model-id
+string that merely *looks* like an Ollama tag.
+
+| Field | Type | Default | Purpose |
+| ----- | ---- | ------- | ------- |
+| `ollama.baseUrl` | string | `http://localhost:11434` | Ollama's own API root (not the OpenAI-compatible `/v1` suffix — each harness's adapter appends what it needs). |
+| `ollama.apiKeyEnv` | string | — | Name of the environment variable holding a credential for `baseUrl`, if Ollama is behind auth. Never the credential value itself — mirrors `worktree.envFiles`'s path-not-secret convention. |
+| `ollama.harnesses` | `string[]` | — | Subset of this project's configured `harnesses` that should route through Ollama. The load-bearing field: `concertino sync`/`doctor`/`validate` read this directly rather than guessing from a model-id string. |
+| `ollama.models` | object | — | Per-role fallback model id (`orchestrator`/`executor`/`evaluator`/`skeptic`/`auditor`), used when a harness in `ollama.harnesses` has no explicit `models.<harness>.<role>` override for that role. An explicit override always wins. |
+| `ollama.gateway` | object | — | Anthropic-compatible proxy (e.g. [LiteLLM](https://docs.litellm.ai/)) Claude Code requires to reach Ollama — **required** when `"claude-code"` appears in `ollama.harnesses`; `concertino validate` fails with an actionable error otherwise. |
+| `ollama.gateway.baseUrl` | string | — | The gateway's Anthropic-compatible base URL. Rendered into `.concertino.env` as `ANTHROPIC_BASE_URL` when set. |
+| `ollama.gateway.apiKeyEnv` | string | — | Name of the environment variable holding the gateway credential. Rendered into `.concertino.env` as `CONCERTINO_OLLAMA_GATEWAY_API_KEY_ENV` (the *name*, never the value) — the operator's own shell/secrets manager sets `ANTHROPIC_AUTH_TOKEN` from it before launching `claude`. |
+
+**Per harness:**
+
+- **Codex** — when `"codex"` is in `ollama.harnesses`, `sync` renders a
+  `[model_providers.ollama]` block into `.codex/config.toml` (merge-marker
+  guarded, so hand-authored content outside it survives a re-sync), and each
+  Ollama-routed role's `.codex/agents/concertino-<role>.toml` gets a
+  `model_provider = "ollama"` line. A role is Ollama-routed iff its harness is
+  in `ollama.harnesses` **and** it has no explicit `models.codex.<role>`
+  override — an override always keeps that one role on its hosted provider.
+- **OpenCode** — when `"opencode"` is in `ollama.harnesses`, `sync` merges a
+  `provider.ollama` entry (OpenAI-compatible, pointed at `ollama.baseUrl` +
+  `/v1`) into `opencode.json`, exposing any explicit `ollama.models` ids.
+- **Claude Code** — never speaks to Ollama directly, even when `"claude-code"`
+  appears in `ollama.harnesses`: an Anthropic-compatible gateway remaps the
+  model id, so `.claude/agents/*.md`'s `model:` frontmatter stays an ordinary
+  hosted alias/string. `ollama.models`'s per-role fallback tier also does not
+  apply to Claude Code for the same reason — only the gateway env vars above
+  are rendered.
+
+`concertino doctor` performs a best-effort, non-fatal reachability check
+against `ollama.baseUrl` (and `ollama.gateway.baseUrl`, when Claude Code is
+Ollama-routed), and reports whether `apiKeyEnv`/`gateway.apiKeyEnv` are set —
+never their values.
 
 ## `commitTrailer`
 

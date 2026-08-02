@@ -4,7 +4,7 @@
 
 A *concertino* is the small group of soloists that leads a concerto grosso, set against the full ensemble. Here it's the five agents that drive a ticket from spec to merged PR — an **orchestrator** conducting an **executor**, an **evaluator**, a cold adversarial **skeptic**, and (opt-in, via **agent-merge**) a cold **auditor** that can verify a finished delivery and merge it itself — bound by hard, re-read-just-in-time behavioral laws so the loop stays diligent and self-correcting with the human out of it.
 
-Concertino runs on both **Claude Code** (full fidelity: native sub-agents, warm resume) and **OpenAI Codex CLI** (a documented, degraded sequential flow). One neutral core, two harness adapters, one per-project config.
+Concertino runs on **Claude Code** (full fidelity: native sub-agents, warm resume), **OpenAI Codex CLI**, and **OpenCode** (both a documented, degraded sequential flow). One neutral core, three harness adapters, one per-project config. Any role on any harness can optionally be routed through a locally-hosted **Ollama** model instead of a hosted one — see `providers.ollama` in [`docs/config-reference.md`](docs/config-reference.md).
 
 ---
 
@@ -44,15 +44,16 @@ concertino/
 │   └── workflow-state.template.md
 ├── config/
 │   ├── concertino.schema.json     # the per-project config schema
-│   └── examples/{helio,generic}.json
+│   └── examples/{helio,generic,opencode-ollama}.json
 ├── adapters/
 │   ├── claude-code/          # frontmatter + plugin manifest templates (full fidelity)
-│   └── codex/                # AGENTS.md skeleton + agent TOML templates (degraded)
+│   ├── codex/                # AGENTS.md skeleton + agent TOML templates (degraded)
+│   └── opencode/              # agent/command markdown templates (degraded)
 ├── bin/concertino            # the sync CLI (Node, zero deps)
 └── docs/
 ```
 
-**Single source, no drift.** Role bodies live once in `core/roles/`. The `concertino` CLI renders them — substituting your project config (gates, providers, canonical docs, budgets) — into each harness's native layout. Edit core or config, re-run `concertino sync`, both harnesses update.
+**Single source, no drift.** Role bodies live once in `core/roles/`. The `concertino` CLI renders them — substituting your project config (gates, providers, canonical docs, budgets) — into each harness's native layout. Edit core or config, re-run `concertino sync`, every configured harness updates.
 
 ## Quick start
 
@@ -74,7 +75,7 @@ concertino init
 
 Then in Claude Code: `/concertino-deliver <TICKET_ID>`.
 
-Prefer a starting profile over the prompts? `concertino init --example=helio` (or `--example=generic`, or `--yes` for non-interactive defaults with gate auto-detection).
+Prefer a starting profile over the prompts? `concertino init --example=helio` (or `--example=generic`, or `--example=opencode-ollama` to start from an OpenCode + local-Ollama profile, or `--yes` for non-interactive defaults with gate auto-detection).
 
 After editing `concertino.config.json`, re-render with `concertino sync`.
 
@@ -84,7 +85,7 @@ After editing `concertino.config.json`, re-render with `concertino sync`.
 concertino init       [--out=DIR] [--example=helio|generic] [--yes]
                       Interactive setup: config → scripts → agent files (all in one).
 
-concertino sync       [--config=PATH] [--out=DIR] [--harness=claude-code,codex] [--dry-run]
+concertino sync       [--config=PATH] [--out=DIR] [--harness=claude-code,codex,opencode] [--dry-run]
                       Render harness files from core + config. Re-run after every edit.
 
 concertino update     <key=value> [...] [--config=PATH] [--out=DIR] [--dry-run]
@@ -100,11 +101,12 @@ concertino diff       [--config=PATH] [--out=DIR] [--harness=...]
                       Show a unified diff between what sync would write and what's on disk.
 
 concertino doctor     [--config=PATH] [--out=DIR]
-                      Check the environment: node, git identity, gh auth, claude CLI,
-                      codex CLI (if configured), Linear MCP, Playwright. Also byte-compares
-                      the rendered artifacts (scripts/concertino/, .concertino/, the agent
-                      files) against core and warns on drift — a stale copy stops emitting
-                      telemetry silently.
+                      Check the environment: node, git identity, gh auth, each selected
+                      harness's CLI (claude/codex/opencode), Linear MCP, Playwright, and
+                      Ollama/gateway reachability (if providers.ollama is configured).
+                      Also byte-compares the rendered artifacts (scripts/concertino/,
+                      .concertino/, the agent files) against core and warns on drift — a
+                      stale copy stops emitting telemetry silently.
 
 concertino watch      [--config=PATH] [--out=DIR]
                       Live fleet dashboard — every active run, its phase, gates,
@@ -117,7 +119,7 @@ concertino upgrade    [--out=DIR]
 concertino gates      [--run=NAME] [--config=PATH] [--out=DIR]
                       List all configured gates, or run one by name.
 
-concertino eject      --role=<role> [--harness=claude-code|codex] [--config=PATH] [--out=DIR]
+concertino eject      --role=<role> [--harness=claude-code|codex|opencode] [--config=PATH] [--out=DIR]
                       Print the fully-rendered agent file for a role to stdout.
                       Respects local overrides in .concertino/roles/. Good for debugging.
 
@@ -131,7 +133,7 @@ concertino completion [fish|zsh|bash]
 concertino --version
 ```
 
-See [`docs/quickstart.md`](docs/quickstart.md) to get running, [`docs/config-reference.md`](docs/config-reference.md) for every config field, [`docs/adapting-to-your-project.md`](docs/adapting-to-your-project.md) for the full walkthrough, and [`docs/harness-capabilities.md`](docs/harness-capabilities.md) for what differs between Claude Code and Codex.
+See [`docs/quickstart.md`](docs/quickstart.md) to get running, [`docs/config-reference.md`](docs/config-reference.md) for every config field, [`docs/adapting-to-your-project.md`](docs/adapting-to-your-project.md) for the full walkthrough, and [`docs/harness-capabilities.md`](docs/harness-capabilities.md) for what differs between Claude Code, Codex, and OpenCode.
 
 ## Acknowledgements / Prior Art
 

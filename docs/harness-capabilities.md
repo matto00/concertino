@@ -1,22 +1,26 @@
-# Harness capabilities — Claude Code vs Codex
+# Harness capabilities — Claude Code vs Codex vs OpenCode
 
 Concertino's orchestra was designed for a harness with **native multi-agent
-orchestration**. Claude Code provides that; Codex does not (yet). "Harness-agnostic"
-here means a shared neutral core with **full fidelity on Claude Code** and a
-**documented, degraded flow on Codex** — not identical behavior.
+orchestration**. Claude Code provides that; Codex does not (yet), and OpenCode's
+own multi-agent guarantees, while real, don't publicly document the specific
+warm-resume-across-turns contract Claude Code's `SendMessage` provides.
+"Harness-agnostic" here means a shared neutral core with **full fidelity on
+Claude Code** and a **documented, degraded flow on Codex and OpenCode** — not
+identical behavior across all three.
 
 ## Capability matrix
 
-| Capability | Claude Code | Codex CLI |
-| ---------- | ----------- | --------- |
-| Spawn a typed sub-agent from the running agent | ✅ `Agent` tool | ⚠️ only `spawn_agents_on_csv` (batch); no targeted dispatch |
-| Sub-agent nesting | ✅ up to 5 levels | ⚠️ `max_depth` (default 1) |
-| Warm resume / inter-agent messaging | ✅ `SendMessage`, persisted transcripts | ❌ workers `report_agent_job_result`; no routing |
-| Orchestrator → executor → evaluator → skeptic → (agent-merge) auditor topology | ✅ first-class | ❌ not supported directly |
-| Background / parallel agents | ✅ | ⚠️ threads run, coordination is manual |
-| Custom instructions | `.claude/agents/*.md` (per-agent) | `AGENTS.md` (single shared doc) |
-| Slash commands / prompts | `.claude/commands/*.md` | `.codex/prompts/*.md` |
-| Plugin distribution | ✅ `.claude-plugin/plugin.json` + marketplace | n/a (config files) |
+| Capability | Claude Code | Codex CLI | OpenCode |
+| ---------- | ----------- | --------- | -------- |
+| Spawn a typed sub-agent from the running agent | ✅ `Agent` tool | ⚠️ only `spawn_agents_on_csv` (batch); no targeted dispatch | ⚠️ Task tool / `@name` mention invokes a `mode: subagent` agent and returns a result |
+| Sub-agent nesting | ✅ up to 5 levels | ⚠️ `max_depth` (default 1) | ⚠️ `subagent_depth` (default 1) |
+| Warm resume / inter-agent messaging | ✅ `SendMessage`, persisted transcripts | ❌ workers `report_agent_job_result`; no routing | ❓ no documented warm-resume-across-turns contract equivalent to `SendMessage` |
+| Orchestrator → executor → evaluator → skeptic → (agent-merge) auditor topology | ✅ first-class | ❌ not supported directly | ❌ not assumed (treated conservatively — see below) |
+| Background / parallel agents | ✅ | ⚠️ threads run, coordination is manual | ⚠️ Task tool calls are synchronous per invocation |
+| Custom instructions | `.claude/agents/*.md` (per-agent) | `AGENTS.md` (single shared doc) | `.opencode/agents/*.md` (per-agent) + `AGENTS.md` (read automatically if present) |
+| Slash commands / prompts | `.claude/commands/*.md` | `.codex/prompts/*.md` | `.opencode/commands/*.md` |
+| Native local-model (Ollama) support | ⚠️ only via an Anthropic-compatible gateway (e.g. LiteLLM) — see `model-providers` below | ✅ `[model_providers.ollama]` in `.codex/config.toml` | ✅ `provider.ollama` (OpenAI-compatible) in `opencode.json` |
+| Plugin distribution | ✅ `.claude-plugin/plugin.json` + marketplace | n/a (config files) | n/a (config files) |
 
 ## What this means for the workflow
 
@@ -86,18 +90,45 @@ Codex accepts `--inline` too (e.g. copy-pasted from a Claude Code invocation)
 but it is a documented no-op here: Codex already plays the orchestrator role
 directly in this one thread, with no subagent-spawn step to skip.
 
+### OpenCode (degraded — sequential single-thread, conservative by design)
+
+OpenCode has a genuine subagent/Task-tool mechanism (a primary agent can invoke a
+`mode: subagent` agent and receive its result), but no publicly documented
+guarantee of Claude Code's warm-resume-across-turns semantics (`SendMessage` to a
+suspended agent). Per this project's own preference for understating rather than
+overstating a harness's capability (a mis-assumed capability is exactly the CON-10
+failure class — see below), Concertino treats OpenCode like Codex: the rendered
+`.opencode/commands/concertino-deliver.md` selects the `concertino-orchestrator`
+primary agent (`.opencode/agents/concertino-orchestrator.md`), which runs the same
+seven-step loop as Codex's sequential flow above, switching into each role by
+reading its own `.opencode/agents/concertino-<role>.md` and the underlying
+`core/roles/<role>.md` spec, persisting `workflow-state.md` between phases.
+
+The five `.opencode/agents/concertino-*.md` definitions are provided for
+environments where OpenCode's Task-tool dispatch *is* used — an operator can
+optionally invoke the executor, evaluator, skeptic, or auditor as a subagent — but
+the default and recommended path is the sequential single-thread flow the primary
+orchestrator agent's own body describes, exactly like Codex's default.
+
+Like Codex, the model each role runs on is fixed at the last `concertino sync`
+(baked into each `.opencode/agents/concertino-<role>.md`'s own `model:`
+frontmatter) — there is no per-spawn model override on OpenCode either, since that
+would require the same warm, per-invocation contract this section already
+declines to assume.
+
 ### Everything that stays identical
 
 The **procedure scripts** (`scripts/concertino/*.sh`) and the **Iron Laws**
-(`.concertino/laws/`) are byte-for-byte the same on both harnesses — both just shell
-out to the same scripts and read the same law docs. That shared, deterministic
-backbone is what makes the cross-harness story honest even where the agent topology
-differs.
+(`.concertino/laws/`) are byte-for-byte the same across all three harnesses —
+each just shells out to the same scripts and reads the same law docs. That
+shared, deterministic backbone is what makes the cross-harness story honest
+even where the agent topology differs.
 
-> Codex's agent model is evolving. If/when it gains targeted sub-agent dispatch and
-> inter-agent messaging, the Codex adapter can render the full topology too — the
-> neutral `core/roles/` specs already describe it; only the adapter's resume block
-> would change.
+> Codex's and OpenCode's agent models are both evolving. If/when either gains
+> targeted sub-agent dispatch and inter-agent messaging with the same
+> guarantees Claude Code documents, that adapter can render the full topology
+> too — the neutral `core/roles/` specs already describe it; only the
+> adapter's resume block would change.
 
 ## Harness-behavior fact: a suspended agent is never resumed by an external event
 
@@ -132,15 +163,18 @@ harness genuinely cannot wait for a sub-agent inline, poll for the artefact
 the sub-agent was told to produce (its report path, or a new commit on the
 branch) instead of returning control speculatively, or escalate.
 
-**Codex finding (see above):** the default sequential single-thread flow has
-no spawn/suspend boundary at all — the one thread reading `AGENTS.md` plays
-every role itself, so there is no child to orphan and this failure mode
-cannot reproduce there. The identical risk reappears only if the *optional*
-worker-dispatch path (`.codex/agents/*.toml` + `spawn_agents_on_csv`, noted
-above) is used: a dispatching thread that returns before a dispatched worker
-calls `report_agent_job_result` orphans that worker exactly as an unresumed
-Claude Code sub-agent would be. `adapters/codex/header.md` documents this same
-caution so the two stay in agreement.
+**Codex and OpenCode finding (see above):** the default sequential single-thread
+flow has no spawn/suspend boundary at all — the one thread reading `AGENTS.md`
+(Codex) or `.opencode/agents/concertino-orchestrator.md` (OpenCode) plays every
+role itself, so there is no child to orphan and this failure mode cannot
+reproduce there. The identical risk reappears only if the *optional*
+worker-dispatch path is used — Codex's `.codex/agents/*.toml` +
+`spawn_agents_on_csv`, or OpenCode's Task tool invoking a `concertino-<role>`
+subagent: a dispatching thread that returns before the dispatched
+worker/subagent reports back (`report_agent_job_result` on Codex; the Task
+tool's own result on OpenCode) orphans it exactly as an unresumed Claude Code
+sub-agent would be. `adapters/codex/header.md` and `adapters/opencode/header.md`
+both document this same caution so all three stay in agreement.
 
 ## Harness-behavior fact: a lingering post-completion turn is invisible to the dashboard (CON-48)
 

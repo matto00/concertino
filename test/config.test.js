@@ -130,7 +130,7 @@ test('schemaSectionOrder matches config/concertino.schema.json\'s own top-level 
   assert.deepEqual(order, [
     'harnesses', 'project', 'ticketProvider', 'specProvider', 'worktree', 'devServers',
     'gates', 'canonicalDocs', 'ui', 'dashboard', 'budgets', 'models', 'modelTiers',
-    'speeds', 'agentMerge', 'commitTrailer',
+    'providers', 'speeds', 'agentMerge', 'commitTrailer',
   ]);
 });
 
@@ -158,4 +158,110 @@ test('getAtPath reads a nested value and returns undefined for a missing path', 
   assert.equal(configLib.getAtPath({ a: { b: 1 } }, 'a.b'), 1);
   assert.equal(configLib.getAtPath({ a: {} }, 'a.b.c'), undefined);
   assert.equal(configLib.getAtPath({}, 'a.b'), undefined);
+});
+
+// --- CON-63: opencode harness + providers.ollama ---------------------------
+
+test('opencode is accepted as a valid harness with no "unknown harnesses" error', () => {
+  const { errors } = configLib.collectConfigIssues(baseConfig({ harnesses: ['opencode'] }), { out: __dirname });
+  assert.equal(errors.filter((e) => e.path === 'harnesses').length, 0);
+});
+
+test('withDefaults leaves the default harnesses list unchanged (opencode not added)', () => {
+  const c = configLib.withDefaults({
+    project: { name: 'p' }, ticketProvider: { kind: 'github' }, specProvider: { kind: 'none' },
+    worktree: { ports: { frontendBase: 1, backendBase: 2 } }, gates: [],
+  });
+  assert.deepEqual(c.harnesses, ['claude-code', 'codex']);
+});
+
+test('providers.ollama accepted with no errors attributable to the providers block', () => {
+  const { errors } = configLib.collectConfigIssues(baseConfig({
+    harnesses: ['codex'],
+    providers: { ollama: { baseUrl: 'http://localhost:11434', harnesses: ['codex'], models: { executor: 'llama3.1:70b' } } },
+  }), { out: __dirname });
+  assert.equal(errors.filter((e) => e.path.startsWith('providers.')).length, 0);
+});
+
+test('absent providers is a no-op: collectConfigIssues reports nothing for the Providers section', () => {
+  const { errors, warnings } = configLib.collectConfigIssues(baseConfig({}), { out: __dirname });
+  assert.equal(errors.filter((e) => e.path.startsWith('providers.')).length, 0);
+  assert.equal(warnings.filter((w) => w.path.startsWith('providers.')).length, 0);
+});
+
+function ollamaBase(over) {
+  const c = configLib.withDefaults({
+    project: { name: 'p' }, ticketProvider: { kind: 'github' }, specProvider: { kind: 'none' },
+    worktree: { ports: { frontendBase: 1, backendBase: 2 } }, gates: [],
+    harnesses: ['codex'],
+  });
+  c.providers = { ollama: Object.assign({ baseUrl: 'http://localhost:11434', harnesses: ['codex'] }, over) };
+  return c;
+}
+
+test('resolveModel: provider model map used when harness is Ollama-routed and no explicit override', () => {
+  const c = ollamaBase({ models: { executor: 'llama3.1:70b' } });
+  assert.equal(configLib.resolveModel(c, 'codex', 'executor'), 'llama3.1:70b');
+});
+
+test('resolveModel: explicit models.<harness>.<role> override wins over the provider model map', () => {
+  const c = ollamaBase({ models: { executor: 'llama3.1:70b' } });
+  c.models.codex.executor = 'codex-mini-latest';
+  assert.equal(configLib.resolveModel(c, 'codex', 'executor'), 'codex-mini-latest');
+});
+
+test('resolveModel: claude-code is never routed through the provider model map, even when listed in providers.ollama.harnesses', () => {
+  const c = ollamaBase({ harnesses: ['claude-code'], models: { executor: 'llama3.1:70b' }, gateway: { baseUrl: 'http://gw' } });
+  const model = configLib.resolveModel(c, 'claude-code', 'executor');
+  assert.notEqual(model, 'llama3.1:70b');
+  assert.equal(model, 'sonnet');
+});
+
+test('resolveModel: a fourth/unknown harness falls back to FALLBACK_MODEL[\'claude-code\'], never a bare ternary default', () => {
+  const c = configLib.withDefaults({
+    project: { name: 'p' }, ticketProvider: { kind: 'github' }, specProvider: { kind: 'none' },
+    worktree: { ports: { frontendBase: 1, backendBase: 2 } }, gates: [],
+  });
+  assert.equal(configLib.resolveModel(c, 'some-future-harness', 'executor'), configLib.FALLBACK_MODEL['claude-code']);
+});
+
+test('isOllamaRouted: true only when harness is in providers.ollama.harnesses and no explicit override', () => {
+  const c = ollamaBase({});
+  assert.equal(configLib.isOllamaRouted(c, 'codex', 'executor'), true);
+  c.models.codex.executor = 'gpt-5.1-codex';
+  assert.equal(configLib.isOllamaRouted(c, 'codex', 'executor'), false);
+});
+
+test('validation fails when claude-code is Ollama-routed without a configured gateway (exact error path)', () => {
+  const { errors } = configLib.collectConfigIssues(baseConfig({
+    harnesses: ['claude-code'],
+    providers: { ollama: { baseUrl: 'http://localhost:11434', harnesses: ['claude-code'] } },
+  }), { out: __dirname });
+  const err = errors.find((e) => e.path === 'providers.ollama.gateway');
+  assert.ok(err, 'expected an error at providers.ollama.gateway');
+  assert.match(err.message, /claude-code.*cannot connect to Ollama directly/i);
+});
+
+test('validation passes once providers.ollama.gateway is added', () => {
+  const { errors } = configLib.collectConfigIssues(baseConfig({
+    harnesses: ['claude-code'],
+    providers: { ollama: { baseUrl: 'http://localhost:11434', harnesses: ['claude-code'], gateway: { baseUrl: 'http://localhost:4000' } } },
+  }), { out: __dirname });
+  assert.equal(errors.filter((e) => e.path === 'providers.ollama.gateway').length, 0);
+});
+
+test('providers.ollama.harnesses naming a harness this project has not configured is rejected', () => {
+  const { errors } = configLib.collectConfigIssues(baseConfig({
+    harnesses: ['claude-code'],
+    providers: { ollama: { baseUrl: 'http://localhost:11434', harnesses: ['codex'] } },
+  }), { out: __dirname });
+  assert.ok(errors.some((e) => e.path === 'providers.ollama.harnesses'));
+});
+
+test('providers.ollama.baseUrl must be a non-empty string when providers.ollama is present', () => {
+  const { errors } = configLib.collectConfigIssues(baseConfig({
+    harnesses: ['codex'],
+    providers: { ollama: { baseUrl: '', harnesses: ['codex'] } },
+  }), { out: __dirname });
+  assert.ok(errors.some((e) => e.path === 'providers.ollama.baseUrl'));
 });

@@ -48,6 +48,7 @@ Edit `concertino.config.json`. The schema is `config/concertino.schema.json`
 | `canonicalDocs` | Your standards (code-quality, design-language). `bindTo` picks which agents must read each, `when` gates it to relevant changes. **This is the highest-leverage field** — binding agents to an explicit standard lifts quality more than any prompt tweak. |
 | `ui` | `enabled`, `tool` (`playwright`), `triggers` (globs), `breakpoints`. Drives Phase 3 review and whether the evaluator/skeptic get browser tools. |
 | `budgets` | Circuit-breaker bounds (execution cycles, skeptic rounds, debug attempts). |
+| `providers.ollama` | Route some or all configured harnesses' roles through a locally-hosted Ollama model. See `config-reference.md`'s `providers` section. |
 | `commitTrailer` | Trailer appended to commits. |
 
 ## 3. Sync
@@ -55,6 +56,7 @@ Edit `concertino.config.json`. The schema is `config/concertino.schema.json`
 ```bash
 concertino sync                      # renders all configured harnesses
 concertino sync --harness=claude-code
+concertino sync --harness=opencode
 concertino sync --dry-run
 ```
 
@@ -63,11 +65,16 @@ config change** — it's the single build step.
 
 What gets written:
 
-- **Claude Code:** `.claude/agents/concertino-{orchestrator,executor,evaluator,skeptic}.md`
+- **Claude Code:** `.claude/agents/concertino-{orchestrator,executor,evaluator,skeptic,auditor}.md`
   and `.claude/commands/concertino-deliver.md`.
 - **Codex:** a `<!-- CONCERTINO:BEGIN -->…<!-- CONCERTINO:END -->` block in `AGENTS.md`
   (replaced in place on re-sync, so your other AGENTS.md content is preserved),
-  plus `.codex/agents/*.toml` and `.codex/prompts/concertino-deliver.md`.
+  plus `.codex/agents/*.toml` and `.codex/prompts/concertino-deliver.md` — and,
+  when `"codex"` is in `providers.ollama.harnesses`, a merge-marker-guarded
+  `[model_providers.ollama]` block in `.codex/config.toml`.
+- **OpenCode:** `.opencode/agents/concertino-{orchestrator,executor,evaluator,skeptic,auditor}.md`
+  and `.opencode/commands/concertino-deliver.md` — and, when `"opencode"` is in
+  `providers.ollama.harnesses`, a `provider.ollama` entry merged into `opencode.json`.
 
 ## 4. Run
 
@@ -75,6 +82,9 @@ What gets written:
 - **Codex:** invoke the `concertino-deliver` prompt (or just ask Codex to deliver the
   ticket — it follows `AGENTS.md`). Note the sequential degradation in
   [`harness-capabilities.md`](harness-capabilities.md).
+- **OpenCode:** run `/concertino-deliver <TICKET_ID>`, which selects the
+  `concertino-orchestrator` primary agent. Same sequential degradation as
+  Codex — see [`harness-capabilities.md`](harness-capabilities.md).
 
 ## Authoring your canonical docs
 
@@ -95,9 +105,12 @@ then curate. Binding the reviewer to read it is the lever.
   behavior for *everyone*) the templates in this repo's `core/roles/`, `core/laws/`
   and `core/scripts/`.
 - **Generated — don't hand-edit:** `.claude/agents/concertino-*.md`,
-  the `AGENTS.md` Concertino block, `.codex/`, `scripts/concertino/*.sh` and
+  the `AGENTS.md` Concertino block, `.codex/`, `.opencode/`, `scripts/concertino/*.sh` and
   `scripts/concertino/.concertino.env`. `sync` overwrites all of these on every
   run, silently — a hand-edit here is discarded, not merged. Re-run `sync` instead.
+  `opencode.json` is the one partial exception: only its `provider.ollama` key
+  is Concertino-managed (structurally merged); everything else in that file is
+  yours, same as `AGENTS.md`'s content outside its marked region.
 
 `scripts/concertino/*.sh` in particular looks editable (they're plain, readable
 shell), but `init` only *copies* them from `core/scripts/`; `sync` re-copies them

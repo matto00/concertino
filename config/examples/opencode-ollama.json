@@ -1,0 +1,47 @@
+{
+  "$schema": "../concertino.schema.json",
+  "harnesses": ["opencode", "codex"],
+  "project": { "name": "my-local-project", "baseBranch": "main" },
+  "ticketProvider": { "kind": "github", "idExample": "#123" },
+  "specProvider": { "kind": "none", "changeDir": "spec/changes/<CHANGE_NAME>" },
+  "worktree": {
+    "base": ".concertino/worktrees",
+    "ports": { "frontendBase": 3000, "backendBase": 4000 },
+    "envFiles": [".env"],
+    "hooks": ["npm ci"]
+  },
+  "gates": [
+    { "name": "lint", "when": "always", "command": "npm run lint" },
+    { "name": "test", "when": "always", "command": "npm test" },
+    { "name": "build", "when": "always", "command": "npm run build" }
+  ],
+  "canonicalDocs": [],
+  "ui": { "enabled": false, "tool": "none" },
+  "budgets": { "executionCycles": 3, "skepticDesignRounds": 3, "skepticFinalRounds": 2, "debugAttempts": 2 },
+  "models": {
+    "opencode": { "skeptic": "anthropic/claude-opus-4-1" }
+  },
+  "modelTiers": {
+    "opencode": { "cheap": "ollama/llama3.1:8b", "standard": "ollama/llama3.1:70b", "capable": "anthropic/claude-opus-4-1" }
+  },
+  "providers": {
+    "ollama": {
+      "baseUrl": "http://localhost:11434",
+      "apiKeyEnv": "OLLAMA_API_KEY",
+      "harnesses": ["codex", "opencode"],
+      "models": {
+        "orchestrator": "llama3.1:70b",
+        "executor": "llama3.1:70b",
+        "evaluator": "llama3.1:70b",
+        "auditor": "llama3.1:70b"
+      }
+    }
+  },
+  "speeds": {
+    "default": {
+      "budgets": {},
+      "roleTiers": { "orchestrator": "standard", "executor": "standard", "evaluator": "standard", "skeptic": "standard", "auditor": "standard" }
+    }
+  },
+  "commitTrailer": ""
+}

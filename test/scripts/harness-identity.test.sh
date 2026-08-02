@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Shell tests for CON-2's harness-identity plumbing. Run:
+# Shell tests for CON-2's harness-identity plumbing (extended by CON-63 for
+# OpenCode's own runtime signal). Run:
 #   bash test/scripts/harness-identity.test.sh
 #
 # Covers two halves of the feature:
@@ -7,8 +8,8 @@
 #       `concertino sync` writes into .concertino.env: the single configured
 #       harness, or empty when more than one is configured.
 #   (b) core/scripts/setup-worktree.sh's runtime detect_harness() — the
-#       CLAUDECODE / CODEX_SANDBOX(_NETWORK_DISABLED) process-env signals that
-#       override the static default at run time, including the
+#       CLAUDECODE / CODEX_SANDBOX(_NETWORK_DISABLED) / OPENCODE process-env
+#       signals that override the static default at run time, including the
 #       both-signals-set-simultaneously case where CLAUDECODE wins, and the
 #       fallback chain down to the static default and then "unknown".
 #
@@ -93,9 +94,10 @@ new_scripts() {
   },
   "modelTiers": {
     "claude-code": { "cheap": "haiku", "standard": "sonnet", "capable": "opus" },
-    "codex": { "cheap": "codex-mini-latest", "standard": "codex-mini-latest", "capable": "gpt-5.1-codex" }
+    "codex": { "cheap": "codex-mini-latest", "standard": "codex-mini-latest", "capable": "gpt-5.1-codex" },
+    "opencode": { "cheap": "anthropic/claude-haiku-4-5", "standard": "anthropic/claude-sonnet-4-5", "capable": "anthropic/claude-opus-4-1" }
   },
-  "models": { "claude-code": {}, "codex": {} }
+  "models": { "claude-code": {}, "codex": {}, "opencode": {} }
 }
 JSON
   printf '%s' "$d"
@@ -117,7 +119,7 @@ new_repo() {
 # never leak into a "no runtime signal" scenario.
 run_setup() {
   local scripts="$1" repo="$2" ticket="$3" branch="$4"; shift 4
-  ( cd "$repo" && env -u CLAUDECODE -u CODEX_SANDBOX -u CODEX_SANDBOX_NETWORK_DISABLED \
+  ( cd "$repo" && env -u CLAUDECODE -u CODEX_SANDBOX -u CODEX_SANDBOX_NETWORK_DISABLED -u OPENCODE \
       "$@" "$scripts/setup-worktree.sh" "$ticket" "$branch" ) >/dev/null 2>&1
   return $?
 }
@@ -164,12 +166,38 @@ run_setup "$SCRIPTS" "$REPO" TEST-104 feat/104 CLAUDECODE=1 CODEX_SANDBOX=1
 check "b.4 both signals set -> claude-code wins" "$(harness_of "$REPO" TEST-104)" "claude-code"
 rm -rf "$SCRIPTS" "$REPO"
 
+# --- OPENCODE set, no static default -> opencode (CON-63) -------------------
+SCRIPTS="$(new_scripts)"
+printf "CONCERTINO_HARNESS=''\n" > "$SCRIPTS/.concertino.env"
+REPO="$(new_repo)"
+run_setup "$SCRIPTS" "$REPO" TEST-108 feat/108 OPENCODE=1
+check "b.5 OPENCODE set -> opencode" "$(harness_of "$REPO" TEST-108)" "opencode"
+rm -rf "$SCRIPTS" "$REPO"
+
+# --- CLAUDECODE wins over an OPENCODE signal (checked first) ----------------
+SCRIPTS="$(new_scripts)"
+printf "CONCERTINO_HARNESS=''\n" > "$SCRIPTS/.concertino.env"
+REPO="$(new_repo)"
+run_setup "$SCRIPTS" "$REPO" TEST-109 feat/109 CLAUDECODE=1 OPENCODE=1
+check "b.6 CLAUDECODE wins over OPENCODE" "$(harness_of "$REPO" TEST-109)" "claude-code"
+rm -rf "$SCRIPTS" "$REPO"
+
+# --- OPENCODE signal absent (guessed variable never fires) falls through to
+# the existing fallback chain exactly as it would for any other harness with
+# no matching runtime signal — the honest "no regression" case.
+SCRIPTS="$(new_scripts)"
+printf "CONCERTINO_HARNESS='codex'\n" > "$SCRIPTS/.concertino.env"
+REPO="$(new_repo)"
+run_setup "$SCRIPTS" "$REPO" TEST-110 feat/110
+check "b.7 no OPENCODE signal -> falls back to static default unaffected" "$(harness_of "$REPO" TEST-110)" "codex"
+rm -rf "$SCRIPTS" "$REPO"
+
 # --- no runtime signal, static default present -> static value used ---------
 SCRIPTS="$(new_scripts)"
 printf "CONCERTINO_HARNESS='codex'\n" > "$SCRIPTS/.concertino.env"
 REPO="$(new_repo)"
 run_setup "$SCRIPTS" "$REPO" TEST-105 feat/105
-check "b.5 no runtime signal -> falls back to static default" "$(harness_of "$REPO" TEST-105)" "codex"
+check "b.8 no runtime signal -> falls back to static default" "$(harness_of "$REPO" TEST-105)" "codex"
 rm -rf "$SCRIPTS" "$REPO"
 
 # --- no runtime signal, no static default -> HARNESS itself still resolves
@@ -190,13 +218,13 @@ printf "CONCERTINO_HARNESS=''\n" > "$SCRIPTS/.concertino.env"
 REPO="$(new_repo)"
 run_setup "$SCRIPTS" "$REPO" TEST-106 feat/106
 RC=$?
-check "b.6 no signal, no static default -> setup-worktree.sh now FAILs (unknown harness has no modelTiers data)" "$RC" "1"
+check "b.9 no signal, no static default -> setup-worktree.sh now FAILs (unknown harness has no modelTiers data)" "$RC" "1"
 # The events LOG ITSELF is never created (setup-worktree.sh bails before any
 # emit-event.sh call happens at all) — harness_of's node helper throws
 # reading a nonexistent file, printing nothing to stdout (stderr suppressed),
 # distinct from the "<no run.start event>" string it prints when the file
 # exists but simply has no matching line.
-check "b.6 no run.start emitted for a run whose harness could not be resolved" "$(harness_of "$REPO" TEST-106)" ""
+check "b.9 no run.start emitted for a run whose harness could not be resolved" "$(harness_of "$REPO" TEST-106)" ""
 rm -rf "$SCRIPTS" "$REPO"
 
 # --- runtime signal overrides a CONFLICTING static default ------------------
@@ -208,7 +236,7 @@ SCRIPTS="$(new_scripts)"
 printf "CONCERTINO_HARNESS='codex'\n" > "$SCRIPTS/.concertino.env"
 REPO="$(new_repo)"
 run_setup "$SCRIPTS" "$REPO" TEST-107 feat/107 CLAUDECODE=1
-check "b.7 runtime signal overrides a conflicting static default" "$(harness_of "$REPO" TEST-107)" "claude-code"
+check "b.10 runtime signal overrides a conflicting static default" "$(harness_of "$REPO" TEST-107)" "claude-code"
 rm -rf "$SCRIPTS" "$REPO"
 
 # ===========================================================================
@@ -223,7 +251,7 @@ run_setup_capture() {
   # contract, since every (b) test above relies on run_setup's return-code-
   # only behavior and discards stdout deliberately.
   local scripts="$1" repo="$2" ticket="$3" branch="$4" speed="$5"; shift 5
-  ( cd "$repo" && env -u CLAUDECODE -u CODEX_SANDBOX -u CODEX_SANDBOX_NETWORK_DISABLED \
+  ( cd "$repo" && env -u CLAUDECODE -u CODEX_SANDBOX -u CODEX_SANDBOX_NETWORK_DISABLED -u OPENCODE \
       "$@" "$scripts/setup-worktree.sh" "$ticket" "$branch" "$speed" ) 2>/dev/null
 }
 
