@@ -34,14 +34,13 @@ function baseConfig(over) {
   );
 }
 
-function runValidate(config) {
+function runValidate(config, extraArgs) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-validate-'));
   const cfgPath = path.join(dir, 'concertino.config.json');
   fs.writeFileSync(cfgPath, JSON.stringify(config));
   try {
-    const out = execFileSync('node', [BIN, 'validate', '--config=' + cfgPath, '--out=' + dir], {
-      encoding: 'utf8',
-    });
+    const args = [BIN, 'validate', '--config=' + cfgPath, '--out=' + dir].concat(extraArgs || []);
+    const out = execFileSync('node', args, { encoding: 'utf8' });
     return { out, status: 0 };
   } catch (e) {
     // cmdValidate only process.exit(1)s on an ERROR-level failure — this
@@ -115,4 +114,49 @@ test('providers.ollama.harnesses includes claude-code WITH a configured gateway 
   }));
   assert.equal(status, 0, 'expected validation to pass once a gateway is configured:\n' + out);
   assert.doesNotMatch(out, /cannot connect to Ollama directly/i);
+});
+
+// --- CON-62: `--ticket <ID>` (tasks.md 4.5, 7.1) ----------------------------
+// The valid/invalid/ambiguous/no-override classification itself is unit-
+// tested directly against lib/config.js's pure `classifyHarnessOverride`
+// (test/config.test.js) and its rendering into collectConfigIssues' emitted
+// lines (also test/config.test.js) — those never touch the network. These
+// two subprocess-level cases below are the ones reachable WITHOUT a live
+// Linear fetch: a non-linear ticketProvider (no fetch attempted at all) and
+// a linear provider with no LINEAR_API_KEY (fetchOneTicket's own early
+// error, before any network call).
+
+test('omitting --ticket is a complete no-op — no "ticket harness" line at all', () => {
+  const { out, status } = runValidate(baseConfig({}));
+  assert.equal(status, 0);
+  assert.doesNotMatch(out, /ticket harness/i);
+});
+
+test('--ticket against a non-linear ticketProvider prints an informational note, never crashes', () => {
+  const { out, status } = runValidate(
+    baseConfig({ ticketProvider: { kind: 'manual', idExample: 'ABC-123' } }),
+    ['--ticket=CON-1'],
+  );
+  assert.equal(status, 0, out);
+  assert.match(out, /--ticket live-checking is only implemented for ticketProvider\.kind "linear"/);
+  assert.match(out, /"manual"/);
+});
+
+test('--ticket against a linear provider with no LINEAR_API_KEY fails clearly, before any network call', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-validate-'));
+  const cfgPath = path.join(dir, 'concertino.config.json');
+  fs.writeFileSync(cfgPath, JSON.stringify(baseConfig({})));
+  try {
+    const env = Object.assign({}, process.env);
+    delete env.LINEAR_API_KEY;
+    execFileSync('node', [BIN, 'validate', '--config=' + cfgPath, '--out=' + dir, '--ticket=CON-1'], {
+      encoding: 'utf8', env,
+    });
+    assert.fail('expected a non-zero exit');
+  } catch (e) {
+    assert.notEqual(e.status, 0);
+    assert.match((e.stdout || '') + (e.stderr || ''), /LINEAR_API_KEY is not set/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

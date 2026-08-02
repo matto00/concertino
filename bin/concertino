@@ -29,8 +29,14 @@ const ADAPTERS = path.join(REPO, 'adapters');
 // down, right where cmdValidate needs them.
 const {
   DEFAULT_MODEL_TIERS, withModelDefaults, withDefaults, resolveModel, isOllamaRouted,
-  deepSet, coerce, loadConfig, collectConfigIssues,
+  deepSet, coerce, loadConfig, collectConfigIssues, VALID_HARNESSES,
+  classifyHarnessOverride,
 } = require(path.join(REPO, 'lib', 'config'));
+// `concertino validate --ticket <ID>` (CON-62, design.md Decision 6) reuses
+// this file's existing single-issue fetch rather than a second GraphQL
+// client — only required here, not at module scope in lib/config.js, since
+// lib/config.js stays side-effect-free / dependency-free by design.
+const { fetchOneTicket } = require(path.join(REPO, 'lib', 'ui', 'linear'));
 // `emit-event.sh --await` blocks inside a single harness command call, which
 // has its own outer timeout (Claude Code caps a Bash call at ~10 minutes).
 // This has to stay comfortably under that or the harness kills the process
@@ -444,6 +450,12 @@ function renderEnv(c) {
   L.push('CONCERTINO_LINK_MODULES=' + envValue((c.worktree.linkModules || []).join(' ')));
   L.push('CONCERTINO_WORKTREE_HOOKS=' + envValue(c.worktree.hooks.join(';')));
   L.push('CONCERTINO_HARNESS=' + envValue(c.harnesses.length === 1 ? c.harnesses[0] : ''));
+  // The set of harnesses with an implemented adapter (lib/config.js's
+  // VALID_HARNESSES) — a sync-time snapshot bash scripts (setup-worktree.sh)
+  // validate a per-ticket HARNESS_OVERRIDE against, so the "implemented
+  // harnesses" list is never hand-duplicated in bash (CON-62 design.md
+  // Decision 4).
+  L.push('CONCERTINO_IMPLEMENTED_HARNESSES=' + envValue(VALID_HARNESSES.join(' ')));
   const dash = c.dashboard || {};
   const escalationTimeout = dash.escalationTimeoutMinutes != null
     ? dash.escalationTimeoutMinutes : DEFAULT_ESCALATION_TIMEOUT_MIN;
@@ -1599,6 +1611,21 @@ function cmdCompletion(args) {
   }
 }
 
+// CON-62 (design.md Decision 6 / tasks.md 4.3): live-fetches `ticketId` and
+// classifies its harness-override state into the shape
+// `collectConfigIssues` (lib/config.js) renders in the Integrations section.
+// The network fetch happens here (the untestable-without-mocking part); the
+// actual label-parsing/classification is `classifyHarnessOverride`
+// (lib/config.js), pure and unit-tested directly, no network required.
+async function buildTicketHarnessCheck(cfg, ticketId) {
+  const tp = cfg.ticketProvider || {};
+  if (tp.kind !== 'linear') {
+    return { ticketId, kind: 'unsupported-provider', providerKind: tp.kind || 'none' };
+  }
+  const ticket = await fetchOneTicket({ id: ticketId });
+  return Object.assign({ ticketId }, classifyHarnessOverride(ticket.labels));
+}
+
 // A thin wrapper around lib/config.js's collectConfigIssues (design.md
 // Decision 2 / tasks.md 1.4): the section-by-section checking logic itself
 // now lives there (shared with lib/ui/screens/settings.js's save-time
@@ -1609,7 +1636,11 @@ function cmdCompletion(args) {
 // code as pre-refactor. Every check that existed before this ticket prints
 // byte-identical output; the two new sections (Budgets/Dashboard,
 // collectConfigIssues' own header comment) are additive lines only.
-function cmdValidate(args) {
+//
+// `async` since CON-62's `--ticket <ID>` (tasks.md 4.1/4.3) live-fetches
+// over the network before collectConfigIssues runs — omitting `--ticket` is
+// a complete no-op (tasks.md 4.5): no fetch happens, byte-identical output.
+async function cmdValidate(args) {
   const out = path.resolve(args.out || '.');
   const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
   console.log('concertino validate → ' + cfgPath);
@@ -1630,7 +1661,16 @@ function cmdValidate(args) {
   try { cfg = JSON.parse(read(cfgPath)); ok('json', 'valid'); }
   catch (e) { fail('invalid JSON: ' + e.message); process.exit(1); }
 
-  const { errors, warnings } = collectConfigIssues(cfg, { out, emit: { section, ok, warn, fail } });
+  // `--ticket <ID>` (tasks.md 4.1/4.3): resolved BEFORE collectConfigIssues
+  // runs (that function stays sync/pure — design.md Decision 6), then handed
+  // in as `opts.ticketHarnessCheck` so it renders inside the same
+  // Integrations section as the static/runtime harness-telemetry lines.
+  let ticketHarnessCheck;
+  if (args.ticket) {
+    ticketHarnessCheck = await buildTicketHarnessCheck(cfg, args.ticket);
+  }
+
+  const { errors, warnings } = collectConfigIssues(cfg, { out, ticketHarnessCheck, emit: { section, ok, warn, fail } });
 
   // ── Summary ──────────────────────────────────────────────────────────────
   const verdict = errors.length ? red('✗ invalid') : green('✓ valid');
@@ -1650,11 +1690,14 @@ function cmdValidate(args) {
 // `resolvedCore` lets a caller that already resolved its own core (cmdInit)
 // pass it straight through instead of having cmdSync re-resolve independently
 // — see design.md Decision 6 / tasks.md 1.4.
-function cmdSync(args, resolvedCore) {
+async function cmdSync(args, resolvedCore) {
   const out = path.resolve(args.out || '.');
   const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
   // Run validate first (errors block sync; warnings are informational).
-  cmdValidate({ ...args, config: cfgPath, out });
+  // `await`ed since cmdValidate is itself async (CON-62's --ticket live
+  // fetch) — kept correct even though sync/update never pass --ticket
+  // themselves, rather than relying on that never happening.
+  await cmdValidate({ ...args, config: cfgPath, out });
   console.log('');
   const c = loadConfig(args, out);
   const core = resolvedCore || resolveCore(REPO, out, args.core);
@@ -1671,7 +1714,7 @@ function cmdSync(args, resolvedCore) {
   console.log(green('done.'));
 }
 
-function cmdUpdate(args) {
+async function cmdUpdate(args) {
   const pairs = args._.slice(1);
   if (!pairs.length) {
     console.error(red('error: ') + 'usage: concertino update <key=value> [key=value ...]');
@@ -1709,7 +1752,7 @@ function cmdUpdate(args) {
   }
   console.log('');
 
-  cmdSync(args);
+  await cmdSync(args);
 }
 
 function writeConfigFromExample(out, example, cfgPath) {
@@ -1769,7 +1812,7 @@ async function cmdInit(args) {
 
   // Auto-sync so agent files are ready immediately.
   console.log('\n' + gray('  ─── Generating agent files ' + '─'.repeat(16)));
-  cmdSync({ _: ['sync'], config: cfgPath, out }, core);
+  await cmdSync({ _: ['sync'], config: cfgPath, out }, core);
 
   console.log('\n  ' + bold('Ready.') + ' Edit ' + cyan('concertino.config.json') + ' to tune gates/models/devServers, then ' + cyan('concertino sync') + ' to re-render.');
   console.log('  Start a delivery: Claude Code → ' + cyan('/concertino-deliver <TICKET_ID>'));
@@ -1812,8 +1855,10 @@ function help() {
         ${dim('concertino update project.name=myapp budgets.executionCycles=5')}
         ${dim('concertino update agentMerge.enabled=true agentMerge.mergeMethod=squash')}
 
-  ${cyan('concertino validate')} ${dim('[--config=PATH] [--out=DIR]')}
+  ${cyan('concertino validate')} ${dim('[--config=PATH] [--out=DIR] [--ticket=ID]')}
       Check concertino.config.json for errors and warnings before syncing.
+      With --ticket=ID, also live-fetches that ticket (ticketProvider.kind
+      "linear" only) and validates any harness:<value> override it declares.
 
   ${cyan('concertino diff')} ${dim('[--config=PATH] [--out=DIR] [--harness=...] [--core=PATH]')}
       Show a unified diff between what sync would write and what's on disk.
@@ -1876,9 +1921,9 @@ if (args.version) { console.log('concertino v' + VERSION); process.exit(0); }
 (async () => {
   try {
     if (cmd === 'init')           await cmdInit(args);
-    else if (cmd === 'sync')      cmdSync(args);
-    else if (cmd === 'update')    cmdUpdate(args);
-    else if (cmd === 'validate')  cmdValidate(args);
+    else if (cmd === 'sync')      await cmdSync(args);
+    else if (cmd === 'update')    await cmdUpdate(args);
+    else if (cmd === 'validate')  await cmdValidate(args);
     else if (cmd === 'diff')      cmdDiff(args);
     else if (cmd === 'doctor')    cmdDoctor(args);
     else if (cmd === 'watch')     await cmdWatch(args);

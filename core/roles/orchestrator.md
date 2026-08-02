@@ -114,27 +114,46 @@ Never let telemetry block delivery: if a call fails, continue.
 1. **Fetch the ticket** (title + description + acceptance criteria) and set its
    status to *In Progress*.
    {{block:ticketProvider}}
+
+   **Check for a per-ticket harness override (CON-62).** Immediately after the
+   fetch, inspect the ticket's `labels` (Linear's `get_issue`/`mcp__linear__get_issue`
+   already returns these — no additional call) for labels matching `^harness:(.+)$`.
+   - **No match** → proceed unchanged; no override for this run.
+   - **Exactly one match, value in the implemented set** (see
+     `CONCERTINO_IMPLEMENTED_HARNESSES` in `.concertino.env` for the current
+     set — today `claude-code`, `codex`, `opencode`) → record the value as
+     `HARNESS_OVERRIDE` for step 3 below.
+   - **Exactly one match, value NOT implemented (e.g. `local-llm`), OR more
+     than one matching label (ambiguous)** → **hard stop here.** Do not derive
+     a branch name (step 2) or call `setup-worktree.sh` (step 3) — no
+     worktree is created. Surface the ticket id and the unsupported/ambiguous
+     value(s) to the human exactly like the `FAIL` → `BLOCKER` treatment in
+     step 3 below.
 2. **Derive a branch name:** `[feature|task|bug]/[3-5-word-description]/[ticket-id]`
    (`feature/` net-new behavior; `task/` tests/tooling/infra; `bug/` regressions).
 3. **Create the worktree** by calling the canonical script (do not hand-roll
    `git worktree` / env-copy / port math — the script is the source of truth),
-   passing `SPEED` (or `default` if unset) as the third argument — this is
+   passing `SPEED` (or `default` if unset) as the third argument and any
+   `HARNESS_OVERRIDE` recorded in step 1 as the optional fourth — this is
    also where the run's speed gets resolved, once, authoritatively:
 
    ```bash
-   scripts/concertino/setup-worktree.sh "$TICKET_ID" "<branch>" "${SPEED:-default}"
+   scripts/concertino/setup-worktree.sh "$TICKET_ID" "<branch>" "${SPEED:-default}" "${HARNESS_OVERRIDE:-}"
    ```
 
    Parse its `READY` lines for `worktree=`, `dev_port=`, `backend_port=` and store
    them as `WORKTREE_PATH`, `DEV_PORT`, `BACKEND_PORT`. **These are now the
    authoritative ports** — do not recompute them later. Also parse `speed=`,
    `budgets=` (a JSON object), `models=` (a JSON object, per role),
-   `second_final_gate_skeptic=`, and `evaluator_clean_worktree=` — these are
-   the run's one authoritative speed resolution (`setup-worktree.sh` already
-   called `resolve-speed.sh` internally; **do not call it again yourself**).
+   `second_final_gate_skeptic=`, `evaluator_clean_worktree=`, `harness=`, and
+   `harness_source=` — these are the run's one authoritative speed/harness
+   resolution (`setup-worktree.sh` already called `resolve-speed.sh`
+   internally; **do not call it again yourself**).
    If the script prints `FAIL` instead (including a failed speed resolution —
-   an unrecognized speed name, or a harness with no model-tier data), treat it
-   as a `BLOCKER`: surface to the human rather than guessing a resolution.
+   an unrecognized speed name, or a harness with no model-tier data — or an
+   unsupported `HARNESS_OVERRIDE`, re-validated here independently of step 1's
+   own check as defense in depth), treat it as a `BLOCKER`: surface to the
+   human rather than guessing a resolution.
 4. **Gate before advancing:** `scripts/concertino/assert-phase.sh setup "$WORKTREE_PATH"`.
    If it prints `FAIL`, do not proceed — re-run setup or escalate.
 5. **Resolve `AGENT_MERGE` once, for the whole run.** `AGENT_MERGE_OVERRIDE`

@@ -1,27 +1,4 @@
-# harness-identity Specification
-
-## Purpose
-Defines how `CONCERTINO_HARNESS` is computed at `concertino sync` time and
-resolved at run time, so telemetry records the harness that actually ran a
-workflow instead of the literal string `unknown`.
-## Requirements
-### Requirement: `concertino sync` renders a `CONCERTINO_HARNESS` static default
-`concertino sync` SHALL write a `CONCERTINO_HARNESS` key into
-`scripts/concertino/.concertino.env` alongside the other `CONCERTINO_*` values. When
-the project config's `harnesses` array has exactly one entry, the value SHALL be
-that harness. When `harnesses` has more than one entry, the value SHALL be empty —
-sync SHALL NOT write the full configured list or an arbitrary single pick as a
-stand-in for a value it cannot determine at render time.
-
-#### Scenario: Single harness configured
-- **WHEN** `concertino sync` runs for a project whose config has
-  `"harnesses": ["claude-code"]`
-- **THEN** the rendered `.concertino.env` contains `CONCERTINO_HARNESS='claude-code'`
-
-#### Scenario: Multiple harnesses configured
-- **WHEN** `concertino sync` runs for a project whose config has
-  `"harnesses": ["claude-code", "codex"]`
-- **THEN** the rendered `.concertino.env` contains `CONCERTINO_HARNESS=''`
+## MODIFIED Requirements
 
 ### Requirement: `setup-worktree.sh` resolves the running harness at runtime
 `setup-worktree.sh` SHALL determine the harness for the `run.start` telemetry
@@ -32,11 +9,9 @@ implemented-harness set (see the "Per-ticket harness override" requirement
 below); (1) if no override was passed, a runtime signal read directly from
 the process environment — `CLAUDECODE` set non-empty indicates `claude-code`;
 `CODEX_SANDBOX` or `CODEX_SANDBOX_NETWORK_DISABLED` set non-empty indicates
-`codex`; a best-effort OpenCode runtime signal set non-empty indicates
-`opencode`, checked after the `CLAUDECODE` and `CODEX_SANDBOX*` checks; (2) if
-neither an override nor a runtime signal is present, the static
-`CONCERTINO_HARNESS` value sourced from `.concertino.env`; (3) if none of the
-above resolves a value, the literal string `unknown`. When no
+`codex`; (2) if neither an override nor a runtime signal is present, the
+static `CONCERTINO_HARNESS` value sourced from `.concertino.env`; (3) if none
+of the above resolves a value, the literal string `unknown`. When no
 `HARNESS_OVERRIDE` is passed, the script SHALL NOT report a `HARNESS` value
 that contradicts a detected runtime signal — this constraint does not apply
 when a valid `HARNESS_OVERRIDE` is passed, which is honored for `HARNESS` even
@@ -44,22 +19,17 @@ if it contradicts a detected runtime signal (see the override requirement
 below for why). The script SHALL also print `READY harness=<value>` and
 `READY harness_source=ticket-override|runtime-detected|static-default|unknown`
 identifying which step of this order produced the resolved `HARNESS` value.
-The OpenCode signal is not a documented public contract (mirroring the
-existing two signals' same caveat) — its absence, or OpenCode never setting
-it in practice, SHALL NOT be treated as an error and SHALL simply fall
-through to step (2), exactly like a missing `CLAUDECODE`/`CODEX_SANDBOX*`
-would.
 
 The harness value the script passes to `resolve-speed.sh` for per-role
 model-tier resolution (hereafter `MODEL_TIER_HARNESS`) is a SEPARATE value
 that SHALL NEVER be influenced by `HARNESS_OVERRIDE`: it SHALL always resolve
-via steps (1)-(3) above only (runtime signal — including the OpenCode arm —
-then static default, then `unknown`) — the exact chain this script used
-before ticket overrides existed, now also covering OpenCode. This is
-intentional: model ids resolved via `MODEL_TIER_HARNESS` are fed directly
-into the live `Agent(...)` tool call actually spawning sub-agents in this
-process, so they SHALL always reflect the harness that is actually
-executing, never a ticket's stated (but not currently running) preference.
+via steps (1)-(3) above only (runtime signal, then static default, then
+`unknown`) — the exact chain this script used before ticket overrides
+existed. This is intentional: model ids resolved via `MODEL_TIER_HARNESS`
+are fed directly into the live `Agent(...)` tool call actually spawning
+sub-agents in this process, so they SHALL always reflect the harness that is
+actually executing, never a ticket's stated (but not currently running)
+preference.
 
 #### Scenario: Run started under Claude Code
 - **WHEN** `setup-worktree.sh` runs with no `HARNESS_OVERRIDE` argument, in a
@@ -74,13 +44,6 @@ executing, never a ticket's stated (but not currently running) preference.
 - **THEN** the `run.start` event records `harness=codex`, and the script
   prints `READY harness=codex` and `READY harness_source=runtime-detected`
 
-#### Scenario: Run started under OpenCode
-- **WHEN** `setup-worktree.sh` runs with no `HARNESS_OVERRIDE` argument, in a
-  process where the OpenCode runtime signal is set, and neither `CLAUDECODE`
-  nor `CODEX_SANDBOX*` is set
-- **THEN** the `run.start` event records `harness=opencode`, and the script
-  prints `READY harness=opencode` and `READY harness_source=runtime-detected`
-
 #### Scenario: Both runtime signals set simultaneously
 - **WHEN** `setup-worktree.sh` runs with no `HARNESS_OVERRIDE` argument, in a
   process where both `CLAUDECODE` and `CODEX_SANDBOX` are set
@@ -88,23 +51,17 @@ executing, never a ticket's stated (but not currently running) preference.
   is checked first and wins, since a Codex sandbox process would not
   independently set `CLAUDECODE`
 
-#### Scenario: Claude Code signal wins over an OpenCode signal
-- **WHEN** `setup-worktree.sh` runs with no `HARNESS_OVERRIDE` argument, in a
-  process where both `CLAUDECODE` and the OpenCode runtime signal are set
-- **THEN** the `run.start` event records `harness=claude-code` — `CLAUDECODE`
-  is checked first in the resolution order
-
 #### Scenario: No runtime signal, single-harness project
-- **WHEN** `setup-worktree.sh` runs with no `HARNESS_OVERRIDE` argument, none
-  of `CLAUDECODE`, `CODEX_SANDBOX*`, or the OpenCode runtime signal set, and
-  the project's `.concertino.env` has a non-empty static `CONCERTINO_HARNESS`
+- **WHEN** `setup-worktree.sh` runs with no `HARNESS_OVERRIDE` argument,
+  neither `CLAUDECODE` nor `CODEX_SANDBOX` set, and the project's
+  `.concertino.env` has a non-empty static `CONCERTINO_HARNESS`
 - **THEN** the `run.start` event records that static value, and the script
   prints `READY harness_source=static-default`
 
 #### Scenario: No runtime signal, no static default
-- **WHEN** `setup-worktree.sh` runs with no `HARNESS_OVERRIDE` argument, none
-  of `CLAUDECODE`, `CODEX_SANDBOX*`, or the OpenCode runtime signal set, and
-  `CONCERTINO_HARNESS` is unset or empty
+- **WHEN** `setup-worktree.sh` runs with no `HARNESS_OVERRIDE` argument,
+  neither `CLAUDECODE` nor `CODEX_SANDBOX` set, and `CONCERTINO_HARNESS` is
+  unset or empty
 - **THEN** the `run.start` event records `harness=unknown`, and the script
   prints `READY harness_source=unknown`
 
@@ -118,15 +75,6 @@ executing, never a ticket's stated (but not currently running) preference.
   the override wins over both the contradicting runtime signal and the
   static default for the `HARNESS` (identity/telemetry) value
 
-#### Scenario: Valid ticket-declared override of opencode outranks runtime detection for identity
-- **WHEN** `setup-worktree.sh` runs with `HARNESS_OVERRIDE=opencode` passed as
-  its 4th argument, in a process where `CLAUDECODE` is set (a contradicting
-  runtime signal)
-- **THEN** the `run.start` event records `harness=opencode`, and the script
-  prints `READY harness=opencode` and `READY harness_source=ticket-override` —
-  `opencode` is in the implemented-harness set (`CONCERTINO_IMPLEMENTED_HARNESSES`),
-  so the override is honored exactly like a `codex` or `claude-code` override
-
 #### Scenario: A contradicting override never changes per-role model-tier resolution
 - **WHEN** `setup-worktree.sh` runs with `HARNESS_OVERRIDE=codex` passed as
   its 4th argument, in a process where `CLAUDECODE` is set (a contradicting
@@ -136,14 +84,6 @@ executing, never a ticket's stated (but not currently running) preference.
   per-role model id in `READY models=` stays valid for the Claude Code
   `Agent(...)` calls this process actually makes, regardless of what the
   ticket's `HARNESS_OVERRIDE` declares
-
-#### Scenario: OpenCode signal absent or unrecognized does not error
-- **WHEN** `setup-worktree.sh` runs in a process where OpenCode is actually
-  running but the guessed runtime signal is not the one OpenCode actually
-  sets (or sets none at all)
-- **THEN** `setup-worktree.sh` does not fail or report an error — it falls
-  through to the static `CONCERTINO_HARNESS` value, or `unknown`, exactly as
-  it would for any other harness with no detected runtime signal
 
 ### Requirement: `concertino validate` surfaces harness-telemetry resolution
 `concertino validate` SHALL print an informational line in the "Integrations"
@@ -199,11 +139,13 @@ SHALL leave `concertino validate`'s behavior unchanged from today.
 - **THEN** validate reports a validation error naming ticket CON-1 and the
   unsupported value `local-llm`, and exits non-zero
 
+## ADDED Requirements
+
 ### Requirement: Ticket-declared harness override resolves and fails loudly, before worktree setup
 The orchestrator SHALL honor an optional per-ticket harness declaration: a
 ticket MAY carry a single Linear label matching `^harness:(.+)$` naming which
-implemented harness (`claude-code`, `codex`, or `opencode`) SHALL execute its
-delivery run. When the orchestrator fetches a ticket during Setup, it SHALL check for
+implemented harness (`claude-code` or `codex`) SHALL execute its delivery
+run. When the orchestrator fetches a ticket during Setup, it SHALL check for
 this label alongside the ticket's other fields. When present
 and its value is in the implemented-harness set, the orchestrator SHALL pass
 that value through to `setup-worktree.sh` as the `HARNESS_OVERRIDE` argument,
@@ -241,13 +183,6 @@ provides.
   run resolves to `codex` regardless of the project's `harnesses` config or
   any runtime env signal
 
-#### Scenario: Ticket declares opencode
-- **WHEN** the orchestrator fetches a ticket labeled `harness:opencode`
-- **THEN** it calls `setup-worktree.sh` with `HARNESS_OVERRIDE=opencode`, and
-  the run resolves to `opencode` regardless of the project's `harnesses`
-  config or any runtime env signal — `opencode` is in the implemented-harness
-  set exactly like `claude-code` and `codex`
-
 #### Scenario: Ticket declares an unsupported harness
 - **WHEN** the orchestrator fetches a ticket labeled `harness:local-llm`
 - **THEN** it stops immediately after the fetch, surfaces to the human that
@@ -266,4 +201,3 @@ provides.
   orchestrator) with `HARNESS_OVERRIDE=local-llm`
 - **THEN** it prints `FAIL` naming the unsupported harness and exits non-zero
   before creating or touching any worktree
-

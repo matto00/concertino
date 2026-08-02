@@ -22,6 +22,22 @@ identical behavior across all three.
 | Native local-model (Ollama) support | ⚠️ only via an Anthropic-compatible gateway (e.g. LiteLLM) — see `model-providers` below | ✅ `[model_providers.ollama]` in `.codex/config.toml` | ✅ `provider.ollama` (OpenAI-compatible) in `opencode.json` |
 | Plugin distribution | ✅ `.claude-plugin/plugin.json` + marketplace | n/a (config files) | n/a (config files) |
 
+## Implemented harnesses (the closed set a per-ticket override validates against)
+
+Only two harnesses have an actual adapter anywhere in this codebase today:
+**`claude-code`** and **`codex`** — the capability matrix above describes
+both. This is also the exact set a per-ticket `harness:<value>` override
+(see [`docs/config-reference.md`](config-reference.md#per-ticket-harness-override-harnessvalue-label))
+is validated against, both by the orchestrator (before any worktree is
+created) and by `setup-worktree.sh` itself as defense in depth. A value
+outside this set — `local-llm` (named as aspirational in early design docs,
+but with no adapter built) or anything else — has nothing to dispatch to and
+fails loudly rather than silently falling back to the project default or a
+runtime-detected harness. Adding a third adapter here means updating
+`lib/config.js`'s `VALID_HARNESSES` and building the adapter itself; the
+override plumbing (label parsing, `setup-worktree.sh`'s 4th arg, `concertino
+validate --ticket`) needs no further change.
+
 ## What this means for the workflow
 
 ### Claude Code (full fidelity)

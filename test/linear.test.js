@@ -657,3 +657,81 @@ test('createTicket defaults description to an empty string rather than sending u
   await linear.createTicket({ apiKey: 'k', teamKey: 'CON', title: 't', transport });
   assert.equal(transport.calls[1].variables.description, '');
 });
+
+// --- fetchOneTicket (CON-62) -------------------------------------------------
+// `concertino validate --ticket <ID>`'s single-issue fetch — reuses the same
+// postRaw/transport plumbing as everything else in this file (see the
+// createTicket/resolveTeam tests above for the error-propagation precedent).
+
+function onePage(issue) {
+  return { status: 200, body: JSON.stringify({ data: { issue } }) };
+}
+
+test('fetchOneTicket returns id/identifier/labels for a found ticket', async () => {
+  const transport = fakeTransport([
+    onePage({ id: 'uuid-1', identifier: 'CON-62', labels: { nodes: [{ name: 'harness:codex' }, { name: 'bug' }] } }),
+  ]);
+  const t = await linear.fetchOneTicket({ apiKey: 'k', id: 'CON-62', transport });
+  assert.deepEqual(t, { id: 'uuid-1', identifier: 'CON-62', labels: ['harness:codex', 'bug'] });
+  assert.equal(transport.calls[0].variables.id, 'CON-62');
+});
+
+test('fetchOneTicket normalises a ticket with no labels to an empty array', async () => {
+  const transport = fakeTransport([onePage({ id: 'uuid-1', identifier: 'CON-1', labels: { nodes: [] } })]);
+  const t = await linear.fetchOneTicket({ apiKey: 'k', id: 'CON-1', transport });
+  assert.deepEqual(t.labels, []);
+});
+
+test('fetchOneTicket rejects when the ticket is not found', async () => {
+  const transport = fakeTransport([onePage(null)]);
+  await assert.rejects(
+    () => linear.fetchOneTicket({ apiKey: 'k', id: 'CON-999', transport }),
+    /ticket "CON-999" was not found/,
+  );
+});
+
+test('fetchOneTicket requires an id before ever calling the transport', async () => {
+  let calls = 0;
+  const transport = () => { calls++; return Promise.resolve(onePage(null)); };
+  await assert.rejects(() => linear.fetchOneTicket({ apiKey: 'k', transport }), /id is required/);
+  assert.equal(calls, 0);
+});
+
+test('fetchOneTicket requires LINEAR_API_KEY (explicit or env) before ever calling the transport', async () => {
+  const prev = process.env.LINEAR_API_KEY;
+  delete process.env.LINEAR_API_KEY;
+  try {
+    let calls = 0;
+    const transport = () => { calls++; return Promise.resolve(onePage(null)); };
+    await assert.rejects(
+      () => linear.fetchOneTicket({ id: 'CON-1', transport }),
+      /LINEAR_API_KEY is not set/,
+    );
+    assert.equal(calls, 0);
+  } finally {
+    if (prev !== undefined) process.env.LINEAR_API_KEY = prev;
+  }
+});
+
+test('fetchOneTicket falls back to LINEAR_API_KEY from the environment', async () => {
+  const prev = process.env.LINEAR_API_KEY;
+  process.env.LINEAR_API_KEY = 'from-env';
+  try {
+    let seen = null;
+    const transport = (req) => { seen = req; return Promise.resolve(onePage({ id: 'u', identifier: 'CON-1', labels: { nodes: [] } })); };
+    await linear.fetchOneTicket({ id: 'CON-1', transport });
+    assert.equal(seen.headers.Authorization, 'from-env');
+  } finally {
+    if (prev === undefined) delete process.env.LINEAR_API_KEY;
+    else process.env.LINEAR_API_KEY = prev;
+  }
+});
+
+test('fetchOneTicket propagates a GraphQL error the same way fetchTickets does', async () => {
+  const transport = () =>
+    Promise.resolve({ status: 200, body: JSON.stringify({ errors: [{ message: 'Entity not found' }] }) });
+  await assert.rejects(
+    () => linear.fetchOneTicket({ apiKey: 'k', id: 'CON-1', transport }),
+    /Entity not found/,
+  );
+});
