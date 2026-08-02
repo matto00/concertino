@@ -2724,16 +2724,28 @@ test('grid mode: digit-jump numbers still match sectionJumpTargets\' numbering (
 
 test('grid mode: selecting a run inside DONE (rendered in column 1) still highlights the correct row', () => {
   const runs = [run({ ticket: 'HEL-1', status: 'running' }), run({ ticket: 'HEL-2', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
-  const outSelected1 = renderFleet(runs, { cols: 150, rows: 30, selected: 1, now: 100000 });
-  const outSelected0 = renderFleet(runs, { cols: 150, rows: 30, selected: 0, now: 100000 });
-  assert.notEqual(plain(outSelected1), plain(outSelected0), 'selecting a different row must change the render');
+  const outSelected1 = plain(renderFleet(runs, { cols: 150, rows: 30, selected: 1, now: 100000 }));
+  const outSelected0 = plain(renderFleet(runs, { cols: 150, rows: 30, selected: 0, now: 100000 }));
+  assert.notEqual(outSelected1, outSelected0, 'selecting a different row must change the render');
   // The ordinary run-selection marker is '▸' (see e.g. the QUICK START/
   // QUEUED-focus tests elsewhere in this file, which explicitly distinguish
   // their own '»' focus marker FROM '▸') — DONE is rendered via
   // renderFinishedRow, which uses '▸' like every other run row, not '»'
   // (QUEUED/QUICK START's unselectable-row focus marker; not applicable
   // here, there is no QUEUED/QUICK START section in this fixture).
-  assert.match(plain(outSelected1), /▸/, 'a selection marker must render somewhere');
+  // Tightened past task-8-report's original "some marker exists somewhere"
+  // check (flagged by review as weaker than the test name claims): assert
+  // the marker sits on the SPECIFIC selected row, on both renders, not
+  // merely that a '▸' appears somewhere in the whole frame.
+  const hel1Selected1 = outSelected1.split('\n').find((l) => l.includes('HEL-1'));
+  const hel2Selected1 = outSelected1.split('\n').find((l) => l.includes('HEL-2'));
+  assert.ok(hel2Selected1 && hel2Selected1.includes('▸'), 'HEL-2 (selected: 1, the DONE row) must carry the ▸ marker');
+  assert.ok(hel1Selected1 && !hel1Selected1.includes('▸'), 'HEL-1 must not carry the marker while HEL-2 is selected');
+
+  const hel1Selected0 = outSelected0.split('\n').find((l) => l.includes('HEL-1'));
+  const hel2Selected0 = outSelected0.split('\n').find((l) => l.includes('HEL-2'));
+  assert.ok(hel1Selected0 && hel1Selected0.includes('▸'), 'HEL-1 (selected: 0, the RUNNING row) must carry the ▸ marker');
+  assert.ok(hel2Selected0 && !hel2Selected0.includes('▸'), 'HEL-2 must not carry the marker while HEL-1 is selected');
 });
 
 test('grid mode: the total rendered frame never exceeds the requested row budget (no scroll-by-one from a mismatched columnAreaHeight)', () => {
@@ -2760,4 +2772,93 @@ test('grid mode: METRICS stays compact when the terminal is grid-eligible but ME
   const out = plain(renderFleet(runs, { cols: 115, rows: 30, selected: 0, now: 100000 }));
   assert.match(out, /throughput \(7d\)/);
   assert.doesNotMatch(out, /throughput \(30d\)/);
+});
+
+// --- Task 8 fix-loop regressions (task review findings) ------------------
+
+// Critical finding: renderFleetGrid's old `metricsWidth = Math.max(40, cols
+// - COLUMN_ONE_WIDTH - 1)` floor forced metricsWidth to 40 at cols === 110
+// (GRID_MIN_COLS itself, cols - 70 - 1 = 39 pre-floor) — the hsplit row then
+// composed to 70 + 1 + 40 = 111 columns against a 110-column budget, so the
+// function's own trailing `f.truncate(l, cols)` stripped METRICS' right
+// border and stamped a stray ellipsis on every line. No existing test used
+// exactly cols: 110 (GRID_MIN_COLS), so this went undetected. Asserts every
+// rendered line stays within budget at exactly that width, across several
+// fixture shapes (with/without banners, with QUICK START/QUEUED) so the
+// regression is pinned regardless of which sections are on screen.
+test('grid mode: every rendered line fits within cols at exactly cols === GRID_MIN_COLS (110) — metricsWidth must never overflow the composed row', () => {
+  const { GRID_MIN_COLS } = require('../lib/ui/screens/fleet');
+  assert.equal(GRID_MIN_COLS, 110, 'this test is pinned to the documented threshold value');
+  const fixtures = [
+    [run({ ticket: 'HEL-1', status: 'running' })],
+    [
+      run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+      run({ ticket: 'HEL-2', status: 'failed', endedAt: 100, elapsedMs: 1000 }),
+      run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+    ],
+  ];
+  for (const runs of fixtures) {
+    const out = renderFleet(runs, { cols: GRID_MIN_COLS, rows: 30, selected: 0, now: 100000 });
+    for (const line of out.split('\n')) {
+      assert.ok(f.visibleLength(line) <= GRID_MIN_COLS,
+        `line exceeds cols:${GRID_MIN_COLS} (visibleLength ${f.visibleLength(line)}): ${JSON.stringify(line)}`);
+    }
+    // The METRICS box's own right border must still be present, not
+    // truncated away — the concrete symptom the reviewer observed.
+    assert.doesNotMatch(plain(out), /…\s*$/m, 'no line should end in a stray truncation ellipsis at cols:110');
+  }
+});
+
+// Important finding: visibleWindowGrid passed `rows: 0` straight into
+// computeWindow whenever columnAreaHeight computed to exactly 0 (banners
+// consuming the whole page) — but computeWindow's OWN `rows: 0` contract
+// means "unbounded, don't trim" (a deliberate, documented behaviour other
+// callers rely on for a structural maxScrollOffset query), not "collapse to
+// nothing". So column 1 rendered at full natural height instead of
+// collapsing, and a terminal one row SHORTER (columnAreaHeight going from 1
+// to 0) could render a much LONGER frame than a taller one — non-monotonic,
+// the opposite of what a height budget exists to guarantee. Fixed in
+// visibleWindowGrid by forcing every column-1 section to shown:0 directly
+// when columnAreaHeight === 0, bypassing computeWindow for that case.
+test('grid mode: shrinking the terminal into columnAreaHeight === 0 must never grow the rendered frame past columnAreaHeight === 1\'s size', () => {
+  const needsYou = Array.from({ length: 2 }, (_, i) =>
+    run({ ticket: `NY-${i}`, status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }));
+  const failed = manyFinished(4, 'failed');
+  const running = Array.from({ length: 6 }, (_, i) => run({ ticket: `RUN-${i}`, status: 'running' }));
+  const done = manyFinished(8, 'done');
+  const runs = needsYou.concat(failed, running, done);
+
+  // rows:16 -> columnAreaHeight computes to 0; rows:17 -> columnAreaHeight
+  // computes to 1, for this exact fixture (head.length + tail.length +
+  // needsYouHeight(6) + failedHeight(6) = 15, pageBudget = rows - 1).
+  const winAt16 = visibleWindowGrid(runs, { rows: 16, selected: 0, scrollOffset: 0, cols: 150 });
+  const winAt17 = visibleWindowGrid(runs, { rows: 17, selected: 0, scrollOffset: 0, cols: 150 });
+  assert.equal(winAt16.columnAreaHeight, 0, 'fixture must actually reach columnAreaHeight: 0 at rows:16');
+  assert.equal(winAt17.columnAreaHeight, 1, 'fixture must actually reach columnAreaHeight: 1 at rows:17');
+
+  const outAt16 = renderFleet(runs, { cols: 150, rows: 16, selected: 0, now: 100000 });
+  const outAt17 = renderFleet(runs, { cols: 150, rows: 17, selected: 0, now: 100000 });
+  const lineCountAt16 = outAt16.split('\n').length;
+  const lineCountAt17 = outAt17.split('\n').length;
+  assert.ok(lineCountAt16 <= lineCountAt17,
+    `shrinking rows 17->16 (columnAreaHeight 1->0) must not grow the frame: got ${lineCountAt17} -> ${lineCountAt16} lines`);
+
+  // Column 1 must actually have collapsed at columnAreaHeight: 0 — every
+  // RUNNING/QUICK START/QUEUED/DONE section shows nothing (a "… and N
+  // more" line at most), not its full natural-height content.
+  const allSections = buildSections({ needsYou, active: running, failed, done }, null, {});
+  allSections.forEach((s, i) => {
+    if (s.kind === 'running' || s.kind === 'queued' || s.kind === 'done') {
+      assert.equal(winAt16.sections[i].shown, 0, `${s.kind} must be fully collapsed when columnAreaHeight is 0`);
+    }
+  });
+
+  // Regression coverage for Task 7's parked issue #1 (sentinel shift): with
+  // nothing visible in column 1, firstVisibleIndex/lastVisibleIndex must
+  // report the same "nothing to scroll toward" sentinel computeWindow
+  // itself falls back to (0 / runs.length - 1) — UNTRANSLATED by
+  // columnIndexBase — not a bogus mid-list index that corresponds to
+  // nothing actually on screen.
+  assert.equal(winAt16.firstVisibleIndex, 0);
+  assert.equal(winAt16.lastVisibleIndex, runs.length - 1);
 });
