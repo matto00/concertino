@@ -2853,3 +2853,304 @@ test('CON-21: cancelling while drafting kills the in-flight child process and re
     await h.teardown(donePromise);
   }
 });
+
+// ===========================================================================
+// fleet-metrics-grid final-fix 2: watch.js's own scroll-accounting call
+// sites — the scrollOffset re-clamp (every draw()) and scrollToShow() (every
+// 'move'/'jump') — call fleetScreen.gridModeEligible()/visibleWindowGrid()/
+// visibleWindow() with a hand-built `opts` object, separate from the one
+// currentState() hands to renderFleet. Both omitted `prompt`/`queueNotice`/
+// `restoreNotice`/`quitConfirm`/`forceStartConfirm`/`clearQueueConfirm` even
+// though every one of them is a live closure variable at both call sites —
+// all six lengthen buildHeadTail()'s tail, which columnAreaHeight (the
+// height gate gridModeEligible checks) is computed against. Omitting them
+// makes watch.js systematically OVER-estimate columnAreaHeight relative to
+// what renderFleet (which always receives the full opts) actually computes,
+// so watch.js could pick grid mode's own scroll/window accounting (which
+// excludes FAILED from the scrollable count entirely — it renders as a
+// banner) for a frame that actually renders single-column (where FAILED IS
+// part of the ordinary scrollable list) — desyncing scrollOffset/
+// maxScrollOffset from what is really on screen.
+//
+// Both tests below spy on the exact shared function (fleetScreen.
+// gridModeEligible) both call sites and renderFleet itself consult — not a
+// hand-rebuilt guess at watch.js's internals — so they observe precisely the
+// `opts` watch.js builds at runtime.
+// ===========================================================================
+
+test('the scrollOffset re-clamp forwards every tail-lengthening opt to gridModeEligible, keeping its grid-mode decision in sync with what renderFleet actually renders (final-fix 2 regression)', async () => {
+  const { EventEmitter } = require('node:events');
+  const fleetScreen = require('../lib/ui/screens/fleet');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-gridsync-'));
+
+  // The exact fixture fleet.test.js's own "gridModeEligible matches
+  // renderFleet's own grid-mode decision" test uses (needs-you/failed/
+  // running) — at cols:150/rows:18 this reaches columnAreaHeight: 7, the
+  // documented GRID_MIN_COLUMN_AREA_HEIGHT threshold (grid-eligible).
+  // Opening the `n` prompt costs buildHeadTail two extra tail lines ("new
+  // run › ▏" plus the "↵ start   esc cancel" hint), pushing columnAreaHeight
+  // down to 5 — single-column only. Confirmed against the real reducer/
+  // fleet.js pipeline (not just fleet.test.js's synthetic `run()` fixtures)
+  // before writing this test.
+  // Needs-you via a BLOCKER `verdict` event, not `escalation.raised`:
+  // reducer.js's deriveStatus() reaches 'needs-you' either way (an
+  // escalation, or a BLOCKER lastVerdict — see its own precedence chain),
+  // but only the escalation path also feeds watch.js's cross-screen banner
+  // (computeLiveEscalations filters on `r.escalation`) — that banner reserves
+  // its own extra row(s) on top of computeScreenRows(), which would silently
+  // change this fixture's columnAreaHeight arithmetic. BLOCKER keeps this
+  // fixture's needs-you/failed/running composition identical to fleet.test.js's
+  // own "gridModeEligible matches renderFleet's own grid-mode decision" test
+  // (same section shapes, same columnAreaHeight numbers) without that banner.
+  const needsYouDir = path.join(root, '.concertino', 'runs', 'HEL-1');
+  fs.mkdirSync(needsYouDir, { recursive: true });
+  fs.writeFileSync(path.join(needsYouDir, 'events.jsonl'),
+    JSON.stringify({ t: 500, kind: 'run.start' }) + '\n' +
+    JSON.stringify({ t: 600, kind: 'verdict', role: 'skeptic', verdict: 'BLOCKER' }) + '\n');
+
+  const failedDir = path.join(root, '.concertino', 'runs', 'HEL-2');
+  fs.mkdirSync(failedDir, { recursive: true });
+  fs.writeFileSync(path.join(failedDir, 'events.jsonl'),
+    JSON.stringify({ t: 700, kind: 'run.start' }) + '\n' +
+    JSON.stringify({ t: 800, kind: 'run.end' }) + '\n'); // no status -> defaults to 'failed'
+
+  const runningDir = path.join(root, '.concertino', 'runs', 'HEL-3');
+  fs.mkdirSync(runningDir, { recursive: true });
+  fs.writeFileSync(path.join(runningDir, 'events.jsonl'),
+    JSON.stringify({ t: 900, kind: 'run.start' }) + '\n');
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() {
+      return [
+        { ticket: 'HEL-3', alive: true, activity: null },
+      ];
+    },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realRowsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'rows');
+  const realColsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'columns');
+  const realWrite = process.stdout.write;
+  const parkedResizeListeners = process.stdout.listeners('resize').slice();
+  process.stdout.removeAllListeners('resize');
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(String(chunk)); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+  // computeScreenRows() reserves one extra row for the persistent top bar
+  // (on top of visibleWindowGrid's own "-1 for the trailing newline" budget
+  // row) — process.stdout.rows: 19 is what makes opts.rows (computeScreenRows()'s
+  // return value) actually land on 18, the exact boundary probed above.
+  Object.defineProperty(process.stdout, 'rows', { value: 19, configurable: true });
+  Object.defineProperty(process.stdout, 'columns', { value: 150, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  // Spy on the shared gridModeEligible — watch.js calls it as
+  // `fleetScreen.gridModeEligible(...)` (a live property lookup, never
+  // destructured), so patching the export here is observed by watch.js's own
+  // internal calls once it's (re-)required below.
+  const originalGridModeEligible = fleetScreen.gridModeEligible;
+  const calls = [];
+  fleetScreen.gridModeEligible = function (runs, opts) {
+    calls.push({ runs, opts });
+    return originalGridModeEligible(runs, opts);
+  };
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root, config: {} });
+
+    assert.ok(calls.length > 0, 'sanity: startup draw() must have called gridModeEligible at least once');
+    const startupCall = calls[calls.length - 1];
+    assert.equal(startupCall.opts.cols, 150);
+    assert.equal(startupCall.opts.rows, 18);
+
+    // Baseline sanity: before the prompt opens, this fixture is genuinely
+    // grid-eligible, and renderFleet actually renders it that way (RUNNING
+    // and METRICS sharing a line).
+    assert.equal(fleetScreen.gridModeEligible(startupCall.runs, startupCall.opts), true,
+      'fixture sanity: cols:150/rows:18 with no tail growth must be grid-eligible');
+    const beforeLines = screenOf(written).split('\n');
+    assert.equal(
+      beforeLines.findIndex((l) => l.includes('RUNNING')),
+      beforeLines.findIndex((l) => l.includes('METRICS')),
+      'fixture sanity: the initial frame must actually render RUNNING/METRICS side by side (grid mode)');
+
+    // What watch.js's PRE-FIX re-clamp block built: the same cols/rows/
+    // selected/scrollOffset/queueState it always had, but none of the six
+    // tail-lengthening fields — even after the prompt opens.
+    const preFixOpts = {
+      cols: 150, rows: 18, selected: 0, scrollOffset: 0, queueState: startupCall.opts.queueState,
+    };
+
+    // Open the `n` prompt — applyAction sets `prompt` and returns true, so
+    // watch.js's own draw() (and this re-clamp block) run again synchronously
+    // with `prompt` now truthy.
+    calls.length = 0;
+    fakeStdin.emit('data', 'n');
+    assert.ok(calls.length > 0, 'sanity: opening the prompt must have redrawn (the re-clamp runs on every draw())');
+    const afterCall = calls[calls.length - 1];
+
+    // The fix: the re-clamp's own opts must now carry `prompt`.
+    assert.ok(afterCall.opts.prompt, 'the scrollOffset re-clamp must forward `prompt` once it is open');
+
+    // The actual render agrees: single-column now (RUNNING and METRICS on
+    // DIFFERENT lines).
+    const afterLines = screenOf(written).split('\n');
+    assert.notEqual(
+      afterLines.findIndex((l) => l.includes('RUNNING')),
+      afterLines.findIndex((l) => l.includes('METRICS')),
+      'opening the prompt must have dropped columnAreaHeight below the grid-mode threshold — renderFleet must now be single-column');
+
+    // The fixed call site's own opts agree with the real render.
+    assert.equal(fleetScreen.gridModeEligible(afterCall.runs, afterCall.opts), false,
+      'the re-clamp\'s own (fixed) opts must now agree with renderFleet: single-column');
+
+    // This is the regression itself: the PRE-FIX opts shape, evaluated
+    // against the exact same runs/state, disagrees — it would still have
+    // reported grid-eligible, even though the real frame just rendered
+    // single-column. That mismatch (watch.js: grid; renderFleet: single-
+    // column) is what let scrollOffset desync from what was really on
+    // screen.
+    assert.equal(fleetScreen.gridModeEligible(afterCall.runs, preFixOpts), true,
+      'regression check: the pre-fix opts shape (missing all six tail fields) would have disagreed with the real, single-column render');
+  } finally {
+    fleetScreen.gridModeEligible = originalGridModeEligible;
+    // fakeStdin 'end' (routed to quit(), which clearInterval()s watch.js's
+    // own poll timer) must run even when an assertion above threw — skipping
+    // it on a failure would leak that interval, which keeps firing draw()
+    // against whatever process.stdout.write happens to be by the time this
+    // finally block finishes restoring it, hanging the whole test run.
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    if (realRowsDescriptor) Object.defineProperty(process.stdout, 'rows', realRowsDescriptor);
+    else delete process.stdout.rows;
+    if (realColsDescriptor) Object.defineProperty(process.stdout, 'columns', realColsDescriptor);
+    else delete process.stdout.columns;
+    process.stdout.removeAllListeners('resize');
+    for (const l of parkedResizeListeners) process.stdout.on('resize', l);
+    delete require.cache[watchPath];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// scrollToShow()'s own winOpts (site 2) already carried prompt/queueNotice/
+// restoreNotice/quitConfirm before this fix — only forceStartConfirm/
+// clearQueueConfirm were missing there. Both of those gate EVERY keypress
+// while active (fleet.js's handleKey: any key but 'y' cancels them), which
+// also blocks the 'move'/'jump' actions that are scrollToShow's only two
+// callers — so there is no reachable keypress sequence where either field is
+// truthy AT THE SAME TIME a 'move'/'jump' actually reaches scrollToShow.
+// A truthy-value divergence (mirroring the test above) is therefore not
+// reachable here; this instead asserts the fix directly, the same way the
+// header comment above recommends when a more direct check is available:
+// the winOpts object scrollToShow builds must carry all six fields as OWN
+// properties (present, whatever their value) — exactly what the fix added.
+test('scrollToShow forwards every tail-lengthening opt (including forceStartConfirm/clearQueueConfirm) to gridModeEligible (final-fix 2 regression)', async () => {
+  const { EventEmitter } = require('node:events');
+  const fleetScreen = require('../lib/ui/screens/fleet');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-scrollshow-'));
+  for (let i = 0; i < 3; i++) {
+    const runDir = path.join(root, '.concertino', 'runs', 'HEL-' + (400 + i));
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+      JSON.stringify({ t: 1000 - i * 10, kind: 'run.start' }) + '\n');
+  }
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() {
+      return [400, 401, 402].map((n) => ({ ticket: 'HEL-' + n, alive: true, activity: null }));
+    },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(String(chunk)); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  const originalGridModeEligible = fleetScreen.gridModeEligible;
+  const calls = [];
+  fleetScreen.gridModeEligible = function (runs, opts) {
+    calls.push(opts);
+    return originalGridModeEligible(runs, opts);
+  };
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root, config: {} });
+
+    // 'j' -> a 'move' action -> scrollToShow(selected), synchronously calling
+    // gridModeEligible BEFORE this keypress's own draw() (and its re-clamp
+    // block, tested above) run — so the FIRST call recorded after 'j' is
+    // scrollToShow's own winOpts, not the re-clamp's.
+    calls.length = 0;
+    fakeStdin.emit('data', 'j');
+    assert.ok(calls.length > 0, 'sanity: j must have triggered scrollToShow');
+    const winOpts = calls[0];
+
+    for (const field of ['prompt', 'queueNotice', 'restoreNotice', 'quitConfirm', 'forceStartConfirm', 'clearQueueConfirm']) {
+      assert.ok(Object.prototype.hasOwnProperty.call(winOpts, field),
+        `scrollToShow's winOpts is missing "${field}" — a tail-lengthening opt buildHeadTail() reads, ` +
+        'omitting it lets columnAreaHeight (and so the grid-mode decision) drift from what renderFleet computes');
+    }
+  } finally {
+    fleetScreen.gridModeEligible = originalGridModeEligible;
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
