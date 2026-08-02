@@ -537,8 +537,21 @@ Run directly (no subagent).
 4. **Create the PR** (`gh pr create` targeting the base branch): title
    `{{var:_ticketPrefixExample}} <brief description>`; body links the ticket and
    summarizes behavioral changes, test plan, risks/follow-ups.
-5. **Post the PR link back to the ticket.**
-6. **Branch on `AGENT_MERGE`** (resolved once at Setup — see above):
+5. **Emit a `pr` telemetry event** for the run's PR, now that `PR_URL` is known
+   and durable (CON-55 — this is the one place in the whole workflow the URL
+   becomes a fact; nothing needs to be inferred or fetched later):
+
+   ```bash
+   scripts/concertino/emit-event.sh pr \
+     ticket=$TICKET_ID role=orchestrator url="$PR_URL" label="<short label>"
+   ```
+
+   This is a distinct event kind from `evidence` — it carries a `url`, not a
+   local-file `ref`, and there is no corresponding `persist-evidence.sh` call
+   (the URL itself is the durable reference; there is no local file to
+   persist).
+6. **Post the PR link back to the ticket.**
+7. **Branch on `AGENT_MERGE`** (resolved once at Setup — see above):
 
    - **`AGENT_MERGE = false`** (today's behavior, unchanged): read the final
      evaluation report now (the only time a PASS report is read). For each

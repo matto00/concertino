@@ -144,6 +144,28 @@ test('pressing the reply key on a stale escalation does nothing', () => {
   assert.equal(action, null);
 });
 
+// --- CON-53: the question wraps instead of being hard-truncated ----------
+
+test('a long question wraps across multiple lines instead of being hard-truncated with an ellipsis', () => {
+  const longQuestion = 'word '.repeat(60).trim(); // well over 74 visible columns (OPTS.cols - 4)
+  const out = plain(renderEscalation(run({
+    escalation: Object.assign({}, run({}).escalation, { question: longQuestion }),
+  }), OPTS));
+  const questionLines = out.split('\n').filter((l) => l.includes('word'));
+  assert.ok(questionLines.length > 1, 'a 60-word question at 74 columns must wrap onto more than one row');
+  for (const line of questionLines) assert.doesNotMatch(line, /…/);
+  // Every one of the 60 words survives the wrap, none dropped or cut off.
+  const wordCount = questionLines.join(' ').split(/\s+/).filter((w) => w === 'word').length;
+  assert.equal(wordCount, 60);
+});
+
+test('a short question (fits on one line) renders identically to before this change', () => {
+  const out = plain(renderEscalation(run({}), OPTS));
+  assert.match(out, /add zod@3\.23 as a runtime dependency\?/);
+  const questionLines = out.split('\n').filter((l) => l.includes('add zod@3.23 as a runtime dependency?'));
+  assert.equal(questionLines.length, 1, 'a short question must render on exactly one line, unchanged');
+});
+
 // --- context: renders above the options, degrades honestly (CON-11) -----
 
 test('an escalation with context renders it above the options', () => {

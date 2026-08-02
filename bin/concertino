@@ -19,31 +19,18 @@ const { execSync } = require('child_process');
 
 const REPO = path.resolve(__dirname, '..');
 const ADAPTERS = path.join(REPO, 'adapters');
-const CODEX_MODEL_FALLBACK = 'codex-mini-latest'; // used only if config has no models.codex.<role> or modelTiers.codex.standard
-// Default modelTiers.<harness> — the concrete model each named tier resolves
-// to when a project doesn't set its own (see design.md Decision 1 /
-// tasks.md 1.2). Claude Code's three aliases are the harness's own official
-// vocabulary (opus/sonnet/haiku), so cheap/standard/capable map onto them in
-// the obvious order. Codex has no equivalent agreed three-tier vocabulary —
-// as of this change there is one broadly-available model id
-// (`codex-mini-latest`) plus the flagship `gpt-5.1-codex`; `cheap`/`standard`
-// both point at the mini model (the only inexpensive option) and `capable`
-// at the flagship, so a `fast`/`default` run and a `slow` run still resolve
-// to two visibly different Codex models even though the tier vocabulary
-// itself is coarser than Claude Code's.
-const DEFAULT_MODEL_TIERS = {
-  'claude-code': { cheap: 'haiku', standard: 'sonnet', capable: 'opus' },
-  codex: { cheap: 'codex-mini-latest', standard: 'codex-mini-latest', capable: 'gpt-5.1-codex' },
-};
-// The implicit `default` speed synthesized when a project's config has no
-// `speeds` block at all — an empty budgets override (falls through entirely
-// to the top-level `budgets`) and every role at `standard`, i.e. byte-for-
-// byte the same resolution every run had before this feature shipped.
-const IMPLICIT_DEFAULT_SPEED = {
-  budgets: {},
-  roleTiers: { orchestrator: 'standard', executor: 'standard', evaluator: 'standard', skeptic: 'standard', auditor: 'standard' },
-};
-const ROLES = ['orchestrator', 'executor', 'evaluator', 'skeptic', 'auditor'];
+// Config-domain logic (defaults, validation, schema flattening) shared with
+// the in-TUI settings screen (CON-57) — extracted into lib/config.js since
+// this file itself runs its own CLI dispatch the instant it is loaded (see
+// the bottom of this file) and so is never a safe `require()` target.
+// DEFAULT_MODEL_TIERS is still referenced directly below (buildConfig); the
+// rest of this trio (withModelDefaults/withDefaults/resolveModel) and
+// deepSet/coerce/loadConfig/collectConfigIssues are destructured further
+// down, right where cmdValidate needs them.
+const {
+  DEFAULT_MODEL_TIERS, withModelDefaults, withDefaults, resolveModel,
+  deepSet, coerce, loadConfig, collectConfigIssues,
+} = require(path.join(REPO, 'lib', 'config'));
 // `emit-event.sh --await` blocks inside a single harness command call, which
 // has its own outer timeout (Claude Code caps a Bash call at ~10 minutes).
 // This has to stay comfortably under that or the harness kills the process
@@ -291,110 +278,6 @@ function detectGates(dir) {
       { name: 'build', when: 'always', command: 'echo "TODO: configure build gate"' },
     ],
   };
-}
-
-// ---------- config defaults ----------------------------------------------
-// Defaults just the models/modelTiers/speeds trio — split out of
-// withDefaults() below so `cmdValidate` can apply the identical defaulting
-// to a Models-section preview without running the rest of withDefaults()
-// (which assumes `c.project`/`c.ticketProvider`/etc. are already present —
-// exactly the fields validate's own earlier sections are still in the
-// middle of checking, possibly reporting as missing). Mutates `c` in place
-// and returns it, same contract as withDefaults() itself.
-function withModelDefaults(c) {
-  // `models` is sparse by design (Decision 1) — presence of a role here means
-  // "explicit override, ignore the active speed's tier". Never invent a
-  // per-role entry here the way the old flat shape did; only ensure the two
-  // harness keys exist as (possibly empty) objects so every downstream
-  // reader can do `c.models['claude-code'][role]` without a null-check.
-  c.models = c.models || {};
-  c.models['claude-code'] = c.models['claude-code'] || {};
-  c.models.codex = c.models.codex || {};
-  // `modelTiers`, unlike `models`, IS fully defaulted — every project gets a
-  // sensible cheap/standard/capable resolution even if it never configures
-  // one, since a speed's roleTiers has nothing to resolve against otherwise.
-  // A project overriding only some tiers keeps its own for the rest (merge,
-  // not replace).
-  c.modelTiers = c.modelTiers || {};
-  for (const h of ['claude-code', 'codex']) {
-    c.modelTiers[h] = Object.assign({}, DEFAULT_MODEL_TIERS[h], c.modelTiers[h] || {});
-  }
-  // `speeds` similarly always resolves — a project with none at all gets
-  // exactly the implicit `default` speed (Migration Plan step 1), so
-  // `resolve-speed.sh 'default'` (or any call omitting a speed argument)
-  // behaves identically on a project that has never heard of this feature.
-  c.speeds = c.speeds || {};
-  if (!c.speeds.default) c.speeds.default = JSON.parse(JSON.stringify(IMPLICIT_DEFAULT_SPEED));
-  return c;
-}
-
-function withDefaults(c) {
-  c.harnesses = c.harnesses || ['claude-code', 'codex'];
-  c.project.baseBranch = c.project.baseBranch || 'main';
-  c.project.baseRemote = c.project.baseRemote || 'origin';
-  c.ticketProvider.idExample = c.ticketProvider.idExample || 'TICKET-123';
-  const sp = c.specProvider || (c.specProvider = { kind: 'none' });
-  if (!sp.changeDir) sp.changeDir = sp.kind === 'openspec'
-    ? 'openspec/changes/<CHANGE_NAME>' : 'spec/changes/<CHANGE_NAME>';
-  c.worktree.base = c.worktree.base || '.concertino/worktrees';
-  c.worktree.envFiles = c.worktree.envFiles || [];
-  c.worktree.linkModules = c.worktree.linkModules || [];
-  c.worktree.hooks = c.worktree.hooks || [];
-  c.canonicalDocs = c.canonicalDocs || [];
-  c.ui = c.ui || { enabled: false, tool: 'none' };
-  c.budgets = Object.assign(
-    { executionCycles: 3, skepticDesignRounds: 3, skepticFinalRounds: 2, debugAttempts: 2 },
-    c.budgets || {}
-  );
-  withModelDefaults(c);
-  c.agentMerge = Object.assign(
-    { enabled: false, mergeMethod: 'squash' },
-    c.agentMerge || {}
-  );
-  c.commitTrailer = c.commitTrailer || '';
-  return c;
-}
-
-// ---------- per-harness model resolution ----------------------------------
-// The one place every reader of `c.models`/`c.modelTiers` goes through
-// (design.md Decision 1 / tasks.md 1.5) — `emitClaude`, `emitCodex`,
-// `cmdEject`, `cmdDiff`, and `cmdValidate`'s Models section all call this
-// instead of independently re-implementing the flat lookup the old shape
-// used, which is exactly how cmdEject/cmdDiff silently drifted from the sync
-// emitters in the first place. Always resolves at the **default** speed —
-// sync-time rendering (frontmatter `model:`, Codex `.toml`) is a static
-// baseline; the per-run, per-speed resolution happens at run time via
-// resolve-speed.sh, never here. `c` must already be `withDefaults()`-shaped
-// (models/modelTiers/speeds all present) for every call site except
-// `cmdValidate`, which passes a project's raw config to deliberately
-// surface an old/missing shape rather than paper over it — see its own
-// call site for how it copes with an unshaped `c`.
-function resolveModel(c, harness, role) {
-  const explicit = c.models && c.models[harness] && c.models[harness][role];
-  if (explicit) return explicit;
-  const defaultSpeed = (c.speeds && c.speeds.default) || IMPLICIT_DEFAULT_SPEED;
-  const tier = (defaultSpeed.roleTiers && defaultSpeed.roleTiers[role]) || 'standard';
-  const tiers = c.modelTiers && c.modelTiers[harness];
-  if (tiers && tiers[tier]) return tiers[tier];
-  return harness === 'codex' ? CODEX_MODEL_FALLBACK : 'sonnet';
-}
-
-// ---------- deep-set + coerce (for `update` command) ---------------------
-function deepSet(obj, dotKey, value) {
-  const parts = dotKey.split('.');
-  let cur = obj;
-  for (let i = 0; i < parts.length - 1; i++) {
-    if (cur[parts[i]] == null || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
-    cur = cur[parts[i]];
-  }
-  cur[parts[parts.length - 1]] = value;
-}
-
-function coerce(v) {
-  if (v === 'true') return true;
-  if (v === 'false') return false;
-  if (/^\d+$/.test(v)) return parseInt(v, 10);
-  return v;
 }
 
 // ---------- template rendering -------------------------------------------
@@ -1397,17 +1280,28 @@ function cmdCompletion(args) {
   }
 }
 
+// A thin wrapper around lib/config.js's collectConfigIssues (design.md
+// Decision 2 / tasks.md 1.4): the section-by-section checking logic itself
+// now lives there (shared with lib/ui/screens/settings.js's save-time
+// validation), and this function's own job is just the CLI's I/O — reading
+// the file (or exiting on a missing/unparseable one, same as before), then
+// printing the returned errors/warnings through the SAME ok/warn/fail
+// console helpers, in the same order, with the same summary line and exit
+// code as pre-refactor. Every check that existed before this ticket prints
+// byte-identical output; the two new sections (Budgets/Dashboard,
+// collectConfigIssues' own header comment) are additive lines only.
 function cmdValidate(args) {
   const out = path.resolve(args.out || '.');
   const cfgPath = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
   console.log('concertino validate → ' + cfgPath);
 
-  const errs = [], warns = [];
   const ok   = (label, val) => console.log(`  ${green('✓')} ${gray(String(label).padEnd(18))} ${val ?? ''}`);
-  const warn = (msg)        => { warns.push(msg); console.log(`  ${yellow('!')} ${msg}`); };
-  const fail = (msg)        => { errs.push(msg);  console.log(`  ${red('✗')} ${msg}`); };
+  const warn = (msg)        => console.log(`  ${yellow('!')} ${msg}`);
+  const fail = (msg)        => console.log(`  ${red('✗')} ${msg}`);
 
   // ── Structure ────────────────────────────────────────────────────────────
+  // Existence/JSON-parse are the CLI's own pre-checks — collectConfigIssues
+  // takes an already-parsed `cfg`, so these two necessarily stay here.
   section('Structure');
   if (!exists(cfgPath)) {
     console.error(red('error: ') + 'no config at ' + cfgPath + ' — run `concertino init` first.');
@@ -1417,195 +1311,22 @@ function cmdValidate(args) {
   try { cfg = JSON.parse(read(cfgPath)); ok('json', 'valid'); }
   catch (e) { fail('invalid JSON: ' + e.message); process.exit(1); }
 
-  const REQUIRED = ['project', 'ticketProvider', 'specProvider', 'worktree', 'gates'];
-  const missing = REQUIRED.filter((k) => cfg[k] == null);
-  missing.length
-    ? missing.forEach((k) => fail(`missing required field: ${cyan(k)}`))
-    : ok('required fields', REQUIRED.join(', '));
-
-  // ── Project ──────────────────────────────────────────────────────────────
-  section('Project');
-  const p = cfg.project || {};
-  p.name ? ok('name', p.name) : fail('project.name is required');
-  ok('baseBranch', p.baseBranch || dim('(defaults to main)'));
-  ok('baseRemote', p.baseRemote || dim('(defaults to origin)'));
-
-  // ── Integrations ─────────────────────────────────────────────────────────
-  section('Integrations');
-  const VALID_HARNESSES = ['claude-code', 'codex'];
-  const harnesses = Array.isArray(cfg.harnesses) ? cfg.harnesses : [];
-  const badHarnesses = harnesses.filter((h) => !VALID_HARNESSES.includes(h));
-  if (!harnesses.length) fail('harnesses must not be empty');
-  else if (badHarnesses.length) fail(`unknown harnesses: ${badHarnesses.join(', ')} (valid: ${VALID_HARNESSES.join(', ')})`);
-  else ok('harnesses', harnesses.join(', '));
-
-  // Informational only — an empty static default for a multi-harness project is
-  // a correct, expected state (Decision 1), never a misconfiguration.
-  if (harnesses.length === 1) {
-    ok('harness telemetry', `static: ${harnesses[0]}`);
-  } else if (harnesses.length > 1) {
-    ok('harness telemetry', `runtime-detected (${harnesses.length} harnesses configured)`);
-  }
-
-  const tp = cfg.ticketProvider || {};
-  ['linear', 'github', 'manual'].includes(tp.kind)
-    ? ok('ticketProvider', tp.kind + (tp.idExample ? dim('  e.g. ' + tp.idExample) : ''))
-    : fail(`ticketProvider.kind must be linear|github|manual (got: ${JSON.stringify(tp.kind)})`);
-  // CON-20: the launch pad's derived-fallback team key (teamKeyFromConfig's
-  // last resort — guessed from ticketProvider.idExample, a value documented
-  // as a sample id, not a real team key) is exactly how the shipped `ABC`
-  // placeholder produced a silently-empty launch pad. Catching the absence
-  // here, at config-check time, is one step earlier than the launch pad's
-  // own zero-ticket-vs-team-not-found distinction — before the feature is
-  // ever opened at all.
-  if (cfg.dashboard && cfg.dashboard.launchPad && cfg.dashboard.launchPad.enabled === true && !tp.teamKey) {
-    warn('ticketProvider.teamKey not set — dashboard.launchPad.enabled is true, so the launch pad will fall back ' +
-      'to a guess derived from ticketProvider.idExample, which is a sample id, not a real team key');
-  }
-
-  const sp = cfg.specProvider || {};
-  if (!['openspec', 'none'].includes(sp.kind)) {
-    fail(`specProvider.kind must be openspec|none (got: ${JSON.stringify(sp.kind)})`);
-  } else {
-    ok('specProvider', sp.kind);
-    if (sp.kind === 'openspec') {
-      for (const k of ['scaffoldCmd', 'applyCmd', 'validateCmd', 'archiveCmd']) {
-        if (!sp[k]) warn(`specProvider.${k} not set — agents will fall back to prose instructions`);
-      }
-    }
-  }
-
-  // ── Worktree ─────────────────────────────────────────────────────────────
-  section('Worktree');
-  const wt = cfg.worktree || {};
-  const ports = wt.ports || {};
-  (Number.isInteger(ports.frontendBase) && Number.isInteger(ports.backendBase))
-    ? ok('ports', `frontend ${ports.frontendBase}+N  ·  backend ${ports.backendBase}+N`)
-    : fail('worktree.ports.frontendBase and backendBase must be integers');
-  if (wt.envFiles && wt.envFiles.length) {
-    const notFound = wt.envFiles.filter((f) => !exists(path.join(out, f)));
-    notFound.length
-      ? warn(`envFiles not found: ${notFound.join(', ')} — worktree setup will warn at runtime`)
-      : ok('envFiles', wt.envFiles.join(', '));
-  }
-
-  // ── Gates ────────────────────────────────────────────────────────────────
-  section('Gates');
-  const gates = cfg.gates || [];
-  if (!gates.length) {
-    fail('no gates configured — executor will skip all verification');
-  } else {
-    ok('count', `${gates.length} gate${gates.length !== 1 ? 's' : ''}: ` + gates.map((g) => g.name).join(', '));
-    for (const g of gates) {
-      if (!g.name || !g.when || !g.command) fail(`gate missing name/when/command: ${JSON.stringify(g)}`);
-      else if (/^echo "TODO/.test(g.command)) warn(`gate ${cyan(g.name)}: placeholder — update gates in concertino.config.json`);
-    }
-  }
-
-  // ── Models ───────────────────────────────────────────────────────────────
-  section('Models');
-  // The old flat shape (models.orchestrator = "sonnet", models.codex =
-  // "codex-mini-latest", etc. — a bare STRING directly under `models`) is
-  // detected specifically here, before any per-harness resolution is
-  // attempted, so a project upgrading past this version hits one clear
-  // migration message rather than a wall of generic schema-validation
-  // failures or (worse, on a correctly-migrated project) a false
-  // "unrecognized alias undefined" for every role — see design.md Decision 1.
-  const rawModels = cfg.models;
-  const oldFlatKeys = (rawModels && typeof rawModels === 'object')
-    ? Object.keys(rawModels).filter((k) => typeof rawModels[k] === 'string')
-    : [];
-  if (oldFlatKeys.length) {
-    fail(
-      `models is the pre-delivery-speed-presets flat shape (bare string value(s) for: ${oldFlatKeys.join(', ')}). ` +
-      `models is now per-harness, per-role: models.orchestrator="sonnet" -> models["claude-code"].orchestrator="sonnet"; ` +
-      `models.codex="codex-mini-latest" -> models.codex.<role>="codex-mini-latest" per role, or omit entirely to use ` +
-      `modelTiers.codex.standard. See CHANGELOG for the full migration.`
-    );
-  } else {
-    // A shallow copy defaulted through the identical models/modelTiers/speeds
-    // logic `concertino sync` itself uses (withModelDefaults — shared, not
-    // re-implemented here), so this preview can never drift from what sync
-    // actually renders. Only this trio is defaulted — cfg.project etc. are
-    // deliberately left as-is, since this section must not crash (or paper
-    // over) a config the earlier sections are still in the middle of
-    // reporting as incomplete.
-    const c2 = withModelDefaults(JSON.parse(JSON.stringify(cfg)));
-    const ALIASES = ['opus', 'sonnet', 'haiku'];
-    for (const role of ['orchestrator', 'executor', 'evaluator', 'skeptic', 'auditor']) {
-      const m = resolveModel(c2, 'claude-code', role);
-      (ALIASES.includes(m) || /^claude-/.test(m))
-        ? ok('claude-code.' + role, m)
-        : warn(`models["claude-code"].${role}: unrecognized alias "${m}" — check Claude Code docs for valid model aliases`);
-    }
-    if ((cfg.harnesses || []).includes('codex')) {
-      for (const role of ['executor', 'evaluator', 'auditor']) {
-        ok('codex.' + role, resolveModel(c2, 'codex', role));
-      }
-    }
-  }
-
-  // ── UI & dev servers ─────────────────────────────────────────────────────
-  section('UI & dev servers');
-  const ui = cfg.ui || {};
-  if (ui.enabled) {
-    ['playwright', 'none'].includes(ui.tool)
-      ? ok('ui.tool', ui.tool)
-      : fail(`ui.tool must be playwright|none (got: ${JSON.stringify(ui.tool)})`);
-    (ui.triggers && ui.triggers.length)
-      ? ok('ui.triggers', ui.triggers.join(', '))
-      : warn('ui.triggers is empty — UI review will never activate');
-    const hasDev = cfg.devServers && (cfg.devServers.backend || cfg.devServers.frontend);
-    if (!hasDev) warn('ui.enabled is true but no devServers configured — start-servers.sh will be a no-op');
-  } else {
-    ok('ui', dim('disabled') + '  (Phase 3 N/A for all tickets)');
-  }
-  const ds = cfg.devServers || {};
-  for (const side of ['backend', 'frontend']) {
-    const s = ds[side];
-    if (s) {
-      if (!s.start)  fail(`devServers.${side}.start is required`);
-      if (!s.health) fail(`devServers.${side}.health is required`);
-      if (s.start && s.health) ok(side, s.health);
-    }
-  }
-
-  // ── Canonical docs ───────────────────────────────────────────────────────
-  section('Canonical docs');
-  const docs = cfg.canonicalDocs || [];
-  if (!docs.length) {
-    ok('canonicalDocs', dim('none configured'));
-  } else {
-    for (const d of docs) {
-      if (!d.path || !d.bindTo || !d.bindTo.length) {
-        fail(`canonicalDoc missing path or bindTo: ${JSON.stringify(d)}`);
-      } else if (!exists(path.join(out, d.path))) {
-        warn(`canonicalDocs "${d.path}" not found in project root — agents will fail to read it`);
-      } else {
-        ok(d.path, dim('→') + ' ' + d.bindTo.join(', '));
-      }
-    }
-  }
+  const { errors, warnings } = collectConfigIssues(cfg, { out, emit: { section, ok, warn, fail } });
 
   // ── Summary ──────────────────────────────────────────────────────────────
-  const verdict = errs.length ? red('✗ invalid') : green('✓ valid');
+  const verdict = errors.length ? red('✗ invalid') : green('✓ valid');
   const counts = [];
-  if (errs.length)  counts.push(red(errs.length + ' error' + (errs.length !== 1 ? 's' : '')));
-  if (warns.length) counts.push(yellow(warns.length + ' warning' + (warns.length !== 1 ? 's' : '')));
+  if (errors.length)   counts.push(red(errors.length + ' error' + (errors.length !== 1 ? 's' : '')));
+  if (warnings.length) counts.push(yellow(warnings.length + ' warning' + (warnings.length !== 1 ? 's' : '')));
   if (!counts.length) counts.push(dim('all checks passed'));
   console.log('\n  ' + verdict + '  ' + counts.join(dim('  ·  ')));
 
-  if (errs.length) process.exit(1);
+  if (errors.length) process.exit(1);
 }
 
-function loadConfig(args, out) {
-  const p = args.config ? path.resolve(args.config) : path.join(out, 'concertino.config.json');
-  if (!exists(p)) {
-    console.error(red('error: ') + 'no config at ' + p + ' — run `concertino init` first.');
-    process.exit(1);
-  }
-  return withDefaults(JSON.parse(read(p)));
-}
+// loadConfig itself now lives in lib/config.js (shared with the settings
+// screen) — destructured at the top of this file, alongside withDefaults/
+// resolveModel/deepSet/coerce/collectConfigIssues.
 
 // `resolvedCore` lets a caller that already resolved its own core (cmdInit)
 // pass it straight through instead of having cmdSync re-resolve independently

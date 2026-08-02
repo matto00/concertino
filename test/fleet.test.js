@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   renderFleet, handleKey, CONFIRM_RESTORED_QUEUE_KEY, visibleWindow, computeWindow,
-  sectionJumpTargets, buildSections, QUICK_START_COUNT, QUICK_START_TOGGLE_KEY,
+  sectionJumpTargets, buildSections, QUICK_START_COUNT,
   metricsFor, metricsColumnLines,
 } = require('../lib/ui/screens/fleet');
 const { renderStackedSection } = require('../lib/ui/screens/fleet');
@@ -882,9 +882,10 @@ test('the METRICS gates line uses the real gate-name vocabulary (phase:setup/ser
 
 test('pressing the METRICS section\'s own digit is a no-op, not a broken jump', () => {
   const runs = [run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
-  // DONE is [1], METRICS is [2] (both always render — DONE has one entry,
-  // METRICS is forceRender: true).
-  assert.equal(handleKey('2', state({ runs })), null);
+  // CON-56: QUICK START is[1] (always renders), DONE is [2], METRICS is [3]
+  // (all three always render — QUICK START/METRICS are forceRender: true,
+  // DONE has one entry).
+  assert.equal(handleKey('3', state({ runs })), null);
 });
 
 test('an escalated run says so — the circuit breaker giving up is not a crash', () => {
@@ -926,12 +927,13 @@ test('NEEDS YOU survives when finished runs would otherwise fill the screen', ()
           escalation: { question: 'add zod@3?', options: ['approve', 'deny'], raisedAt: 1 } }),
   ].concat(manyFinished(50, 'done'));
 
-  // rows:12 was this fixture's floor before METRICS grew from a 3-row to a
-  // 7-row untrimmable panel (this task, 2026-08-01); the +4 rows shifts the
-  // floor here too — verified empirically (rows:14 still renders 15 lines).
-  const out = renderFleet(runs, { cols: 78, rows: 15, selected: 0 });
+  // rows:15 was this fixture's floor before QUICK START became unconditional
+  // (CON-56) — it is now ALSO an always-on, untrimmable 3-row floor (1
+  // emptyHint line + 2-row border), same as METRICS, shifting this fixture's
+  // own floor up by 3 — verified empirically (rows:17 still renders 18 lines).
+  const out = renderFleet(runs, { cols: 78, rows: 18, selected: 0 });
   const lines = out.split('\n');
-  assert.ok(lines.length <= 15, `output is ${lines.length} lines, terminal is 15`);
+  assert.ok(lines.length <= 18, `output is ${lines.length} lines, terminal is 18`);
   assert.match(out, /NEEDS YOU/);
   assert.match(out, /HEL-338/);
   assert.match(out, /add zod@3\?/);
@@ -945,13 +947,14 @@ test('a tiny terminal still keeps every NEEDS YOU run', () => {
     run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q1', options: [], raisedAt: 1 } }),
     run({ ticket: 'HEL-2', status: 'needs-you', escalation: { question: 'q2', options: [], raisedAt: 1 } }),
   ].concat(manyFinished(20, 'failed'));
-  // rows:14 was this fixture's floor before METRICS grew from a 3-row to a
-  // 7-row untrimmable panel (this task, 2026-08-01); verified empirically
-  // that rows:17 is the new floor (rows:16 still renders 17 lines).
-  const out = renderFleet(runs, { cols: 78, rows: 17, selected: 0 });
+  // rows:17 was this fixture's floor before QUICK START became unconditional
+  // (CON-56) — it is now ALSO an always-on, untrimmable 3-row floor, shifting
+  // this fixture's own floor up by 3 — verified empirically that rows:20 is
+  // the new floor (rows:19 still renders 20 lines).
+  const out = renderFleet(runs, { cols: 78, rows: 20, selected: 0 });
   assert.match(out, /HEL-1/);
   assert.match(out, /HEL-2/);
-  assert.ok(out.split('\n').length <= 17);
+  assert.ok(out.split('\n').length <= 20);
 });
 
 // Two populated sections were never enough to catch this: a section trimmed to
@@ -968,10 +971,15 @@ test('a tiny terminal still keeps every NEEDS YOU run', () => {
 // The METRICS charts pass (2026-08-01) grew METRICS' own untrimmable floor
 // from 3 rows (1 emptyHint line + 2-row border) to 7 rows (5 emptyLines +
 // 2-row border) — even with RUNNING/FAILED/DONE each collapsed to their own
-// 1-row floor, the combined untrimmable minimum is now head+tail(3) +
+// 1-row floor, the combined untrimmable minimum was head+tail(3) +
 // NEEDS YOU(4) + RUNNING(1) + FAILED(1) + DONE(1) + METRICS(7) = 17 rows,
-// so the smallest `rows` that can hold it is 18 (rows - 1 == 17), not 14.
-test('the total-height cap holds with all four sections populated (plus the always-on METRICS panel)', () => {
+// so the smallest `rows` that could hold it was 18 (rows - 1 == 17), not 14.
+// CON-56: QUICK START is now unconditional too (forceRender, empty here — no
+// quickStartTickets opt is passed), adding its own untrimmable 3-row floor
+// (1 emptyHint line + 2-row border) — the combined minimum is now 20 rows,
+// verified empirically (rows:20 renders exactly 20 lines, the smallest
+// `rows` that still satisfies output <= rows).
+test('the total-height cap holds with all four sections populated (plus the always-on METRICS and QUICK START panels)', () => {
   const runs = [
     run({ ticket: 'HEL-338', status: 'needs-you',
           escalation: { question: 'add zod@3?', options: ['approve', 'deny'], raisedAt: 1 } }),
@@ -981,7 +989,7 @@ test('the total-height cap holds with all four sections populated (plus the alwa
   ].concat(manyFinished(8, 'failed'))
    .concat(manyFinished(8, 'done'));
 
-  for (const rows of [18, 20, 24, 28]) {
+  for (const rows of [20, 22, 24, 28]) {
     const out = renderFleet(runs, { cols: 78, rows, selected: 0 });
     const lines = out.split('\n');
     assert.ok(lines.length <= rows,
@@ -1010,11 +1018,15 @@ test('the total-height cap holds with all four sections populated (plus the alwa
 //
 // The METRICS charts pass (2026-08-01) grew METRICS' own untrimmable floor
 // from 3 rows to 7 rows (see the four-section test above for the exact
-// breakdown), pushing this fixture's own floor up again — verified
-// empirically: rows:19 is the smallest terminal that still fits (rows:18
-// renders 19 lines, over budget), so the smallest scheduled value in the
-// list below that clears it is 20, not 16.
-test('the total-height cap holds with all five sections (including a populated QUEUED) populated, plus METRICS', () => {
+// breakdown), pushing this fixture's own floor up again — rows:19 was the
+// smallest terminal that still fit (rows:18 rendered 19 lines, over budget).
+//
+// CON-56: QUICK START is now unconditional too, adding its own untrimmable
+// 3-row floor on top of that — verified empirically, the new floor is
+// rows:22 (rows:22 renders exactly 22 lines; rows:21 renders 22, over
+// budget), so the smallest scheduled value in the list below that clears it
+// is 22, not 20.
+test('the total-height cap holds with all five sections (including a populated QUEUED) populated, plus METRICS and QUICK START', () => {
   const runs = [
     run({ ticket: 'HEL-338', status: 'needs-you',
           escalation: { question: 'add zod@3?', options: ['approve', 'deny'], raisedAt: 1 } }),
@@ -1025,7 +1037,7 @@ test('the total-height cap holds with all five sections (including a populated Q
    .concat(manyFinished(8, 'done'));
   const queueState = { pending: manyQueued(20), inFlight: new Set(), maxConcurrent: 1 };
 
-  for (const rows of [20, 24, 28, 32]) {
+  for (const rows of [22, 24, 28, 32]) {
     const out = renderFleet(runs, { cols: 78, rows, selected: 0, queueState });
     const lines = out.split('\n');
     assert.ok(lines.length <= rows,
@@ -1407,8 +1419,10 @@ test('a small terminal at a non-zero scroll offset still renders the header + NE
   // The METRICS charts pass (2026-08-01) grew METRICS' own untrimmable floor
   // from 3 rows to 7 rows (see the four-section "total-height cap" test
   // above for the exact breakdown), shifting this fixture's floor up by the
-  // same +4 — verified empirically (rows:16 is the new floor).
-  for (const rows of [16, 18, 20]) {
+  // same +4 (to rows:16). CON-56: QUICK START is now unconditional too,
+  // adding its own untrimmable 3-row floor on top of that — verified
+  // empirically (rows:19 is the new floor).
+  for (const rows of [19, 20, 22]) {
     const out = renderFleet(runs, { cols: 78, rows, selected: 0, scrollOffset });
     const lines = out.split('\n');
     assert.ok(lines.length <= rows, `rows:${rows} rendered ${lines.length} lines`);
@@ -1480,6 +1494,57 @@ test('no rendered line exceeds the terminal width', () => {
   for (const line of out.split('\n')) {
     assert.ok(visible(line).length <= 60, `line too long (${visible(line).length}): ${line}`);
   }
+});
+
+// --- CON-53: the escalation question wraps instead of being hard-truncated -
+
+test('a long escalation question wraps onto additional lines instead of being clipped with an ellipsis', () => {
+  const longQuestion = 'word '.repeat(40).trim(); // well over cols - 8 at 80 columns
+  const out = renderFleet([
+    run({ ticket: 'HEL-338', status: 'needs-you',
+          escalation: { question: longQuestion, options: ['approve', 'deny'], raisedAt: 1 } }),
+  ], { cols: 80, selected: 0 });
+  const plainOut = plain(out);
+  const questionLines = plainOut.split('\n').filter((l) => l.includes('word'));
+  assert.ok(questionLines.length > 1, 'a 40-word question at 80 columns must wrap onto more than one row');
+  for (const line of questionLines) assert.doesNotMatch(line, /…/);
+  const wordCount = questionLines.join(' ').split(/\s+/).filter((w) => w === 'word').length;
+  assert.equal(wordCount, 40, 'every word must survive the wrap, none dropped or cut off');
+});
+
+test('a wrapped escalation question keeps the stale marker/options on its last line, and box borders stay intact', () => {
+  const longQuestion = 'word '.repeat(40).trim();
+  const out = renderFleet([
+    run({ ticket: 'HEL-338', status: 'needs-you',
+          escalation: { question: longQuestion, options: ['approve', 'deny'], raisedAt: 1 } }),
+    run({ ticket: 'HEL-331', status: 'running' }),
+  ], { cols: 80, selected: 0 });
+  const plainOut = plain(out);
+  assert.match(plainOut, /approve \/ deny/, 'the options hint must still render, appended to the wrapped block\'s last line');
+  // No rendered line — border or content — may exceed the terminal's column
+  // budget, and every top/bottom border line (all `─`/corner characters) must
+  // be the same width as every other one: a wrapped multi-line row that threw
+  // off the box's own border bookkeeping would either overflow a line or
+  // produce a mismatched border width.
+  const lines = plainOut.split('\n');
+  const borderWidths = new Set();
+  for (const line of lines) {
+    assert.ok(line.length <= 80, `line exceeds terminal width (${line.length}): ${line}`);
+    if (/^[┌┐└┘─]+$/.test(line)) borderWidths.add(line.length);
+  }
+  assert.equal(borderWidths.size, 1, `expected every border line to share one width, got: ${[...borderWidths]}`);
+  assert.match(plainOut, /RUNNING/, 'the RUNNING section below NEEDS YOU must still render, not be corrupted/overwritten');
+  assert.match(plainOut, /HEL-331/, 'the RUNNING run below the wrapped question must still render');
+});
+
+test('a short escalation question (fits on one line) renders identically to before this change', () => {
+  const out = plain(renderFleet([
+    run({ ticket: 'HEL-338', status: 'needs-you',
+          escalation: { question: 'add zod@3?', options: ['approve', 'deny'], raisedAt: 1 } }),
+  ], { cols: 80, selected: 0 }));
+  const questionLines = out.split('\n').filter((l) => l.includes('add zod@3?'));
+  assert.equal(questionLines.length, 1, 'a short question must render on exactly one line, unchanged');
+  assert.match(questionLines[0], /approve \/ deny/);
 });
 
 // --- snapshot widths, wide characters, borders + colour together (task 6.2) -
@@ -1705,6 +1770,29 @@ test('l with no runs is a no-op', () => {
   assert.equal(handleKey('l', state({ runs: [] })), null);
 });
 
+// CON-54: additive to the `l` binding above — a distinct action
+// (view-ticket, not open-drilldown) for the same selected run.
+test('t opens the ticket detail view for the selected run (RUNNING)', () => {
+  assert.deepEqual(handleKey('t', state({})), { type: 'view-ticket', ticket: 'HEL-1' });
+});
+
+test('t opens the ticket detail view for the selected run (DONE)', () => {
+  const done = run({ ticket: 'HEL-2', status: 'done', endStatus: 'merged' });
+  assert.deepEqual(handleKey('t', state({ runs: [done] })),
+    { type: 'view-ticket', ticket: 'HEL-2' });
+});
+
+test('t with no runs is a no-op', () => {
+  assert.equal(handleKey('t', state({ runs: [] })), null);
+});
+
+test("l on RUNNING/DONE is unaffected by t's addition", () => {
+  assert.deepEqual(handleKey('l', state({})), { type: 'open-drilldown', ticket: 'HEL-1' });
+  const done = run({ ticket: 'HEL-2', status: 'done', endStatus: 'merged' });
+  assert.deepEqual(handleKey('l', state({ runs: [done] })),
+    { type: 'open-drilldown', ticket: 'HEL-2' });
+});
+
 test('k still means move-up, not kill — the fleet footer must never claim otherwise', () => {
   assert.deepEqual(handleKey('k', state({})), { type: 'move', delta: -1 });
   const out = plain(renderFleet([run({})], OPTS));
@@ -1843,34 +1931,43 @@ test('digit jump lands on the first row of the target section when NEEDS YOU/RUN
     run({ ticket: 'HEL-4', status: 'failed', endStatus: 'escalated', endedAt: 100 }),
   ];
   // Sections on screen (canonical order): NEEDS YOU (1 row, index 0), FAILED
-  // (1 row, index 1), RUNNING (2 rows, indices 2-3). Digit 2 -> FAILED's
+  // (1 row, index 1), RUNNING (2 rows, indices 2-3), then QUICK START
+  // (digit 4, unselectable, always on screen since CON-56 — doesn't affect
+  // FAILED's own digit, since it renders after RUNNING). Digit 2 -> FAILED's
   // first row, index 1.
   assert.deepEqual(handleKey('2', state({ runs })), { type: 'jump', index: 1 });
 });
 
-test('numbering skips empty sections — digit 2 reaches DONE when NEEDS YOU/FAILED are empty', () => {
+test('numbering skips empty sections — digit 3 reaches DONE when NEEDS YOU/FAILED are empty', () => {
   const runs = [
     run({ ticket: 'HEL-1', status: 'running' }),
     run({ ticket: 'HEL-2', status: 'done', endStatus: 'delivered', endedAt: 100 }),
     run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered', endedAt: 100 }),
   ];
-  // Only RUNNING (index 0) and DONE (indices 1-2) are rendered — DONE is the
-  // SECOND section on screen, not the fifth in a fixed scheme.
-  assert.deepEqual(handleKey('2', state({ runs })), { type: 'jump', index: 1 });
+  // CON-56: RUNNING(1)=index0, QUICK START(2, unselectable, always on
+  // screen), DONE(3)=indices1-2 — DONE is the THIRD section on screen, not
+  // the fifth in a fixed scheme (and no longer the second, now that QUICK
+  // START always claims a digit between them).
+  assert.deepEqual(handleKey('3', state({ runs })), { type: 'jump', index: 1 });
 });
 
 test('an out-of-range digit is a no-op, leaving selection/focus unchanged', () => {
   const runs = [run({ ticket: 'HEL-1', status: 'running' })];
-  assert.equal(handleKey('2', state({ runs })), null);
-  // Also true of the empty fleet — zero sections rendered.
-  assert.equal(handleKey('1', state({ runs: [] })), null);
+  // On-screen targets: RUNNING(1), QUICK START(2, always on screen —
+  // CON-56), METRICS(3, always on screen but never focusable — its own
+  // 'metrics' case in handleKey returns null regardless). Digit 4 is
+  // genuinely out of range (only 3 targets exist).
+  assert.equal(handleKey('4', state({ runs })), null);
+  // Also true of the empty fleet — QUICK START and METRICS are still the
+  // only two (both forceRender) targets, so digit 3 is out of range.
+  assert.equal(handleKey('3', state({ runs: [] })), null);
 });
 
 test('QUEUED participates in the digit numbering but jumps via focus-queue, never perturbing selected', () => {
   const runs = [run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } })];
   const queueState = { pending: ['CON-9', 'CON-10'], inFlight: new Set(), maxConcurrent: 1 };
-  // NEEDS YOU (1) is section 1; QUEUED is section 2.
-  assert.deepEqual(handleKey('2', state({ runs, queueState })), { type: 'focus-queue', index: 0 });
+  // CON-56: NEEDS YOU(1), QUICK START(2, always on screen), QUEUED(3).
+  assert.deepEqual(handleKey('3', state({ runs, queueState })), { type: 'focus-queue', index: 0 });
 });
 
 test('a digit that resolves to a runs-backed section while already focused on QUEUED exits queue-focus and jumps normally', () => {
@@ -1891,7 +1988,8 @@ test('pressing QUEUED\'s own digit again while already focused on it re-emits fo
   const runs = [run({ ticket: 'HEL-1', status: 'running' })];
   const queueState = { pending: ['CON-9', 'CON-10'], inFlight: new Set(), maxConcurrent: 1 };
   const s = state({ runs, queueState, focus: 'queue', queueFocus: 1 });
-  assert.deepEqual(handleKey('2', s), { type: 'focus-queue', index: 0 });
+  // CON-56: RUNNING(1), QUICK START(2, always on screen), QUEUED(3).
+  assert.deepEqual(handleKey('3', s), { type: 'focus-queue', index: 0 });
 });
 
 // --- CON-39: the QUEUED-local focus cursor ----------------------------------
@@ -1942,6 +2040,18 @@ test('f is a no-op when nothing is validly focused (queueFocus null or out of ra
 
 test('f outside queue focus is unbound, same as any other unclaimed key', () => {
   assert.equal(handleKey('f', state({})), null);
+});
+
+// CON-54: t on a focused QUEUED row opens the ticket detail view — resolved
+// the same way f's own open-force-start-confirm resolves its ticket, above.
+test('t on a focused pending ticket opens the ticket detail view, naming that exact ticket', () => {
+  assert.deepEqual(handleKey('t', queueFocusState({ queueFocus: 1 })),
+    { type: 'view-ticket', ticket: 'CON-2' });
+});
+
+test('t is a no-op when nothing is validly focused in QUEUED (queueFocus null or out of range)', () => {
+  assert.equal(handleKey('t', queueFocusState({ queueFocus: null })), null);
+  assert.equal(handleKey('t', queueFocusState({ queueFocus: 99 })), null);
 });
 
 // --- CON-39: force-start's own y/anything-else confirmation gate -----------
@@ -2132,10 +2242,11 @@ test('section numbering skips sections that are not on screen this frame, matchi
   const out = plain(renderFleet([
     run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
   ], OPTS));
-  // NEEDS YOU and RUNNING are both empty (never rendered) — DONE is the
-  // first (and only) section on screen, so it must be numbered [1], not
-  // whatever position it holds in buildSections' own full list.
-  assert.match(out, /\[1\] DONE/);
+  // NEEDS YOU and RUNNING are both empty (never rendered) — QUICK START
+  // (CON-56: always on screen, forceRender when empty) is [1], so DONE is
+  // the SECOND section on screen, not the first (and not whatever position
+  // it holds in buildSections' own full list).
+  assert.match(out, /\[2\] DONE/);
 });
 
 test('the [N] shown in a title always equals the digit that actually jumps to it', () => {
@@ -2145,7 +2256,11 @@ test('the [N] shown in a title always equals the digit that actually jumps to it
     run({ ticket: 'HEL-3', status: 'failed', endStatus: 'escalated', endedAt: 100, elapsedMs: 60000 }),
     run({ ticket: 'HEL-4', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
   ];
-  const targets = sectionJumpTargets(runs, null, false);
+  // CON-56: QUICK START is unconditional now, so it's implicitly among these
+  // targets too (no flag to pass) — metricsVisible: true here matches
+  // renderFleet's own always-on METRICS section (metricsFor always returns a
+  // truthy object), so `targets` and the actual render agree on every digit.
+  const targets = sectionJumpTargets(runs, null, true);
   const out = plain(renderFleet(runs, OPTS));
   targets.forEach((t, i) => {
     const n = i + 1;
@@ -2163,19 +2278,19 @@ function qsTicket(over) {
 
 // --- section presence/position ----------------------------------------------
 
-test('the QUICK START section only appears when quickStartVisible is true', () => {
-  const hidden = plain(renderFleet([run({})], OPTS));
-  assert.doesNotMatch(hidden, /QUICK START/);
+test('the QUICK START section always appears — CON-56, no toggle/opt required', () => {
+  const noOptsAtAll = plain(renderFleet([run({})], OPTS));
+  assert.match(noOptsAtAll, /QUICK START/);
 
-  const visible = plain(renderFleet([run({})],
-    { ...OPTS, quickStartVisible: true, quickStartTickets: [qsTicket({})] }));
-  assert.match(visible, /QUICK START/);
+  const withTickets = plain(renderFleet([run({})],
+    { ...OPTS, quickStartTickets: [qsTicket({})] }));
+  assert.match(withTickets, /QUICK START/);
 });
 
 test('QUICK START renders between RUNNING and QUEUED', () => {
   const queueState = { pending: ['CON-9'], inFlight: new Set(), maxConcurrent: 1 };
   const out = plain(renderFleet([run({ status: 'running' })], {
-    ...OPTS, queueState, quickStartVisible: true, quickStartTickets: [qsTicket({ identifier: 'CON-5' })],
+    ...OPTS, queueState, quickStartTickets: [qsTicket({ identifier: 'CON-5' })],
   }));
   const runningIdx = out.indexOf('RUNNING');
   const quickStartIdx = out.indexOf('QUICK START');
@@ -2188,55 +2303,56 @@ test('QUICK START renders between RUNNING and QUEUED', () => {
 
 test('a cold cache shows the fetch hint, distinct from the fully-filtered hint', () => {
   const cold = plain(renderFleet([run({})],
-    { ...OPTS, quickStartVisible: true, quickStartTickets: [], quickStartCold: true }));
+    { ...OPTS, quickStartTickets: [], quickStartCold: true }));
   assert.match(cold, /no tickets cached yet — press N to fetch/);
 
   const filtered = plain(renderFleet([run({})],
-    { ...OPTS, quickStartVisible: true, quickStartTickets: [], quickStartCold: false }));
+    { ...OPTS, quickStartTickets: [], quickStartCold: false }));
   assert.match(filtered, /nothing left to quick-start/);
   assert.doesNotMatch(filtered, /no tickets cached yet/);
 });
 
 test('a populated QUICK START list never shows either empty hint', () => {
   const out = plain(renderFleet([run({})],
-    { ...OPTS, quickStartVisible: true, quickStartTickets: [qsTicket({})] }));
+    { ...OPTS, quickStartTickets: [qsTicket({})] }));
   assert.doesNotMatch(out, /no tickets cached yet/);
   assert.doesNotMatch(out, /nothing left to quick-start/);
 });
 
 // --- sectionHeight / cap ------------------------------------------------------
 
-test('buildSections builds no QUICK START entry at all when quickStartVisible is falsy', () => {
+test('buildSections always includes a QUICK START entry, even with no opts at all', () => {
   const sections = buildSections({ needsYou: [], active: [run({})], failed: [], done: [] }, null, {});
-  assert.ok(!sections.some((s) => s.kind === 'quickstart'));
+  assert.ok(sections.some((s) => s.kind === 'quickstart'));
 });
 
 test('a forceRender-empty QUICK START section is flagged correctly by buildSections', () => {
   const emptySections = buildSections(
     { needsYou: [], active: [run({})], failed: [], done: [] }, null,
-    { quickStartVisible: true, quickStartTickets: [] });
+    { quickStartTickets: [] });
   const qs = emptySections.find((s) => s.kind === 'quickstart');
   assert.equal(qs.forceRender, true);
   assert.equal(qs.group.length, 0);
 });
 
-test('sectionHeight costs a forceRender-empty QUICK START exactly 3 rows — verified via renderFleet\'s own line-count delta', () => {
-  const withoutQuickStart = renderFleet([run({})], OPTS);
-  const withEmptyQuickStart = renderFleet([run({})],
-    { ...OPTS, quickStartVisible: true, quickStartTickets: [], quickStartCold: true });
-  const delta = withEmptyQuickStart.split('\n').length - withoutQuickStart.split('\n').length;
-  assert.equal(delta, 3, 'a forceRender-empty QUICK START box (1 hint line + 2-row border) must cost exactly 3 lines');
-});
-
-test('a hidden (quickStartVisible: false) QUICK START costs nothing — the frame is byte-identical either way', () => {
-  const without = renderFleet([run({})], OPTS);
-  const withHiddenFlagUnset = renderFleet([run({})], { ...OPTS, quickStartTickets: [] });
-  assert.equal(without, withHiddenFlagUnset);
+test('sectionHeight costs a forceRender-empty QUICK START exactly 3 rows', () => {
+  // CON-56: QUICK START is always on screen now, so its box cost is measured
+  // directly off a single render (no on/off comparison to diff against) —
+  // the span from its own numbered title line up to (not including) the
+  // next section's (METRICS, which always immediately follows it here: no
+  // QUEUED, and FAILED/DONE are both empty and unforced, so they render
+  // nothing) title line.
+  const out = plain(renderFleet([run({})], OPTS));
+  const lines = out.split('\n');
+  const qsIdx = lines.findIndex((l) => l.includes('QUICK START'));
+  const metricsIdx = lines.findIndex((l) => l.includes('METRICS'));
+  assert.ok(qsIdx >= 0 && metricsIdx > qsIdx);
+  assert.equal(metricsIdx - qsIdx, 3, 'a forceRender-empty QUICK START box (1 hint line + 2-row border) must cost exactly 3 lines');
 });
 
 test('a populated QUICK START section carries cap: QUICK_START_COUNT, not undefined/NaN', () => {
   const sections = buildSections({ needsYou: [], active: [], failed: [], done: [] }, null,
-    { quickStartVisible: true, quickStartTickets: [qsTicket({})] });
+    { quickStartTickets: [qsTicket({})] });
   const qs = sections.find((s) => s.kind === 'quickstart');
   assert.equal(qs.cap, QUICK_START_COUNT);
   assert.equal(Number.isNaN(qs.cap), false);
@@ -2244,29 +2360,25 @@ test('a populated QUICK START section carries cap: QUICK_START_COUNT, not undefi
 
 // --- sectionJumpTargets -------------------------------------------------------
 
-test('sectionJumpTargets includes a forceRender-empty QUICK START when visible', () => {
+test('sectionJumpTargets always includes a forceRender-empty QUICK START', () => {
   const targets = sectionJumpTargets([run({ status: 'running' })], null, true);
   const kinds = targets.map((t) => t.section.kind);
   assert.ok(kinds.includes('quickstart'), `expected 'quickstart' among ${kinds.join(',')}`);
 });
 
 test('sectionJumpTargets never throws when metricsVisible passes the bare {} stand-in buildSections only checks for truthiness', () => {
-  const targets = sectionJumpTargets([run({ status: 'running' })], null, false, true);
+  // CON-56: sectionJumpTargets dropped its middle `quickStartVisible`
+  // parameter — signature is now (runs, queueState, metricsVisible).
+  const targets = sectionJumpTargets([run({ status: 'running' })], null, true);
   const kinds = targets.map((t) => t.section.kind);
   assert.ok(kinds.includes('metrics'), `expected 'metrics' among ${kinds.join(',')}`);
-});
-
-test('sectionJumpTargets omits QUICK START entirely when quickStartVisible is false', () => {
-  const targets = sectionJumpTargets([run({ status: 'running' })], null, false);
-  const kinds = targets.map((t) => t.section.kind);
-  assert.ok(!kinds.includes('quickstart'));
 });
 
 // --- row rendering -------------------------------------------------------------
 
 test('a populated QUICK START row renders via the ticket-object row renderer, with the correct row focused', () => {
   const out = plain(renderFleet([run({})], {
-    ...OPTS, quickStartVisible: true, focus: 'quickstart', quickStartFocus: 1,
+    ...OPTS, focus: 'quickstart', quickStartFocus: 1,
     quickStartTickets: [
       qsTicket({ identifier: 'CON-10', title: 'First ticket', priority: 1 }),
       qsTicket({ identifier: 'CON-11', title: 'Second ticket', priority: 2 }),
@@ -2287,7 +2399,7 @@ test('a QUEUED row in the same frame still renders via the unchanged renderQueue
   const queuedTitles = new Map([['CON-20', 'A queued ticket']]);
   const out = plain(renderFleet([run({})], {
     ...OPTS, queueState, queuedTitles,
-    quickStartVisible: true, quickStartTickets: [qsTicket({ identifier: 'CON-30', title: 'A quick-start ticket' })],
+    quickStartTickets: [qsTicket({ identifier: 'CON-30', title: 'A quick-start ticket' })],
   }));
   assert.match(out, /1\. CON-20 {2}A queued ticket/);
   assert.match(out, /CON-30/);
@@ -2298,13 +2410,13 @@ test('a QUEUED row in the same frame still renders via the unchanged renderQueue
 
 test('renderFleet\'s own returned string actually contains a rendered QUICK START box/hint', () => {
   const withTickets = renderFleet([run({})], {
-    ...OPTS, quickStartVisible: true, quickStartTickets: [qsTicket({ identifier: 'CON-40' })],
+    ...OPTS, quickStartTickets: [qsTicket({ identifier: 'CON-40' })],
   });
   assert.match(plain(withTickets), /QUICK START/);
   assert.match(plain(withTickets), /CON-40/);
 
   const emptyForced = renderFleet([run({})], {
-    ...OPTS, quickStartVisible: true, quickStartTickets: [], quickStartCold: true,
+    ...OPTS, quickStartTickets: [], quickStartCold: true,
   });
   assert.match(plain(emptyForced), /QUICK START/);
   assert.match(plain(emptyForced), /no tickets cached yet/);
@@ -2328,7 +2440,7 @@ test('a visible QUICK START section never perturbs the run row-index space', () 
     run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered', endedAt: 100 }),
   ];
   const opts = {
-    ...OPTS, quickStartVisible: true,
+    ...OPTS,
     quickStartTickets: [qsTicket({}), qsTicket({ identifier: 'CON-2' })],
   };
 
@@ -2348,7 +2460,7 @@ test('a visible QUICK START section never perturbs the run row-index space', () 
 
 test('no QUICK START row is ever marked with the ordinary run-row ▸ selection marker', () => {
   const out = plain(renderFleet([run({})], {
-    ...OPTS, selected: 0, quickStartVisible: true, quickStartTickets: [qsTicket({})],
+    ...OPTS, selected: 0, quickStartTickets: [qsTicket({})],
   }));
   const quickStartLine = out.split('\n').find((l) => l.includes(qsTicket({}).identifier));
   assert.ok(quickStartLine);
@@ -2360,32 +2472,27 @@ test('no QUICK START row is ever marked with the ordinary run-row ▸ selection 
 test('height-budget trimming accounts for QUICK START like any other non-pinned section', () => {
   const manyRuns = [];
   for (let i = 0; i < 10; i++) manyRuns.push(run({ ticket: 'HEL-' + i, status: 'done', endStatus: 'delivered', endedAt: 100 }));
-  const withoutQuickStart = visibleWindow(manyRuns, { rows: 12, selected: 0 });
-  const withQuickStart = visibleWindow(manyRuns, {
-    rows: 12, selected: 0, quickStartVisible: true, quickStartTickets: [qsTicket({})],
+  const emptyQuickStart = visibleWindow(manyRuns, { rows: 12, selected: 0 });
+  const populatedQuickStart = visibleWindow(manyRuns, {
+    rows: 12, selected: 0, quickStartTickets: [qsTicket({})],
   });
-  // Sanity: the two calls build a different number of sections (QUICK START
-  // adds one) — this alone shows the budget accounting is genuinely seeing it,
-  // rather than the extra opts fields being silently ignored.
-  assert.equal(withoutQuickStart.sections.length + 1, withQuickStart.sections.length);
+  // CON-56: QUICK START is always one of the built sections (index 2: NEEDS
+  // YOU, RUNNING, QUICK START, ...) regardless of how many tickets it holds
+  // — the section count itself never changes; populating it changes what it
+  // SHOWS (and so how much height-budget accounting sees it consume), which
+  // is what this test actually checks.
+  assert.equal(emptyQuickStart.sections.length, populatedQuickStart.sections.length);
+  assert.equal(emptyQuickStart.sections[2].shown, 0);
+  assert.equal(populatedQuickStart.sections[2].shown, 1);
 });
 
-// --- CON-40: Q toggle ----------------------------------------------------------
-
-test('Q returns the toggle-quickstart action regardless of current state — applyAction (watch.js) decides open vs close', () => {
-  assert.deepEqual(handleKey(QUICK_START_TOGGLE_KEY, state({ quickStartVisible: false })),
-    { type: 'toggle-quickstart' });
-  assert.deepEqual(handleKey(QUICK_START_TOGGLE_KEY, state({ quickStartVisible: true, focus: 'quickstart' })),
-    { type: 'toggle-quickstart' });
-});
-
-// --- CON-40: digit-jump discriminates quickstart vs queued vs ordinary -------
+// --- CON-40/CON-56: digit-jump discriminates quickstart vs queued vs ordinary -
 
 test('digit-jump resolves to focus-quickstart when the target section is QUICK START', () => {
   const runs = [run({ ticket: 'HEL-1', status: 'running' })];
-  // Sections: RUNNING (1), QUICK START (2) — quickStartVisible: true.
+  // Sections: RUNNING (1), QUICK START (2) — always on screen (CON-56).
   assert.deepEqual(
-    handleKey('2', state({ runs, quickStartVisible: true })),
+    handleKey('2', state({ runs })),
     { type: 'focus-quickstart', index: 0 },
   );
 });
@@ -2395,25 +2502,19 @@ test('digit-jump resolves to focus-queue (not focus-quickstart) when both QUICK 
   const queueState = { pending: ['CON-9'], inFlight: new Set(), maxConcurrent: 1 };
   // Sections: RUNNING(1), QUICK START(2), QUEUED(3).
   assert.deepEqual(
-    handleKey('3', state({ runs, queueState, quickStartVisible: true })),
+    handleKey('3', state({ runs, queueState })),
     { type: 'focus-queue', index: 0 },
   );
   assert.deepEqual(
-    handleKey('2', state({ runs, queueState, quickStartVisible: true })),
+    handleKey('2', state({ runs, queueState })),
     { type: 'focus-quickstart', index: 0 },
   );
-});
-
-test('digit-jump against quickStartVisible: false never reaches QUICK START, even with runs present', () => {
-  const runs = [run({ ticket: 'HEL-1', status: 'running' })];
-  // Only RUNNING is on screen — digit 2 is out of range.
-  assert.equal(handleKey('2', state({ runs, quickStartVisible: false })), null);
 });
 
 // --- CON-40: the QUICK START-local focus cursor -------------------------------
 
 function quickStartFocusState(over) {
-  return state(Object.assign({ focus: 'quickstart', quickStartFocus: 0, quickStartVisible: true }, over));
+  return state(Object.assign({ focus: 'quickstart', quickStartFocus: 0 }, over));
 }
 
 test('j/k (and arrow aliases) move the QUICK START-local cursor while focused, never the ordinary move action', () => {
@@ -2432,6 +2533,16 @@ test('a emits quickstart-add unconditionally while focused, even with no ticket 
     { type: 'quickstart-add', index: 99 });
 });
 
+// CON-54: t emits view-ticket-quickstart unconditionally while focused, same
+// as a's own quickstart-add just above — handleKey has no ticket list to
+// resolve `index` against; watch.js does that (design.md Decision 1/3).
+test('t emits view-ticket-quickstart unconditionally while focused, even with no ticket data in state', () => {
+  assert.deepEqual(handleKey('t', quickStartFocusState({ quickStartFocus: 3 })),
+    { type: 'view-ticket-quickstart', index: 3 });
+  assert.deepEqual(handleKey('t', quickStartFocusState({ quickStartFocus: 99 })),
+    { type: 'view-ticket-quickstart', index: 99 });
+});
+
 test('bare Escape exits QUICK START focus', () => {
   assert.deepEqual(handleKey('\x1b', quickStartFocusState({})), { type: 'exit-quickstart-focus' });
 });
@@ -2444,23 +2555,22 @@ test('Enter/l/n/N are suppressed (no-ops) while focus is quickstart', () => {
   assert.equal(handleKey('N', quickStartFocusState({})), null);
 });
 
-test('forceStartConfirm/quitConfirm still short-circuit before Q/quickstart-focus handling', () => {
-  const withForceStart = state({ forceStartConfirm: { ticket: 'CON-1' }, quickStartVisible: true, focus: 'quickstart' });
-  assert.deepEqual(handleKey(QUICK_START_TOGGLE_KEY, withForceStart), { type: 'cancel-force-start' });
+test('forceStartConfirm/quitConfirm still short-circuit before quickstart-focus handling', () => {
+  const withForceStart = state({ forceStartConfirm: { ticket: 'CON-1' }, focus: 'quickstart' });
   assert.deepEqual(handleKey('a', withForceStart), { type: 'cancel-force-start' });
 
-  const withQuitConfirm = state({ quitConfirm: true, quickStartVisible: true, focus: 'quickstart' });
-  assert.deepEqual(handleKey(QUICK_START_TOGGLE_KEY, withQuitConfirm), { type: 'cancel-quit' });
+  const withQuitConfirm = state({ quitConfirm: true, focus: 'quickstart' });
+  assert.deepEqual(handleKey('a', withQuitConfirm), { type: 'cancel-quit' });
 });
 
-test('the footer always advertises the Q quick start hint', () => {
-  // A wider terminal than OPTS' 78 cols — the footer line is long enough
-  // (↵ attach / l details / j/k move / 1-9 jump / n new run / N launch pad /
-  // Q quick start / q quit) that OPTS' own width truncates it before this
-  // hint; this test is about the hint's PRESENCE in the built string, not
-  // about width truncation (already covered elsewhere).
+test('the footer no longer advertises a Q quick start hint — CON-56 removes the toggle', () => {
+  // A wider terminal than OPTS' 78 cols, matching the width the old test used
+  // to check the hint's presence — now checking its absence, over the same
+  // full footer line (↵ attach / l details / j/k move / 1-9 jump / n new run
+  // / N launch pad / q quit).
   const out = plain(renderFleet([run({})], { cols: 140, selected: 0 }));
-  assert.match(out, /Q quick start/);
+  assert.doesNotMatch(out, /Q quick start/);
+  assert.match(out, /q quit/);
 });
 
 // --- CON-48: a live post-run.end escalation buckets under NEEDS YOU --------
@@ -2502,7 +2612,7 @@ test('QUICK START, QUEUED, and METRICS section titles are each prefixed with the
   const out = plain(renderFleet([
     run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
   ], {
-    ...OPTS, now: 100000, queueState, quickStartVisible: true, quickStartTickets: [qsTicket({ identifier: 'CON-5' })],
+    ...OPTS, now: 100000, queueState, quickStartTickets: [qsTicket({ identifier: 'CON-5' })],
   }));
   assert.match(out, new RegExp(icons.quickStart + ' QUICK START'));
   assert.match(out, new RegExp(icons.queue + ' QUEUED'));
@@ -2517,11 +2627,12 @@ test('NEEDS YOU, RUNNING, FAILED, and DONE section headings carry no new icon �
     run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered' }),
   ], OPTS));
   // Exact, unprefixed section headings — no glyph inserted before them.
-  // Canonical order: NEEDS YOU, FAILED, RUNNING, DONE.
+  // Canonical order: NEEDS YOU, FAILED, RUNNING, QUICK START (always on
+  // screen now, CON-56 — untested here but still claims [4]), DONE.
   assert.match(out, /\[1\] NEEDS YOU/);
   assert.match(out, /\[2\] FAILED/);
   assert.match(out, /\[3\] RUNNING/);
-  assert.match(out, /\[4\] DONE/);
+  assert.match(out, /\[5\] DONE/);
 });
 
 // --- fleet-metrics-grid: renderStackedSection --------------------------

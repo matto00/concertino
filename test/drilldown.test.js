@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   renderDrillDown, handleKey, render, isLive, fmtGateDuration, phasePipeline,
-  ticketPanelLines, evidenceItems, evidenceLines, EVIDENCE_MAX_VISIBLE,
+  ticketPanelLines, evidenceItems, evidenceLines, EVIDENCE_MAX_VISIBLE, describeEvent,
 } = require('../lib/ui/screens/drilldown');
 const icons = require('../lib/ui/icons');
 
@@ -197,11 +197,12 @@ test('a failed run\'s drill-down header status is coloured the same red the flee
   // Same colour the fleet view's FAILED section heading uses, for the exact
   // same run's status — this is the "same colour everywhere" scenario, not
   // just "some colour appears somewhere." The heading now carries a
-  // lazygit-layout digit-jump number ("[1] FAILED") as the single, sole
-  // section this fixture renders — the numbering is inside the same colour
-  // wrap, not a separate un-coloured prefix.
+  // lazygit-layout digit-jump number ("[2] FAILED" — CON-56: QUICK START is
+  // always on screen too and renders first, claiming [1]) as the single,
+  // sole populated section this fixture renders — the numbering is inside
+  // the same colour wrap, not a separate un-coloured prefix.
   const fleetOut = renderFleet([failedRun], { cols: 78, selected: 0 });
-  const escapedFailedHeading = f.STATUS_COLOUR.failed('[1] FAILED').replace(/[[\]()]/g, '\\$&');
+  const escapedFailedHeading = f.STATUS_COLOUR.failed('[2] FAILED').replace(/[[\]()]/g, '\\$&');
   assert.match(fleetOut, new RegExp(escapedFailedHeading));
 
   // A dead window with no endStatus ("window exited") is also a failed-run
@@ -786,6 +787,70 @@ test('↵ while EVIDENCE is focused with a selected entry opens it via open-evid
 test('↵ while EVIDENCE is focused with no entries (defensive) is a no-op', () => {
   const r = run({ events: evidenceEvents(1) });
   assert.equal(handleKey('\r', { run: r, drillFocus: 'evidence', drillEvidenceIndex: 5 }), null);
+});
+
+// --- CON-55: PR artifact type in the EVIDENCE panel -------------------------
+
+function prEvent(over) {
+  return Object.assign({ t: 5000, kind: 'pr', role: 'orchestrator', url: 'https://github.com/example/repo/pull/9', label: 'PR: add widget' }, over);
+}
+
+test('evidenceItems includes both evidence-kind and pr-kind events, in event order', () => {
+  const items = evidenceItems(run({ events: [
+    { t: 1, kind: 'run.start' },
+    { t: 2, kind: 'evidence', label: 'a.md' },
+    prEvent({ t: 3 }),
+    { t: 4, kind: 'evidence', label: 'b.md' },
+  ] }));
+  assert.equal(items.length, 3);
+  assert.deepEqual(items.map((ev) => ev.kind), ['evidence', 'pr', 'evidence']);
+});
+
+test('evidenceItems shows only file-based evidence when no pr event has been emitted', () => {
+  const items = evidenceItems(run({ events: [
+    { t: 1, kind: 'evidence', label: 'a.md' },
+    { t: 2, kind: 'evidence', label: 'b.md' },
+  ] }));
+  assert.equal(items.length, 2);
+  assert.ok(items.every((ev) => ev.kind === 'evidence'));
+});
+
+test('evidenceLines prefixes a pr-kind entry with the pr icon, not the plain selection marker', () => {
+  const r = run({ events: [{ t: 1, kind: 'evidence', label: 'a.md', ref: '/tmp/a.md' }, prEvent()] });
+  const lines = evidenceLines(r, 60, { focused: false });
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^ {2}a\.md/, 'file entry keeps the plain unselected prefix');
+  assert.ok(plain(lines[1]).startsWith(icons.pr + ' '), 'pr entry is prefixed with the pr icon');
+  assert.match(plain(lines[1]), /PR: add widget/);
+});
+
+test('evidenceLines: a pr entry is visibly distinguishable from a file entry', () => {
+  const r = run({ events: [{ t: 1, kind: 'evidence', label: 'a.md', ref: '/tmp/a.md' }, prEvent()] });
+  const lines = evidenceLines(r, 60, { focused: false });
+  assert.notEqual(plain(lines[0])[0], plain(lines[1])[0]);
+});
+
+test('describeEvent has a friendly case for pr events (TIMELINE rendering)', () => {
+  const { label, detail } = describeEvent(prEvent());
+  assert.equal(label, 'PR opened');
+  assert.equal(detail, 'https://github.com/example/repo/pull/9');
+});
+
+test('↵ on a selected pr entry dispatches open-external-url, not open-evidence-doc', () => {
+  const r = run({ events: [{ t: 1, kind: 'evidence', label: 'a.md', ref: '/tmp/a.md' }, prEvent()] });
+  const action = handleKey('\r', { run: r, drillFocus: 'evidence', drillEvidenceIndex: 1 });
+  assert.deepEqual(action, {
+    type: 'open-external-url', ticket: r.ticket,
+    url: 'https://github.com/example/repo/pull/9', label: 'PR: add widget',
+  });
+});
+
+test('↵ on a selected file-based entry is unaffected by a pr entry also being present', () => {
+  const r = run({ events: [{ t: 1, kind: 'evidence', label: 'a.md', ref: '/tmp/a.md' }, prEvent()] });
+  const action = handleKey('\r', { run: r, drillFocus: 'evidence', drillEvidenceIndex: 0 });
+  assert.deepEqual(action, {
+    type: 'open-evidence-doc', ticket: r.ticket, ref: '/tmp/a.md', label: 'a.md',
+  });
 });
 
 // --- EVIDENCE cap and scroll-follows-selection ------------------------------

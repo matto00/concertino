@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {
   buildFrame, attachAndRestore, computeLiveEscalations, idleMsFromActivity,
-  canonicalHarness, resolveModelsForPlan,
+  canonicalHarness, resolveModelsForPlan, openInBrowser,
   CURSOR_HOME, ALT_SCREEN_ENTER, ALT_SCREEN_EXIT,
 } = require('../lib/ui/watch');
 const { padTo, visibleLength } = require('../lib/ui/format');
@@ -1178,9 +1178,10 @@ test('jumping into QUEUED focus, moving the cursor, and exiting leaves the run s
     const beforeFrame = screenOf(written);
     assert.equal(markedTicket(beforeFrame), 'HEL-2', 'sanity: selection is on HEL-2 before entering queue focus');
 
-    // Sections on screen: RUNNING (1), QUEUED (2). Digit 2 jumps INTO
-    // QUEUED focus without touching the run selection at all.
-    fakeStdin.emit('data', '2');
+    // Sections on screen: RUNNING (1), QUICK START (2, always on screen —
+    // CON-56), QUEUED (3). Digit 3 jumps INTO QUEUED focus without touching
+    // the run selection at all.
+    fakeStdin.emit('data', '3');
     const inQueueFrame = screenOf(written);
     assert.match(inQueueFrame, /»/, 'the QUEUED-local cursor marker should now be on screen');
     assert.equal(markedTicket(inQueueFrame), 'HEL-2', 'the run selection marker must be unaffected by entering queue focus');
@@ -1257,9 +1258,10 @@ test('force-start: f opens a confirmation, any key cancels, y actually starts th
     const watchModule = require('../lib/ui/watch');
     donePromise = watchModule.watch({ root, config: {} });
 
-    // No runs at all — QUEUED is the ONLY section on screen, so digit 1
-    // jumps straight into queue focus on CON-90 (the sole pending ticket).
-    fakeStdin.emit('data', '1');
+    // No runs at all — QUICK START (always on screen — CON-56) is digit 1,
+    // QUEUED is digit 2, jumping straight into queue focus on CON-90 (the
+    // sole pending ticket).
+    fakeStdin.emit('data', '2');
     const focusedFrame = screenOf(written);
     assert.match(focusedFrame, /»/);
 
@@ -1766,9 +1768,11 @@ test('quickstart-add with no active queue creates a single-ticket maxConcurrent:
     const watchModule = require('../lib/ui/watch');
     donePromise = watchModule.watch({ root: h.root, config: {} });
 
-    // Q opens+focuses QUICK START; the top of the priority-sorted list
-    // (CON-100, Urgent) is quickStartFocus 0.
-    h.fakeStdin.emit('data', 'Q');
+    // CON-56: QUICK START is always shown (no toggle) — digit-jump into it
+    // instead (it's the only forceRender-eligible section on screen here, so
+    // it's digit 1). The top of the priority-sorted list (CON-100, Urgent)
+    // is quickStartFocus 0.
+    h.fakeStdin.emit('data', '1');
     const focusedFrame = h.screen();
     assert.match(focusedFrame, /QUICK START/);
     assert.match(focusedFrame, /CON-100/);
@@ -1811,7 +1815,9 @@ test('a second quickstart-add onto an already-active queue appends via enqueueOn
     const watchModule = require('../lib/ui/watch');
     donePromise = watchModule.watch({ root: h.root, config: {} });
 
-    h.fakeStdin.emit('data', 'Q'); // opens+focuses; quickStartFocus: 0 -> CON-200 (Urgent)
+    // CON-56: digit-jump into QUICK START (always shown, no toggle) —
+    // focuses it with quickStartFocus: 0 -> CON-200 (Urgent).
+    h.fakeStdin.emit('data', '1');
     h.fakeStdin.emit('data', 'a'); // creates a fresh, confirmed, maxConcurrent:1 queue for CON-200
 
     assert.equal(h.spawnCalls.length, 1);
@@ -1853,7 +1859,11 @@ test('an already-queued ticket never appears in the QUICK START list at all — 
     const watchModule = require('../lib/ui/watch');
     donePromise = watchModule.watch({ root: h.root, config: {} });
 
-    h.fakeStdin.emit('data', 'Q');
+    // CON-56: digit-jump into QUICK START (always shown, no toggle) — it is
+    // still digit 1 here even with a restored QUEUED section also on
+    // screen, since QUICK START renders before QUEUED (buildSections'
+    // render order).
+    h.fakeStdin.emit('data', '1');
     const frame = h.screen();
 
     // Isolate the QUICK START box's own content (between its own title line
@@ -1907,7 +1917,8 @@ test('an out-of-bounds quickstart-add index (empty eligible list) is a no-op tha
     const watchModule = require('../lib/ui/watch');
     donePromise = watchModule.watch({ root: h.root, config: {} });
 
-    h.fakeStdin.emit('data', 'Q');
+    // CON-56: digit-jump into QUICK START (always shown, no toggle).
+    h.fakeStdin.emit('data', '1');
     const focusedFrame = h.screen();
     assert.match(focusedFrame, /no tickets cached yet/);
 
@@ -1915,6 +1926,200 @@ test('an out-of-bounds quickstart-add index (empty eligible list) is a no-op tha
 
     assert.equal(h.spawnCalls.length, 0, 'nothing should ever be spawned from an empty eligible list');
     assert.equal(queueCache.read(h.root), null, 'no queue should have been created at all');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+// --- CON-54: t / view-ticket / view-ticket-quickstart / back-to-launchpad --
+// routing ---------------------------------------------------------------
+// `mode`, `launchPad` and `ticketviewReturnMode` are private closures inside
+// watch(opts) — exactly like queueState/launchPad above, the only way to
+// prove a real 't'/'esc' keypress reaches them end to end is against a real
+// running dashboard (a fake session, not real tmux) and reading what actually
+// lands on screen.
+
+test('t on the QUICK START-focused ticket opens the ticket detail view (view-ticket-quickstart), populating the cache even though the launch pad was never opened', async () => {
+  const h = setupQuickStartHarness([
+    { identifier: 'CON-100', title: 'Urgent ticket', priority: 1, description: 'the full description body' },
+    { identifier: 'CON-101', title: 'Less urgent ticket', priority: 3 },
+  ]);
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: {} });
+
+    // CON-56: digit-jump into QUICK START (always on screen, digit 1 here —
+    // no runs, no queue). quickStartFocus: 0 -> CON-100 (top priority).
+    h.fakeStdin.emit('data', '1');
+    h.fakeStdin.emit('data', 't');
+
+    // CON-54, design.md Decision 4: ensureLaunchPad() must have populated
+    // launchPad.cache even though 'N' (the launch pad's own entry point) was
+    // never pressed this session — findTicket() has to have something to
+    // search. A passing match on the ticket's own title (not just its
+    // identifier) proves the FULL cached ticket object was found, not just an
+    // id echoed back.
+    const opened = h.screen();
+    assert.match(opened, /CON-100/);
+    assert.match(opened, /Urgent ticket/);
+    assert.match(opened, /esc back/);
+    assert.doesNotMatch(opened, /QUICK START/, 'the fleet view must no longer be on screen');
+
+    // esc returns to the FLEET view (ticketviewReturnMode === 'fleet'), not
+    // the launch pad — the launch pad was never even opened this session.
+    h.fakeStdin.emit('data', '\x1b');
+    const backOnFleet = h.screen();
+    assert.match(backOnFleet, /QUICK START/);
+    assert.doesNotMatch(backOnFleet, /esc back/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('t on a QUICK START focus whose eligible list shrank out from under it (focused index no longer resolves) is a no-op', async () => {
+  const cacheModule = require('../lib/ui/cache');
+  const h = setupQuickStartHarness([
+    { identifier: 'CON-110', title: 'First ticket', priority: 1 },
+    { identifier: 'CON-111', title: 'Second ticket', priority: 2 },
+  ]);
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: {} });
+
+    h.fakeStdin.emit('data', '1'); // focus QUICK START, quickStartFocus: 0
+    h.fakeStdin.emit('data', 'j'); // quickStartFocus: 1 -> CON-111 (draw()'s own reclamp confirms this is still valid — len is 2)
+
+    // Rewrite the cache DIRECTLY (no keypress in between, so no draw() runs
+    // and quickStartFocus is never reclamped) to shrink the eligible list to
+    // a single entry — exactly the "list shrank between render and keypress"
+    // race the spec's no-op requirement describes: index 1 no longer
+    // resolves to anything by the time 't' is actually handled.
+    cacheModule.write(h.root, { tickets: [{ identifier: 'CON-110', title: 'First ticket', priority: 1 }], epics: [] }, Date.now());
+
+    h.fakeStdin.emit('data', 't');
+
+    const frame = h.screen();
+    assert.doesNotMatch(frame, /esc back/, 'no ticket detail view should have opened');
+    assert.match(frame, /QUICK START/, 'the fleet view must still be on screen');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('t on a QUEUED-focused ticket opens the ticket detail view (view-ticket), and esc returns to the fleet view', async () => {
+  const queueCache = require('../lib/ui/queue-cache');
+  const h = setupLaunchPadHarness(
+    [{ identifier: 'CON-120', title: 'Pending queued ticket', epicId: 'e1', state: { name: 'Todo', type: 'unstarted' }, description: 'queued ticket body' }],
+    [{ id: 'e1', name: 'Epic', openCount: 1 }],
+  );
+  // A restored, unconfirmed queue — untouched by tick() (shouldTick()
+  // refuses it), so CON-120 stays stably `pending` for the whole test,
+  // exactly like the sibling "already-`⏳ queued`" test above relies on.
+  queueCache.write(h.root, {
+    pending: ['CON-120'], inFlight: new Set(), maxConcurrent: 1, launchCommand: null,
+  }, 'sess-preexisting', Date.now());
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    // No RUNNING/NEEDS YOU: QUICK START(1), QUEUED(2) — CON-120 is already
+    // pending, so it is excluded from QUICK START's own eligible list and
+    // only reachable via QUEUED.
+    h.fakeStdin.emit('data', '2');
+    const focused = h.screen();
+    assert.match(focused, /QUEUED/);
+
+    h.fakeStdin.emit('data', 't');
+
+    const opened = h.screen();
+    assert.match(opened, /CON-120/);
+    assert.match(opened, /Pending queued ticket/);
+    assert.match(opened, /esc back/);
+
+    // Opened from the fleet view (via QUEUED, never the launch pad) — esc
+    // must return to the fleet view, not the launch pad.
+    h.fakeStdin.emit('data', '\x1b');
+    const backOnFleet = h.screen();
+    assert.match(backOnFleet, /QUEUED/);
+    assert.doesNotMatch(backOnFleet, /esc back/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('the launch pad\'s own ↵ -> open-ticketview -> esc still returns to the launch pad, unaffected by the new fleet-originated entry points', async () => {
+  const h = setupLaunchPadHarness(
+    [{ identifier: 'CON-130', title: 'Launch pad ticket', epicId: 'e1', state: { name: 'Todo', type: 'unstarted' }, description: 'launch pad ticket body' }],
+    [{ id: 'e1', name: 'Epic', openCount: 1 }],
+  );
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    h.fakeStdin.emit('data', 'N');   // open the launch pad
+    h.fakeStdin.emit('data', '\t');  // switch focus to the tickets pane
+    h.fakeStdin.emit('data', '\r');  // open-ticketview on the highlighted ticket
+
+    const opened = h.screen();
+    assert.match(opened, /CON-130/);
+    assert.match(opened, /Launch pad ticket/);
+    assert.match(opened, /esc back/);
+
+    h.fakeStdin.emit('data', '\x1b'); // esc — must return to the LAUNCH PAD, not the fleet
+    const backOnLaunchPad = h.screen();
+    assert.doesNotMatch(backOnLaunchPad, /esc back/);
+    assert.match(backOnLaunchPad, /Launch pad ticket|CON-130/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('alternating entry points each return correctly — launch pad, then fleet, in the same session', async () => {
+  const queueCache = require('../lib/ui/queue-cache');
+  const h = setupLaunchPadHarness(
+    [{ identifier: 'CON-140', title: 'Both entry points ticket', epicId: 'e1', state: { name: 'Todo', type: 'unstarted' }, description: 'body' }],
+    [{ id: 'e1', name: 'Epic', openCount: 1 }],
+  );
+  queueCache.write(h.root, {
+    pending: ['CON-140'], inFlight: new Set(), maxConcurrent: 1, launchCommand: null,
+  }, 'sess-preexisting', Date.now());
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    // First: open from the launch pad, esc back to the launch pad.
+    h.fakeStdin.emit('data', 'N');
+    h.fakeStdin.emit('data', '\t');
+    h.fakeStdin.emit('data', '\r');
+    assert.match(h.screen(), /esc back/);
+    h.fakeStdin.emit('data', '\x1b');
+    assert.doesNotMatch(h.screen(), /esc back/);
+
+    // Leave the launch pad entirely, back to the fleet.
+    h.fakeStdin.emit('data', '\x1b');
+    const onFleet = h.screen();
+    assert.match(onFleet, /QUEUED/, 'must be back on the fleet view');
+
+    // Second: open via 't' from the fleet's QUEUED row, esc back to the
+    // FLEET this time — not a stale launch-pad destination left over from
+    // the first visit.
+    h.fakeStdin.emit('data', '2'); // focus-queue
+    h.fakeStdin.emit('data', 't');
+    assert.match(h.screen(), /esc back/);
+    h.fakeStdin.emit('data', '\x1b');
+    const backOnFleet = h.screen();
+    assert.match(backOnFleet, /QUEUED/);
+    assert.doesNotMatch(backOnFleet, /esc back/);
   } finally {
     await h.teardown(donePromise);
   }
@@ -1938,7 +2143,11 @@ test('the eligible list excludes a ticket that already has a live run, not just 
     const watchModule = require('../lib/ui/watch');
     donePromise = watchModule.watch({ root: h.root, config: {} });
 
-    h.fakeStdin.emit('data', 'Q');
+    // CON-56: digit-jump into QUICK START (always shown, no toggle) — HEL-1
+    // has a live run here, so RUNNING is non-empty and renders first,
+    // pushing QUICK START to digit 2 (unlike the other harness tests in this
+    // file, which have no runs at all and so land QUICK START on digit 1).
+    h.fakeStdin.emit('data', '2');
     const focusedFrame = h.screen();
     const quickStartPane = focusedFrame.split('QUICK START')[1] || '';
     assert.doesNotMatch(quickStartPane.split('\n').slice(0, 6).join('\n'), /HEL-1.*Already running/);
@@ -1948,6 +2157,76 @@ test('the eligible list excludes a ticket that already has a live run, not just 
 
     assert.equal(h.spawnCalls.length, 1);
     assert.equal(h.spawnCalls[0].ticket, 'CON-400');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('t on a RUNNING row opens the ticket detail view (view-ticket), and esc returns to the fleet view', async () => {
+  const h = setupQuickStartHarness([
+    { identifier: 'CON-500', title: 'A currently running ticket', priority: 1, description: 'running ticket body' },
+  ], {
+    listWindows() { return [{ ticket: 'CON-500', alive: true, activity: null }]; },
+  });
+
+  const runDir = path.join(h.root, '.concertino', 'runs', 'CON-500');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'), JSON.stringify({ t: 1000, kind: 'run.start' }) + '\n');
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: {} });
+
+    // CON-500 is already `▲ running`, so RUNNING (not QUICK START) is the
+    // first section — `selected: 0` (the default) already lands on it, no
+    // digit-jump needed.
+    h.fakeStdin.emit('data', 't');
+
+    const opened = h.screen();
+    assert.match(opened, /CON-500/);
+    assert.match(opened, /A currently running ticket/);
+    assert.match(opened, /esc back/);
+
+    h.fakeStdin.emit('data', '\x1b');
+    const backOnFleet = h.screen();
+    assert.match(backOnFleet, /RUNNING/);
+    assert.doesNotMatch(backOnFleet, /esc back/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('t on a DONE row opens the ticket detail view (view-ticket), and esc returns to the fleet view', async () => {
+  const h = setupQuickStartHarness([
+    { identifier: 'CON-501', title: 'A finished ticket', priority: 1, description: 'done ticket body' },
+  ]);
+
+  const runDir = path.join(h.root, '.concertino', 'runs', 'CON-501');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+    JSON.stringify({ t: 1000, kind: 'run.start' }) + '\n' +
+    JSON.stringify({ t: 2000, kind: 'run.end', status: 'delivered' }) + '\n');
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: {} });
+
+    // CON-501 has already ended (run.end, no live window) — it lands in
+    // DONE, the only runs-backed section on screen, so `selected: 0` (the
+    // default) already lands on it.
+    h.fakeStdin.emit('data', 't');
+
+    const opened = h.screen();
+    assert.match(opened, /CON-501/);
+    assert.match(opened, /A finished ticket/);
+    assert.match(opened, /esc back/);
+
+    h.fakeStdin.emit('data', '\x1b');
+    const backOnFleet = h.screen();
+    assert.match(backOnFleet, /DONE/);
+    assert.doesNotMatch(backOnFleet, /esc back/);
   } finally {
     await h.teardown(donePromise);
   }
@@ -3152,5 +3431,483 @@ test('scrollToShow forwards every tail-lengthening opt (including forceStartConf
     delete require.cache[watchPath];
     delete require.cache[sessionPath];
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+// ===========================================================================
+// CON-57: the settings screen, driven end to end through the real onKey/
+// applyAction pipeline (mirrors setupQuickStartHarness's own "fake session/
+// stdin, real fs" technique) — `concertino.config.json` is a REAL file on
+// disk here (not just an in-memory `opts.config`), since openSettings()
+// deliberately re-reads it fresh off disk every time `s` is pressed
+// (design.md Decision 4), and settings-save writes back to that same file.
+// ===========================================================================
+
+function setupSettingsHarness(config) {
+  const { EventEmitter } = require('node:events');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-settings-'));
+  const cfgPath = path.join(root, 'concertino.config.json');
+  fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2) + '\n');
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return []; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  // isTTY true so the 'data' handler does NOT strip a trailing '\r' (used
+  // throughout these tests to commit a field edit / toggle a boolean) as it
+  // does for piped stdin — see watch.js's own comment there, and
+  // withWatchHarness's identical setting above.
+  fakeStdin.isTTY = true;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  return {
+    root, cfgPath, fakeStdin, written,
+    screen: () => screenOf(written),
+    readConfig: () => JSON.parse(fs.readFileSync(cfgPath, 'utf8')),
+    rawBytes: () => fs.readFileSync(cfgPath, 'utf8'),
+    async teardown(donePromise) {
+      fakeStdin.emit('end');
+      if (donePromise) await donePromise;
+      process.stdout.write = realWrite;
+      Object.defineProperty(process, 'stdin', realStdinDescriptor);
+      delete require.cache[watchPath];
+      delete require.cache[sessionPath];
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+const SETTINGS_CONFIG = {
+  harnesses: ['claude-code'],
+  project: { name: 'fixture-project', baseBranch: 'main' },
+  ticketProvider: { kind: 'linear', idExample: 'CON-1' },
+  specProvider: { kind: 'none' },
+  worktree: { ports: { frontendBase: 5173, backendBase: 8080 } },
+  gates: [{ name: 'test', when: 'always', command: 'true' }],
+  agentMerge: { enabled: false, mergeMethod: 'squash' },
+  budgets: { executionCycles: 3 },
+};
+
+test('CON-57: s opens the settings screen from the fleet', async () => {
+  const h = setupSettingsHarness(SETTINGS_CONFIG);
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: SETTINGS_CONFIG });
+
+    h.fakeStdin.emit('data', 's');
+    const frame = h.screen();
+    assert.match(frame, /SETTINGS/);
+    assert.match(frame, /project/i);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-57: toggling a boolean field and saving writes the change to concertino.config.json', async () => {
+  const h = setupSettingsHarness(SETTINGS_CONFIG);
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: SETTINGS_CONFIG });
+
+    h.fakeStdin.emit('data', 's'); // open settings
+    // Navigate SECTIONS down to 'agentMerge', enter FIELDS, toggle `enabled`.
+    const sections = configLibForOrder();
+    const agentMergeIndex = sections.indexOf('agentMerge');
+    for (let i = 0; i < agentMergeIndex; i++) h.fakeStdin.emit('data', 'j');
+    h.fakeStdin.emit('data', '\t'); // focus fields (agentMerge.enabled is field 0)
+    h.fakeStdin.emit('data', '\r'); // toggle boolean
+    h.fakeStdin.emit('data', 'S'); // save
+
+    const written = h.readConfig();
+    assert.equal(written.agentMerge.enabled, true, 'the toggled value must be persisted');
+    // The rest of the file must be untouched.
+    assert.equal(written.project.name, 'fixture-project');
+
+    const frame = h.screen();
+    assert.doesNotMatch(frame, /SETTINGS/, 'a successful save returns to the fleet');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-57: Escape with no save leaves concertino.config.json byte-unchanged', async () => {
+  const h = setupSettingsHarness(SETTINGS_CONFIG);
+  const before = h.rawBytes();
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: SETTINGS_CONFIG });
+
+    h.fakeStdin.emit('data', 's');
+    h.fakeStdin.emit('data', '\t'); // focus fields on the first section (harnesses is absent — first real section is project)
+    h.fakeStdin.emit('data', '\r'); // would open project.name's prompt
+    typeText(h.fakeStdin, 'changed-name');
+    h.fakeStdin.emit('data', '\x1b'); // cancel the field prompt (not the whole screen)
+    h.fakeStdin.emit('data', '\x1b'); // now discard everything and return to fleet
+
+    const after = h.rawBytes();
+    assert.equal(after, before, 'Escape must never write to concertino.config.json');
+    assert.doesNotMatch(h.screen(), /SETTINGS/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-57: an invalid edit (non-numeric budgets.executionCycles) is rejected on save and the file is left untouched', async () => {
+  const h = setupSettingsHarness(SETTINGS_CONFIG);
+  const before = h.rawBytes();
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: SETTINGS_CONFIG });
+
+    h.fakeStdin.emit('data', 's');
+    const sections = configLibForOrder();
+    const budgetsIndex = sections.indexOf('budgets');
+    for (let i = 0; i < budgetsIndex; i++) h.fakeStdin.emit('data', 'j');
+    h.fakeStdin.emit('data', '\t'); // focus fields (budgets.executionCycles is field 0)
+    h.fakeStdin.emit('data', '\r'); // open the free-text prompt, seeded with "3"
+    // Clear the seeded value and type a non-numeric one.
+    h.fakeStdin.emit('data', '\x7f');
+    typeText(h.fakeStdin, 'abc');
+    h.fakeStdin.emit('data', '\r'); // commit into the candidate (still just staged)
+    h.fakeStdin.emit('data', 'S'); // save — must be rejected
+
+    const frame = h.screen();
+    assert.match(frame, /budgets\.executionCycles/);
+    assert.match(frame, /SETTINGS/, 'a rejected save must keep the screen open with the edit still staged');
+
+    const after = h.rawBytes();
+    assert.equal(after, before, 'a rejected save must never touch the file on disk');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-57: a below-minimum dashboard value is rejected on save and the file is left untouched', async () => {
+  const h = setupSettingsHarness(SETTINGS_CONFIG);
+  const before = h.rawBytes();
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: SETTINGS_CONFIG });
+
+    h.fakeStdin.emit('data', 's');
+    const sections = configLibForOrder();
+    const dashboardIndex = sections.indexOf('dashboard');
+    for (let i = 0; i < dashboardIndex; i++) h.fakeStdin.emit('data', 'j');
+    h.fakeStdin.emit('data', '\t'); // focus fields
+    // dashboard's field order follows the schema: tmuxSession, launchCommand,
+    // maxConcurrent, escalationTimeoutMinutes, retentionDays, launchPad.enabled,
+    // launchPad.backlog — move down to maxConcurrent (index 2).
+    h.fakeStdin.emit('data', 'j');
+    h.fakeStdin.emit('data', 'j');
+    h.fakeStdin.emit('data', '\r'); // open the prompt, seeded with the schema default "2"
+    h.fakeStdin.emit('data', '\x7f');
+    typeText(h.fakeStdin, '0');
+    h.fakeStdin.emit('data', '\r');
+    h.fakeStdin.emit('data', 'S');
+
+    const frame = h.screen();
+    assert.match(frame, /dashboard\.maxConcurrent/);
+
+    const after = h.rawBytes();
+    assert.equal(after, before, 'a rejected save must never touch the file on disk');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-57: clearing a required field (project.name) is rejected on save, inline error shown, file untouched', async () => {
+  const h = setupSettingsHarness(SETTINGS_CONFIG);
+  const before = h.rawBytes();
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: SETTINGS_CONFIG });
+
+    h.fakeStdin.emit('data', 's');
+    const sections = configLibForOrder();
+    const projectIndex = sections.indexOf('project');
+    for (let i = 0; i < projectIndex; i++) h.fakeStdin.emit('data', 'j');
+    h.fakeStdin.emit('data', '\t'); // focus fields (project.name is field 0)
+    h.fakeStdin.emit('data', '\r'); // open the prompt, seeded with "fixture-project"
+    for (let i = 0; i < 'fixture-project'.length; i++) h.fakeStdin.emit('data', '\x7f'); // clear it
+    h.fakeStdin.emit('data', '\r'); // commit the now-empty value into the candidate
+    h.fakeStdin.emit('data', 'S'); // save — must be rejected
+
+    const frame = h.screen();
+    assert.match(frame, /project\.name/);
+    assert.match(frame, /SETTINGS/, 'a rejected save must keep the screen open with the edit still staged');
+
+    const after = h.rawBytes();
+    assert.equal(after, before, 'a rejected save must never touch the file on disk');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+function configLibForOrder() {
+  const configLib = require('../lib/config');
+  return configLib.schemaSectionOrder(configLib.loadSchema());
+}
+
+// ===========================================================================
+// CON-55 — PR artifact type in the EVIDENCE panel: openInBrowser() (the one
+// new child-process call), and the 'open-external-url' action handler's
+// success/failure paths (design.md Decisions 3/4).
+//
+// No real `xdg-open` (or any real browser) is ever touched — a fake
+// executable named `xdg-open` is put on PATH ahead of the real one for the
+// duration of each test, the same PATH-shadowing technique
+// test/scripts/check-merge-readiness.test.sh already uses for its own
+// MOCKBIN. This proves the real execFileSync('xdg-open', ...) call site
+// behaves correctly against a controlled success/failure/missing-binary
+// outcome, without requiring a display or a real browser in CI.
+// ===========================================================================
+
+// Writes an executable script named `xdg-open` into a fresh temp dir and
+// returns that dir's path, ready to be prepended to PATH. `exitCode` controls
+// whether the fake opener succeeds or fails; omit the file entirely
+// (`missing: true`) to exercise the "binary not found" failure mode.
+// Shebang uses an ABSOLUTE interpreter path (never `#!/usr/bin/env bash`,
+// which itself has to resolve `bash` via PATH) — that would defeat the whole
+// point of replacing PATH below, since a system that HAS a real `xdg-open`
+// (this project's own dev box does) would leave it reachable through `env`'s
+// own PATH search regardless of what process.env.PATH is set to for the
+// `execFileSync('xdg-open', ...)` lookup itself.
+const SHELL = fs.existsSync('/bin/sh') ? '/bin/sh' : '/usr/bin/bash';
+function fakeXdgOpenDir({ exitCode, missing }) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-xdg-open-'));
+  if (!missing) {
+    const bin = path.join(dir, 'xdg-open');
+    fs.writeFileSync(bin, '#!' + SHELL + '\nexit ' + exitCode + '\n');
+    fs.chmodSync(bin, 0o755);
+  }
+  return dir;
+}
+
+// REPLACES process.env.PATH for the duration of `body` (never merely
+// prepends — this system has a real `xdg-open` at /usr/bin/xdg-open, and
+// leaving the real PATH reachable would let the "missing"/shadow tests below
+// silently fall through to it), restoring it afterward even if `body`
+// throws.
+function withPath(dir, body) {
+  const realPath = process.env.PATH;
+  process.env.PATH = dir;
+  try {
+    return body();
+  } finally {
+    process.env.PATH = realPath;
+  }
+}
+
+test('openInBrowser succeeds silently when xdg-open exits 0', () => {
+  const dir = fakeXdgOpenDir({ exitCode: 0 });
+  withPath(dir, () => {
+    assert.doesNotThrow(() => openInBrowser('https://example.com/pr/1'));
+  });
+});
+
+test('openInBrowser throws when xdg-open exits non-zero', () => {
+  const dir = fakeXdgOpenDir({ exitCode: 1 });
+  withPath(dir, () => {
+    assert.throws(() => openInBrowser('https://example.com/pr/1'));
+  });
+});
+
+test('openInBrowser throws when xdg-open is not on PATH at all', () => {
+  const dir = fakeXdgOpenDir({ missing: true });
+  withPath(dir, () => {
+    assert.throws(() => openInBrowser('https://example.com/pr/1'));
+  });
+});
+
+// A single-run fleet whose event log has both a file-based `evidence` event
+// and a `pr` event — enough to drill in, focus EVIDENCE, and select either
+// kind of entry. Mirrors setupSettingsHarness's shape (fake session/stdin/
+// stdout via require.cache, no real tmux).
+function setupPrEvidenceHarness() {
+  const { EventEmitter } = require('node:events');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-pr-'));
+  const runDir = path.join(root, '.concertino', 'runs', 'HEL-77');
+  fs.mkdirSync(runDir, { recursive: true });
+  const events = [
+    { t: 1000, kind: 'run.start', harness: 'claude', model: 'opus-5' },
+    { t: 2000, kind: 'evidence', role: 'evaluator', label: 'plan.md', ref: path.join(runDir, 'plan.md') },
+    { t: 3000, kind: 'pr', role: 'orchestrator', url: 'https://github.com/example/repo/pull/9', label: 'PR: add widget' },
+  ];
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  fs.writeFileSync(path.join(runDir, 'plan.md'), '# plan\n');
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return [{ ticket: 'HEL-77', alive: true, activity: null }]; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = true;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  return {
+    root, fakeStdin, written,
+    screen: () => screenOf(written),
+    // 'l' drills into the (only, selected) run; '4' jumps straight to the
+    // EVIDENCE panel (DRILL_PANELS index 3 — drilldown.js); 'j' moves the
+    // selection down from the leading (evidence) entry onto the pr entry.
+    openEvidencePanelOnPrEntry() {
+      this.fakeStdin.emit('data', 'l');
+      this.fakeStdin.emit('data', '4');
+      this.fakeStdin.emit('data', 'j');
+    },
+    openEvidencePanelOnFileEntry() {
+      this.fakeStdin.emit('data', 'l');
+      this.fakeStdin.emit('data', '4');
+    },
+    async teardown(donePromise) {
+      fakeStdin.emit('end');
+      if (donePromise) await donePromise;
+      process.stdout.write = realWrite;
+      Object.defineProperty(process, 'stdin', realStdinDescriptor);
+      delete require.cache[watchPath];
+      delete require.cache[sessionPath];
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+test('CON-55: Enter on the pr entry opens the browser and leaves the dashboard on the drill-down (not docview)', async () => {
+  const h = setupPrEvidenceHarness();
+  const dir = fakeXdgOpenDir({ exitCode: 0 });
+  let donePromise;
+  try {
+    await withPath(dir, async () => {
+      const watchModule = require('../lib/ui/watch');
+      donePromise = watchModule.watch({ root: h.root, config: {} });
+
+      h.openEvidencePanelOnPrEntry();
+      h.fakeStdin.emit('data', '\r');
+
+      const frame = h.screen();
+      assert.match(frame, /EVIDENCE/, 'must still be on the drill-down, not docview');
+      assert.doesNotMatch(frame, /could not open/, 'a successful open must show no failure notice');
+    });
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-55: Enter on the pr entry shows a visible notice (not a crash) when xdg-open fails', async () => {
+  const h = setupPrEvidenceHarness();
+  const dir = fakeXdgOpenDir({ exitCode: 1 });
+  let donePromise;
+  try {
+    await withPath(dir, async () => {
+      const watchModule = require('../lib/ui/watch');
+      donePromise = watchModule.watch({ root: h.root, config: {} });
+
+      h.openEvidencePanelOnPrEntry();
+      h.fakeStdin.emit('data', '\r');
+
+      const frame = h.screen();
+      assert.match(frame, /could not open/, 'a failed open must surface a visible drillNotice');
+      assert.match(frame, /https:\/\/github\.com\/example\/repo\/pull\/9/, 'the notice must identify the URL');
+      assert.match(frame, /EVIDENCE/, 'a failed open must not crash — the dashboard stays on the drill-down');
+    });
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-55: Enter on the pr entry shows a visible notice when xdg-open is missing entirely', async () => {
+  const h = setupPrEvidenceHarness();
+  const dir = fakeXdgOpenDir({ missing: true });
+  let donePromise;
+  try {
+    await withPath(dir, async () => {
+      const watchModule = require('../lib/ui/watch');
+      donePromise = watchModule.watch({ root: h.root, config: {} });
+
+      h.openEvidencePanelOnPrEntry();
+      h.fakeStdin.emit('data', '\r');
+
+      const frame = h.screen();
+      assert.match(frame, /could not open/, 'a missing xdg-open must surface a visible drillNotice, not crash');
+    });
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-55: Enter on a file-based evidence entry still opens docview, unaffected by the pr entry also being present', async () => {
+  const h = setupPrEvidenceHarness();
+  const dir = fakeXdgOpenDir({ exitCode: 0 });
+  let donePromise;
+  try {
+    await withPath(dir, async () => {
+      const watchModule = require('../lib/ui/watch');
+      donePromise = watchModule.watch({ root: h.root, config: {} });
+
+      h.openEvidencePanelOnFileEntry();
+      h.fakeStdin.emit('data', '\r');
+
+      const frame = h.screen();
+      assert.match(frame, /plan\.md/, 'docview must show the selected file entry\'s title/content');
+      assert.doesNotMatch(frame, /could not open/, 'opening a file entry must never touch the browser-open path');
+    });
+  } finally {
+    await h.teardown(donePromise);
   }
 });
