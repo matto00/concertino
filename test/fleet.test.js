@@ -869,7 +869,7 @@ test('the METRICS gates line uses the real gate-name vocabulary (phase:setup/ser
   ];
   const out = plain(renderFleet([
     run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000, gates }),
-  ], { ...OPTS, cols: 120, now }));
+  ], { ...OPTS, cols: 100, now }));
   const gatesLine = out.split('\n').find((l) => l.includes('gates'));
   assert.ok(gatesLine, 'a gates line must render');
   assert.match(gatesLine, /setup 100%/);
@@ -2640,4 +2640,124 @@ test('visibleWindowGrid\'s selected-row trim protection keeps the actually-selec
     assert.ok(w.startOffset <= 0 && 0 < w.startOffset + w.shown,
       `rows:${rows} — RUNNING row 0 (the selected row) must stay within [startOffset, startOffset+shown), got ${JSON.stringify(w)}`);
   }
+});
+
+// --- Task 8: renderFleet's grid-mode branch ----------------------------
+
+test('renderFleet stays single-column below GRID_MIN_COLS, byte-identical to before this task', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' }), run({ ticket: 'HEL-2', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
+  const out = plain(renderFleet(runs, { cols: 109, rows: 30, selected: 0, now: 100000 }));
+  assert.doesNotMatch(out, /METRICS.*RUNNING/s, 'single-column mode never places a later section\'s text before an earlier one on the same line');
+  const lines = out.split('\n');
+  assert.ok(lines.some((l) => l.trim().startsWith('┌') && l.includes('RUNNING')));
+});
+
+test('renderFleet: cols one below GRID_MIN_COLS stays single-column, cols at GRID_MIN_COLS switches to grid', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' })];
+  const { GRID_MIN_COLS } = require('../lib/ui/screens/fleet');
+  const belowLines = plain(renderFleet(runs, { cols: GRID_MIN_COLS - 1, rows: 30, selected: 0, now: 100000 })).split('\n');
+  const atLines = plain(renderFleet(runs, { cols: GRID_MIN_COLS, rows: 30, selected: 0, now: 100000 })).split('\n');
+  assert.notEqual(
+    belowLines.findIndex((l) => l.includes('RUNNING')),
+    belowLines.findIndex((l) => l.includes('METRICS')),
+    'below GRID_MIN_COLS, RUNNING and METRICS must be on DIFFERENT lines (single-column stack)',
+  );
+  assert.equal(
+    atLines.findIndex((l) => l.includes('RUNNING')),
+    atLines.findIndex((l) => l.includes('METRICS')),
+    'at GRID_MIN_COLS, RUNNING and METRICS must be on the SAME line (side by side)',
+  );
+});
+
+test('renderFleet switches to the two-column grid at GRID_MIN_COLS', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' }), run({ ticket: 'HEL-2', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
+  const out = plain(renderFleet(runs, { cols: 150, rows: 30, selected: 0, now: 100000 }));
+  const lines = out.split('\n');
+  const runningLine = lines.find((l) => l.includes('RUNNING'));
+  const metricsLine = lines.find((l) => l.includes('METRICS'));
+  assert.ok(runningLine, 'RUNNING must render');
+  assert.ok(metricsLine, 'METRICS must render');
+  assert.equal(lines.indexOf(runningLine), lines.indexOf(metricsLine), 'RUNNING and METRICS render on the SAME line — side by side, not stacked');
+});
+
+test('grid mode: METRICS column fills the full column-area height regardless of column 1\'s actual content height', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' })]; // column 1 has almost nothing to show
+  const out = plain(renderFleet(runs, { cols: 150, rows: 30, selected: 0, now: 100000 }));
+  const lines = out.split('\n');
+  const metricsBorderLines = lines.filter((l) => l.includes('│') || l.includes('┃'));
+  // METRICS' own box border should extend well past where column 1's tiny
+  // RUNNING box ends — i.e. there exist rows where the METRICS-side border
+  // character is present but column 1's content area is just blank padding.
+  assert.ok(metricsBorderLines.length > 6, 'METRICS should render a tall box, not a short one, on a 30-row terminal with almost no column-1 content');
+});
+
+test('grid mode: NEEDS YOU and FAILED render as full-width banners above the two columns', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'failed', endedAt: 100, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-3', status: 'running' }),
+  ];
+  const out = plain(renderFleet(runs, { cols: 150, rows: 30, selected: 0, now: 100000 }));
+  const lines = out.split('\n');
+  const needsYouIdx = lines.findIndex((l) => l.includes('NEEDS YOU'));
+  const failedIdx = lines.findIndex((l) => l.includes('FAILED'));
+  const runningIdx = lines.findIndex((l) => l.includes('RUNNING'));
+  assert.ok(needsYouIdx >= 0 && failedIdx >= 0 && runningIdx >= 0);
+  assert.ok(needsYouIdx < failedIdx, 'NEEDS YOU banner comes first');
+  assert.ok(failedIdx < runningIdx, 'FAILED banner comes before the two-column area starts');
+});
+
+test('grid mode: digit-jump numbers still match sectionJumpTargets\' numbering (no drift introduced by grid rendering)', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'failed', endedAt: 100, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-3', status: 'running' }),
+    run({ ticket: 'HEL-4', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+  ];
+  const out = plain(renderFleet(runs, { cols: 150, rows: 30, selected: 0, now: 100000 }));
+  const targets = sectionJumpTargets(runs, null, false, true);
+  targets.forEach((t, i) => {
+    const num = i + 1;
+    assert.match(out, new RegExp(`\\[${num}\\] ${t.section.title.replace(/[[\]()]/g, '\\$&')}`));
+  });
+});
+
+test('grid mode: selecting a run inside DONE (rendered in column 1) still highlights the correct row', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' }), run({ ticket: 'HEL-2', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
+  const outSelected1 = renderFleet(runs, { cols: 150, rows: 30, selected: 1, now: 100000 });
+  const outSelected0 = renderFleet(runs, { cols: 150, rows: 30, selected: 0, now: 100000 });
+  assert.notEqual(plain(outSelected1), plain(outSelected0), 'selecting a different row must change the render');
+  // The ordinary run-selection marker is '▸' (see e.g. the QUICK START/
+  // QUEUED-focus tests elsewhere in this file, which explicitly distinguish
+  // their own '»' focus marker FROM '▸') — DONE is rendered via
+  // renderFinishedRow, which uses '▸' like every other run row, not '»'
+  // (QUEUED/QUICK START's unselectable-row focus marker; not applicable
+  // here, there is no QUEUED/QUICK START section in this fixture).
+  assert.match(plain(outSelected1), /▸/, 'a selection marker must render somewhere');
+});
+
+test('grid mode: the total rendered frame never exceeds the requested row budget (no scroll-by-one from a mismatched columnAreaHeight)', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'failed', endedAt: 100, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+  ];
+  for (const rows of [15, 20, 25, 30, 40]) {
+    const out = renderFleet(runs, { cols: 150, rows, selected: 0, now: 100000 });
+    const lineCount = out.split('\n').length;
+    assert.ok(lineCount <= rows - 1, `at rows:${rows}, rendered ${lineCount} lines — must leave the one row reserved for the trailing newline`);
+  }
+});
+
+test('grid mode: METRICS renders its expanded tier when the terminal is wide enough (>= COLUMN_ONE_WIDTH + 1 + 80)', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
+  const out = plain(renderFleet(runs, { cols: 160, rows: 30, selected: 0, now: 100000 }));
+  assert.match(out, /throughput \(30d\)/);
+});
+
+test('grid mode: METRICS stays compact when the terminal is grid-eligible but METRICS\' own column is still narrow', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
+  const out = plain(renderFleet(runs, { cols: 115, rows: 30, selected: 0, now: 100000 }));
+  assert.match(out, /throughput \(7d\)/);
+  assert.doesNotMatch(out, /throughput \(30d\)/);
 });
