@@ -6,6 +6,7 @@ const {
   sectionJumpTargets, buildSections, QUICK_START_COUNT, QUICK_START_TOGGLE_KEY,
   metricsFor, metricsColumnLines,
 } = require('../lib/ui/screens/fleet');
+const { renderStackedSection } = require('../lib/ui/screens/fleet');
 const { reduce, PHASE_ORDER } = require('../lib/ui/reducer');
 const f = require('../lib/ui/format');
 
@@ -2519,4 +2520,41 @@ test('NEEDS YOU, RUNNING, FAILED, and DONE section headings carry no new icon â€
   assert.match(out, /\[2\] FAILED/);
   assert.match(out, /\[3\] RUNNING/);
   assert.match(out, /\[4\] DONE/);
+});
+
+// --- fleet-metrics-grid: renderStackedSection --------------------------
+
+test('renderStackedSection renders a non-empty section as a bordered box at its natural height, with the given jump number', () => {
+  const sections = buildSections({ needsYou: [], active: [run({ ticket: 'HEL-1', status: 'running' })], failed: [], done: [] }, null, {});
+  const running = sections.find((s) => s.kind === 'running');
+  const w = { shown: 1, startOffset: 0, hidden: 0 };
+  const lines = renderStackedSection(running, 3, w, { cols: 70, avgDoneMs: null, selected: 0, sectionStartIndex: 0 });
+  assert.match(lines[0], /\[3\] RUNNING/);
+  assert.match(plain(lines.join('\n')), /HEL-1/);
+  assert.equal(lines[lines.length - 1][0], 'â””', 'a natural-height box always closes with its own bottom border');
+});
+
+test('renderStackedSection renders a forceRender-empty section (e.g. METRICS-shaped) from its emptyLines', () => {
+  const s = { title: 'X', group: [], statusKey: 'x', kind: 'x', unselectable: true, forceRender: true, emptyLines: ['one', 'two'] };
+  const lines = renderStackedSection(s, 1, { shown: 0, startOffset: 0, hidden: 0 }, { cols: 40 });
+  assert.match(plain(lines.join('\n')), /one/);
+  assert.match(plain(lines.join('\n')), /two/);
+});
+
+test('renderStackedSection renders nothing for an ordinary empty, non-forceRender section', () => {
+  const s = { title: 'X', group: [], statusKey: 'x', kind: 'x', forceRender: false };
+  const lines = renderStackedSection(s, 1, { shown: 0, startOffset: 0, hidden: 0 }, { cols: 40 });
+  assert.deepEqual(lines, []);
+});
+
+test('renderStackedSection never grows past its natural height, even when told about a larger box budget elsewhere on the page', () => {
+  const sections = buildSections({ needsYou: [], active: [run({ ticket: 'HEL-1', status: 'running' })], failed: [], done: [] }, null, {});
+  const running = sections.find((s) => s.kind === 'running');
+  const w = { shown: 1, startOffset: 0, hidden: 0 };
+  const lines = renderStackedSection(running, 1, w, { cols: 70, avgDoneMs: null, selected: 0, sectionStartIndex: 0 });
+  // 1 run row (2 lines per row) + 2 border lines = 4, regardless of how
+  // much vertical space the page has elsewhere (unlike renderFleet's
+  // single-column loop, this function has no budget/grow-to-fill concept
+  // at all).
+  assert.equal(lines.length, 4);
 });
