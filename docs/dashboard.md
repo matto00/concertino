@@ -98,6 +98,29 @@ description overflows the cap, only the leading rows are shown, followed by
 a dimmed `… N more lines` row — the same "count what's hidden" convention
 TIMELINE already uses for events beyond its own cap (`… N earlier events`).
 
+### The run drill-down's other keys
+
+Beyond the TICKET panel above, the drill-down has four panels — TICKET,
+TIMELINE, GATES, EVIDENCE — and its own key set, distinct from the fleet
+view's:
+
+| Key | Action |
+| --- | --- |
+| `1`-`4` | Jump directly to a panel (TICKET / TIMELINE / GATES / EVIDENCE) |
+| `Tab` | Cycle through the four panels in order |
+| `↑`/`↓` | Scroll the focused panel's content (TICKET/TIMELINE/GATES); `Page Up`/`Page Down` scroll by 5 lines |
+| `j`/`k` | While EVIDENCE holds focus: move the EVIDENCE selection (not scroll — the one panel where j/k mean select, not scroll) |
+| `↵` | Attach to the run — or, while EVIDENCE holds focus, open the selected evidence entry: a plain evidence doc opens in the in-TUI reader, a `pr`-kind entry (CON-55) opens externally in the OS browser instead |
+| `k` | Kill the run, behind a `y` confirmation — only bound while the run is live; inert (and unadvertised) once it has finished |
+| `r` | Restart the run, behind a `y` confirmation — same liveness gating as `k` |
+| `esc` | Back to the fleet |
+
+`k` kill / `r` restart are deliberately unreachable while EVIDENCE holds
+focus (`j`/`k` mean something else there); they return once focus moves to
+TICKET, TIMELINE, or GATES. A destructive action (`k`/`r`) always needs a
+deliberate `y` — any other key, including `esc`, cancels the confirmation
+without acting.
+
 ## Keys
 
 | Key | Action |
@@ -367,6 +390,14 @@ memory, not on disk: a restart mid-batch forgets anything still queued, but
 every ticket already launched is unaffected (tmux + the event log already
 make that durable, exactly as for a ticket started with `n`).
 
+The launch plan also binds `h` to cycle the harness (only shown/bound when
+the project has more than one configured), `m` to cycle agent-merge on/off
+(only when it's editable for this batch), `s` to cycle the speed (always
+available — every project has at least the `default` speed), and `n` to
+toggle the batch between starting immediately and being held for a later,
+separate confirm from the fleet view. `esc` cancels the plan without
+launching anything.
+
 This section documents the on-disk cache underneath all of that, so the cache
 file is not a mystery if you find one on disk.
 
@@ -490,3 +521,31 @@ cuts a fetch short.
 
 Read-only throughout. Concertino never writes ticket state from the dashboard;
 the orchestrator already owns that transition.
+
+## The settings screen
+
+`s` from the fleet view opens the settings screen — view and edit
+`concertino.config.json` without leaving the dashboard. Two panes: SECTIONS
+on the left (the schema's top-level keys, in schema-declaration order) and
+that section's FIELDS on the right (each leaf field's current value, type/enum
+badge, and whether it's editable), plus a full-width detail pane below showing
+the selected field's description and, when one is open, its edit prompt or a
+save-time validation error.
+
+| Key | Action |
+| --- | --- |
+| `j`/`k` | Move the selection — the focused pane's own cursor (sections or fields) |
+| `Tab` / `↵` / `l` | Move focus from SECTIONS to FIELDS |
+| `Tab` / `h` | Move focus from FIELDS back to SECTIONS |
+| `↵` / `space` | On an editable field: open its edit affordance — a boolean toggles immediately, an enum cycles through its allowed values, anything else opens a free-text prompt seeded with the current value. A no-op on a read-only field |
+| `S` | Validate every staged edit and, only if clean, write it back to `concertino.config.json` |
+| `esc` | Discard every staged edit and return to the fleet screen, without saving |
+
+Only `project`, `ui`, `dashboard`, `budgets`, `agentMerge`, `models`,
+`modelTiers`, `speeds`, `commitTrailer`, and `worktree.ports.*` are editable
+in this screen; everything else (`ticketProvider`, `specProvider`,
+`harnesses`, `devServers`, `gates`, `canonicalDocs`, and the rest of
+`worktree`) renders read-only regardless of its own field type — the detail
+pane says so and points at `concertino update` or hand-editing the config
+file directly for those. While a free-text edit prompt is open, `esc`
+cancels just that prompt (not the whole screen) and `↵` commits it.
