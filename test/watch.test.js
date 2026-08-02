@@ -1931,6 +1931,200 @@ test('an out-of-bounds quickstart-add index (empty eligible list) is a no-op tha
   }
 });
 
+// --- CON-54: t / view-ticket / view-ticket-quickstart / back-to-launchpad --
+// routing ---------------------------------------------------------------
+// `mode`, `launchPad` and `ticketviewReturnMode` are private closures inside
+// watch(opts) — exactly like queueState/launchPad above, the only way to
+// prove a real 't'/'esc' keypress reaches them end to end is against a real
+// running dashboard (a fake session, not real tmux) and reading what actually
+// lands on screen.
+
+test('t on the QUICK START-focused ticket opens the ticket detail view (view-ticket-quickstart), populating the cache even though the launch pad was never opened', async () => {
+  const h = setupQuickStartHarness([
+    { identifier: 'CON-100', title: 'Urgent ticket', priority: 1, description: 'the full description body' },
+    { identifier: 'CON-101', title: 'Less urgent ticket', priority: 3 },
+  ]);
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: {} });
+
+    // CON-56: digit-jump into QUICK START (always on screen, digit 1 here —
+    // no runs, no queue). quickStartFocus: 0 -> CON-100 (top priority).
+    h.fakeStdin.emit('data', '1');
+    h.fakeStdin.emit('data', 't');
+
+    // CON-54, design.md Decision 4: ensureLaunchPad() must have populated
+    // launchPad.cache even though 'N' (the launch pad's own entry point) was
+    // never pressed this session — findTicket() has to have something to
+    // search. A passing match on the ticket's own title (not just its
+    // identifier) proves the FULL cached ticket object was found, not just an
+    // id echoed back.
+    const opened = h.screen();
+    assert.match(opened, /CON-100/);
+    assert.match(opened, /Urgent ticket/);
+    assert.match(opened, /esc back/);
+    assert.doesNotMatch(opened, /QUICK START/, 'the fleet view must no longer be on screen');
+
+    // esc returns to the FLEET view (ticketviewReturnMode === 'fleet'), not
+    // the launch pad — the launch pad was never even opened this session.
+    h.fakeStdin.emit('data', '\x1b');
+    const backOnFleet = h.screen();
+    assert.match(backOnFleet, /QUICK START/);
+    assert.doesNotMatch(backOnFleet, /esc back/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('t on a QUICK START focus whose eligible list shrank out from under it (focused index no longer resolves) is a no-op', async () => {
+  const cacheModule = require('../lib/ui/cache');
+  const h = setupQuickStartHarness([
+    { identifier: 'CON-110', title: 'First ticket', priority: 1 },
+    { identifier: 'CON-111', title: 'Second ticket', priority: 2 },
+  ]);
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: {} });
+
+    h.fakeStdin.emit('data', '1'); // focus QUICK START, quickStartFocus: 0
+    h.fakeStdin.emit('data', 'j'); // quickStartFocus: 1 -> CON-111 (draw()'s own reclamp confirms this is still valid — len is 2)
+
+    // Rewrite the cache DIRECTLY (no keypress in between, so no draw() runs
+    // and quickStartFocus is never reclamped) to shrink the eligible list to
+    // a single entry — exactly the "list shrank between render and keypress"
+    // race the spec's no-op requirement describes: index 1 no longer
+    // resolves to anything by the time 't' is actually handled.
+    cacheModule.write(h.root, { tickets: [{ identifier: 'CON-110', title: 'First ticket', priority: 1 }], epics: [] }, Date.now());
+
+    h.fakeStdin.emit('data', 't');
+
+    const frame = h.screen();
+    assert.doesNotMatch(frame, /esc back/, 'no ticket detail view should have opened');
+    assert.match(frame, /QUICK START/, 'the fleet view must still be on screen');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('t on a QUEUED-focused ticket opens the ticket detail view (view-ticket), and esc returns to the fleet view', async () => {
+  const queueCache = require('../lib/ui/queue-cache');
+  const h = setupLaunchPadHarness(
+    [{ identifier: 'CON-120', title: 'Pending queued ticket', epicId: 'e1', state: { name: 'Todo', type: 'unstarted' }, description: 'queued ticket body' }],
+    [{ id: 'e1', name: 'Epic', openCount: 1 }],
+  );
+  // A restored, unconfirmed queue — untouched by tick() (shouldTick()
+  // refuses it), so CON-120 stays stably `pending` for the whole test,
+  // exactly like the sibling "already-`⏳ queued`" test above relies on.
+  queueCache.write(h.root, {
+    pending: ['CON-120'], inFlight: new Set(), maxConcurrent: 1, launchCommand: null,
+  }, 'sess-preexisting', Date.now());
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    // No RUNNING/NEEDS YOU: QUICK START(1), QUEUED(2) — CON-120 is already
+    // pending, so it is excluded from QUICK START's own eligible list and
+    // only reachable via QUEUED.
+    h.fakeStdin.emit('data', '2');
+    const focused = h.screen();
+    assert.match(focused, /QUEUED/);
+
+    h.fakeStdin.emit('data', 't');
+
+    const opened = h.screen();
+    assert.match(opened, /CON-120/);
+    assert.match(opened, /Pending queued ticket/);
+    assert.match(opened, /esc back/);
+
+    // Opened from the fleet view (via QUEUED, never the launch pad) — esc
+    // must return to the fleet view, not the launch pad.
+    h.fakeStdin.emit('data', '\x1b');
+    const backOnFleet = h.screen();
+    assert.match(backOnFleet, /QUEUED/);
+    assert.doesNotMatch(backOnFleet, /esc back/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('the launch pad\'s own ↵ -> open-ticketview -> esc still returns to the launch pad, unaffected by the new fleet-originated entry points', async () => {
+  const h = setupLaunchPadHarness(
+    [{ identifier: 'CON-130', title: 'Launch pad ticket', epicId: 'e1', state: { name: 'Todo', type: 'unstarted' }, description: 'launch pad ticket body' }],
+    [{ id: 'e1', name: 'Epic', openCount: 1 }],
+  );
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    h.fakeStdin.emit('data', 'N');   // open the launch pad
+    h.fakeStdin.emit('data', '\t');  // switch focus to the tickets pane
+    h.fakeStdin.emit('data', '\r');  // open-ticketview on the highlighted ticket
+
+    const opened = h.screen();
+    assert.match(opened, /CON-130/);
+    assert.match(opened, /Launch pad ticket/);
+    assert.match(opened, /esc back/);
+
+    h.fakeStdin.emit('data', '\x1b'); // esc — must return to the LAUNCH PAD, not the fleet
+    const backOnLaunchPad = h.screen();
+    assert.doesNotMatch(backOnLaunchPad, /esc back/);
+    assert.match(backOnLaunchPad, /Launch pad ticket|CON-130/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('alternating entry points each return correctly — launch pad, then fleet, in the same session', async () => {
+  const queueCache = require('../lib/ui/queue-cache');
+  const h = setupLaunchPadHarness(
+    [{ identifier: 'CON-140', title: 'Both entry points ticket', epicId: 'e1', state: { name: 'Todo', type: 'unstarted' }, description: 'body' }],
+    [{ id: 'e1', name: 'Epic', openCount: 1 }],
+  );
+  queueCache.write(h.root, {
+    pending: ['CON-140'], inFlight: new Set(), maxConcurrent: 1, launchCommand: null,
+  }, 'sess-preexisting', Date.now());
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
+
+    // First: open from the launch pad, esc back to the launch pad.
+    h.fakeStdin.emit('data', 'N');
+    h.fakeStdin.emit('data', '\t');
+    h.fakeStdin.emit('data', '\r');
+    assert.match(h.screen(), /esc back/);
+    h.fakeStdin.emit('data', '\x1b');
+    assert.doesNotMatch(h.screen(), /esc back/);
+
+    // Leave the launch pad entirely, back to the fleet.
+    h.fakeStdin.emit('data', '\x1b');
+    const onFleet = h.screen();
+    assert.match(onFleet, /QUEUED/, 'must be back on the fleet view');
+
+    // Second: open via 't' from the fleet's QUEUED row, esc back to the
+    // FLEET this time — not a stale launch-pad destination left over from
+    // the first visit.
+    h.fakeStdin.emit('data', '2'); // focus-queue
+    h.fakeStdin.emit('data', 't');
+    assert.match(h.screen(), /esc back/);
+    h.fakeStdin.emit('data', '\x1b');
+    const backOnFleet = h.screen();
+    assert.match(backOnFleet, /QUEUED/);
+    assert.doesNotMatch(backOnFleet, /esc back/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
 test('the eligible list excludes a ticket that already has a live run, not just an already-queued one', async () => {
   const queueCache = require('../lib/ui/queue-cache');
   const h = setupQuickStartHarness([
@@ -1963,6 +2157,76 @@ test('the eligible list excludes a ticket that already has a live run, not just 
 
     assert.equal(h.spawnCalls.length, 1);
     assert.equal(h.spawnCalls[0].ticket, 'CON-400');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('t on a RUNNING row opens the ticket detail view (view-ticket), and esc returns to the fleet view', async () => {
+  const h = setupQuickStartHarness([
+    { identifier: 'CON-500', title: 'A currently running ticket', priority: 1, description: 'running ticket body' },
+  ], {
+    listWindows() { return [{ ticket: 'CON-500', alive: true, activity: null }]; },
+  });
+
+  const runDir = path.join(h.root, '.concertino', 'runs', 'CON-500');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'), JSON.stringify({ t: 1000, kind: 'run.start' }) + '\n');
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: {} });
+
+    // CON-500 is already `▲ running`, so RUNNING (not QUICK START) is the
+    // first section — `selected: 0` (the default) already lands on it, no
+    // digit-jump needed.
+    h.fakeStdin.emit('data', 't');
+
+    const opened = h.screen();
+    assert.match(opened, /CON-500/);
+    assert.match(opened, /A currently running ticket/);
+    assert.match(opened, /esc back/);
+
+    h.fakeStdin.emit('data', '\x1b');
+    const backOnFleet = h.screen();
+    assert.match(backOnFleet, /RUNNING/);
+    assert.doesNotMatch(backOnFleet, /esc back/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('t on a DONE row opens the ticket detail view (view-ticket), and esc returns to the fleet view', async () => {
+  const h = setupQuickStartHarness([
+    { identifier: 'CON-501', title: 'A finished ticket', priority: 1, description: 'done ticket body' },
+  ]);
+
+  const runDir = path.join(h.root, '.concertino', 'runs', 'CON-501');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+    JSON.stringify({ t: 1000, kind: 'run.start' }) + '\n' +
+    JSON.stringify({ t: 2000, kind: 'run.end', status: 'delivered' }) + '\n');
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: {} });
+
+    // CON-501 has already ended (run.end, no live window) — it lands in
+    // DONE, the only runs-backed section on screen, so `selected: 0` (the
+    // default) already lands on it.
+    h.fakeStdin.emit('data', 't');
+
+    const opened = h.screen();
+    assert.match(opened, /CON-501/);
+    assert.match(opened, /A finished ticket/);
+    assert.match(opened, /esc back/);
+
+    h.fakeStdin.emit('data', '\x1b');
+    const backOnFleet = h.screen();
+    assert.match(backOnFleet, /DONE/);
+    assert.doesNotMatch(backOnFleet, /esc back/);
   } finally {
     await h.teardown(donePromise);
   }

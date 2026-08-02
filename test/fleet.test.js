@@ -1576,6 +1576,29 @@ test('l with no runs is a no-op', () => {
   assert.equal(handleKey('l', state({ runs: [] })), null);
 });
 
+// CON-54: additive to the `l` binding above — a distinct action
+// (view-ticket, not open-drilldown) for the same selected run.
+test('t opens the ticket detail view for the selected run (RUNNING)', () => {
+  assert.deepEqual(handleKey('t', state({})), { type: 'view-ticket', ticket: 'HEL-1' });
+});
+
+test('t opens the ticket detail view for the selected run (DONE)', () => {
+  const done = run({ ticket: 'HEL-2', status: 'done', endStatus: 'merged' });
+  assert.deepEqual(handleKey('t', state({ runs: [done] })),
+    { type: 'view-ticket', ticket: 'HEL-2' });
+});
+
+test('t with no runs is a no-op', () => {
+  assert.equal(handleKey('t', state({ runs: [] })), null);
+});
+
+test("l on RUNNING/DONE is unaffected by t's addition", () => {
+  assert.deepEqual(handleKey('l', state({})), { type: 'open-drilldown', ticket: 'HEL-1' });
+  const done = run({ ticket: 'HEL-2', status: 'done', endStatus: 'merged' });
+  assert.deepEqual(handleKey('l', state({ runs: [done] })),
+    { type: 'open-drilldown', ticket: 'HEL-2' });
+});
+
 test('k still means move-up, not kill — the fleet footer must never claim otherwise', () => {
   assert.deepEqual(handleKey('k', state({})), { type: 'move', delta: -1 });
   const out = plain(renderFleet([run({})], OPTS));
@@ -1823,6 +1846,18 @@ test('f is a no-op when nothing is validly focused (queueFocus null or out of ra
 
 test('f outside queue focus is unbound, same as any other unclaimed key', () => {
   assert.equal(handleKey('f', state({})), null);
+});
+
+// CON-54: t on a focused QUEUED row opens the ticket detail view — resolved
+// the same way f's own open-force-start-confirm resolves its ticket, above.
+test('t on a focused pending ticket opens the ticket detail view, naming that exact ticket', () => {
+  assert.deepEqual(handleKey('t', queueFocusState({ queueFocus: 1 })),
+    { type: 'view-ticket', ticket: 'CON-2' });
+});
+
+test('t is a no-op when nothing is validly focused in QUEUED (queueFocus null or out of range)', () => {
+  assert.equal(handleKey('t', queueFocusState({ queueFocus: null })), null);
+  assert.equal(handleKey('t', queueFocusState({ queueFocus: 99 })), null);
 });
 
 // --- CON-39: force-start's own y/anything-else confirmation gate -----------
@@ -2282,6 +2317,16 @@ test('a emits quickstart-add unconditionally while focused, even with no ticket 
   // has no ticket list to check against (design.md Decision 3).
   assert.deepEqual(handleKey('a', quickStartFocusState({ quickStartFocus: 99 })),
     { type: 'quickstart-add', index: 99 });
+});
+
+// CON-54: t emits view-ticket-quickstart unconditionally while focused, same
+// as a's own quickstart-add just above — handleKey has no ticket list to
+// resolve `index` against; watch.js does that (design.md Decision 1/3).
+test('t emits view-ticket-quickstart unconditionally while focused, even with no ticket data in state', () => {
+  assert.deepEqual(handleKey('t', quickStartFocusState({ quickStartFocus: 3 })),
+    { type: 'view-ticket-quickstart', index: 3 });
+  assert.deepEqual(handleKey('t', quickStartFocusState({ quickStartFocus: 99 })),
+    { type: 'view-ticket-quickstart', index: 99 });
 });
 
 test('bare Escape exits QUICK START focus', () => {

@@ -103,9 +103,17 @@ TIMELINE already uses for events beyond its own cap (`… N earlier events`).
 | Key | Action |
 | --- | --- |
 | `↵` | Attach to the selected run — or, on a row with a live escalation, open the escalation screen. `Ctrl-b d` detaches back to the dashboard |
-| `j` / `k` | Move the selection |
+| `l` / `→` | Open the run drill-down (timeline, gates, evidence) for the selected RUNNING/FAILED/DONE/NEEDS YOU row |
+| `t` | Open the ticket detail view (title, description, comments) for the focused/selected row in QUICK START, QUEUED, RUNNING, or DONE. Additive to `l` on RUNNING/DONE — the two open different screens for the same row. A no-op if the row has no resolvable ticket at keypress time |
+| `j` / `k` | Move the selection — or, while QUICK START/QUEUED is locally focused, that section's own cursor instead |
+| `1`-`9` | Jump straight to the Nth section actually on screen this frame (NEEDS YOU, RUNNING, QUICK START, QUEUED, FAILED, DONE, METRICS — whichever are rendered), focusing QUICK START/QUEUED locally when the target is one of those two |
+| `a` | While QUICK START is locally focused: quick-start the highlighted eligible ticket |
+| `f` | While QUEUED is locally focused: force-start the highlighted pending ticket, past a confirmation |
+| `C` | Clear the queue — drops everything still pending, past a confirmation. Bound whenever QUEUED has anything pending, independent of focus |
+| `c` | Confirm a queue restored from a previous session (shown after a dashboard restart with tickets still pending/in flight) |
 | `n` | Start a new run — type a ticket id and `↵` to launch, or type free text and `↵` to draft a new ticket first (Linear only — see "Starting a run from an intention" below); `esc` to cancel |
 | `N` | Open the launch pad — browse epics/tickets, pick a batch, launch it. Always bound; if the feature gate is off it explains why rather than doing nothing (see below) |
+| `s` | Open the settings screen (view/edit `concertino.config.json`) |
 | `g` | Reply to the oldest live escalation across the whole fleet, from **whatever screen you're on** — see "The cross-screen escalation banner" below |
 | `q` | Quit the dashboard (runs keep going) |
 
