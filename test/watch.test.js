@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {
   buildFrame, attachAndRestore, computeLiveEscalations, idleMsFromActivity,
-  canonicalHarness, resolveModelsForPlan,
+  canonicalHarness, resolveModelsForPlan, openInBrowser,
   CURSOR_HOME, ALT_SCREEN_ENTER, ALT_SCREEN_EXIT,
 } = require('../lib/ui/watch');
 const { padTo, visibleLength } = require('../lib/ui/format');
@@ -3114,3 +3114,234 @@ function configLibForOrder() {
   const configLib = require('../lib/config');
   return configLib.schemaSectionOrder(configLib.loadSchema());
 }
+
+// ===========================================================================
+// CON-55 — PR artifact type in the EVIDENCE panel: openInBrowser() (the one
+// new child-process call), and the 'open-external-url' action handler's
+// success/failure paths (design.md Decisions 3/4).
+//
+// No real `xdg-open` (or any real browser) is ever touched — a fake
+// executable named `xdg-open` is put on PATH ahead of the real one for the
+// duration of each test, the same PATH-shadowing technique
+// test/scripts/check-merge-readiness.test.sh already uses for its own
+// MOCKBIN. This proves the real execFileSync('xdg-open', ...) call site
+// behaves correctly against a controlled success/failure/missing-binary
+// outcome, without requiring a display or a real browser in CI.
+// ===========================================================================
+
+// Writes an executable script named `xdg-open` into a fresh temp dir and
+// returns that dir's path, ready to be prepended to PATH. `exitCode` controls
+// whether the fake opener succeeds or fails; omit the file entirely
+// (`missing: true`) to exercise the "binary not found" failure mode.
+// Shebang uses an ABSOLUTE interpreter path (never `#!/usr/bin/env bash`,
+// which itself has to resolve `bash` via PATH) — that would defeat the whole
+// point of replacing PATH below, since a system that HAS a real `xdg-open`
+// (this project's own dev box does) would leave it reachable through `env`'s
+// own PATH search regardless of what process.env.PATH is set to for the
+// `execFileSync('xdg-open', ...)` lookup itself.
+const SHELL = fs.existsSync('/bin/sh') ? '/bin/sh' : '/usr/bin/bash';
+function fakeXdgOpenDir({ exitCode, missing }) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-xdg-open-'));
+  if (!missing) {
+    const bin = path.join(dir, 'xdg-open');
+    fs.writeFileSync(bin, '#!' + SHELL + '\nexit ' + exitCode + '\n');
+    fs.chmodSync(bin, 0o755);
+  }
+  return dir;
+}
+
+// REPLACES process.env.PATH for the duration of `body` (never merely
+// prepends — this system has a real `xdg-open` at /usr/bin/xdg-open, and
+// leaving the real PATH reachable would let the "missing"/shadow tests below
+// silently fall through to it), restoring it afterward even if `body`
+// throws.
+function withPath(dir, body) {
+  const realPath = process.env.PATH;
+  process.env.PATH = dir;
+  try {
+    return body();
+  } finally {
+    process.env.PATH = realPath;
+  }
+}
+
+test('openInBrowser succeeds silently when xdg-open exits 0', () => {
+  const dir = fakeXdgOpenDir({ exitCode: 0 });
+  withPath(dir, () => {
+    assert.doesNotThrow(() => openInBrowser('https://example.com/pr/1'));
+  });
+});
+
+test('openInBrowser throws when xdg-open exits non-zero', () => {
+  const dir = fakeXdgOpenDir({ exitCode: 1 });
+  withPath(dir, () => {
+    assert.throws(() => openInBrowser('https://example.com/pr/1'));
+  });
+});
+
+test('openInBrowser throws when xdg-open is not on PATH at all', () => {
+  const dir = fakeXdgOpenDir({ missing: true });
+  withPath(dir, () => {
+    assert.throws(() => openInBrowser('https://example.com/pr/1'));
+  });
+});
+
+// A single-run fleet whose event log has both a file-based `evidence` event
+// and a `pr` event — enough to drill in, focus EVIDENCE, and select either
+// kind of entry. Mirrors setupSettingsHarness's shape (fake session/stdin/
+// stdout via require.cache, no real tmux).
+function setupPrEvidenceHarness() {
+  const { EventEmitter } = require('node:events');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-pr-'));
+  const runDir = path.join(root, '.concertino', 'runs', 'HEL-77');
+  fs.mkdirSync(runDir, { recursive: true });
+  const events = [
+    { t: 1000, kind: 'run.start', harness: 'claude', model: 'opus-5' },
+    { t: 2000, kind: 'evidence', role: 'evaluator', label: 'plan.md', ref: path.join(runDir, 'plan.md') },
+    { t: 3000, kind: 'pr', role: 'orchestrator', url: 'https://github.com/example/repo/pull/9', label: 'PR: add widget' },
+  ];
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  fs.writeFileSync(path.join(runDir, 'plan.md'), '# plan\n');
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return [{ ticket: 'HEL-77', alive: true, activity: null }]; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = true;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  return {
+    root, fakeStdin, written,
+    screen: () => screenOf(written),
+    // 'l' drills into the (only, selected) run; '4' jumps straight to the
+    // EVIDENCE panel (DRILL_PANELS index 3 — drilldown.js); 'j' moves the
+    // selection down from the leading (evidence) entry onto the pr entry.
+    openEvidencePanelOnPrEntry() {
+      this.fakeStdin.emit('data', 'l');
+      this.fakeStdin.emit('data', '4');
+      this.fakeStdin.emit('data', 'j');
+    },
+    openEvidencePanelOnFileEntry() {
+      this.fakeStdin.emit('data', 'l');
+      this.fakeStdin.emit('data', '4');
+    },
+    async teardown(donePromise) {
+      fakeStdin.emit('end');
+      if (donePromise) await donePromise;
+      process.stdout.write = realWrite;
+      Object.defineProperty(process, 'stdin', realStdinDescriptor);
+      delete require.cache[watchPath];
+      delete require.cache[sessionPath];
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+test('CON-55: Enter on the pr entry opens the browser and leaves the dashboard on the drill-down (not docview)', async () => {
+  const h = setupPrEvidenceHarness();
+  const dir = fakeXdgOpenDir({ exitCode: 0 });
+  let donePromise;
+  try {
+    await withPath(dir, async () => {
+      const watchModule = require('../lib/ui/watch');
+      donePromise = watchModule.watch({ root: h.root, config: {} });
+
+      h.openEvidencePanelOnPrEntry();
+      h.fakeStdin.emit('data', '\r');
+
+      const frame = h.screen();
+      assert.match(frame, /EVIDENCE/, 'must still be on the drill-down, not docview');
+      assert.doesNotMatch(frame, /could not open/, 'a successful open must show no failure notice');
+    });
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-55: Enter on the pr entry shows a visible notice (not a crash) when xdg-open fails', async () => {
+  const h = setupPrEvidenceHarness();
+  const dir = fakeXdgOpenDir({ exitCode: 1 });
+  let donePromise;
+  try {
+    await withPath(dir, async () => {
+      const watchModule = require('../lib/ui/watch');
+      donePromise = watchModule.watch({ root: h.root, config: {} });
+
+      h.openEvidencePanelOnPrEntry();
+      h.fakeStdin.emit('data', '\r');
+
+      const frame = h.screen();
+      assert.match(frame, /could not open/, 'a failed open must surface a visible drillNotice');
+      assert.match(frame, /https:\/\/github\.com\/example\/repo\/pull\/9/, 'the notice must identify the URL');
+      assert.match(frame, /EVIDENCE/, 'a failed open must not crash — the dashboard stays on the drill-down');
+    });
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-55: Enter on the pr entry shows a visible notice when xdg-open is missing entirely', async () => {
+  const h = setupPrEvidenceHarness();
+  const dir = fakeXdgOpenDir({ missing: true });
+  let donePromise;
+  try {
+    await withPath(dir, async () => {
+      const watchModule = require('../lib/ui/watch');
+      donePromise = watchModule.watch({ root: h.root, config: {} });
+
+      h.openEvidencePanelOnPrEntry();
+      h.fakeStdin.emit('data', '\r');
+
+      const frame = h.screen();
+      assert.match(frame, /could not open/, 'a missing xdg-open must surface a visible drillNotice, not crash');
+    });
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-55: Enter on a file-based evidence entry still opens docview, unaffected by the pr entry also being present', async () => {
+  const h = setupPrEvidenceHarness();
+  const dir = fakeXdgOpenDir({ exitCode: 0 });
+  let donePromise;
+  try {
+    await withPath(dir, async () => {
+      const watchModule = require('../lib/ui/watch');
+      donePromise = watchModule.watch({ root: h.root, config: {} });
+
+      h.openEvidencePanelOnFileEntry();
+      h.fakeStdin.emit('data', '\r');
+
+      const frame = h.screen();
+      assert.match(frame, /plan\.md/, 'docview must show the selected file entry\'s title/content');
+      assert.doesNotMatch(frame, /could not open/, 'opening a file entry must never touch the browser-open path');
+    });
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
