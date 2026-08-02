@@ -704,6 +704,22 @@ test('metricsFor.gateRates computes each gate\'s pass-rate from the latest per-r
   assert.ok(!('phase:servers' in m.gateRates), 'a gate no run ever reported must be omitted, not 0%');
 });
 
+test('metricsColumnLines returns the same 5 compact lines buildSections used to build inline', () => {
+  const { metricsColumnLines } = require('../lib/ui/screens/fleet');
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000,
+      events: [{ kind: 'verdict', role: 'evaluator', verdict: 'PASS' }],
+      gates: [{ name: 'phase:setup', status: 'pass' }] }),
+  ], 100000);
+  const lines = metricsColumnLines(m, { cols: 76 });
+  assert.equal(lines.length, 5);
+  assert.match(lines[0], /avg delivery/);
+  assert.match(lines[1], /success\s+today/);
+  assert.match(lines[2], /throughput \(7d\)/);
+  assert.match(lines[3], /verdicts\s+evaluator/);
+  assert.match(lines[4], /gates\s+setup/);
+});
+
 test('the fleet view shows a METRICS section after DONE with real numbers', () => {
   const out = plain(renderFleet([
     run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
