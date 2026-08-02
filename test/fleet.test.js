@@ -2604,3 +2604,40 @@ test('visibleWindowGrid with rows:0 returns an unbounded (untrimmed) window, mat
   const idx = buildSections({ needsYou: [], active: [], failed: [], done: runs }, null, {}).findIndex((s) => s.kind === 'done');
   assert.equal(win.sections[idx].shown, 5, 'DONE still caps at MAX_FINISHED even untrimmed — cap and height-budget trim are different things');
 });
+
+// Regression: computeWindow re-bases its internal globalIndex at 0 over
+// whatever section list it's handed, but `selected` is always a GLOBAL
+// flat-row index (the one renderFleet/watch.js/Task 8's sectionStartIndices
+// walk all use) that already counts NEEDS YOU's and FAILED's rows ahead of
+// RUNNING. Passing selected straight through to computeWindow's restricted
+// columnSections call — without translating it into that list's own
+// re-based index space, and translating the returned indices back out —
+// silently shifts firstVisibleIndex/lastVisibleIndex and the selected-row
+// trim protection by needsYou.length + failed.length.
+test('visibleWindowGrid translates the global `selected` into column 1\'s re-based index space and back out again', () => {
+  const needsYou = Array.from({ length: 2 }, (_, i) => run({ ticket: `NY-${i}`, status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }));
+  const failed = manyFinished(3, 'failed');
+  const running = Array.from({ length: 4 }, (_, i) => run({ ticket: `RUN-${i}`, status: 'running' }));
+  const runs = needsYou.concat(failed, running);
+  // RUNNING's true global start index is needsYou.length + failed.length = 5.
+  const win = visibleWindowGrid(runs, { rows: 30, selected: 5, scrollOffset: 0, cols: 150 });
+  assert.equal(win.firstVisibleIndex, 5, 'RUNNING\'s global start index is 5 (2 needs-you + 3 failed ahead of it), not 0');
+});
+
+test('visibleWindowGrid\'s selected-row trim protection keeps the actually-selected RUNNING row visible, even though its global index is offset by NEEDS YOU/FAILED', () => {
+  const needsYou = Array.from({ length: 2 }, (_, i) => run({ ticket: `NY-${i}`, status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }));
+  const failed = manyFinished(3, 'failed');
+  const running = Array.from({ length: 10 }, (_, i) => run({ ticket: `RUN-${i}`, status: 'running' }));
+  const runs = needsYou.concat(failed, running);
+  const idx = buildSections({ needsYou, active: running, failed, done: [] }, null, {}).findIndex((s) => s.kind === 'running');
+  // selected = 5 is RUNNING's first row (global index needsYou.length + failed.length = 5).
+  // rows: 26 and 30 are small enough that column 1 must trim RUNNING's 10
+  // rows down, which is exactly when the mistranslated `selected` used to
+  // evict the actually-selected row instead of protecting it.
+  for (const rows of [26, 30]) {
+    const win = visibleWindowGrid(runs, { rows, selected: 5, scrollOffset: 0, cols: 150 });
+    const w = win.sections[idx];
+    assert.ok(w.startOffset <= 0 && 0 < w.startOffset + w.shown,
+      `rows:${rows} — RUNNING row 0 (the selected row) must stay within [startOffset, startOffset+shown), got ${JSON.stringify(w)}`);
+  }
+});
