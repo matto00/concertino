@@ -408,7 +408,9 @@ test('buildSections lists FAILED right after NEEDS YOU, ahead of RUNNING — the
     {},
   );
   const kinds = sections.map((s) => s.kind);
-  assert.deepEqual(kinds, ['needs-you', 'failed', 'running', 'done']);
+  // 'quickstart' is now unconditionally present (CON-56: no longer gated
+  // behind a visibility flag) between 'running' and 'done'.
+  assert.deepEqual(kinds, ['needs-you', 'failed', 'running', 'quickstart', 'done']);
 });
 
 // --- DONE rows compare delivery time against this repo's own average -------
@@ -2476,14 +2478,15 @@ test('height-budget trimming accounts for QUICK START like any other non-pinned 
   const populatedQuickStart = visibleWindow(manyRuns, {
     rows: 12, selected: 0, quickStartTickets: [qsTicket({})],
   });
-  // CON-56: QUICK START is always one of the built sections (index 2: NEEDS
-  // YOU, RUNNING, QUICK START, ...) regardless of how many tickets it holds
-  // — the section count itself never changes; populating it changes what it
+  // CON-56: QUICK START is always one of the built sections (index 3:
+  // NEEDS YOU, FAILED, RUNNING, QUICK START, ... — fleet-metrics-grid moved
+  // FAILED to index 1) regardless of how many tickets it holds — the
+  // section count itself never changes; populating it changes what it
   // SHOWS (and so how much height-budget accounting sees it consume), which
   // is what this test actually checks.
   assert.equal(emptyQuickStart.sections.length, populatedQuickStart.sections.length);
-  assert.equal(emptyQuickStart.sections[2].shown, 0);
-  assert.equal(populatedQuickStart.sections[2].shown, 1);
+  assert.equal(emptyQuickStart.sections[3].shown, 0);
+  assert.equal(populatedQuickStart.sections[3].shown, 1);
 });
 
 // --- CON-40/CON-56: digit-jump discriminates quickstart vs queued vs ordinary -
