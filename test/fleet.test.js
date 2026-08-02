@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const {
   renderFleet, handleKey, CONFIRM_RESTORED_QUEUE_KEY, visibleWindow,
   sectionJumpTargets, buildSections, QUICK_START_COUNT, QUICK_START_TOGGLE_KEY,
-  metricsFor,
+  metricsFor, metricsColumnLines,
 } = require('../lib/ui/screens/fleet');
 const { reduce, PHASE_ORDER } = require('../lib/ui/reducer');
 const f = require('../lib/ui/format');
@@ -718,6 +718,74 @@ test('metricsColumnLines returns the same 5 compact lines buildSections used to 
   assert.match(lines[2], /throughput \(7d\)/);
   assert.match(lines[3], /verdicts\s+evaluator/);
   assert.match(lines[4], /gates\s+setup/);
+});
+
+function metricsFixtureExpanded() {
+  return {
+    avgMs: 90000, deliveredToday: 2, deliveredWeek: 5, escalationsToday: 1,
+    successRate: { today: { rate: 1, done: 2, total: 2 }, week: { rate: 0.8, done: 4, total: 5 } },
+    throughput: [0, 0, 0, 0, 0, 1, 1],
+    throughput30d: new Array(30).fill(0).map((_, i) => (i >= 28 ? 1 : 0)),
+    verdictRates: { evaluator: 0.9, skeptic: null, auditor: null },
+    gateRates: { 'phase:setup': 1 },
+    durationBuckets: { under10: 3, from10to30: 1, over30: 0 },
+    recentEscalations: [
+      { ticket: 'CON-9', role: 'orchestrator', question: 'retry?', raisedAt: 5000 },
+      { ticket: 'CON-8', role: 'evaluator', question: 'looks risky, proceed?', raisedAt: 4000 },
+    ],
+  };
+}
+
+test('metricsColumnLines stays compact when the column is narrower than 80 cols, even with plenty of rows', () => {
+  const lines = metricsColumnLines(metricsFixtureExpanded(), { cols: 60, contentRows: 40 });
+  assert.equal(lines.length, 5);
+});
+
+test('metricsColumnLines stays compact when contentRows is too small, even with a wide column', () => {
+  const lines = metricsColumnLines(metricsFixtureExpanded(), { cols: 100, contentRows: 5 });
+  assert.equal(lines.length, 5);
+});
+
+test('metricsColumnLines expands when both cols>=80 and contentRows>=11: 30-day throughput, duration line, escalations', () => {
+  const lines = metricsColumnLines(metricsFixtureExpanded(), { cols: 90, contentRows: 20 });
+  assert.match(lines[2], /throughput \(30d\)/);
+  const durationLine = lines.find((l) => l.startsWith('duration'));
+  assert.ok(durationLine, 'a duration line must render');
+  assert.match(durationLine, /<10m 75%/);
+  assert.match(durationLine, /10-30m 25%/);
+  assert.match(durationLine, /30m\+ 0%/);
+  assert.ok(lines.includes('recent escalations'), 'a recent-escalations header must render');
+  const escLine = lines.find((l) => l.includes('CON-9'));
+  assert.ok(escLine, 'the newest escalation must render');
+  assert.match(escLine, /retry\?/);
+});
+
+test('metricsColumnLines\' expanded tier shows only as many escalation rows as contentRows allows', () => {
+  const m = metricsFixtureExpanded();
+  m.recentEscalations = Array.from({ length: 20 }, (_, i) => ({
+    ticket: `CON-${i}`, role: 'orchestrator', question: 'q', raisedAt: 20 - i,
+  }));
+  const lines = metricsColumnLines(m, { cols: 90, contentRows: 13 }); // 8 fixed + header + 1 room for 3 more? see below
+  // fixedLines = [line1,line2,line3,line4,line5,'',durationLine,''] = 8 lines.
+  // remaining = contentRows - 8. header consumes 1, the rest go to escalation rows.
+  const remaining = 13 - 8;
+  const escalationRowCount = lines.length - 8 - 1; // minus the 8 fixed lines and the header
+  assert.equal(escalationRowCount, remaining - 1);
+});
+
+test('metricsColumnLines\' expanded tier says "no escalations yet" when the list is empty but there is room', () => {
+  const m = metricsFixtureExpanded();
+  m.recentEscalations = [];
+  const lines = metricsColumnLines(m, { cols: 90, contentRows: 20 });
+  assert.ok(lines.some((l) => l.includes('no escalations yet')));
+});
+
+test('metricsColumnLines\' expanded-tier duration line says "no data yet" with no duration history', () => {
+  const m = metricsFixtureExpanded();
+  m.durationBuckets = { under10: 0, from10to30: 0, over30: 0 };
+  const lines = metricsColumnLines(m, { cols: 90, contentRows: 20 });
+  const durationLine = lines.find((l) => l.startsWith('duration'));
+  assert.match(durationLine, /no data yet/);
 });
 
 test('the fleet view shows a METRICS section after DONE with real numbers', () => {
