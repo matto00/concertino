@@ -15,8 +15,8 @@
 # check is specifically designed to reject.
 #
 # SAFETY: every `concertino sync`/`doctor`/`init`/`eject`/`diff` invocation
-# below runs against a throwaway COPY of bin/+adapters/+core/+config/ (built
-# fresh per test by new_main()), never against this checkout's own
+# below runs against a throwaway COPY of bin/+lib/+adapters/+core/+config/
+# (built fresh per test by new_main()), never against this checkout's own
 # bin/concertino. This test never invokes this repo's own CLI on itself.
 set -uo pipefail
 
@@ -37,9 +37,15 @@ echo "bin/concertino (core resolution)"
 # config/ + package.json, copied fresh from this project and git-initialized
 # so it is itself a bona fide git working-tree root. This plays the role of
 # the executing script's own REPO in every scenario below.
+# CON-57: bin/concertino requires lib/config.js (shared with the settings
+# screen) unconditionally at the top of the file, for every command — so
+# every throwaway copy below has to include lib/ too, exactly like a real
+# `npm install` would (package.json's own "files" array already lists both
+# bin/ and lib/).
 new_main() {
   local d; d="$(mktemp -d)"
   cp -r "$ROOT/bin" "$d/bin"
+  cp -r "$ROOT/lib" "$d/lib"
   cp -r "$ROOT/adapters" "$d/adapters"
   cp -r "$ROOT/core" "$d/core"
   cp -r "$ROOT/config" "$d/config"
@@ -114,6 +120,7 @@ git -C "$CONSUMER" init -q
 MAIN="$(new_main)"
 mkdir -p "$CONSUMER/node_modules/concertino"
 cp -r "$MAIN/bin" "$CONSUMER/node_modules/concertino/bin"
+cp -r "$MAIN/lib" "$CONSUMER/node_modules/concertino/lib"
 cp -r "$MAIN/adapters" "$CONSUMER/node_modules/concertino/adapters"
 cp -r "$MAIN/core" "$CONSUMER/node_modules/concertino/core"
 cp "$MAIN/package.json" "$CONSUMER/node_modules/concertino/package.json"
