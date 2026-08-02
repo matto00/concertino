@@ -159,3 +159,112 @@ test('getAtPath reads a nested value and returns undefined for a missing path', 
   assert.equal(configLib.getAtPath({ a: {} }, 'a.b.c'), undefined);
   assert.equal(configLib.getAtPath({}, 'a.b'), undefined);
 });
+
+// --- CON-62: VALID_HARNESSES / per-ticket harness override --------------
+
+test('VALID_HARNESSES is the exact implemented-adapter set, in order', () => {
+  assert.deepEqual(configLib.VALID_HARNESSES, ['claude-code', 'codex']);
+});
+
+test('parseHarnessOverrideLabels: no matching label -> null', () => {
+  assert.equal(configLib.parseHarnessOverrideLabels([]), null);
+  assert.equal(configLib.parseHarnessOverrideLabels(['bug', 'p1']), null);
+  assert.equal(configLib.parseHarnessOverrideLabels(undefined), null);
+});
+
+test('parseHarnessOverrideLabels: one matching label -> its value', () => {
+  assert.deepEqual(configLib.parseHarnessOverrideLabels(['bug', 'harness:codex']), ['codex']);
+});
+
+test('parseHarnessOverrideLabels: more than one matching label -> every value (caller decides ambiguous)', () => {
+  assert.deepEqual(
+    configLib.parseHarnessOverrideLabels(['harness:codex', 'harness:claude-code']),
+    ['codex', 'claude-code'],
+  );
+});
+
+test('classifyHarnessOverride: no label -> no-override', () => {
+  assert.deepEqual(configLib.classifyHarnessOverride([]), { kind: 'no-override' });
+});
+
+test('classifyHarnessOverride: implemented value -> valid', () => {
+  assert.deepEqual(configLib.classifyHarnessOverride(['harness:codex']), { kind: 'valid', value: 'codex' });
+});
+
+test('classifyHarnessOverride: unimplemented value -> invalid', () => {
+  assert.deepEqual(
+    configLib.classifyHarnessOverride(['harness:local-llm']),
+    { kind: 'invalid', value: 'local-llm' },
+  );
+});
+
+test('classifyHarnessOverride: two harness: labels -> ambiguous', () => {
+  assert.deepEqual(
+    configLib.classifyHarnessOverride(['harness:codex', 'harness:claude-code']),
+    { kind: 'ambiguous', values: ['codex', 'claude-code'] },
+  );
+});
+
+// --- CON-62: collectConfigIssues renders opts.ticketHarnessCheck ----------
+// (design.md Decision 6 / tasks.md 4.4 option (a)) — the network fetch
+// itself lives in bin/concertino (untestable here without mocking the
+// network); these tests exercise the already-classified shape it hands in.
+
+test('ticketHarnessCheck omitted -> no ticket-harness line, no new errors (tasks.md 4.5 no-op)', () => {
+  const { errors } = configLib.collectConfigIssues(baseConfig({}), { out: __dirname });
+  assert.equal(errors.filter((e) => e.path === 'ticket.harness').length, 0);
+});
+
+test('ticketHarnessCheck kind=no-override -> informational, no error', () => {
+  const emitted = [];
+  const { errors } = configLib.collectConfigIssues(baseConfig({}), {
+    out: __dirname,
+    ticketHarnessCheck: { ticketId: 'CON-1', kind: 'no-override' },
+    emit: { ok: (label, val) => emitted.push([label, val]) },
+  });
+  assert.equal(errors.length, 0);
+  assert.ok(emitted.some(([, val]) => /CON-1 has no harness override/.test(String(val))));
+});
+
+test('ticketHarnessCheck kind=valid -> informational, names ticket + value, no error', () => {
+  const emitted = [];
+  const { errors } = configLib.collectConfigIssues(baseConfig({}), {
+    out: __dirname,
+    ticketHarnessCheck: { ticketId: 'CON-1', kind: 'valid', value: 'codex' },
+    emit: { ok: (label, val) => emitted.push([label, val]) },
+  });
+  assert.equal(errors.length, 0);
+  assert.ok(emitted.some(([, val]) => /CON-1 declares harness:codex/.test(String(val))));
+  assert.ok(emitted.some(([, val]) => /takes precedence/.test(String(val))));
+});
+
+test('ticketHarnessCheck kind=invalid -> validation error naming ticket + value', () => {
+  const { errors } = configLib.collectConfigIssues(baseConfig({}), {
+    out: __dirname,
+    ticketHarnessCheck: { ticketId: 'CON-1', kind: 'invalid', value: 'local-llm' },
+  });
+  const e = errors.find((e) => e.path === 'ticket.harness');
+  assert.ok(e, 'expected a ticket.harness error');
+  assert.match(e.message, /CON-1/);
+  assert.match(e.message, /local-llm/);
+});
+
+test('ticketHarnessCheck kind=ambiguous -> validation error naming every value', () => {
+  const { errors } = configLib.collectConfigIssues(baseConfig({}), {
+    out: __dirname,
+    ticketHarnessCheck: { ticketId: 'CON-1', kind: 'ambiguous', values: ['codex', 'claude-code'] },
+  });
+  const e = errors.find((e) => e.path === 'ticket.harness');
+  assert.ok(e, 'expected a ticket.harness error');
+  assert.match(e.message, /CON-1/);
+  assert.match(e.message, /codex/);
+  assert.match(e.message, /claude-code/);
+});
+
+test('ticketHarnessCheck kind=unsupported-provider -> informational, no error', () => {
+  const { errors } = configLib.collectConfigIssues(baseConfig({}), {
+    out: __dirname,
+    ticketHarnessCheck: { ticketId: 'CON-1', kind: 'unsupported-provider', providerKind: 'manual' },
+  });
+  assert.equal(errors.filter((e) => e.path === 'ticket.harness').length, 0);
+});
