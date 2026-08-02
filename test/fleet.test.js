@@ -1436,10 +1436,17 @@ test('computeWindow with includeHeadTail:false does not subtract the page header
   const sections = buildSections({ needsYou: [], active: [], failed: [], done: runs }, null, {});
   const withHeadTail = computeWindow(runs, sections, { rows: 10, selected: 0, scrollOffset: 0, includeHeadTail: true });
   const withoutHeadTail = computeWindow(runs, sections, { rows: 10, selected: 0, scrollOffset: 0, includeHeadTail: false });
-  // Excluding head/tail leaves more of the same 10-row budget for content,
-  // so at least as many (and, with real head/tail content present, more)
-  // DONE rows survive the trim.
-  assert.ok(withoutHeadTail.sections[0].shown >= withHeadTail.sections[0].shown);
+  // Excluding head/tail leaves more of the same 10-row budget for content, so
+  // more DONE rows survive the trim. Targeted by `kind` rather than a
+  // hardcoded index (section order can shift, as it already did once in
+  // Task 2) — and NOT sections[0], which is NEEDS YOU and empty in this
+  // fixture (shown: 0 on both sides regardless of includeHeadTail, which
+  // would make the assertion vacuous).
+  const done = sections.findIndex((s) => s.kind === 'done');
+  assert.ok(
+    withoutHeadTail.sections[done].shown > withHeadTail.sections[done].shown,
+    `expected more DONE rows without head/tail: ${withoutHeadTail.sections[done].shown} vs ${withHeadTail.sections[done].shown}`,
+  );
 });
 
 // --- only bound keys are advertised ----------------------------------------
