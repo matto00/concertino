@@ -1,27 +1,4 @@
-# harness-identity Specification
-
-## Purpose
-Defines how `CONCERTINO_HARNESS` is computed at `concertino sync` time and
-resolved at run time, so telemetry records the harness that actually ran a
-workflow instead of the literal string `unknown`.
-## Requirements
-### Requirement: `concertino sync` renders a `CONCERTINO_HARNESS` static default
-`concertino sync` SHALL write a `CONCERTINO_HARNESS` key into
-`scripts/concertino/.concertino.env` alongside the other `CONCERTINO_*` values. When
-the project config's `harnesses` array has exactly one entry, the value SHALL be
-that harness. When `harnesses` has more than one entry, the value SHALL be empty —
-sync SHALL NOT write the full configured list or an arbitrary single pick as a
-stand-in for a value it cannot determine at render time.
-
-#### Scenario: Single harness configured
-- **WHEN** `concertino sync` runs for a project whose config has
-  `"harnesses": ["claude-code"]`
-- **THEN** the rendered `.concertino.env` contains `CONCERTINO_HARNESS='claude-code'`
-
-#### Scenario: Multiple harnesses configured
-- **WHEN** `concertino sync` runs for a project whose config has
-  `"harnesses": ["claude-code", "codex"]`
-- **THEN** the rendered `.concertino.env` contains `CONCERTINO_HARNESS=''`
+## MODIFIED Requirements
 
 ### Requirement: `setup-worktree.sh` resolves the running harness at runtime
 `setup-worktree.sh` SHALL determine the harness for the `run.start` telemetry
@@ -162,6 +139,8 @@ SHALL leave `concertino validate`'s behavior unchanged from today.
 - **THEN** validate reports a validation error naming ticket CON-1 and the
   unsupported value `local-llm`, and exits non-zero
 
+## ADDED Requirements
+
 ### Requirement: Ticket-declared harness override resolves and fails loudly, before worktree setup
 The orchestrator SHALL honor an optional per-ticket harness declaration: a
 ticket MAY carry a single Linear label matching `^harness:(.+)$` naming which
@@ -222,4 +201,3 @@ provides.
   orchestrator) with `HARNESS_OVERRIDE=local-llm`
 - **THEN** it prints `FAIL` naming the unsupported harness and exits non-zero
   before creating or touching any worktree
-

@@ -1,0 +1,54 @@
+## 1. Single source of truth for implemented harnesses
+
+- [x] 1.1 In `lib/config.js`, hoist the existing inline `VALID_HARNESSES = ['claude-code', 'codex']` (currently local to `collectConfigIssues`, ~line 204) to a module-level exported constant so both `collectConfigIssues` and the new `--ticket` validation path (task 4) can reuse it without duplicating the list.
+- [x] 1.2 In `bin/concertino`'s `renderEnv(c)` (~line 431-442), add a new line writing `CONCERTINO_IMPLEMENTED_HARNESSES='claude-code codex'` (space-separated, generated from `lib/config.js`'s exported `VALID_HARNESSES.join(' ')`) into `.concertino.env`, alongside the existing `CONCERTINO_HARNESS=` line.
+- [x] 1.3 Update `renderEnv`'s existing snapshot/diff tests (wherever `.concertino.env` output is asserted, e.g. `test/` files covering `sync`/`renderEnv`) to expect the new key.
+
+## 2. `setup-worktree.sh` — accept and validate a 4th `HARNESS_OVERRIDE` arg
+
+- [x] 2.1 In `core/scripts/setup-worktree.sh`, add `HARNESS_OVERRIDE="${4:-}"` alongside the existing `TICKET_ID`/`BRANCH`/`SPEED` positional reads, and update the usage comment/header (`Usage: setup-worktree.sh <TICKET_ID> <BRANCH> [SPEED] [HARNESS_OVERRIDE]`) and the module doc-comment's resolution-order list to describe the new top-priority step.
+- [x] 2.2 Source `CONCERTINO_IMPLEMENTED_HARNESSES` from `.concertino.env` (already sourced at the top of the script) and, when `HARNESS_OVERRIDE` is non-empty, validate it against that space-separated set **before any git/worktree operation** (i.e. before `REPO_ROOT="$(git rev-parse --show-toplevel)"`). On an unsupported value, print `FAIL unsupported harness '<value>' — no adapter implemented (implemented: <list>)` to stderr and exit non-zero.
+- [x] 2.3 Replace the existing `RUNTIME_HARNESS="$(detect_harness)"` / `HARNESS="${RUNTIME_HARNESS:-${CONCERTINO_HARNESS:-unknown}}"` block with the two-variable version from design.md Decision 5: keep computing `MODEL_TIER_HARNESS` exactly as `HARNESS` was computed before this ticket (runtime signal, then static default, then `unknown` — NEVER influenced by `HARNESS_OVERRIDE`), and compute `HARNESS`/`HARNESS_SOURCE` separately (override wins when present, else falls back to `MODEL_TIER_HARNESS`'s chain). **This split is load-bearing** — the skeptic's design-gate round 1 REFUTE was specifically about a contradicting override otherwise breaking per-role model resolution; do not collapse these back into one variable.
+- [x] 2.4 Update the existing `resolve-speed.sh "$SPEED" "$HARNESS"` call site to pass `"$MODEL_TIER_HARNESS"` instead of `"$HARNESS"` — this is the one call site the split exists to protect.
+- [x] 2.5 Add `READY harness=${HARNESS}` and `READY harness_source=${HARNESS_SOURCE}` to the READY-lines block near the end of the script (after the existing `READY evaluator_clean_worktree=` line), and update the script's own header-comment READY contract listing and resolution-order description to name both `HARNESS` and `MODEL_TIER_HARNESS` and how they differ.
+- [x] 2.6 Verify the existing `run.start` `emit-event.sh` call (which already includes `"harness=${HARNESS}"`) needs no further change — `HARNESS` now correctly reflects an override when present, with no separate code path.
+- [x] 2.7 Sync `core/scripts/setup-worktree.sh` to `scripts/concertino/setup-worktree.sh` (or run whatever this repo's existing "core → synced copy" step is — check other recent changes to `core/scripts/*.sh` for the pattern, e.g. is there a build/sync step, or is `scripts/concertino/` hand-copied and checked in as its own artifact).
+
+## 3. Orchestrator role — read the label, hard-stop early, pass the override through
+
+- [x] 3.1 In `core/roles/orchestrator.md`'s Setup section (step 1, ticket fetch), add instructions: after fetching the ticket, inspect its `labels` for exactly one match of `^harness:(.+)$`.
+  - No match → proceed unchanged (no override).
+  - Exactly one match, value in the implemented set (`claude-code`, `codex`) → record it as `HARNESS_OVERRIDE` for step 3 (setup-worktree.sh invocation).
+  - Exactly one match, value NOT implemented, OR more than one matching label → stop here: do not derive a branch name, do not call `setup-worktree.sh`. Surface the ticket id + the unsupported/ambiguous value(s) to the human as a hard stop (same treatment as the existing "If the script prints `FAIL`... treat it as a `BLOCKER`" precedent already in this file's Setup step 3).
+- [x] 3.2 Update Setup step 3's `setup-worktree.sh` invocation example to show the optional 4th arg: `setup-worktree.sh "$TICKET_ID" "<branch>" "${SPEED:-default}" "${HARNESS_OVERRIDE:-}"`.
+- [x] 3.3 Note in the same section that `setup-worktree.sh` independently re-validates this value (defense in depth) — so a `FAIL` from the script at this point (distinct from the orchestrator's own earlier check) is still possible and handled by the existing generic `FAIL` → `BLOCKER` rule.
+- [x] 3.4 If this repo's core role docs are synced to `.claude/agents/concertino-orchestrator.md` (or similar) via `concertino sync`, re-run sync for this repo's own dev config after editing, and confirm the synced copy picked up the change (existing convention — check how other recent `core/roles/*.md` edits handled this).
+
+## 4. `concertino validate --ticket <ID>`
+
+- [x] 4.1 In `bin/concertino`'s CLI arg parsing for the `validate` command, accept an optional `--ticket <ID>` value.
+- [x] 4.2 In `lib/ui/linear.js`, add a minimal single-issue fetch helper (e.g. `fetchOneTicket({ apiKey, id, transport })`) that returns at least `{ identifier, labels }` for one ticket by id — reuse the existing GraphQL transport/auth plumbing (`postRaw`, `LINEAR_API_KEY` from env) rather than a second client. If `LINEAR_API_KEY` is unset, throw a clear error rather than crash with a stack trace.
+- [x] 4.3 In `cmdValidate` (`bin/concertino`, ~line 1292), when `args.ticket` is present and `ticketProvider.kind === 'linear'`: call the new helper, extract labels, and check for `^harness:(.+)$`.
+  - No match → print an informational line in the Integrations section: ticket has no override, resolves via the existing chain.
+  - Exactly one match, value implemented → print an informational line naming the ticket + value, noting it will take precedence over project default and runtime detection.
+  - Exactly one match, value not implemented, or more than one match → push a validation error (so `cmdValidate` exits non-zero) naming the ticket + the unsupported/ambiguous value(s).
+  - If `ticketProvider.kind !== 'linear'` (github/manual), print an informational note that `--ticket` live-checking is only implemented for the `linear` provider today (do not crash).
+- [x] 4.4 Thread this through `collectConfigIssues` (`lib/config.js`) cleanly: either (a) pass an optional `opts.ticketHarnessCheck` result into `collectConfigIssues` so it prints/errors within the existing `sec('Integrations')` block right after the existing harness-telemetry lines (~line 209-215), or (b) have `cmdValidate` print this block itself immediately after calling `collectConfigIssues`, still inside a `section('Integrations')`-equivalent grouping. Prefer (a) if it doesn't meaningfully complicate `collectConfigIssues`'s signature — keeps all Integrations-section rendering in one place.
+- [x] 4.5 Make sure omitting `--ticket` is a complete no-op — zero behavior change to today's `validate` output.
+
+## 5. Documentation
+
+- [x] 5.1 `docs/config-reference.md`: extend the `harnesses` field's existing prose block (~lines 33-43, "harnesses also drives the CONCERTINO_HARNESS value...") with a new paragraph documenting the per-ticket override: the `harness:<value>` label convention, that it is read alongside a ticket's other fields during Setup, and that it takes precedence over BOTH the static default and runtime detection (call out explicitly that this is a different precedence than the runtime-detection-first order described just above it, so a reader doesn't have to infer the interaction). Document `concertino validate --ticket <ID>`.
+- [x] 5.2 `docs/harness-capabilities.md`: add a short section (near the top, e.g. after "Capability matrix") listing the currently implemented harnesses (`claude-code`, `codex`) as the closed set any per-ticket override is validated against, and cross-reference `docs/config-reference.md` for the override syntax. Explicitly note `local-llm` (and any other undocumented value) has no adapter today and will fail loudly rather than silently falling back.
+- [x] 5.3 Cross-link both doc sections to each other (config-reference → harness-capabilities for "what's implemented", harness-capabilities → config-reference for "how to declare it per-ticket").
+
+## 6. Tests
+
+- [x] 6.1 Add/extend `setup-worktree.sh` tests (the existing `test/scripts/harness-identity.test.sh` covers this exact area today — reuse its `new_scripts`/`new_repo`/`run_setup`/`harness_of` helper pattern) covering: override with a valid value beats a contradicting runtime signal and the static default for `HARNESS`/`READY harness=`/`READY harness_source=`; override with an invalid value FAILs before any worktree operation (assert no worktree/branch was created); no override leaves existing behavior/tests passing unchanged; **a contradicting override (e.g. `HARNESS_OVERRIDE=codex` with `CLAUDECODE` set) does NOT change the harness value passed to `resolve-speed.sh`/reflected in `READY models=`** — this is the specific regression the design-gate skeptic's round-1 REFUTE was about (design.md Decision 5's `MODEL_TIER_HARNESS`/`HARNESS` split), so it needs its own explicit assertion, not just inferred from the other cases.
+- [x] 6.2 Add tests for `lib/config.js`'s exported `VALID_HARNESSES` and for `cmdValidate`'s `--ticket` path (mocking/stubbing the Linear fetch the same way existing `lib/ui/linear.js` consumers are tested, if such a pattern exists — check `test/` for existing Linear-mocking conventions) covering: no override present, valid override present, invalid override present, ambiguous (2+ labels) override present, and `ticketProvider.kind !== 'linear'`.
+- [x] 6.3 Run the full existing test suite (`npm test` — the repo's own `gates` entry) and fix any incidental breakage from the `renderEnv` / `.concertino.env` snapshot changes (task 1.3).
+
+## 7. Manual verification
+
+- [x] 7.1 Run `concertino validate --ticket <a real or fixture ticket id with no override>` and confirm the "no override" informational line appears with zero exit-code impact.
+- [x] 7.2 Manually invoke `setup-worktree.sh <ticket> <branch> default codex` and `... default local-llm` against a scratch branch, confirming the valid case resolves `harness=codex`/`harness_source=ticket-override` and the invalid case FAILs before touching git, per the new spec scenarios in `openspec/changes/per-ticket-harness-override/specs/harness-identity/spec.md`.

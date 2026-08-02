@@ -42,6 +42,50 @@ runtime with a harness-set environment variable when one is present
 `unknown` if neither resolves. `concertino validate` reports which mode
 (static vs. runtime-detected) a project's configured `harnesses` will use.
 
+### Per-ticket harness override (`harness:<value>` label)
+
+A single ticket can override the harness used for its own run, independent
+of the project's `harnesses` config above. Add a label matching
+`harness:<value>` (e.g. `harness:codex`) to the ticket — the orchestrator
+reads it alongside the ticket's other fields at Setup (Linear's
+`get_issue`/`mcp__linear__get_issue` already returns `labels`, so no extra
+API call is needed).
+
+**This is a different, higher-priority precedence than the runtime-detection
+chain described just above:** a ticket-declared override wins over BOTH the
+static `CONCERTINO_HARNESS` default AND runtime env-based detection
+(`CLAUDECODE`/`CODEX_SANDBOX*`) — not merely over the static default. Do not
+assume it slots into the same order as an ordinary runtime signal; it is
+checked first, ahead of everything else.
+
+The value must be one of the currently implemented harnesses — see
+[`docs/harness-capabilities.md`](harness-capabilities.md) for the current
+list. A ticket labeled with an unimplemented harness (e.g. `harness:local-llm`)
+fails loudly, before any worktree is created — it never silently falls back
+to the project default. A ticket carrying more than one `harness:` label is
+treated the same way (ambiguous override), never silently picking one.
+
+This override affects only the run's **identity/telemetry** — which harness
+`run.start` and `READY harness=` report. It does **not** change which
+per-role model ids get resolved: those always reflect the harness actually
+executing the process (`resolve-speed.sh`'s `MODEL_TIER_HARNESS`), regardless
+of what any ticket declares — a contradicting override (e.g. a ticket labeled
+`harness:codex` run from inside a live Claude Code session) still gets valid
+Claude Code model ids, never Codex ones fed into a Claude Code `Agent(...)`
+call.
+
+Check a specific ticket's declared override (if any) ahead of a run with:
+
+```bash
+concertino validate --ticket <ID>
+```
+
+This live-fetches the named ticket (`ticketProvider.kind: "linear"` only
+today) and reports, in the Integrations section: no override present, a
+valid override (and that it will take precedence), or an unsupported/
+ambiguous override as a validation error (non-zero exit). Omitting `--ticket`
+leaves `concertino validate`'s output unchanged from today.
+
 ---
 
 ## `project`
