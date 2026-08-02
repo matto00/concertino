@@ -1,6 +1,6 @@
 {
   "budgets": {
-    "executionCycles": 3,
+    "executionCycles": 7,
     "skepticDesignRounds": 3,
     "skepticFinalRounds": 2,
     "debugAttempts": 2
