@@ -20,9 +20,17 @@ hasnt(){ grep -qF "$2" "$3" && bad "$1" "unexpectedly found [$2]" || ok "$1"; }
 
 # Create a throwaway copy of the project for testing resolveCore() — ensures
 # tests don't mutate the real repository or leave dangling git worktree entries.
+# CON-57: bin/concertino now requires lib/config.js (shared with the
+# settings screen) unconditionally at the top of the file, for every
+# command — so this copy has to include lib/ too, exactly like a real
+# `npm install` would (package.json's own "files" array already lists both
+# bin/ and lib/); omitting it here is not a smaller/faster fixture, it is an
+# incomplete one that happened to work only while every command this test
+# exercises was still self-contained inside bin/concertino itself.
 new_main() {
   local d; d="$(mktemp -d)"
   cp -r "$ROOT/bin" "$d/bin"
+  cp -r "$ROOT/lib" "$d/lib"
   cp -r "$ROOT/adapters" "$d/adapters"
   cp -r "$ROOT/core" "$d/core"
   cp -r "$ROOT/config" "$d/config"

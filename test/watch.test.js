@@ -2868,3 +2868,249 @@ test('CON-21: cancelling while drafting kills the in-flight child process and re
     await h.teardown(donePromise);
   }
 });
+
+// ===========================================================================
+// CON-57: the settings screen, driven end to end through the real onKey/
+// applyAction pipeline (mirrors setupQuickStartHarness's own "fake session/
+// stdin, real fs" technique) — `concertino.config.json` is a REAL file on
+// disk here (not just an in-memory `opts.config`), since openSettings()
+// deliberately re-reads it fresh off disk every time `s` is pressed
+// (design.md Decision 4), and settings-save writes back to that same file.
+// ===========================================================================
+
+function setupSettingsHarness(config) {
+  const { EventEmitter } = require('node:events');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-settings-'));
+  const cfgPath = path.join(root, 'concertino.config.json');
+  fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2) + '\n');
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return []; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  // isTTY true so the 'data' handler does NOT strip a trailing '\r' (used
+  // throughout these tests to commit a field edit / toggle a boolean) as it
+  // does for piped stdin — see watch.js's own comment there, and
+  // withWatchHarness's identical setting above.
+  fakeStdin.isTTY = true;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  return {
+    root, cfgPath, fakeStdin, written,
+    screen: () => screenOf(written),
+    readConfig: () => JSON.parse(fs.readFileSync(cfgPath, 'utf8')),
+    rawBytes: () => fs.readFileSync(cfgPath, 'utf8'),
+    async teardown(donePromise) {
+      fakeStdin.emit('end');
+      if (donePromise) await donePromise;
+      process.stdout.write = realWrite;
+      Object.defineProperty(process, 'stdin', realStdinDescriptor);
+      delete require.cache[watchPath];
+      delete require.cache[sessionPath];
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+const SETTINGS_CONFIG = {
+  harnesses: ['claude-code'],
+  project: { name: 'fixture-project', baseBranch: 'main' },
+  ticketProvider: { kind: 'linear', idExample: 'CON-1' },
+  specProvider: { kind: 'none' },
+  worktree: { ports: { frontendBase: 5173, backendBase: 8080 } },
+  gates: [{ name: 'test', when: 'always', command: 'true' }],
+  agentMerge: { enabled: false, mergeMethod: 'squash' },
+  budgets: { executionCycles: 3 },
+};
+
+test('CON-57: s opens the settings screen from the fleet', async () => {
+  const h = setupSettingsHarness(SETTINGS_CONFIG);
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: SETTINGS_CONFIG });
+
+    h.fakeStdin.emit('data', 's');
+    const frame = h.screen();
+    assert.match(frame, /SETTINGS/);
+    assert.match(frame, /project/i);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-57: toggling a boolean field and saving writes the change to concertino.config.json', async () => {
+  const h = setupSettingsHarness(SETTINGS_CONFIG);
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: SETTINGS_CONFIG });
+
+    h.fakeStdin.emit('data', 's'); // open settings
+    // Navigate SECTIONS down to 'agentMerge', enter FIELDS, toggle `enabled`.
+    const sections = configLibForOrder();
+    const agentMergeIndex = sections.indexOf('agentMerge');
+    for (let i = 0; i < agentMergeIndex; i++) h.fakeStdin.emit('data', 'j');
+    h.fakeStdin.emit('data', '\t'); // focus fields (agentMerge.enabled is field 0)
+    h.fakeStdin.emit('data', '\r'); // toggle boolean
+    h.fakeStdin.emit('data', 'S'); // save
+
+    const written = h.readConfig();
+    assert.equal(written.agentMerge.enabled, true, 'the toggled value must be persisted');
+    // The rest of the file must be untouched.
+    assert.equal(written.project.name, 'fixture-project');
+
+    const frame = h.screen();
+    assert.doesNotMatch(frame, /SETTINGS/, 'a successful save returns to the fleet');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-57: Escape with no save leaves concertino.config.json byte-unchanged', async () => {
+  const h = setupSettingsHarness(SETTINGS_CONFIG);
+  const before = h.rawBytes();
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: SETTINGS_CONFIG });
+
+    h.fakeStdin.emit('data', 's');
+    h.fakeStdin.emit('data', '\t'); // focus fields on the first section (harnesses is absent — first real section is project)
+    h.fakeStdin.emit('data', '\r'); // would open project.name's prompt
+    typeText(h.fakeStdin, 'changed-name');
+    h.fakeStdin.emit('data', '\x1b'); // cancel the field prompt (not the whole screen)
+    h.fakeStdin.emit('data', '\x1b'); // now discard everything and return to fleet
+
+    const after = h.rawBytes();
+    assert.equal(after, before, 'Escape must never write to concertino.config.json');
+    assert.doesNotMatch(h.screen(), /SETTINGS/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-57: an invalid edit (non-numeric budgets.executionCycles) is rejected on save and the file is left untouched', async () => {
+  const h = setupSettingsHarness(SETTINGS_CONFIG);
+  const before = h.rawBytes();
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: SETTINGS_CONFIG });
+
+    h.fakeStdin.emit('data', 's');
+    const sections = configLibForOrder();
+    const budgetsIndex = sections.indexOf('budgets');
+    for (let i = 0; i < budgetsIndex; i++) h.fakeStdin.emit('data', 'j');
+    h.fakeStdin.emit('data', '\t'); // focus fields (budgets.executionCycles is field 0)
+    h.fakeStdin.emit('data', '\r'); // open the free-text prompt, seeded with "3"
+    // Clear the seeded value and type a non-numeric one.
+    h.fakeStdin.emit('data', '\x7f');
+    typeText(h.fakeStdin, 'abc');
+    h.fakeStdin.emit('data', '\r'); // commit into the candidate (still just staged)
+    h.fakeStdin.emit('data', 'S'); // save — must be rejected
+
+    const frame = h.screen();
+    assert.match(frame, /budgets\.executionCycles/);
+    assert.match(frame, /SETTINGS/, 'a rejected save must keep the screen open with the edit still staged');
+
+    const after = h.rawBytes();
+    assert.equal(after, before, 'a rejected save must never touch the file on disk');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-57: a below-minimum dashboard value is rejected on save and the file is left untouched', async () => {
+  const h = setupSettingsHarness(SETTINGS_CONFIG);
+  const before = h.rawBytes();
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: SETTINGS_CONFIG });
+
+    h.fakeStdin.emit('data', 's');
+    const sections = configLibForOrder();
+    const dashboardIndex = sections.indexOf('dashboard');
+    for (let i = 0; i < dashboardIndex; i++) h.fakeStdin.emit('data', 'j');
+    h.fakeStdin.emit('data', '\t'); // focus fields
+    // dashboard's field order follows the schema: tmuxSession, launchCommand,
+    // maxConcurrent, escalationTimeoutMinutes, retentionDays, launchPad.enabled,
+    // launchPad.backlog — move down to maxConcurrent (index 2).
+    h.fakeStdin.emit('data', 'j');
+    h.fakeStdin.emit('data', 'j');
+    h.fakeStdin.emit('data', '\r'); // open the prompt, seeded with the schema default "2"
+    h.fakeStdin.emit('data', '\x7f');
+    typeText(h.fakeStdin, '0');
+    h.fakeStdin.emit('data', '\r');
+    h.fakeStdin.emit('data', 'S');
+
+    const frame = h.screen();
+    assert.match(frame, /dashboard\.maxConcurrent/);
+
+    const after = h.rawBytes();
+    assert.equal(after, before, 'a rejected save must never touch the file on disk');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('CON-57: clearing a required field (project.name) is rejected on save, inline error shown, file untouched', async () => {
+  const h = setupSettingsHarness(SETTINGS_CONFIG);
+  const before = h.rawBytes();
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: SETTINGS_CONFIG });
+
+    h.fakeStdin.emit('data', 's');
+    const sections = configLibForOrder();
+    const projectIndex = sections.indexOf('project');
+    for (let i = 0; i < projectIndex; i++) h.fakeStdin.emit('data', 'j');
+    h.fakeStdin.emit('data', '\t'); // focus fields (project.name is field 0)
+    h.fakeStdin.emit('data', '\r'); // open the prompt, seeded with "fixture-project"
+    for (let i = 0; i < 'fixture-project'.length; i++) h.fakeStdin.emit('data', '\x7f'); // clear it
+    h.fakeStdin.emit('data', '\r'); // commit the now-empty value into the candidate
+    h.fakeStdin.emit('data', 'S'); // save — must be rejected
+
+    const frame = h.screen();
+    assert.match(frame, /project\.name/);
+    assert.match(frame, /SETTINGS/, 'a rejected save must keep the screen open with the edit still staged');
+
+    const after = h.rawBytes();
+    assert.equal(after, before, 'a rejected save must never touch the file on disk');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+function configLibForOrder() {
+  const configLib = require('../lib/config');
+  return configLib.schemaSectionOrder(configLib.loadSchema());
+}
