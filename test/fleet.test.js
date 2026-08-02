@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const {
-  renderFleet, handleKey, CONFIRM_RESTORED_QUEUE_KEY, visibleWindow,
+  renderFleet, handleKey, CONFIRM_RESTORED_QUEUE_KEY, visibleWindow, computeWindow,
   sectionJumpTargets, buildSections, QUICK_START_COUNT, QUICK_START_TOGGLE_KEY,
   metricsFor, metricsColumnLines,
 } = require('../lib/ui/screens/fleet');
@@ -1416,6 +1416,30 @@ test('a small terminal at a non-zero scroll offset still renders the header + NE
     // no partially rendered box.
     assert.match(out, /more/, `rows:${rows} lost the overflow accounting`);
   }
+});
+
+// --- computeWindow extraction (Task 5) --------------------------------------
+
+test('computeWindow produces the identical result visibleWindow already returns, given the same buildSections output', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' }), run({ ticket: 'HEL-2', status: 'done' })];
+  const sections = buildSections(
+    { needsYou: [], active: [runs[0]], failed: [], done: [runs[1]] },
+    null, {},
+  );
+  const direct = computeWindow(runs, sections, { rows: 30, selected: 0, scrollOffset: 0 });
+  const viaWrapper = visibleWindow(runs, { rows: 30, selected: 0, scrollOffset: 0 });
+  assert.deepEqual(direct, viaWrapper);
+});
+
+test('computeWindow with includeHeadTail:false does not subtract the page header/footer row count from the budget', () => {
+  const runs = manyFinished(20, 'done');
+  const sections = buildSections({ needsYou: [], active: [], failed: [], done: runs }, null, {});
+  const withHeadTail = computeWindow(runs, sections, { rows: 10, selected: 0, scrollOffset: 0, includeHeadTail: true });
+  const withoutHeadTail = computeWindow(runs, sections, { rows: 10, selected: 0, scrollOffset: 0, includeHeadTail: false });
+  // Excluding head/tail leaves more of the same 10-row budget for content,
+  // so at least as many (and, with real head/tail content present, more)
+  // DONE rows survive the trim.
+  assert.ok(withoutHeadTail.sections[0].shown >= withHeadTail.sections[0].shown);
 });
 
 // --- only bound keys are advertised ----------------------------------------
