@@ -2558,3 +2558,49 @@ test('renderStackedSection never grows past its natural height, even when told a
   // at all).
   assert.equal(lines.length, 4);
 });
+
+// --- fleet-metrics-grid: visibleWindowGrid ------------------------------
+
+const { visibleWindowGrid } = require('../lib/ui/screens/fleet');
+
+test('visibleWindowGrid shows NEEDS YOU in full, exactly like visibleWindow\'s pinned treatment', () => {
+  const runs = Array.from({ length: 5 }, (_, i) => run({ ticket: `HEL-${i}`, status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }));
+  const win = visibleWindowGrid(runs, { rows: 15, selected: 0, cols: 150 });
+  const idx = buildSections({ needsYou: runs, active: [], failed: [], done: [] }, null, {}).findIndex((s) => s.kind === 'needs-you');
+  assert.equal(win.sections[idx].shown, 5);
+});
+
+test('visibleWindowGrid caps FAILED at MAX_FINISHED and never scroll-adjusts it', () => {
+  const runs = manyFinished(12, 'failed');
+  const win1 = visibleWindowGrid(runs, { rows: 30, selected: 0, scrollOffset: 0, cols: 150 });
+  const win2 = visibleWindowGrid(runs, { rows: 30, selected: 0, scrollOffset: 10, cols: 150 });
+  const idx = buildSections({ needsYou: [], active: [], failed: runs, done: [] }, null, {}).findIndex((s) => s.kind === 'failed');
+  assert.equal(win1.sections[idx].shown, 5);
+  assert.equal(win1.sections[idx].startOffset, 0);
+  assert.deepEqual(win1.sections[idx], win2.sections[idx], 'scrollOffset must not change FAILED\'s window in grid mode');
+});
+
+test('visibleWindowGrid windows DONE against the column area\'s own height, not the full terminal', () => {
+  const runs = manyFinished(20, 'done');
+  const winShort = visibleWindowGrid(runs, { rows: 12, selected: 0, scrollOffset: 0, cols: 150 });
+  const winTall = visibleWindowGrid(runs, { rows: 40, selected: 0, scrollOffset: 0, cols: 150 });
+  const idx = buildSections({ needsYou: [], active: [], failed: [], done: runs }, null, {}).findIndex((s) => s.kind === 'done');
+  assert.ok(winTall.sections[idx].shown >= winShort.sections[idx].shown);
+});
+
+test('visibleWindowGrid\'s maxScrollOffset reflects only RUNNING/QUICK START/QUEUED/DONE, not FAILED', () => {
+  // DONE has 12 items capped at MAX_FINISHED=5, so up to 7 can be scrolled
+  // through; FAILED must not add to this even though it also has surplus.
+  const done = manyFinished(12, 'done');
+  const failed = manyFinished(12, 'failed');
+  const runs = failed.concat(done);
+  const win = visibleWindowGrid(runs, { rows: 0, selected: 0, scrollOffset: 0, cols: 150 });
+  assert.equal(win.maxScrollOffset, 7);
+});
+
+test('visibleWindowGrid with rows:0 returns an unbounded (untrimmed) window, matching visibleWindow\'s own structural-query contract', () => {
+  const runs = manyFinished(20, 'done');
+  const win = visibleWindowGrid(runs, { rows: 0, selected: 0, scrollOffset: 0, cols: 150 });
+  const idx = buildSections({ needsYou: [], active: [], failed: [], done: runs }, null, {}).findIndex((s) => s.kind === 'done');
+  assert.equal(win.sections[idx].shown, 5, 'DONE still caps at MAX_FINISHED even untrimmed — cap and height-budget trim are different things');
+});
