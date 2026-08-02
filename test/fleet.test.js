@@ -1193,11 +1193,13 @@ test('the selection marker points at reduce()\'s run for every index', () => {
 });
 
 // CON-28: the same pin, but with a non-empty QUEUED section rendered between
-// RUNNING and FAILED — the exact scenario tasks.md 4.5 calls the ticket's
-// primary constraint. QUEUED rows have no run object at all, so if the shared
-// index counter advanced for them (even by accident), every FAILED/DONE
-// selection below QUEUED would resolve to the wrong run.
-test('the selection marker still points at the correct run when a non-empty QUEUED section renders between RUNNING and FAILED', () => {
+// RUNNING and DONE — the exact scenario tasks.md 4.5 calls the ticket's
+// primary constraint. (Section order, post CON-40/fleet-metrics-grid's FAILED
+// reorder: NEEDS YOU, FAILED, RUNNING, QUEUED, DONE — QUEUED no longer sits
+// next to FAILED.) QUEUED rows have no run object at all, so if the shared
+// index counter advanced for them (even by accident), every DONE selection
+// below QUEUED would resolve to the wrong run.
+test('the selection marker still points at the correct run when a non-empty QUEUED section renders between RUNNING and DONE', () => {
   const runs = reduce(realisticLog(), REAL_WINDOWS, 2000);
   assert.ok(runs.length >= 8, `expected the full fleet, got ${runs.length}`);
   const queueState = { pending: ['CON-90', 'CON-91', 'CON-92'], inFlight: new Set(), maxConcurrent: 2 };
@@ -2748,13 +2750,33 @@ test('grid mode: selecting a run inside DONE (rendered in column 1) still highli
   assert.ok(hel2Selected0 && !hel2Selected0.includes('▸'), 'HEL-2 must not carry the marker while HEL-1 is selected');
 });
 
-test('grid mode: the total rendered frame never exceeds the requested row budget (no scroll-by-one from a mismatched columnAreaHeight)', () => {
+// Final whole-branch review, Finding 4: this title used to read "the total
+// rendered frame never exceeds the requested row budget", worded as a
+// general system property. It isn't one — banners (NEEDS YOU/FAILED) are
+// never trimmed by design, and METRICS' forceRender floor is untrimmable in
+// single-column mode too (see the "METRICS charts pass... own untrimmable
+// floor" comments elsewhere in this file), so a banner/METRICS-heavy
+// fixture at a small enough `rows` can legitimately render MORE lines than
+// the budget without that being a "cap" failure in the sense this title
+// implied. Narrowed to scope the claim to what THIS fixture actually
+// demonstrates: grid mode's own columnAreaHeight accounting (the thing the
+// parenthetical was already about) stays scroll-by-one-safe across the
+// `rows` values where grid mode actually engages.
+//
+// `rows` starts at 18, not 15: at cols:150 this exact fixture's
+// columnAreaHeight only reaches 7 (METRICS' compact-tier floor — 5 content
+// lines + 2-row border) at rows:18; below that, Finding 1's fix falls back
+// to the single-column path, where METRICS' own untrimmable floor can
+// legitimately exceed the budget (the same pre-existing, accepted behavior
+// this file already documents for single-column mode) — a different,
+// out-of-scope property from the one this test targets.
+test('grid mode: columnAreaHeight accounting stays scroll-by-one-safe across rows where grid mode engages (this fixture never exceeds the row budget)', () => {
   const runs = [
     run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
     run({ ticket: 'HEL-2', status: 'failed', endedAt: 100, elapsedMs: 1000 }),
     run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
   ];
-  for (const rows of [15, 20, 25, 30, 40]) {
+  for (const rows of [18, 20, 25, 30, 40]) {
     const out = renderFleet(runs, { cols: 150, rows, selected: 0, now: 100000 });
     const lineCount = out.split('\n').length;
     assert.ok(lineCount <= rows - 1, `at rows:${rows}, rendered ${lineCount} lines — must leave the one row reserved for the trailing newline`);
@@ -2765,6 +2787,109 @@ test('grid mode: METRICS renders its expanded tier when the terminal is wide eno
   const runs = [run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
   const out = plain(renderFleet(runs, { cols: 160, rows: 30, selected: 0, now: 100000 }));
   assert.match(out, /throughput \(30d\)/);
+});
+
+// Final whole-branch review, Finding 1: metricsColumnLines' compact tier
+// always returns exactly 5 lines with no shorter fallback, but
+// renderFleetGrid used to size METRICS' box to exactly columnAreaHeight
+// regardless of whether that height could actually fit all 5 — and
+// layout.box silently drops content past `height - 2` with NO ellipsis and
+// no other signal. A wide-but-short terminal (a horizontally-split tmux
+// pane, a half-height terminal window) lands exactly in that gap: wide
+// enough to qualify for grid mode (`cols >= GRID_MIN_COLS`) but short
+// enough that columnAreaHeight computes into the 3-6 range — so METRICS
+// rendered only 1-4 of its 5 compact lines, with the reader given no
+// indication anything was cut. The design doc's old "can't happen in
+// two-column mode by construction" edge-case claim was wrong: a terminal
+// can be wide AND short at once, and the width-only `cols >= GRID_MIN_COLS`
+// gate does not account for that.
+test('grid mode: METRICS never silently drops compact-tier lines on a wide-but-short terminal', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'failed', endedAt: 100, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-3', status: 'running' }),
+  ];
+  // Pinned: for this exact fixture at cols:150, columnAreaHeight computes to
+  // 4 at rows:15 — squarely in the 3-6 "not enough room for the compact
+  // tier's 5 lines + 2-row border (7), but still nonzero" danger zone.
+  const win = visibleWindowGrid(runs, { rows: 15, selected: 0, scrollOffset: 0, cols: 150 });
+  assert.equal(win.columnAreaHeight, 4, 'fixture must actually reach columnAreaHeight: 4 at rows:15, cols:150');
+
+  for (const rows of [14, 15, 16, 17]) {
+    const out = plain(renderFleet(runs, { cols: 150, rows, selected: 0, now: 100000 }));
+    const anyMetricsLine = /avg delivery|success\s+today|throughput \(|verdicts\s|gates\s/.test(out);
+    // Either METRICS doesn't render at all this frame (e.g. a single-column
+    // fallback, or a fully collapsed box) — acceptable — or, if it renders
+    // ANY of its 5 compact-tier lines, it must render ALL FIVE. A partial
+    // set (some lines silently dropped, others present) is exactly the bug.
+    if (!anyMetricsLine) continue;
+    assert.match(out, /avg delivery/, `rows:${rows}: METRICS line 1 (avg delivery) missing while another line rendered`);
+    assert.match(out, /success\s+today/, `rows:${rows}: METRICS line 2 (success) missing while another line rendered`);
+    assert.match(out, /throughput \(/, `rows:${rows}: METRICS line 3 (throughput) missing while another line rendered`);
+    assert.match(out, /verdicts\s/, `rows:${rows}: METRICS line 4 (verdicts) missing while another line rendered`);
+    assert.match(out, /gates\s/, `rows:${rows}: METRICS line 5 (gates) missing while another line rendered`);
+  }
+
+  // The chosen fix (fall back to the single-column path whenever the grid's
+  // column area can't fit METRICS' compact tier) also needs pinning
+  // directly: at rows:15/cols:150, RUNNING and METRICS must render
+  // stacked (single-column), not side by side, even though cols alone
+  // would otherwise qualify for grid mode.
+  const fallbackOut = plain(renderFleet(runs, { cols: 150, rows: 15, selected: 0, now: 100000 }));
+  const lines = fallbackOut.split('\n');
+  const runningLine = lines.findIndex((l) => l.includes('RUNNING'));
+  const metricsLine = lines.findIndex((l) => l.includes('METRICS'));
+  assert.notEqual(runningLine, metricsLine,
+    'at columnAreaHeight:4, grid mode must fall back to single-column — RUNNING and METRICS must be on DIFFERENT lines');
+});
+
+// Consequence of Finding 1's fix: renderFleet's grid-mode decision is no
+// longer just `cols >= GRID_MIN_COLS` — it also requires the column area to
+// fit METRICS' compact-tier floor. watch.js's own scroll-accounting call
+// sites (the scrollOffset re-clamp and scrollToShow) must pick the exact
+// SAME windowing function (visibleWindowGrid vs visibleWindow) the renderer
+// will use this frame, or `maxScrollOffset`/`firstVisibleIndex` computed
+// against grid mode's own accounting (which excludes FAILED entirely — it
+// renders as a banner, never part of column 1's scrollable list) could be
+// applied to a frame that actually rendered single-column (where FAILED IS
+// part of the ordinary scrollable flat list). `gridModeEligible` is the
+// shared helper both `renderFleet` and watch.js now use to avoid exactly
+// that drift — this pins its own contract directly.
+test('gridModeEligible matches renderFleet\'s own grid-mode decision, including the Finding 1 height gate', () => {
+  const { gridModeEligible, GRID_MIN_COLS, GRID_MIN_COLUMN_AREA_HEIGHT } = require('../lib/ui/screens/fleet');
+  assert.equal(GRID_MIN_COLUMN_AREA_HEIGHT, 7, 'this test is pinned to the documented threshold value');
+
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'failed', endedAt: 100, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-3', status: 'running' }),
+  ];
+
+  // Below GRID_MIN_COLS: never eligible, regardless of height.
+  assert.equal(gridModeEligible(runs, { cols: GRID_MIN_COLS - 1, rows: 100, selected: 0, scrollOffset: 0 }), false);
+
+  // At/above GRID_MIN_COLS but too short for METRICS' compact-tier floor
+  // (columnAreaHeight: 6 at rows:17, for this exact fixture — see the
+  // sibling "never silently drops" test above for the same fixture at
+  // rows:15/columnAreaHeight:4): not eligible.
+  assert.equal(gridModeEligible(runs, { cols: 150, rows: 17, selected: 0, scrollOffset: 0 }), false);
+
+  // Just tall enough (columnAreaHeight: 7 at rows:18): eligible, and must
+  // agree with what renderFleet itself actually renders this frame.
+  assert.equal(gridModeEligible(runs, { cols: 150, rows: 18, selected: 0, scrollOffset: 0 }), true);
+  const out = plain(renderFleet(runs, { cols: 150, rows: 18, selected: 0, now: 100000 }));
+  const lines = out.split('\n');
+  assert.equal(
+    lines.findIndex((l) => l.includes('RUNNING')),
+    lines.findIndex((l) => l.includes('METRICS')),
+    'gridModeEligible said true at rows:18 — renderFleet must actually render RUNNING and METRICS side by side');
+
+  // rows: 0 is a documented rows-independent structural query for OTHER
+  // callers (visibleWindow/visibleWindowGrid's own `maxScrollOffset`
+  // contract) — gridModeEligible must not be fooled into reporting `true`
+  // for it; a caller needing both must check eligibility against the real
+  // row count separately, per this function's own header comment.
+  assert.equal(gridModeEligible(runs, { cols: 150, rows: 0, selected: 0, scrollOffset: 0 }), false);
 });
 
 test('grid mode: METRICS stays compact when the terminal is grid-eligible but METRICS\' own column is still narrow', () => {
