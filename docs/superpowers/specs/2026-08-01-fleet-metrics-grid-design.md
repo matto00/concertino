@@ -78,10 +78,12 @@ better than interleaving one of them into the two-column area below.
 ### Sizing thresholds
 
 - **Two-column mode requires the terminal to be ≥ 110 columns wide.** Below
-  that, the page renders exactly as it does today: one vertical stack, in
-  section order NEEDS YOU → RUNNING → QUICK START → QUEUED → FAILED → DONE
-  → METRICS (compact 5-line box) — the existing, already-tested code path,
-  completely unchanged.
+  that, the page renders one vertical stack, in the canonical section order
+  NEEDS YOU → FAILED → RUNNING → QUICK START → QUEUED → DONE → METRICS
+  (compact 5-line box) — the same canonical order the grid layout above
+  also builds on (see Task 2 of the implementation plan, which moved FAILED
+  ahead of RUNNING for exactly this reason), rendered through the existing,
+  already-tested single-column code path.
 - **Column 1 is a fixed 70 columns wide** in two-column mode, regardless of
   total terminal width — the same width run rows already render
   comfortably narrower than today's typical 80+ column terminal, so ticket
@@ -225,11 +227,23 @@ is "use the space when there's real content to fill it with," not
   sections — unchanged behavior, just running against a possibly-smaller
   height input than the full terminal.
 - **METRICS content taller than `contentRows` even at the compact tier**
-  (extremely short terminal): can't happen in two-column mode by
-  construction — the `< 110` branch only engages when width is small, and
-  height-only constraints stay on the existing single-column path where
-  METRICS is already `forceRender` and this exact scenario is already
-  handled (documented in the previous design's edge cases).
+  (a wide-but-short terminal — a horizontally-split tmux pane, a half-height
+  terminal window): CAN happen in two-column mode — a terminal can be wide
+  AND short at once, so the width-only `cols >= GRID_MIN_COLS` gate alone
+  does not rule this out. `metricsColumnLines`' compact tier always returns
+  exactly 5 lines with no shorter fallback, but `layout.box` renders exactly
+  `height - 2` content rows and silently drops anything beyond that (no
+  ellipsis, no signal) — so without a height check, `columnAreaHeight`
+  landing in the 3-6 range would render METRICS with only 1-4 of its 5
+  compact lines and no indication anything was cut. Fixed (final
+  whole-branch review, Finding 1) by extending the grid-mode gate itself:
+  `renderFleet` also requires the column area to have room for METRICS'
+  compact-tier floor (>= 7 rows — 5 content lines + 2-row border), computed
+  via `visibleWindowGrid`, before committing to grid mode at all; below
+  that, it falls back to the single-column path exactly as if
+  `cols < GRID_MIN_COLS`, where METRICS is already `forceRender` and this
+  exact scenario is already handled (documented in the previous design's
+  edge cases).
 - **Zero runs in history at all**: compact-tier degradation is unchanged
   from today. Expanded tier: lines 1-5 degrade exactly as today
   (`n/a`/`no data yet`), line 7 shows `no data yet`, line 10 shows `no

@@ -2,10 +2,11 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const {
-  renderFleet, handleKey, CONFIRM_RESTORED_QUEUE_KEY, visibleWindow,
+  renderFleet, handleKey, CONFIRM_RESTORED_QUEUE_KEY, visibleWindow, computeWindow,
   sectionJumpTargets, buildSections, QUICK_START_COUNT,
-  metricsFor,
+  metricsFor, metricsColumnLines,
 } = require('../lib/ui/screens/fleet');
+const { renderStackedSection } = require('../lib/ui/screens/fleet');
 const { reduce, PHASE_ORDER } = require('../lib/ui/reducer');
 const f = require('../lib/ui/format');
 
@@ -317,9 +318,12 @@ test('the confirm key does nothing when there is no restored-unconfirmed queue o
 // skip it entirely (design.md Decision 1).
 
 test('inserting a non-empty QUEUED section never perturbs which run a FAILED/DONE row below it resolves to', () => {
+  // Array order mirrors the canonical section order (FAILED, RUNNING, DONE —
+  // NEEDS YOU is empty here) so `runs[selected]` lines up with the flat walk
+  // position `selected` renders at.
   const runs = [
-    run({ ticket: 'HEL-1', status: 'running' }),
     run({ ticket: 'HEL-2', status: 'failed', endStatus: 'escalated', endedAt: 100 }),
+    run({ ticket: 'HEL-1', status: 'running' }),
     run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered', endedAt: 100 }),
   ];
   const queueState = { pending: ['CON-9', 'CON-10'], inFlight: new Set(), maxConcurrent: 1 };
@@ -395,6 +399,16 @@ test('a delivered run and a failed run render under different headings', () => {
   assert.ok(out.indexOf('FAILED') < out.indexOf('HEL-2'), 'HEL-2 under FAILED');
   assert.ok(out.indexOf('HEL-2') < out.indexOf('DONE'), 'FAILED section comes first');
   assert.ok(out.indexOf('DONE') < out.indexOf('HEL-1'), 'HEL-1 under DONE');
+});
+
+test('buildSections lists FAILED right after NEEDS YOU, ahead of RUNNING — the canonical order every grid-mode task depends on', () => {
+  const sections = buildSections(
+    { needsYou: [], active: [run({ ticket: 'HEL-1', status: 'running' })], failed: [run({ ticket: 'HEL-2', status: 'failed' })], done: [] },
+    null,
+    {},
+  );
+  const kinds = sections.map((s) => s.kind);
+  assert.deepEqual(kinds, ['needs-you', 'failed', 'running', 'done']);
 });
 
 // --- DONE rows compare delivery time against this repo's own average -------
@@ -596,6 +610,64 @@ test('metricsFor.throughput is seven zeroes with no delivery history', () => {
   assert.deepEqual(m.throughput, [0, 0, 0, 0, 0, 0, 0]);
 });
 
+test('metricsFor.throughput30d buckets done runs into the last 30 UTC days, oldest first', () => {
+  const now = 40 * DAY_MS;
+  const todayStart = 40 * DAY_MS;
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endedAt: todayStart, elapsedMs: 1000 }), // today
+    run({ ticket: 'HEL-2', status: 'done', endedAt: todayStart - 20 * DAY_MS, elapsedMs: 1000 }), // 20 days ago
+    run({ ticket: 'HEL-3', status: 'done', endedAt: todayStart - 31 * DAY_MS, elapsedMs: 1000 }), // outside the 30-day window
+  ], now);
+  assert.equal(m.throughput30d.length, 30);
+  assert.equal(m.throughput30d[29], 1, 'index 29 is today');
+  assert.equal(m.throughput30d[9], 1, 'index 9 is 20 days ago');
+  assert.equal(m.throughput30d.reduce((a, b) => a + b, 0), 2, 'the 31-day-old delivery must not be counted');
+});
+
+test('metricsFor.throughput30d is thirty zeroes with no delivery history', () => {
+  const m = metricsFor([], 1000000);
+  assert.deepEqual(m.throughput30d, new Array(30).fill(0));
+});
+
+test('metricsFor.durationBuckets counts done runs with a known elapsedMs into three ranges', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', elapsedMs: 5 * 60000 }),      // under10
+    run({ ticket: 'HEL-2', status: 'done', elapsedMs: 9 * 60000 + 59000 }), // under10 (just below 10m)
+    run({ ticket: 'HEL-3', status: 'done', elapsedMs: 10 * 60000 }),     // from10to30 (exactly 10m)
+    run({ ticket: 'HEL-4', status: 'done', elapsedMs: 25 * 60000 }),     // from10to30
+    run({ ticket: 'HEL-5', status: 'done', elapsedMs: 30 * 60000 }),     // over30 (exactly 30m)
+    run({ ticket: 'HEL-6', status: 'done', elapsedMs: 45 * 60000 }),     // over30
+    run({ ticket: 'HEL-7', status: 'running' }),                        // no elapsedMs to count — excluded
+  ], 1000000);
+  assert.deepEqual(m.durationBuckets, { under10: 2, from10to30: 2, over30: 2 });
+});
+
+test('metricsFor.durationBuckets is all zero with no done-run history', () => {
+  const m = metricsFor([run({ ticket: 'HEL-1', status: 'running' })], 1000000);
+  assert.deepEqual(m.durationBuckets, { under10: 0, from10to30: 0, over30: 0 });
+});
+
+test('metricsFor.recentEscalations collects every escalation.raised event across all runs, newest first', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', events: [
+      { kind: 'escalation.raised', t: 100, ticket: 'HEL-1', role: 'orchestrator', question: 'add zod?' },
+    ] }),
+    run({ ticket: 'HEL-2', events: [
+      { kind: 'escalation.raised', t: 300, ticket: 'HEL-2', role: 'evaluator', question: 'drop the column?' },
+      { kind: 'escalation.raised', t: 200, ticket: 'HEL-2', role: null, question: 'retry?' },
+    ] }),
+  ], 1000000);
+  assert.equal(m.recentEscalations.length, 3);
+  assert.deepEqual(m.recentEscalations.map((e) => e.raisedAt), [300, 200, 100], 'newest first');
+  assert.deepEqual(m.recentEscalations[0], { ticket: 'HEL-2', role: 'evaluator', question: 'drop the column?', raisedAt: 300 });
+  assert.equal(m.recentEscalations[1].role, null, 'a missing role stays null, not a made-up default');
+});
+
+test('metricsFor.recentEscalations is empty with no escalation history', () => {
+  const m = metricsFor([run({ ticket: 'HEL-1', status: 'done' })], 1000000);
+  assert.deepEqual(m.recentEscalations, []);
+});
+
 test('metricsFor.verdictRates computes each role\'s pass-rate from verdict events across all runs', () => {
   const m = metricsFor([
     run({ ticket: 'HEL-1', events: [
@@ -631,6 +703,90 @@ test('metricsFor.gateRates computes each gate\'s pass-rate from the latest per-r
   assert.equal(m.gateRates['phase:setup'], 1);
   assert.equal(m.gateRates['server:backend'], 0);
   assert.ok(!('phase:servers' in m.gateRates), 'a gate no run ever reported must be omitted, not 0%');
+});
+
+test('metricsColumnLines returns the same 5 compact lines buildSections used to build inline', () => {
+  const { metricsColumnLines } = require('../lib/ui/screens/fleet');
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000,
+      events: [{ kind: 'verdict', role: 'evaluator', verdict: 'PASS' }],
+      gates: [{ name: 'phase:setup', status: 'pass' }] }),
+  ], 100000);
+  const lines = metricsColumnLines(m, { cols: 76 });
+  assert.equal(lines.length, 5);
+  assert.match(lines[0], /avg delivery/);
+  assert.match(lines[1], /success\s+today/);
+  assert.match(lines[2], /throughput \(7d\)/);
+  assert.match(lines[3], /verdicts\s+evaluator/);
+  assert.match(lines[4], /gates\s+setup/);
+});
+
+function metricsFixtureExpanded() {
+  return {
+    avgMs: 90000, deliveredToday: 2, deliveredWeek: 5, escalationsToday: 1,
+    successRate: { today: { rate: 1, done: 2, total: 2 }, week: { rate: 0.8, done: 4, total: 5 } },
+    throughput: [0, 0, 0, 0, 0, 1, 1],
+    throughput30d: new Array(30).fill(0).map((_, i) => (i >= 28 ? 1 : 0)),
+    verdictRates: { evaluator: 0.9, skeptic: null, auditor: null },
+    gateRates: { 'phase:setup': 1 },
+    durationBuckets: { under10: 3, from10to30: 1, over30: 0 },
+    recentEscalations: [
+      { ticket: 'CON-9', role: 'orchestrator', question: 'retry?', raisedAt: 5000 },
+      { ticket: 'CON-8', role: 'evaluator', question: 'looks risky, proceed?', raisedAt: 4000 },
+    ],
+  };
+}
+
+test('metricsColumnLines stays compact when the column is narrower than 80 cols, even with plenty of rows', () => {
+  const lines = metricsColumnLines(metricsFixtureExpanded(), { cols: 60, contentRows: 40 });
+  assert.equal(lines.length, 5);
+});
+
+test('metricsColumnLines stays compact when contentRows is too small, even with a wide column', () => {
+  const lines = metricsColumnLines(metricsFixtureExpanded(), { cols: 100, contentRows: 5 });
+  assert.equal(lines.length, 5);
+});
+
+test('metricsColumnLines expands when both cols>=80 and contentRows>=11: 30-day throughput, duration line, escalations', () => {
+  const lines = metricsColumnLines(metricsFixtureExpanded(), { cols: 90, contentRows: 20 });
+  assert.match(lines[2], /throughput \(30d\)/);
+  const durationLine = lines.find((l) => l.startsWith('duration'));
+  assert.ok(durationLine, 'a duration line must render');
+  assert.match(durationLine, /<10m 75%/);
+  assert.match(durationLine, /10-30m 25%/);
+  assert.match(durationLine, /30m\+ 0%/);
+  assert.ok(lines.includes('recent escalations'), 'a recent-escalations header must render');
+  const escLine = lines.find((l) => l.includes('CON-9'));
+  assert.ok(escLine, 'the newest escalation must render');
+  assert.match(escLine, /retry\?/);
+});
+
+test('metricsColumnLines\' expanded tier shows only as many escalation rows as contentRows allows', () => {
+  const m = metricsFixtureExpanded();
+  m.recentEscalations = Array.from({ length: 20 }, (_, i) => ({
+    ticket: `CON-${i}`, role: 'orchestrator', question: 'q', raisedAt: 20 - i,
+  }));
+  const lines = metricsColumnLines(m, { cols: 90, contentRows: 13 }); // 8 fixed + header + 1 room for 3 more? see below
+  // fixedLines = [line1,line2,line3,line4,line5,'',durationLine,''] = 8 lines.
+  // remaining = contentRows - 8. header consumes 1, the rest go to escalation rows.
+  const remaining = 13 - 8;
+  const escalationRowCount = lines.length - 8 - 1; // minus the 8 fixed lines and the header
+  assert.equal(escalationRowCount, remaining - 1);
+});
+
+test('metricsColumnLines\' expanded tier says "no escalations yet" when the list is empty but there is room', () => {
+  const m = metricsFixtureExpanded();
+  m.recentEscalations = [];
+  const lines = metricsColumnLines(m, { cols: 90, contentRows: 20 });
+  assert.ok(lines.some((l) => l.includes('no escalations yet')));
+});
+
+test('metricsColumnLines\' expanded-tier duration line says "no data yet" with no duration history', () => {
+  const m = metricsFixtureExpanded();
+  m.durationBuckets = { under10: 0, from10to30: 0, over30: 0 };
+  const lines = metricsColumnLines(m, { cols: 90, contentRows: 20 });
+  const durationLine = lines.find((l) => l.startsWith('duration'));
+  assert.match(durationLine, /no data yet/);
 });
 
 test('the fleet view shows a METRICS section after DONE with real numbers', () => {
@@ -713,7 +869,7 @@ test('the METRICS gates line uses the real gate-name vocabulary (phase:setup/ser
   ];
   const out = plain(renderFleet([
     run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000, gates }),
-  ], { ...OPTS, cols: 120, now }));
+  ], { ...OPTS, cols: 100, now }));
   const gatesLine = out.split('\n').find((l) => l.includes('gates'));
   assert.ok(gatesLine, 'a gates line must render');
   assert.match(gatesLine, /setup 100%/);
@@ -1049,11 +1205,13 @@ test('the selection marker points at reduce()\'s run for every index', () => {
 });
 
 // CON-28: the same pin, but with a non-empty QUEUED section rendered between
-// RUNNING and FAILED — the exact scenario tasks.md 4.5 calls the ticket's
-// primary constraint. QUEUED rows have no run object at all, so if the shared
-// index counter advanced for them (even by accident), every FAILED/DONE
-// selection below QUEUED would resolve to the wrong run.
-test('the selection marker still points at the correct run when a non-empty QUEUED section renders between RUNNING and FAILED', () => {
+// RUNNING and DONE — the exact scenario tasks.md 4.5 calls the ticket's
+// primary constraint. (Section order, post CON-40/fleet-metrics-grid's FAILED
+// reorder: NEEDS YOU, FAILED, RUNNING, QUEUED, DONE — QUEUED no longer sits
+// next to FAILED.) QUEUED rows have no run object at all, so if the shared
+// index counter advanced for them (even by accident), every DONE selection
+// below QUEUED would resolve to the wrong run.
+test('the selection marker still points at the correct run when a non-empty QUEUED section renders between RUNNING and DONE', () => {
   const runs = reduce(realisticLog(), REAL_WINDOWS, 2000);
   assert.ok(runs.length >= 8, `expected the full fleet, got ${runs.length}`);
   const queueState = { pending: ['CON-90', 'CON-91', 'CON-92'], inFlight: new Set(), maxConcurrent: 2 };
@@ -1074,16 +1232,21 @@ test('the selection marker still points at the correct run when a non-empty QUEU
 // --- CON-6: scroll offset — the selection marker must stay aligned at every
 // scroll position, not just scrollOffset: 0, and NEEDS YOU must never move --
 
-// NEEDS YOU (1) + RUNNING (2) + FAILED (12, windowed at MAX_FINISHED=5 —
-// design.md Decision 1) + DONE (3): more than one page of FAILED alone, so
-// scrolling through it is unavoidable, and RUNNING/DONE give the walk in
-// design.md Decision 2 more than one section to cross.
+// NEEDS YOU (1) + FAILED (12, windowed at MAX_FINISHED=5 — design.md
+// Decision 1) + RUNNING (2) + DONE (3): more than one page of FAILED alone,
+// so scrolling through it is unavoidable, and RUNNING/DONE give the walk in
+// design.md Decision 2 more than one section to cross. Array order mirrors
+// the canonical section order (NEEDS YOU, FAILED, RUNNING, DONE) so
+// `runs[n]` lines up with the flat walk position `selected: n` renders at
+// (see the reducer.js STATUS_ORDER comment for why this correspondence
+// matters).
 function scrollFixture() {
   return [
     run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+  ].concat(manyFinished(12, 'failed'), [
     run({ ticket: 'HEL-2', status: 'running' }),
     run({ ticket: 'HEL-3', status: 'running' }),
-  ].concat(manyFinished(12, 'failed')).concat(manyFinished(3, 'done'));
+  ]).concat(manyFinished(3, 'done'));
 }
 
 // 3.1: extends "the selection marker points at reduce()'s run for every
@@ -1270,6 +1433,37 @@ test('a small terminal at a non-zero scroll offset still renders the header + NE
     // no partially rendered box.
     assert.match(out, /more/, `rows:${rows} lost the overflow accounting`);
   }
+});
+
+// --- computeWindow extraction (Task 5) --------------------------------------
+
+test('computeWindow produces the identical result visibleWindow already returns, given the same buildSections output', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' }), run({ ticket: 'HEL-2', status: 'done' })];
+  const sections = buildSections(
+    { needsYou: [], active: [runs[0]], failed: [], done: [runs[1]] },
+    null, {},
+  );
+  const direct = computeWindow(runs, sections, { rows: 30, selected: 0, scrollOffset: 0 });
+  const viaWrapper = visibleWindow(runs, { rows: 30, selected: 0, scrollOffset: 0 });
+  assert.deepEqual(direct, viaWrapper);
+});
+
+test('computeWindow with includeHeadTail:false does not subtract the page header/footer row count from the budget', () => {
+  const runs = manyFinished(20, 'done');
+  const sections = buildSections({ needsYou: [], active: [], failed: [], done: runs }, null, {});
+  const withHeadTail = computeWindow(runs, sections, { rows: 10, selected: 0, scrollOffset: 0, includeHeadTail: true });
+  const withoutHeadTail = computeWindow(runs, sections, { rows: 10, selected: 0, scrollOffset: 0, includeHeadTail: false });
+  // Excluding head/tail leaves more of the same 10-row budget for content, so
+  // more DONE rows survive the trim. Targeted by `kind` rather than a
+  // hardcoded index (section order can shift, as it already did once in
+  // Task 2) — and NOT sections[0], which is NEEDS YOU and empty in this
+  // fixture (shown: 0 on both sides regardless of includeHeadTail, which
+  // would make the assertion vacuous).
+  const done = sections.findIndex((s) => s.kind === 'done');
+  assert.ok(
+    withoutHeadTail.sections[done].shown > withHeadTail.sections[done].shown,
+    `expected more DONE rows without head/tail: ${withoutHeadTail.sections[done].shown} vs ${withHeadTail.sections[done].shown}`,
+  );
 });
 
 // --- only bound keys are advertised ----------------------------------------
@@ -1736,12 +1930,12 @@ test('digit jump lands on the first row of the target section when NEEDS YOU/RUN
     run({ ticket: 'HEL-3', status: 'running' }),
     run({ ticket: 'HEL-4', status: 'failed', endStatus: 'escalated', endedAt: 100 }),
   ];
-  // CON-56: QUICK START is now always on screen too (unselectable, forceRender
-  // when empty), so it claims digit 3 here — sections on screen: NEEDS YOU
-  // (1 row, index 0), RUNNING (2 rows, index 1-2), QUICK START (digit 3,
-  // unselectable), FAILED (1 row, index 3). Digit 4 -> FAILED's first row,
-  // index 3.
-  assert.deepEqual(handleKey('4', state({ runs })), { type: 'jump', index: 3 });
+  // Sections on screen (canonical order): NEEDS YOU (1 row, index 0), FAILED
+  // (1 row, index 1), RUNNING (2 rows, indices 2-3), then QUICK START
+  // (digit 4, unselectable, always on screen since CON-56 — doesn't affect
+  // FAILED's own digit, since it renders after RUNNING). Digit 2 -> FAILED's
+  // first row, index 1.
+  assert.deepEqual(handleKey('2', state({ runs })), { type: 'jump', index: 1 });
 });
 
 test('numbering skips empty sections — digit 3 reaches DONE when NEEDS YOU/FAILED are empty', () => {
@@ -2231,17 +2425,37 @@ test('renderFleet\'s own returned string actually contains a rendered QUICK STAR
 // --- row-index space is unaffected --------------------------------------------
 
 test('a visible QUICK START section never perturbs the run row-index space', () => {
+  // Array order mirrors the canonical section order (FAILED, RUNNING, then
+  // DONE) so `selected: n` lines up with the flat walk position `n` renders
+  // at. DONE matters here specifically: QUICK START renders AFTER RUNNING
+  // and BEFORE DONE in the canonical order (NEEDS YOU, FAILED, RUNNING,
+  // QUICK START, QUEUED, DONE), so a DONE row is the only runs-backed row in
+  // this fixture that actually sits BELOW QUICK START on screen. Without it,
+  // this test could pass even if QUICK START's rows wrongly consumed a slot
+  // in the selectable-index space, because both FAILED and RUNNING render
+  // above QUICK START regardless.
   const runs = [
-    run({ ticket: 'HEL-1', status: 'running' }),
     run({ ticket: 'HEL-2', status: 'failed', endStatus: 'escalated', endedAt: 100 }),
+    run({ ticket: 'HEL-1', status: 'running' }),
+    run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered', endedAt: 100 }),
   ];
-  const out = plain(renderFleet(runs, {
-    ...OPTS, selected: 1,
+  const opts = {
+    ...OPTS,
     quickStartTickets: [qsTicket({}), qsTicket({ identifier: 'CON-2' })],
-  }));
-  const marked = out.split('\n').filter((l) => l.includes('▸'));
-  assert.equal(marked.length, 1);
-  assert.match(marked[0], /HEL-2/, 'selected=1 must still resolve to the second RUN, unaffected by QUICK START rows above it');
+  };
+
+  const outSecond = plain(renderFleet(runs, { ...opts, selected: 1 }));
+  const markedSecond = outSecond.split('\n').filter((l) => l.includes('▸'));
+  assert.equal(markedSecond.length, 1);
+  assert.match(markedSecond[0], /HEL-1/, 'selected=1 must still resolve to the second RUN, unaffected by QUICK START rows above it');
+
+  // The real regression case: DONE renders below QUICK START, so this only
+  // stays correct if QUICK START's (unselectable) rows never consumed a
+  // slot in the shared index space.
+  const outThird = plain(renderFleet(runs, { ...opts, selected: 2 }));
+  const markedThird = outThird.split('\n').filter((l) => l.includes('▸'));
+  assert.equal(markedThird.length, 1);
+  assert.match(markedThird[0], /HEL-3/, 'selected=2 must resolve to the DONE run, which renders below QUICK START — this is what would break if QUICK START rows perturbed the index space');
 });
 
 test('no QUICK START row is ever marked with the ordinary run-row ▸ selection marker', () => {
@@ -2413,10 +2627,474 @@ test('NEEDS YOU, RUNNING, FAILED, and DONE section headings carry no new icon �
     run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered' }),
   ], OPTS));
   // Exact, unprefixed section headings — no glyph inserted before them.
-  // CON-56: QUICK START (always on screen now) claims [3], pushing
-  // FAILED/DONE to [4]/[5].
+  // Canonical order: NEEDS YOU, FAILED, RUNNING, QUICK START (always on
+  // screen now, CON-56 — untested here but still claims [4]), DONE.
   assert.match(out, /\[1\] NEEDS YOU/);
-  assert.match(out, /\[2\] RUNNING/);
-  assert.match(out, /\[4\] FAILED/);
+  assert.match(out, /\[2\] FAILED/);
+  assert.match(out, /\[3\] RUNNING/);
   assert.match(out, /\[5\] DONE/);
+});
+
+// --- fleet-metrics-grid: renderStackedSection --------------------------
+
+test('renderStackedSection renders a non-empty section as a bordered box at its natural height, with the given jump number', () => {
+  const sections = buildSections({ needsYou: [], active: [run({ ticket: 'HEL-1', status: 'running' })], failed: [], done: [] }, null, {});
+  const running = sections.find((s) => s.kind === 'running');
+  const w = { shown: 1, startOffset: 0, hidden: 0 };
+  const lines = renderStackedSection(running, 3, w, { cols: 70, avgDoneMs: null, selected: 0, sectionStartIndex: 0 });
+  assert.match(lines[0], /\[3\] RUNNING/);
+  assert.match(plain(lines.join('\n')), /HEL-1/);
+  assert.equal(lines[lines.length - 1][0], '└', 'a natural-height box always closes with its own bottom border');
+});
+
+test('renderStackedSection renders a forceRender-empty section (e.g. METRICS-shaped) from its emptyLines', () => {
+  const s = { title: 'X', group: [], statusKey: 'x', kind: 'x', unselectable: true, forceRender: true, emptyLines: ['one', 'two'] };
+  const lines = renderStackedSection(s, 1, { shown: 0, startOffset: 0, hidden: 0 }, { cols: 40 });
+  assert.match(plain(lines.join('\n')), /one/);
+  assert.match(plain(lines.join('\n')), /two/);
+});
+
+test('renderStackedSection renders nothing for an ordinary empty, non-forceRender section', () => {
+  const s = { title: 'X', group: [], statusKey: 'x', kind: 'x', forceRender: false };
+  const lines = renderStackedSection(s, 1, { shown: 0, startOffset: 0, hidden: 0 }, { cols: 40 });
+  assert.deepEqual(lines, []);
+});
+
+test('renderStackedSection never grows past its natural height, even when told about a larger box budget elsewhere on the page', () => {
+  const sections = buildSections({ needsYou: [], active: [run({ ticket: 'HEL-1', status: 'running' })], failed: [], done: [] }, null, {});
+  const running = sections.find((s) => s.kind === 'running');
+  const w = { shown: 1, startOffset: 0, hidden: 0 };
+  const lines = renderStackedSection(running, 1, w, { cols: 70, avgDoneMs: null, selected: 0, sectionStartIndex: 0 });
+  // 1 run row (2 lines per row) + 2 border lines = 4, regardless of how
+  // much vertical space the page has elsewhere (unlike renderFleet's
+  // single-column loop, this function has no budget/grow-to-fill concept
+  // at all).
+  assert.equal(lines.length, 4);
+});
+
+// --- fleet-metrics-grid: visibleWindowGrid ------------------------------
+
+const { visibleWindowGrid } = require('../lib/ui/screens/fleet');
+
+test('visibleWindowGrid shows NEEDS YOU in full, exactly like visibleWindow\'s pinned treatment', () => {
+  const runs = Array.from({ length: 5 }, (_, i) => run({ ticket: `HEL-${i}`, status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }));
+  const win = visibleWindowGrid(runs, { rows: 15, selected: 0, cols: 150 });
+  const idx = buildSections({ needsYou: runs, active: [], failed: [], done: [] }, null, {}).findIndex((s) => s.kind === 'needs-you');
+  assert.equal(win.sections[idx].shown, 5);
+});
+
+test('visibleWindowGrid caps FAILED at MAX_FINISHED and never scroll-adjusts it', () => {
+  const runs = manyFinished(12, 'failed');
+  const win1 = visibleWindowGrid(runs, { rows: 30, selected: 0, scrollOffset: 0, cols: 150 });
+  const win2 = visibleWindowGrid(runs, { rows: 30, selected: 0, scrollOffset: 10, cols: 150 });
+  const idx = buildSections({ needsYou: [], active: [], failed: runs, done: [] }, null, {}).findIndex((s) => s.kind === 'failed');
+  assert.equal(win1.sections[idx].shown, 5);
+  assert.equal(win1.sections[idx].startOffset, 0);
+  assert.deepEqual(win1.sections[idx], win2.sections[idx], 'scrollOffset must not change FAILED\'s window in grid mode');
+});
+
+test('visibleWindowGrid windows DONE against the column area\'s own height, not the full terminal', () => {
+  const runs = manyFinished(20, 'done');
+  const winShort = visibleWindowGrid(runs, { rows: 12, selected: 0, scrollOffset: 0, cols: 150 });
+  const winTall = visibleWindowGrid(runs, { rows: 40, selected: 0, scrollOffset: 0, cols: 150 });
+  const idx = buildSections({ needsYou: [], active: [], failed: [], done: runs }, null, {}).findIndex((s) => s.kind === 'done');
+  assert.ok(winTall.sections[idx].shown >= winShort.sections[idx].shown);
+});
+
+test('visibleWindowGrid\'s maxScrollOffset reflects only RUNNING/QUICK START/QUEUED/DONE, not FAILED', () => {
+  // DONE has 12 items capped at MAX_FINISHED=5, so up to 7 can be scrolled
+  // through; FAILED must not add to this even though it also has surplus.
+  const done = manyFinished(12, 'done');
+  const failed = manyFinished(12, 'failed');
+  const runs = failed.concat(done);
+  const win = visibleWindowGrid(runs, { rows: 0, selected: 0, scrollOffset: 0, cols: 150 });
+  assert.equal(win.maxScrollOffset, 7);
+});
+
+test('visibleWindowGrid with rows:0 returns an unbounded (untrimmed) window, matching visibleWindow\'s own structural-query contract', () => {
+  const runs = manyFinished(20, 'done');
+  const win = visibleWindowGrid(runs, { rows: 0, selected: 0, scrollOffset: 0, cols: 150 });
+  const idx = buildSections({ needsYou: [], active: [], failed: [], done: runs }, null, {}).findIndex((s) => s.kind === 'done');
+  assert.equal(win.sections[idx].shown, 5, 'DONE still caps at MAX_FINISHED even untrimmed — cap and height-budget trim are different things');
+});
+
+// Regression: computeWindow re-bases its internal globalIndex at 0 over
+// whatever section list it's handed, but `selected` is always a GLOBAL
+// flat-row index (the one renderFleet/watch.js/Task 8's sectionStartIndices
+// walk all use) that already counts NEEDS YOU's and FAILED's rows ahead of
+// RUNNING. Passing selected straight through to computeWindow's restricted
+// columnSections call — without translating it into that list's own
+// re-based index space, and translating the returned indices back out —
+// silently shifts firstVisibleIndex/lastVisibleIndex and the selected-row
+// trim protection by needsYou.length + failed.length.
+test('visibleWindowGrid translates the global `selected` into column 1\'s re-based index space and back out again', () => {
+  const needsYou = Array.from({ length: 2 }, (_, i) => run({ ticket: `NY-${i}`, status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }));
+  const failed = manyFinished(3, 'failed');
+  const running = Array.from({ length: 4 }, (_, i) => run({ ticket: `RUN-${i}`, status: 'running' }));
+  const runs = needsYou.concat(failed, running);
+  // RUNNING's true global start index is needsYou.length + failed.length = 5.
+  const win = visibleWindowGrid(runs, { rows: 30, selected: 5, scrollOffset: 0, cols: 150 });
+  assert.equal(win.firstVisibleIndex, 5, 'RUNNING\'s global start index is 5 (2 needs-you + 3 failed ahead of it), not 0');
+});
+
+test('visibleWindowGrid\'s selected-row trim protection keeps the actually-selected RUNNING row visible, even though its global index is offset by NEEDS YOU/FAILED', () => {
+  const needsYou = Array.from({ length: 2 }, (_, i) => run({ ticket: `NY-${i}`, status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }));
+  const failed = manyFinished(3, 'failed');
+  const running = Array.from({ length: 10 }, (_, i) => run({ ticket: `RUN-${i}`, status: 'running' }));
+  const runs = needsYou.concat(failed, running);
+  const idx = buildSections({ needsYou, active: running, failed, done: [] }, null, {}).findIndex((s) => s.kind === 'running');
+  // selected = 5 is RUNNING's first row (global index needsYou.length + failed.length = 5).
+  // rows: 26 and 30 are small enough that column 1 must trim RUNNING's 10
+  // rows down, which is exactly when the mistranslated `selected` used to
+  // evict the actually-selected row instead of protecting it.
+  for (const rows of [26, 30]) {
+    const win = visibleWindowGrid(runs, { rows, selected: 5, scrollOffset: 0, cols: 150 });
+    const w = win.sections[idx];
+    assert.ok(w.startOffset <= 0 && 0 < w.startOffset + w.shown,
+      `rows:${rows} — RUNNING row 0 (the selected row) must stay within [startOffset, startOffset+shown), got ${JSON.stringify(w)}`);
+  }
+});
+
+// --- Task 8: renderFleet's grid-mode branch ----------------------------
+
+test('renderFleet stays single-column below GRID_MIN_COLS, byte-identical to before this task', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' }), run({ ticket: 'HEL-2', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
+  const out = plain(renderFleet(runs, { cols: 109, rows: 30, selected: 0, now: 100000 }));
+  assert.doesNotMatch(out, /METRICS.*RUNNING/s, 'single-column mode never places a later section\'s text before an earlier one on the same line');
+  const lines = out.split('\n');
+  assert.ok(lines.some((l) => l.trim().startsWith('┌') && l.includes('RUNNING')));
+});
+
+test('renderFleet: cols one below GRID_MIN_COLS stays single-column, cols at GRID_MIN_COLS switches to grid', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' })];
+  const { GRID_MIN_COLS } = require('../lib/ui/screens/fleet');
+  const belowLines = plain(renderFleet(runs, { cols: GRID_MIN_COLS - 1, rows: 30, selected: 0, now: 100000 })).split('\n');
+  const atLines = plain(renderFleet(runs, { cols: GRID_MIN_COLS, rows: 30, selected: 0, now: 100000 })).split('\n');
+  assert.notEqual(
+    belowLines.findIndex((l) => l.includes('RUNNING')),
+    belowLines.findIndex((l) => l.includes('METRICS')),
+    'below GRID_MIN_COLS, RUNNING and METRICS must be on DIFFERENT lines (single-column stack)',
+  );
+  assert.equal(
+    atLines.findIndex((l) => l.includes('RUNNING')),
+    atLines.findIndex((l) => l.includes('METRICS')),
+    'at GRID_MIN_COLS, RUNNING and METRICS must be on the SAME line (side by side)',
+  );
+});
+
+test('renderFleet switches to the two-column grid at GRID_MIN_COLS', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' }), run({ ticket: 'HEL-2', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
+  const out = plain(renderFleet(runs, { cols: 150, rows: 30, selected: 0, now: 100000 }));
+  const lines = out.split('\n');
+  const runningLine = lines.find((l) => l.includes('RUNNING'));
+  const metricsLine = lines.find((l) => l.includes('METRICS'));
+  assert.ok(runningLine, 'RUNNING must render');
+  assert.ok(metricsLine, 'METRICS must render');
+  assert.equal(lines.indexOf(runningLine), lines.indexOf(metricsLine), 'RUNNING and METRICS render on the SAME line — side by side, not stacked');
+});
+
+test('grid mode: METRICS column fills the full column-area height regardless of column 1\'s actual content height', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' })]; // column 1 has almost nothing to show
+  const out = plain(renderFleet(runs, { cols: 150, rows: 30, selected: 0, now: 100000 }));
+  const lines = out.split('\n');
+  const metricsBorderLines = lines.filter((l) => l.includes('│') || l.includes('┃'));
+  // METRICS' own box border should extend well past where column 1's tiny
+  // RUNNING box ends — i.e. there exist rows where the METRICS-side border
+  // character is present but column 1's content area is just blank padding.
+  assert.ok(metricsBorderLines.length > 6, 'METRICS should render a tall box, not a short one, on a 30-row terminal with almost no column-1 content');
+});
+
+test('grid mode: NEEDS YOU and FAILED render as full-width banners above the two columns', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'failed', endedAt: 100, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-3', status: 'running' }),
+  ];
+  const out = plain(renderFleet(runs, { cols: 150, rows: 30, selected: 0, now: 100000 }));
+  const lines = out.split('\n');
+  const needsYouIdx = lines.findIndex((l) => l.includes('NEEDS YOU'));
+  const failedIdx = lines.findIndex((l) => l.includes('FAILED'));
+  const runningIdx = lines.findIndex((l) => l.includes('RUNNING'));
+  assert.ok(needsYouIdx >= 0 && failedIdx >= 0 && runningIdx >= 0);
+  assert.ok(needsYouIdx < failedIdx, 'NEEDS YOU banner comes first');
+  assert.ok(failedIdx < runningIdx, 'FAILED banner comes before the two-column area starts');
+});
+
+test('grid mode: digit-jump numbers still match sectionJumpTargets\' numbering (no drift introduced by grid rendering)', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'failed', endedAt: 100, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-3', status: 'running' }),
+    run({ ticket: 'HEL-4', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+  ];
+  const out = plain(renderFleet(runs, { cols: 150, rows: 30, selected: 0, now: 100000 }));
+  const targets = sectionJumpTargets(runs, null, false, true);
+  targets.forEach((t, i) => {
+    const num = i + 1;
+    assert.match(out, new RegExp(`\\[${num}\\] ${t.section.title.replace(/[[\]()]/g, '\\$&')}`));
+  });
+});
+
+test('grid mode: selecting a run inside DONE (rendered in column 1) still highlights the correct row', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' }), run({ ticket: 'HEL-2', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
+  const outSelected1 = plain(renderFleet(runs, { cols: 150, rows: 30, selected: 1, now: 100000 }));
+  const outSelected0 = plain(renderFleet(runs, { cols: 150, rows: 30, selected: 0, now: 100000 }));
+  assert.notEqual(outSelected1, outSelected0, 'selecting a different row must change the render');
+  // The ordinary run-selection marker is '▸' (see e.g. the QUICK START/
+  // QUEUED-focus tests elsewhere in this file, which explicitly distinguish
+  // their own '»' focus marker FROM '▸') — DONE is rendered via
+  // renderFinishedRow, which uses '▸' like every other run row, not '»'
+  // (QUEUED/QUICK START's unselectable-row focus marker; not applicable
+  // here, there is no QUEUED/QUICK START section in this fixture).
+  // Tightened past task-8-report's original "some marker exists somewhere"
+  // check (flagged by review as weaker than the test name claims): assert
+  // the marker sits on the SPECIFIC selected row, on both renders, not
+  // merely that a '▸' appears somewhere in the whole frame.
+  const hel1Selected1 = outSelected1.split('\n').find((l) => l.includes('HEL-1'));
+  const hel2Selected1 = outSelected1.split('\n').find((l) => l.includes('HEL-2'));
+  assert.ok(hel2Selected1 && hel2Selected1.includes('▸'), 'HEL-2 (selected: 1, the DONE row) must carry the ▸ marker');
+  assert.ok(hel1Selected1 && !hel1Selected1.includes('▸'), 'HEL-1 must not carry the marker while HEL-2 is selected');
+
+  const hel1Selected0 = outSelected0.split('\n').find((l) => l.includes('HEL-1'));
+  const hel2Selected0 = outSelected0.split('\n').find((l) => l.includes('HEL-2'));
+  assert.ok(hel1Selected0 && hel1Selected0.includes('▸'), 'HEL-1 (selected: 0, the RUNNING row) must carry the ▸ marker');
+  assert.ok(hel2Selected0 && !hel2Selected0.includes('▸'), 'HEL-2 must not carry the marker while HEL-1 is selected');
+});
+
+// Final whole-branch review, Finding 4: this title used to read "the total
+// rendered frame never exceeds the requested row budget", worded as a
+// general system property. It isn't one — banners (NEEDS YOU/FAILED) are
+// never trimmed by design, and METRICS' forceRender floor is untrimmable in
+// single-column mode too (see the "METRICS charts pass... own untrimmable
+// floor" comments elsewhere in this file), so a banner/METRICS-heavy
+// fixture at a small enough `rows` can legitimately render MORE lines than
+// the budget without that being a "cap" failure in the sense this title
+// implied. Narrowed to scope the claim to what THIS fixture actually
+// demonstrates: grid mode's own columnAreaHeight accounting (the thing the
+// parenthetical was already about) stays scroll-by-one-safe across the
+// `rows` values where grid mode actually engages.
+//
+// `rows` starts at 18, not 15: at cols:150 this exact fixture's
+// columnAreaHeight only reaches 7 (METRICS' compact-tier floor — 5 content
+// lines + 2-row border) at rows:18; below that, Finding 1's fix falls back
+// to the single-column path, where METRICS' own untrimmable floor can
+// legitimately exceed the budget (the same pre-existing, accepted behavior
+// this file already documents for single-column mode) — a different,
+// out-of-scope property from the one this test targets.
+test('grid mode: columnAreaHeight accounting stays scroll-by-one-safe across rows where grid mode engages (this fixture never exceeds the row budget)', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'failed', endedAt: 100, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+  ];
+  for (const rows of [18, 20, 25, 30, 40]) {
+    const out = renderFleet(runs, { cols: 150, rows, selected: 0, now: 100000 });
+    const lineCount = out.split('\n').length;
+    assert.ok(lineCount <= rows - 1, `at rows:${rows}, rendered ${lineCount} lines — must leave the one row reserved for the trailing newline`);
+  }
+});
+
+test('grid mode: METRICS renders its expanded tier when the terminal is wide enough (>= COLUMN_ONE_WIDTH + 1 + 80)', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
+  const out = plain(renderFleet(runs, { cols: 160, rows: 30, selected: 0, now: 100000 }));
+  assert.match(out, /throughput \(30d\)/);
+});
+
+// Final whole-branch review, Finding 1: metricsColumnLines' compact tier
+// always returns exactly 5 lines with no shorter fallback, but
+// renderFleetGrid used to size METRICS' box to exactly columnAreaHeight
+// regardless of whether that height could actually fit all 5 — and
+// layout.box silently drops content past `height - 2` with NO ellipsis and
+// no other signal. A wide-but-short terminal (a horizontally-split tmux
+// pane, a half-height terminal window) lands exactly in that gap: wide
+// enough to qualify for grid mode (`cols >= GRID_MIN_COLS`) but short
+// enough that columnAreaHeight computes into the 3-6 range — so METRICS
+// rendered only 1-4 of its 5 compact lines, with the reader given no
+// indication anything was cut. The design doc's old "can't happen in
+// two-column mode by construction" edge-case claim was wrong: a terminal
+// can be wide AND short at once, and the width-only `cols >= GRID_MIN_COLS`
+// gate does not account for that.
+test('grid mode: METRICS never silently drops compact-tier lines on a wide-but-short terminal', () => {
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'failed', endedAt: 100, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-3', status: 'running' }),
+  ];
+  // Pinned: for this exact fixture at cols:150, columnAreaHeight computes to
+  // 4 at rows:15 — squarely in the 3-6 "not enough room for the compact
+  // tier's 5 lines + 2-row border (7), but still nonzero" danger zone.
+  const win = visibleWindowGrid(runs, { rows: 15, selected: 0, scrollOffset: 0, cols: 150 });
+  assert.equal(win.columnAreaHeight, 4, 'fixture must actually reach columnAreaHeight: 4 at rows:15, cols:150');
+
+  for (const rows of [14, 15, 16, 17]) {
+    const out = plain(renderFleet(runs, { cols: 150, rows, selected: 0, now: 100000 }));
+    const anyMetricsLine = /avg delivery|success\s+today|throughput \(|verdicts\s|gates\s/.test(out);
+    // Either METRICS doesn't render at all this frame (e.g. a single-column
+    // fallback, or a fully collapsed box) — acceptable — or, if it renders
+    // ANY of its 5 compact-tier lines, it must render ALL FIVE. A partial
+    // set (some lines silently dropped, others present) is exactly the bug.
+    if (!anyMetricsLine) continue;
+    assert.match(out, /avg delivery/, `rows:${rows}: METRICS line 1 (avg delivery) missing while another line rendered`);
+    assert.match(out, /success\s+today/, `rows:${rows}: METRICS line 2 (success) missing while another line rendered`);
+    assert.match(out, /throughput \(/, `rows:${rows}: METRICS line 3 (throughput) missing while another line rendered`);
+    assert.match(out, /verdicts\s/, `rows:${rows}: METRICS line 4 (verdicts) missing while another line rendered`);
+    assert.match(out, /gates\s/, `rows:${rows}: METRICS line 5 (gates) missing while another line rendered`);
+  }
+
+  // The chosen fix (fall back to the single-column path whenever the grid's
+  // column area can't fit METRICS' compact tier) also needs pinning
+  // directly: at rows:15/cols:150, RUNNING and METRICS must render
+  // stacked (single-column), not side by side, even though cols alone
+  // would otherwise qualify for grid mode.
+  const fallbackOut = plain(renderFleet(runs, { cols: 150, rows: 15, selected: 0, now: 100000 }));
+  const lines = fallbackOut.split('\n');
+  const runningLine = lines.findIndex((l) => l.includes('RUNNING'));
+  const metricsLine = lines.findIndex((l) => l.includes('METRICS'));
+  assert.notEqual(runningLine, metricsLine,
+    'at columnAreaHeight:4, grid mode must fall back to single-column — RUNNING and METRICS must be on DIFFERENT lines');
+});
+
+// Consequence of Finding 1's fix: renderFleet's grid-mode decision is no
+// longer just `cols >= GRID_MIN_COLS` — it also requires the column area to
+// fit METRICS' compact-tier floor. watch.js's own scroll-accounting call
+// sites (the scrollOffset re-clamp and scrollToShow) must pick the exact
+// SAME windowing function (visibleWindowGrid vs visibleWindow) the renderer
+// will use this frame, or `maxScrollOffset`/`firstVisibleIndex` computed
+// against grid mode's own accounting (which excludes FAILED entirely — it
+// renders as a banner, never part of column 1's scrollable list) could be
+// applied to a frame that actually rendered single-column (where FAILED IS
+// part of the ordinary scrollable flat list). `gridModeEligible` is the
+// shared helper both `renderFleet` and watch.js now use to avoid exactly
+// that drift — this pins its own contract directly.
+test('gridModeEligible matches renderFleet\'s own grid-mode decision, including the Finding 1 height gate', () => {
+  const { gridModeEligible, GRID_MIN_COLS, GRID_MIN_COLUMN_AREA_HEIGHT } = require('../lib/ui/screens/fleet');
+  assert.equal(GRID_MIN_COLUMN_AREA_HEIGHT, 7, 'this test is pinned to the documented threshold value');
+
+  const runs = [
+    run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+    run({ ticket: 'HEL-2', status: 'failed', endedAt: 100, elapsedMs: 1000 }),
+    run({ ticket: 'HEL-3', status: 'running' }),
+  ];
+
+  // Below GRID_MIN_COLS: never eligible, regardless of height.
+  assert.equal(gridModeEligible(runs, { cols: GRID_MIN_COLS - 1, rows: 100, selected: 0, scrollOffset: 0 }), false);
+
+  // At/above GRID_MIN_COLS but too short for METRICS' compact-tier floor
+  // (columnAreaHeight: 6 at rows:17, for this exact fixture — see the
+  // sibling "never silently drops" test above for the same fixture at
+  // rows:15/columnAreaHeight:4): not eligible.
+  assert.equal(gridModeEligible(runs, { cols: 150, rows: 17, selected: 0, scrollOffset: 0 }), false);
+
+  // Just tall enough (columnAreaHeight: 7 at rows:18): eligible, and must
+  // agree with what renderFleet itself actually renders this frame.
+  assert.equal(gridModeEligible(runs, { cols: 150, rows: 18, selected: 0, scrollOffset: 0 }), true);
+  const out = plain(renderFleet(runs, { cols: 150, rows: 18, selected: 0, now: 100000 }));
+  const lines = out.split('\n');
+  assert.equal(
+    lines.findIndex((l) => l.includes('RUNNING')),
+    lines.findIndex((l) => l.includes('METRICS')),
+    'gridModeEligible said true at rows:18 — renderFleet must actually render RUNNING and METRICS side by side');
+
+  // rows: 0 is a documented rows-independent structural query for OTHER
+  // callers (visibleWindow/visibleWindowGrid's own `maxScrollOffset`
+  // contract) — gridModeEligible must not be fooled into reporting `true`
+  // for it; a caller needing both must check eligibility against the real
+  // row count separately, per this function's own header comment.
+  assert.equal(gridModeEligible(runs, { cols: 150, rows: 0, selected: 0, scrollOffset: 0 }), false);
+});
+
+test('grid mode: METRICS stays compact when the terminal is grid-eligible but METRICS\' own column is still narrow', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
+  const out = plain(renderFleet(runs, { cols: 115, rows: 30, selected: 0, now: 100000 }));
+  assert.match(out, /throughput \(7d\)/);
+  assert.doesNotMatch(out, /throughput \(30d\)/);
+});
+
+// --- Task 8 fix-loop regressions (task review findings) ------------------
+
+// Critical finding: renderFleetGrid's old `metricsWidth = Math.max(40, cols
+// - COLUMN_ONE_WIDTH - 1)` floor forced metricsWidth to 40 at cols === 110
+// (GRID_MIN_COLS itself, cols - 70 - 1 = 39 pre-floor) — the hsplit row then
+// composed to 70 + 1 + 40 = 111 columns against a 110-column budget, so the
+// function's own trailing `f.truncate(l, cols)` stripped METRICS' right
+// border and stamped a stray ellipsis on every line. No existing test used
+// exactly cols: 110 (GRID_MIN_COLS), so this went undetected. Asserts every
+// rendered line stays within budget at exactly that width, across several
+// fixture shapes (with/without banners, with QUICK START/QUEUED) so the
+// regression is pinned regardless of which sections are on screen.
+test('grid mode: every rendered line fits within cols at exactly cols === GRID_MIN_COLS (110) — metricsWidth must never overflow the composed row', () => {
+  const { GRID_MIN_COLS } = require('../lib/ui/screens/fleet');
+  assert.equal(GRID_MIN_COLS, 110, 'this test is pinned to the documented threshold value');
+  const fixtures = [
+    [run({ ticket: 'HEL-1', status: 'running' })],
+    [
+      run({ ticket: 'HEL-1', status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }),
+      run({ ticket: 'HEL-2', status: 'failed', endedAt: 100, elapsedMs: 1000 }),
+      run({ ticket: 'HEL-3', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
+    ],
+  ];
+  for (const runs of fixtures) {
+    const out = renderFleet(runs, { cols: GRID_MIN_COLS, rows: 30, selected: 0, now: 100000 });
+    for (const line of out.split('\n')) {
+      assert.ok(f.visibleLength(line) <= GRID_MIN_COLS,
+        `line exceeds cols:${GRID_MIN_COLS} (visibleLength ${f.visibleLength(line)}): ${JSON.stringify(line)}`);
+    }
+    // The METRICS box's own right border must still be present, not
+    // truncated away — the concrete symptom the reviewer observed.
+    assert.doesNotMatch(plain(out), /…\s*$/m, 'no line should end in a stray truncation ellipsis at cols:110');
+  }
+});
+
+// Important finding: visibleWindowGrid passed `rows: 0` straight into
+// computeWindow whenever columnAreaHeight computed to exactly 0 (banners
+// consuming the whole page) — but computeWindow's OWN `rows: 0` contract
+// means "unbounded, don't trim" (a deliberate, documented behaviour other
+// callers rely on for a structural maxScrollOffset query), not "collapse to
+// nothing". So column 1 rendered at full natural height instead of
+// collapsing, and a terminal one row SHORTER (columnAreaHeight going from 1
+// to 0) could render a much LONGER frame than a taller one — non-monotonic,
+// the opposite of what a height budget exists to guarantee. Fixed in
+// visibleWindowGrid by forcing every column-1 section to shown:0 directly
+// when columnAreaHeight === 0, bypassing computeWindow for that case.
+test('grid mode: shrinking the terminal into columnAreaHeight === 0 must never grow the rendered frame past columnAreaHeight === 1\'s size', () => {
+  const needsYou = Array.from({ length: 2 }, (_, i) =>
+    run({ ticket: `NY-${i}`, status: 'needs-you', escalation: { question: 'q', options: [], raisedAt: 1 } }));
+  const failed = manyFinished(4, 'failed');
+  const running = Array.from({ length: 6 }, (_, i) => run({ ticket: `RUN-${i}`, status: 'running' }));
+  const done = manyFinished(8, 'done');
+  const runs = needsYou.concat(failed, running, done);
+
+  // rows:16 -> columnAreaHeight computes to 0; rows:17 -> columnAreaHeight
+  // computes to 1, for this exact fixture (head.length + tail.length +
+  // needsYouHeight(6) + failedHeight(6) = 15, pageBudget = rows - 1).
+  const winAt16 = visibleWindowGrid(runs, { rows: 16, selected: 0, scrollOffset: 0, cols: 150 });
+  const winAt17 = visibleWindowGrid(runs, { rows: 17, selected: 0, scrollOffset: 0, cols: 150 });
+  assert.equal(winAt16.columnAreaHeight, 0, 'fixture must actually reach columnAreaHeight: 0 at rows:16');
+  assert.equal(winAt17.columnAreaHeight, 1, 'fixture must actually reach columnAreaHeight: 1 at rows:17');
+
+  const outAt16 = renderFleet(runs, { cols: 150, rows: 16, selected: 0, now: 100000 });
+  const outAt17 = renderFleet(runs, { cols: 150, rows: 17, selected: 0, now: 100000 });
+  const lineCountAt16 = outAt16.split('\n').length;
+  const lineCountAt17 = outAt17.split('\n').length;
+  assert.ok(lineCountAt16 <= lineCountAt17,
+    `shrinking rows 17->16 (columnAreaHeight 1->0) must not grow the frame: got ${lineCountAt17} -> ${lineCountAt16} lines`);
+
+  // Column 1 must actually have collapsed at columnAreaHeight: 0 — every
+  // RUNNING/QUICK START/QUEUED/DONE section shows nothing (a "… and N
+  // more" line at most), not its full natural-height content.
+  const allSections = buildSections({ needsYou, active: running, failed, done }, null, {});
+  allSections.forEach((s, i) => {
+    if (s.kind === 'running' || s.kind === 'queued' || s.kind === 'done') {
+      assert.equal(winAt16.sections[i].shown, 0, `${s.kind} must be fully collapsed when columnAreaHeight is 0`);
+    }
+  });
+
+  // Regression coverage for Task 7's parked issue #1 (sentinel shift): with
+  // nothing visible in column 1, firstVisibleIndex/lastVisibleIndex must
+  // report the same "nothing to scroll toward" sentinel computeWindow
+  // itself falls back to (0 / runs.length - 1) — UNTRANSLATED by
+  // columnIndexBase — not a bogus mid-list index that corresponds to
+  // nothing actually on screen.
+  assert.equal(winAt16.firstVisibleIndex, 0);
+  assert.equal(winAt16.lastVisibleIndex, runs.length - 1);
 });

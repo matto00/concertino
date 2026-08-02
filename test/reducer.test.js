@@ -335,11 +335,19 @@ test('runs sort attention-first', () => {
     ['HEL-DONE', { events: [{ t: 1, kind: 'run.end', ticket: 'HEL-DONE', role: 'orchestrator', status: 'delivered' }], malformed: 0 }],
     ['HEL-RUN',  { events: [{ t: 2, kind: 'phase.enter', ticket: 'HEL-RUN', role: 'orchestrator', phase: 'Execution' }], malformed: 0 }],
     ['HEL-ESC',  { events: [{ t: 3, kind: 'escalation.raised', ticket: 'HEL-ESC', role: 'orchestrator', question: 'q' }], malformed: 0 }],
+    ['HEL-FAIL', { events: [{ t: 4, kind: 'run.end', ticket: 'HEL-FAIL', role: 'orchestrator', status: 'escalated' }], malformed: 0 }],
   ]);
   const windows = [
     { ticket: 'HEL-RUN', alive: true, idleMs: 0 },
     { ticket: 'HEL-ESC', alive: true, idleMs: 0 },
   ];
   const runs = reduce(events, windows, NOW);
-  assert.deepEqual(runs.map((r) => r.ticket), ['HEL-ESC', 'HEL-RUN', 'HEL-DONE']);
+  // Pins STATUS_ORDER (lib/ui/reducer.js) group-for-group against
+  // buildSections' canonical section order (lib/ui/screens/fleet.js):
+  // needs-you, failed, running, done. watch.js's `runs[selected]` attach
+  // logic relies on this array's order matching the fleet screen's render
+  // order — if a future reorder changes one without the other, this is the
+  // test that should catch it before it becomes a "attached to the wrong
+  // run" bug.
+  assert.deepEqual(runs.map((r) => r.ticket), ['HEL-ESC', 'HEL-FAIL', 'HEL-RUN', 'HEL-DONE']);
 });
