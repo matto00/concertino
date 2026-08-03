@@ -1,7 +1,7 @@
 {
   "name": "concertino",
   "version": "0.1.5",
-  "description": "A harness-agnostic, evidence-gated agent orchestra for autonomous ticket delivery (orchestrator + executor + evaluator + cold skeptic). Renders into Claude Code and OpenAI Codex from one neutral core.",
+  "description": "A harness-agnostic, evidence-gated agent orchestra for autonomous ticket delivery (orchestrator + executor + evaluator + cold skeptic). Renders into Claude Code, OpenAI Codex, and OpenCode from one neutral core, with optional local-model (Ollama) routing per role.",
   "bin": {
     "concertino": "bin/concertino"
   },
@@ -20,12 +20,14 @@
     "node": ">=16"
   },
   "scripts": {
-    "test": "node --test && bash test/scripts/emit-event.test.sh && bash test/scripts/persist-evidence.test.sh && bash test/scripts/gather-escalation-context.test.sh && bash test/scripts/triage-followup.test.sh && bash test/scripts/assert-phase.test.sh && bash test/scripts/start-servers.test.sh && bash test/scripts/watch-smoke.test.sh && bash test/scripts/doctor-artifacts.test.sh && bash test/scripts/ticket-pattern.test.sh && bash test/scripts/escalation-loop.test.sh && bash test/scripts/sync-core-resolution.test.sh && bash test/scripts/harness-identity.test.sh && bash test/scripts/resolve-speed.test.sh && bash test/scripts/cleanup.test.sh && bash test/scripts/doctor-base-branch.test.sh && bash test/scripts/auditor-render.test.sh && bash test/scripts/check-merge-readiness.test.sh",
+    "test": "node --test && bash test/scripts/emit-event.test.sh && bash test/scripts/persist-evidence.test.sh && bash test/scripts/gather-escalation-context.test.sh && bash test/scripts/triage-followup.test.sh && bash test/scripts/assert-phase.test.sh && bash test/scripts/start-servers.test.sh && bash test/scripts/watch-smoke.test.sh && bash test/scripts/doctor-artifacts.test.sh && bash test/scripts/ticket-pattern.test.sh && bash test/scripts/escalation-loop.test.sh && bash test/scripts/sync-core-resolution.test.sh && bash test/scripts/harness-identity.test.sh && bash test/scripts/resolve-speed.test.sh && bash test/scripts/cleanup.test.sh && bash test/scripts/doctor-base-branch.test.sh && bash test/scripts/auditor-render.test.sh && bash test/scripts/check-merge-readiness.test.sh && bash test/scripts/opencode-render.test.sh && bash test/scripts/codex-ollama-render.test.sh",
     "test:selftest": "node bin/concertino sync --out=/tmp/concertino-selftest --config=config/examples/helio.json --dry-run"
   },
   "keywords": [
     "claude-code",
     "codex",
+    "opencode",
+    "ollama",
     "agents",
     "subagents",
     "agent-orchestration",

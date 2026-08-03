@@ -85,6 +85,37 @@ test('launch pad explicitly disabled, teamKey absent — validate does not warn'
   assert.doesNotMatch(out, /ticketProvider\.teamKey not set/);
 });
 
+// CON-63: claude-code Ollama-routed without a gateway is the one new
+// behavioral validation rule this change adds (design.md Decision 4) —
+// exercised here as a real subprocess so the printed output (not just the
+// underlying collectConfigIssues() array) is covered, matching this file's
+// own existing convention.
+
+test('providers.ollama.harnesses includes claude-code with no gateway — validate fails and names providers.ollama.gateway', () => {
+  const { out, status } = runValidate(baseConfig({
+    harnesses: ['claude-code'],
+    providers: { ollama: { baseUrl: 'http://localhost:11434', harnesses: ['claude-code'] } },
+  }));
+  assert.equal(status, 1, 'expected a validation failure exit code:\n' + out);
+  assert.match(out, /providers\.ollama\.gateway/);
+  assert.match(out, /Claude Code cannot connect to Ollama directly/);
+});
+
+test('providers.ollama.harnesses includes claude-code WITH a configured gateway — validate passes', () => {
+  const { out, status } = runValidate(baseConfig({
+    harnesses: ['claude-code'],
+    providers: {
+      ollama: {
+        baseUrl: 'http://localhost:11434',
+        harnesses: ['claude-code'],
+        gateway: { baseUrl: 'http://localhost:4000', apiKeyEnv: 'LITELLM_API_KEY' },
+      },
+    },
+  }));
+  assert.equal(status, 0, 'expected validation to pass once a gateway is configured:\n' + out);
+  assert.doesNotMatch(out, /cannot connect to Ollama directly/i);
+});
+
 // --- CON-62: `--ticket <ID>` (tasks.md 4.5, 7.1) ----------------------------
 // The valid/invalid/ambiguous/no-override classification itself is unit-
 // tested directly against lib/config.js's pure `classifyHarnessOverride`

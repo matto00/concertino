@@ -57,10 +57,16 @@
       "cheap": "codex-mini-latest",
       "standard": "codex-mini-latest",
       "capable": "gpt-5.1-codex"
+    },
+    "opencode": {
+      "cheap": "anthropic/claude-haiku-4-5",
+      "standard": "anthropic/claude-sonnet-4-5",
+      "capable": "anthropic/claude-opus-4-1"
     }
   },
   "models": {
     "claude-code": {},
-    "codex": {}
+    "codex": {},
+    "opencode": {}
   }
 }

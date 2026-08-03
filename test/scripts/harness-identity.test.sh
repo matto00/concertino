@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Shell tests for CON-2's harness-identity plumbing. Run:
+# Shell tests for CON-2's harness-identity plumbing (extended by CON-63 for
+# OpenCode's own runtime signal). Run:
 #   bash test/scripts/harness-identity.test.sh
 #
 # Covers two halves of the feature:
@@ -7,8 +8,8 @@
 #       `concertino sync` writes into .concertino.env: the single configured
 #       harness, or empty when more than one is configured.
 #   (b) core/scripts/setup-worktree.sh's runtime detect_harness() — the
-#       CLAUDECODE / CODEX_SANDBOX(_NETWORK_DISABLED) process-env signals that
-#       override the static default at run time, including the
+#       CLAUDECODE / CODEX_SANDBOX(_NETWORK_DISABLED) / OPENCODE process-env
+#       signals that override the static default at run time, including the
 #       both-signals-set-simultaneously case where CLAUDECODE wins, and the
 #       fallback chain down to the static default and then "unknown".
 #
@@ -59,7 +60,9 @@ has   "a.1 validate names the static value" "static: claude-code" "$OUT/sync-out
 # set — lib/config.js's VALID_HARNESSES, space-separated — regardless of
 # which harness(es) this project configures. Not affected by the
 # single-vs-multi-harness distinction the rest of section (a) covers.
-has   "a.1 renders CONCERTINO_IMPLEMENTED_HARNESSES='claude-code codex'" "CONCERTINO_IMPLEMENTED_HARNESSES='claude-code codex'" "$OUT/scripts/concertino/.concertino.env"
+# CON-63 added opencode as a third implemented adapter, so this now reads
+# three values, not two.
+has   "a.1 renders CONCERTINO_IMPLEMENTED_HARNESSES='claude-code codex opencode'" "CONCERTINO_IMPLEMENTED_HARNESSES='claude-code codex opencode'" "$OUT/scripts/concertino/.concertino.env"
 rm -rf "$OUT"
 
 # --- multiple harnesses configured -> empty, never a guess ------------------
@@ -98,9 +101,10 @@ new_scripts() {
   },
   "modelTiers": {
     "claude-code": { "cheap": "haiku", "standard": "sonnet", "capable": "opus" },
-    "codex": { "cheap": "codex-mini-latest", "standard": "codex-mini-latest", "capable": "gpt-5.1-codex" }
+    "codex": { "cheap": "codex-mini-latest", "standard": "codex-mini-latest", "capable": "gpt-5.1-codex" },
+    "opencode": { "cheap": "anthropic/claude-haiku-4-5", "standard": "anthropic/claude-sonnet-4-5", "capable": "anthropic/claude-opus-4-1" }
   },
-  "models": { "claude-code": {}, "codex": {} }
+  "models": { "claude-code": {}, "codex": {}, "opencode": {} }
 }
 JSON
   printf '%s' "$d"
@@ -122,7 +126,7 @@ new_repo() {
 # never leak into a "no runtime signal" scenario.
 run_setup() {
   local scripts="$1" repo="$2" ticket="$3" branch="$4"; shift 4
-  ( cd "$repo" && env -u CLAUDECODE -u CODEX_SANDBOX -u CODEX_SANDBOX_NETWORK_DISABLED \
+  ( cd "$repo" && env -u CLAUDECODE -u CODEX_SANDBOX -u CODEX_SANDBOX_NETWORK_DISABLED -u OPENCODE \
       "$@" "$scripts/setup-worktree.sh" "$ticket" "$branch" ) >/dev/null 2>&1
   return $?
 }
@@ -169,12 +173,38 @@ run_setup "$SCRIPTS" "$REPO" TEST-104 feat/104 CLAUDECODE=1 CODEX_SANDBOX=1
 check "b.4 both signals set -> claude-code wins" "$(harness_of "$REPO" TEST-104)" "claude-code"
 rm -rf "$SCRIPTS" "$REPO"
 
+# --- OPENCODE set, no static default -> opencode (CON-63) -------------------
+SCRIPTS="$(new_scripts)"
+printf "CONCERTINO_HARNESS=''\n" > "$SCRIPTS/.concertino.env"
+REPO="$(new_repo)"
+run_setup "$SCRIPTS" "$REPO" TEST-108 feat/108 OPENCODE=1
+check "b.5 OPENCODE set -> opencode" "$(harness_of "$REPO" TEST-108)" "opencode"
+rm -rf "$SCRIPTS" "$REPO"
+
+# --- CLAUDECODE wins over an OPENCODE signal (checked first) ----------------
+SCRIPTS="$(new_scripts)"
+printf "CONCERTINO_HARNESS=''\n" > "$SCRIPTS/.concertino.env"
+REPO="$(new_repo)"
+run_setup "$SCRIPTS" "$REPO" TEST-109 feat/109 CLAUDECODE=1 OPENCODE=1
+check "b.6 CLAUDECODE wins over OPENCODE" "$(harness_of "$REPO" TEST-109)" "claude-code"
+rm -rf "$SCRIPTS" "$REPO"
+
+# --- OPENCODE signal absent (guessed variable never fires) falls through to
+# the existing fallback chain exactly as it would for any other harness with
+# no matching runtime signal — the honest "no regression" case.
+SCRIPTS="$(new_scripts)"
+printf "CONCERTINO_HARNESS='codex'\n" > "$SCRIPTS/.concertino.env"
+REPO="$(new_repo)"
+run_setup "$SCRIPTS" "$REPO" TEST-110 feat/110
+check "b.7 no OPENCODE signal -> falls back to static default unaffected" "$(harness_of "$REPO" TEST-110)" "codex"
+rm -rf "$SCRIPTS" "$REPO"
+
 # --- no runtime signal, static default present -> static value used ---------
 SCRIPTS="$(new_scripts)"
 printf "CONCERTINO_HARNESS='codex'\n" > "$SCRIPTS/.concertino.env"
 REPO="$(new_repo)"
 run_setup "$SCRIPTS" "$REPO" TEST-105 feat/105
-check "b.5 no runtime signal -> falls back to static default" "$(harness_of "$REPO" TEST-105)" "codex"
+check "b.8 no runtime signal -> falls back to static default" "$(harness_of "$REPO" TEST-105)" "codex"
 rm -rf "$SCRIPTS" "$REPO"
 
 # --- no runtime signal, no static default -> HARNESS itself still resolves
@@ -195,13 +225,13 @@ printf "CONCERTINO_HARNESS=''\n" > "$SCRIPTS/.concertino.env"
 REPO="$(new_repo)"
 run_setup "$SCRIPTS" "$REPO" TEST-106 feat/106
 RC=$?
-check "b.6 no signal, no static default -> setup-worktree.sh now FAILs (unknown harness has no modelTiers data)" "$RC" "1"
+check "b.9 no signal, no static default -> setup-worktree.sh now FAILs (unknown harness has no modelTiers data)" "$RC" "1"
 # The events LOG ITSELF is never created (setup-worktree.sh bails before any
 # emit-event.sh call happens at all) — harness_of's node helper throws
 # reading a nonexistent file, printing nothing to stdout (stderr suppressed),
 # distinct from the "<no run.start event>" string it prints when the file
 # exists but simply has no matching line.
-check "b.6 no run.start emitted for a run whose harness could not be resolved" "$(harness_of "$REPO" TEST-106)" ""
+check "b.9 no run.start emitted for a run whose harness could not be resolved" "$(harness_of "$REPO" TEST-106)" ""
 rm -rf "$SCRIPTS" "$REPO"
 
 # --- runtime signal overrides a CONFLICTING static default ------------------
@@ -213,7 +243,7 @@ SCRIPTS="$(new_scripts)"
 printf "CONCERTINO_HARNESS='codex'\n" > "$SCRIPTS/.concertino.env"
 REPO="$(new_repo)"
 run_setup "$SCRIPTS" "$REPO" TEST-107 feat/107 CLAUDECODE=1
-check "b.7 runtime signal overrides a conflicting static default" "$(harness_of "$REPO" TEST-107)" "claude-code"
+check "b.10 runtime signal overrides a conflicting static default" "$(harness_of "$REPO" TEST-107)" "claude-code"
 rm -rf "$SCRIPTS" "$REPO"
 
 # ===========================================================================
@@ -228,7 +258,7 @@ run_setup_capture() {
   # contract, since every (b) test above relies on run_setup's return-code-
   # only behavior and discards stdout deliberately.
   local scripts="$1" repo="$2" ticket="$3" branch="$4" speed="$5"; shift 5
-  ( cd "$repo" && env -u CLAUDECODE -u CODEX_SANDBOX -u CODEX_SANDBOX_NETWORK_DISABLED \
+  ( cd "$repo" && env -u CLAUDECODE -u CODEX_SANDBOX -u CODEX_SANDBOX_NETWORK_DISABLED -u OPENCODE \
       "$@" "$scripts/setup-worktree.sh" "$ticket" "$branch" "$speed" ) 2>/dev/null
 }
 
@@ -281,7 +311,7 @@ rm -rf "$SCRIPTS" "$REPO"
 
 new_scripts_with_impl() {
   local d; d="$(new_scripts)"
-  printf "CONCERTINO_IMPLEMENTED_HARNESSES='claude-code codex'\n" >> "$d/.concertino.env"
+  printf "CONCERTINO_IMPLEMENTED_HARNESSES='claude-code codex opencode'\n" >> "$d/.concertino.env"
   printf '%s' "$d"
 }
 
@@ -303,12 +333,29 @@ run_setup_capture4_stderr() {
 # --- valid override beats a CONTRADICTING runtime signal AND the static
 #     default, for the identity (HARNESS) value ------------------------------
 SCRIPTS="$(new_scripts_with_impl)"
-printf "CONCERTINO_HARNESS='claude-code'\nCONCERTINO_IMPLEMENTED_HARNESSES='claude-code codex'\n" > "$SCRIPTS/.concertino.env"
+printf "CONCERTINO_HARNESS='claude-code'\nCONCERTINO_IMPLEMENTED_HARNESSES='claude-code codex opencode'\n" > "$SCRIPTS/.concertino.env"
 REPO="$(new_repo)"
 READY="$(run_setup_capture4 "$SCRIPTS" "$REPO" TEST-301 feat/301 default codex CLAUDECODE=1)"
 has_str "d.1 READY harness=codex (override wins over runtime+static)" "$READY" "READY harness=codex"
 has_str "d.1 READY harness_source=ticket-override" "$READY" "READY harness_source=ticket-override"
 check "d.1 run.start records harness=codex" "$(harness_of "$REPO" TEST-301)" "codex"
+rm -rf "$SCRIPTS" "$REPO"
+
+# --- HARNESS_OVERRIDE=opencode — the new combination CON-63 + CON-62 create
+# together: opencode is in CONCERTINO_IMPLEMENTED_HARNESSES (CON-63), so a
+# ticket-declared override of it must be honored exactly like codex/
+# claude-code, including winning identity over a contradicting runtime
+# signal — while MODEL_TIER_HARNESS still stays the runtime-detected harness
+# (claude-code here), never opencode, exactly as d.4 below verifies for codex.
+SCRIPTS="$(new_scripts_with_impl)"
+printf "CONCERTINO_HARNESS='claude-code'\nCONCERTINO_IMPLEMENTED_HARNESSES='claude-code codex opencode'\n" > "$SCRIPTS/.concertino.env"
+REPO="$(new_repo)"
+READY="$(run_setup_capture4 "$SCRIPTS" "$REPO" TEST-305 feat/305 default opencode CLAUDECODE=1)"
+has_str "d.1b READY harness=opencode (override wins over runtime+static)" "$READY" "READY harness=opencode"
+has_str "d.1b READY harness_source=ticket-override" "$READY" "READY harness_source=ticket-override"
+has_str "d.1b READY models= stays the RUNTIME harness's models (sonnet), not opencode's" "$READY" "\"orchestrator\":\"sonnet\""
+check "d.1b run.start records harness=opencode" "$(harness_of "$REPO" TEST-305)" "opencode"
+check "d.1b run.start models= (per-role) stays claude-code's (sonnet)" "$(printf '%s' "$(run_field "$REPO" TEST-305 models)" | grep -qF 'sonnet' && echo yes || echo no)" "yes"
 rm -rf "$SCRIPTS" "$REPO"
 
 # --- invalid override FAILs before any git/worktree operation ---------------
@@ -326,7 +373,7 @@ rm -rf "$SCRIPTS" "$REPO"
 
 # --- no override -> unchanged behavior (runtime detection still wins) -------
 SCRIPTS="$(new_scripts_with_impl)"
-printf "CONCERTINO_HARNESS=''\nCONCERTINO_IMPLEMENTED_HARNESSES='claude-code codex'\n" > "$SCRIPTS/.concertino.env"
+printf "CONCERTINO_HARNESS=''\nCONCERTINO_IMPLEMENTED_HARNESSES='claude-code codex opencode'\n" > "$SCRIPTS/.concertino.env"
 REPO="$(new_repo)"
 READY="$(run_setup_capture4 "$SCRIPTS" "$REPO" TEST-303 feat/303 default "" CODEX_SANDBOX=1)"
 has_str "d.3 no override -> READY harness=codex (runtime-detected)" "$READY" "READY harness=codex"
@@ -340,7 +387,7 @@ rm -rf "$SCRIPTS" "$REPO"
 #     (codex-mini-latest), even though HARNESS_OVERRIDE=codex is honored for
 #     identity in the very same run (design.md Decision 5). ------------------
 SCRIPTS="$(new_scripts_with_impl)"
-printf "CONCERTINO_HARNESS='claude-code'\nCONCERTINO_IMPLEMENTED_HARNESSES='claude-code codex'\n" > "$SCRIPTS/.concertino.env"
+printf "CONCERTINO_HARNESS='claude-code'\nCONCERTINO_IMPLEMENTED_HARNESSES='claude-code codex opencode'\n" > "$SCRIPTS/.concertino.env"
 REPO="$(new_repo)"
 READY="$(run_setup_capture4 "$SCRIPTS" "$REPO" TEST-304 feat/304 default codex CLAUDECODE=1)"
 has_str "d.4 contradicting override still reports harness=codex for identity" "$READY" "READY harness=codex"

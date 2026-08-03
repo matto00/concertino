@@ -119,9 +119,10 @@ Never let telemetry block delivery: if a call fails, continue.
    fetch, inspect the ticket's `labels` (Linear's `get_issue`/`mcp__linear__get_issue`
    already returns these — no additional call) for labels matching `^harness:(.+)$`.
    - **No match** → proceed unchanged; no override for this run.
-   - **Exactly one match, value in the implemented set** (`claude-code`, `codex`
-     — see `CONCERTINO_IMPLEMENTED_HARNESSES` in `.concertino.env`) → record the
-     value as `HARNESS_OVERRIDE` for step 3 below.
+   - **Exactly one match, value in the implemented set** (see
+     `CONCERTINO_IMPLEMENTED_HARNESSES` in `.concertino.env` for the current
+     set — today `claude-code`, `codex`, `opencode`) → record the value as
+     `HARNESS_OVERRIDE` for step 3 below.
    - **Exactly one match, value NOT implemented (e.g. `local-llm`), OR more
      than one matching label (ambiguous)** → **hard stop here.** Do not derive
      a branch name (step 2) or call `setup-worktree.sh` (step 3) — no
@@ -194,7 +195,7 @@ Execute directly (no subagent).
    Claude Code, pass the skeptic's resolved model (`workflow-state.md`'s
    `MODELS.skeptic`) as this `Agent` call's own `model` parameter — see
    "Per-spawn model overrides" below for the full contract this relies on; on
-   Codex there is no equivalent per-spawn call (see that same section).
+   Codex or OpenCode there is no equivalent per-spawn call (see that same section).
    **Wait for its verdict inside this turn before proceeding** — free if you're
    the top-level session, fatal if you're a sub-agent (you'd never see the
    verdict, and the skeptic you just spawned is orphaned). If the harness
@@ -268,7 +269,7 @@ or the evaluator's report path instead of returning control, or escalate.
 Both spawns above are on Claude Code: pass each role's resolved model
 (`workflow-state.md`'s `MODELS.executor` / `MODELS.evaluator`) as the `Agent`
 call's own `model` parameter — see "Per-spawn model overrides" below. Codex
-has no equivalent per-spawn call.
+and OpenCode have no equivalent per-spawn call.
 
 Record agent IDs in `workflow-state.md` for resume.
 

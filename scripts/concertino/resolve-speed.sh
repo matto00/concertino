@@ -19,11 +19,12 @@ set -uo pipefail
 #   SPEED    optional; one of the names under speeds.json's "speeds" key
 #            (fast/default/slow, or whatever a project has renamed/added).
 #            Defaults to "default" when omitted or empty.
-#   HARNESS  optional; claude-code|codex, used VERBATIM when given — no
-#            detection. When omitted, resolved in the same order
+#   HARNESS  optional; claude-code|codex|opencode, used VERBATIM when given —
+#            no detection. When omitted, resolved in the same order
 #            setup-worktree.sh's own detect_harness() uses:
 #              1. Runtime signal from the process environment (CLAUDECODE,
-#                 else CODEX_SANDBOX/CODEX_SANDBOX_NETWORK_DISABLED)
+#                 else CODEX_SANDBOX/CODEX_SANDBOX_NETWORK_DISABLED, else
+#                 OPENCODE)
 #              2. The static CONCERTINO_HARNESS default from .concertino.env
 #              3. The literal string "unknown"
 #            (This is the same order for the same reason: two independent
@@ -82,6 +83,8 @@ if [ -z "$HARNESS" ]; then
     HARNESS="claude-code"
   elif [ -n "${CODEX_SANDBOX:-}" ] || [ -n "${CODEX_SANDBOX_NETWORK_DISABLED:-}" ]; then
     HARNESS="codex"
+  elif [ -n "${OPENCODE:-}" ]; then
+    HARNESS="opencode"
   else
     HARNESS="${CONCERTINO_HARNESS:-unknown}"
   fi
