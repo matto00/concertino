@@ -406,5 +406,49 @@ else
 fi
 rm -rf "$SCRIPTS" "$REPO"
 
+# ===========================================================================
+# (e) CON-67 — port derivation folds a team-prefix hash into the offset so
+#     same-numbered tickets from different teams (CON-55 vs HEL-55) never
+#     collide. setup-worktree.sh and lib/ui/screens/launchplan.js's
+#     derivePorts() are deliberate duplicates of the same arithmetic — this
+#     section computes both and asserts they agree, so they can never drift
+#     apart silently.
+# ===========================================================================
+
+ready_ports() {
+  # $1 = captured READY output -> "dev_port backend_port"
+  printf '%s %s' \
+    "$(printf '%s\n' "$1" | sed -n 's/^READY dev_port=//p')" \
+    "$(printf '%s\n' "$1" | sed -n 's/^READY backend_port=//p')"
+}
+
+js_ports() {
+  # $1 = ticket id -> "devPort backendPort" per lib/ui/screens/launchplan.js
+  node -e '
+    const { derivePorts } = require(process.argv[1]);
+    const p = derivePorts(process.argv[2], { frontendBase: 5173, backendBase: 8080 });
+    console.log(p.devPort + " " + p.backendPort);
+  ' "$ROOT/lib/ui/screens/launchplan.js" "$1"
+}
+
+SCRIPTS="$(new_scripts)"
+printf "CONCERTINO_HARNESS='claude-code'\n" > "$SCRIPTS/.concertino.env"
+REPO="$(new_repo)"
+READY_CON="$(run_setup_capture "$SCRIPTS" "$REPO" CON-55 feat/con-55 default CLAUDECODE=1)"
+READY_HEL="$(run_setup_capture "$SCRIPTS" "$REPO" HEL-55 feat/hel-55 default CLAUDECODE=1)"
+CON_PORTS="$(ready_ports "$READY_CON")"
+HEL_PORTS="$(ready_ports "$READY_HEL")"
+check "e.1 setup-worktree.sh agrees with derivePorts() for CON-55" "$CON_PORTS" "$(js_ports CON-55)"
+check "e.1 setup-worktree.sh agrees with derivePorts() for HEL-55" "$HEL_PORTS" "$(js_ports HEL-55)"
+if [ -n "$CON_PORTS" ] && [ "$CON_PORTS" != "$HEL_PORTS" ]; then
+  ok "e.2 CON-55 and HEL-55 derive different ports"
+else
+  bad "e.2 CON-55 and HEL-55 derive different ports" "CON [$CON_PORTS] vs HEL [$HEL_PORTS]"
+fi
+# Re-running the same ticket (worktree reuse path) must reuse its ports.
+READY_CON2="$(run_setup_capture "$SCRIPTS" "$REPO" CON-55 feat/con-55 default CLAUDECODE=1)"
+check "e.3 rerun of CON-55 reuses the same ports" "$(ready_ports "$READY_CON2")" "$CON_PORTS"
+rm -rf "$SCRIPTS" "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

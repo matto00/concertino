@@ -32,12 +32,28 @@ const OPTS = { cols: 78 };
 
 // --- ports shown pre-flight --------------------------------------------------
 
-test('derivePorts mirrors setup-worktree.sh: base + ticket number', () => {
-  assert.deepEqual(derivePorts('CON-338', { frontendBase: 5173, backendBase: 8080 }), { devPort: 5511, backendPort: 8418 });
+test('derivePorts mirrors setup-worktree.sh: base + team-prefix hash offset + ticket number', () => {
+  // "CON" hashes to offset 74 ((h % 8) * 37 with h = 914) — see the CON-67
+  // comment inside derivePorts / setup-worktree.sh's port derivation.
+  assert.deepEqual(derivePorts('CON-338', { frontendBase: 5173, backendBase: 8080 }), { devPort: 5585, backendPort: 8492 });
 });
 
 test('derivePorts defaults the bases when portsCfg is absent', () => {
-  assert.deepEqual(derivePorts('CON-1', null), { devPort: 5174, backendPort: 8081 });
+  assert.deepEqual(derivePorts('CON-1', null), { devPort: 5248, backendPort: 8155 });
+});
+
+test('derivePorts separates same-numbered tickets from different teams (CON-67)', () => {
+  const cfg = { frontendBase: 5173, backendBase: 8080 };
+  const con = derivePorts('CON-55', cfg);
+  const hel = derivePorts('HEL-55', cfg);
+  assert.notEqual(con.devPort, hel.devPort);
+  assert.notEqual(con.backendPort, hel.backendPort);
+});
+
+test('derivePorts is stable across calls for the same ticket id — reruns reuse ports', () => {
+  assert.deepEqual(derivePorts('CON-55', null), derivePorts('CON-55', null));
+  assert.deepEqual(derivePorts('CON-55', null), { devPort: 5302, backendPort: 8209 });
+  assert.deepEqual(derivePorts('HEL-55', null), { devPort: 5487, backendPort: 8394 });
 });
 
 test('derivePorts returns null for a ticket with no trailing number, same as setup-worktree.sh would FAIL', () => {
@@ -51,9 +67,9 @@ test('deriveTicketNum reads the number after the final hyphen', () => {
 
 test('the plan renders each ticket\'s ports with no run started and no network', () => {
   const out = plain(renderLaunchPlan(plan({}), 0, OPTS));
-  assert.match(out, /:5511 :8418/);
-  assert.match(out, /:5514 :8421/);
-  assert.match(out, /:5522 :8429/);
+  assert.match(out, /:5585 :8492/);
+  assert.match(out, /:5588 :8495/);
+  assert.match(out, /:5596 :8503/);
 });
 
 // --- concurrency: bounded, editable, never "parallel = all of them" --------

@@ -207,15 +207,35 @@ BACKEND_PORT_BASE="${CONCERTINO_BACKEND_PORT_BASE:-8080}"
 BASE_REMOTE="${CONCERTINO_BASE_REMOTE:-origin}"
 BASE_BRANCH="${CONCERTINO_BASE_BRANCH:-main}"
 
-# Derive stable ports from the ticket number so parallel orchestrators never
-# collide. e.g. ticket #55 with default bases -> dev 5228, backend 8135.
+# Derive stable ports from the ticket number PLUS a small deterministic hash
+# of the team prefix (CON-67) so parallel orchestrators never collide — even
+# across teams: same-numbered tickets from different teams (CON-55 vs HEL-55)
+# used to resolve to identical ports.
+#
+# KEEP IN LOCKSTEP with derivePorts() in lib/ui/screens/launchplan.js — the
+# launch plan's pre-flight port preview deliberately duplicates this exact
+# arithmetic, and its own comment points back here.
+#
+# Hash: over the team prefix (everything before the LAST '-'; empty when the
+# id has no '-'), h = (h*31 + charcode) % 1000 per character, then
+# TEAM_OFFSET = (h % 8) * 37 — bounded to 0..259, so with sane bases the
+# final ports stay non-privileged and well under 65535. Pure arithmetic on
+# the ticket id, so reruns of a ticket always reuse its ports.
+# e.g. CON-55 with default bases -> dev 5302, backend 8209; HEL-55 -> 5487, 8394.
 TICKET_NUM="${TICKET_ID##*-}"
 if ! [[ "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
   echo "FAIL could not derive numeric ticket id from '$TICKET_ID'" >&2
   exit 1
 fi
-DEV_PORT=$((FRONTEND_PORT_BASE + TICKET_NUM))
-BACKEND_PORT=$((BACKEND_PORT_BASE + TICKET_NUM))
+TEAM_PREFIX=""
+case "$TICKET_ID" in *-*) TEAM_PREFIX="${TICKET_ID%-*}" ;; esac
+TEAM_HASH=0
+for (( _i = 0; _i < ${#TEAM_PREFIX}; _i++ )); do
+  TEAM_HASH=$(( (TEAM_HASH * 31 + $(printf '%d' "'${TEAM_PREFIX:$_i:1}")) % 1000 ))
+done
+TEAM_OFFSET=$(( (TEAM_HASH % 8) * 37 ))
+DEV_PORT=$((FRONTEND_PORT_BASE + TEAM_OFFSET + TICKET_NUM))
+BACKEND_PORT=$((BACKEND_PORT_BASE + TEAM_OFFSET + TICKET_NUM))
 
 WORKTREE_PATH="${REPO_ROOT}/${WORKTREE_BASE}/${BRANCH}"
 
