@@ -6,6 +6,11 @@
 # escalate instead. Whatever happens, `cleanup.sh --phase4` must still exit 0
 # and print its normal `READY cleaned worktree=...` line — a stale base is a
 # risk for the NEXT run, never a reason to leave THIS teardown incomplete.
+#
+# Also covers CON-64: run.end must be emitted (correctly ticket-tagged) even
+# when the worktree basename is not ticket-shaped, provided the ticket ID is
+# passed as the explicit 4th argument; and the basename-inference fallback
+# plus emit-event.sh's loud terminal-event warning when neither resolves.
 set -uo pipefail
 
 # See escalation-loop.test.sh's identical note: some shells export
@@ -80,8 +85,20 @@ advance_remote() {
 }
 
 run_cleanup() {
-  local primary="$1" wt="$2" out="$3" err="$4"
-  ( cd "$primary" && bash scripts/concertino/cleanup.sh --phase4 "$wt" "" "" ) > "$out" 2> "$err"
+  # $5 (optional) = explicit TICKET_ID — CON-64's 4th positional script arg.
+  # Empty exercises the pre-CON-64 basename-inference fallback.
+  local primary="$1" wt="$2" out="$3" err="$4" ticket="${5:-}"
+  ( cd "$primary" && bash scripts/concertino/cleanup.sh --phase4 "$wt" "" "" "$ticket" ) > "$out" 2> "$err"
+}
+
+run_end_ticket() {
+  # Prints the ticket field of the run.end event in $1, if any.
+  node -e '
+    const fs = require("fs");
+    const lines = fs.readFileSync(process.argv[1], "utf8").trim().split("\n");
+    const line = lines.map(l => JSON.parse(l)).find(e => e.kind === "run.end");
+    console.log(line ? `${line.ticket}/${line.status}` : "<no run.end event>");
+  ' "$1" 2>/dev/null
 }
 
 # --- already current: silent no-op ------------------------------------------
@@ -234,6 +251,47 @@ check "exits 0 after a fetch-failed retry exhaustion" "$RC" "0"
 has "prints READY despite a fetch-failed retry exhaustion" "READY cleaned worktree=" "$OUT"
 has "'could not determine' note after a fetch-failed retry" "could not determine" "$ERR"
 hasnt "no 'remains behind' note after a fetch-failed retry" "remains behind" "$ERR"
+rm -rf "$BASE"
+
+# ===========================================================================
+# CON-64 — run.end must be emitted for a worktree whose basename is NOT a
+# ticket shape (doesn't end in a digit), when the ticket ID is passed
+# explicitly. This is the exact regression the ticket exists to close: CON-63
+# ran on branch `feature/local-llm-harnesses`, the basename inference silently
+# failed the ticket regex, and the run never terminated on the dashboard.
+# ===========================================================================
+
+# --- explicit ticket + non-ticket basename: run.end lands, correctly tagged -
+BASE="$(mktemp -d)"; new_pair "$BASE"
+WT="$BASE/local-llm-harnesses"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-9
+check "exits 0 (explicit ticket, non-ticket basename)" "$?" "0"
+has   "prints READY (explicit ticket, non-ticket basename)" "READY cleaned worktree=" "$OUT"
+check "run.end is tagged with the explicit ticket, status delivered" \
+  "$(run_end_ticket "$BASE/primary/.concertino/runs/TICK-9/events.jsonl")" "TICK-9/delivered"
+rm -rf "$BASE"
+
+# --- no explicit ticket, ticket-shaped basename: inference fallback holds ---
+BASE="$(mktemp -d)"; new_pair "$BASE"
+WT="$BASE/TICK-10"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup "$BASE/primary" "$WT" "$OUT" "$ERR"
+check "exits 0 (basename-inference fallback)" "$?" "0"
+check "run.end via basename inference still lands" \
+  "$(run_end_ticket "$BASE/primary/.concertino/runs/TICK-10/events.jsonl")" "TICK-10/delivered"
+rm -rf "$BASE"
+
+# --- no explicit ticket, non-ticket basename: no silent drop — loud warning -
+BASE="$(mktemp -d)"; new_pair "$BASE"
+WT="$BASE/local-llm-harnesses"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup "$BASE/primary" "$WT" "$OUT" "$ERR"
+check "still exits 0 when run.end cannot be tagged" "$?" "0"
+has   "prints READY even when run.end cannot be tagged" "READY cleaned worktree=" "$OUT"
+check "no run dir created for the malformed ticket" \
+  "$([ -e "$BASE/primary/.concertino/runs/local-llm-harnesses" ] && echo present || echo absent)" "absent"
+has   "emit-event.sh warns loudly about the untaggable run.end" "WARNING: run.end" "$ERR"
 rm -rf "$BASE"
 
 echo "  $PASS passed, $FAIL failed"

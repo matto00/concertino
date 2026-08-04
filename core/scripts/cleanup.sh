@@ -18,8 +18,8 @@ set -euo pipefail
 #   - the environment sentinel `CONCERTINO_PHASE4=1` is set.
 # Without the opt-in it prints a refusal to stderr and exits 0 (safe no-op).
 #
-# Usage: cleanup.sh --phase4 <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>
-#    or: CONCERTINO_PHASE4=1 cleanup.sh <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>
+# Usage: cleanup.sh --phase4 <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]
+#    or: CONCERTINO_PHASE4=1 cleanup.sh <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]
 #
 # Prints "READY cleaned worktree=<path>" on success — ALWAYS exits 0,
 # regardless of whether the fast-forward below succeeded, escalated, or was
@@ -38,9 +38,10 @@ elif [ "${CONCERTINO_PHASE4:-}" != "1" ]; then
   exit 0
 fi
 
-WORKTREE_PATH="${1:?usage: cleanup.sh --phase4 <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>}"
+WORKTREE_PATH="${1:?usage: cleanup.sh --phase4 <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]}"
 DEV_PORT="${2:-}"
 BACKEND_PORT="${3:-}"
+TICKET_ID="${4:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
@@ -68,7 +69,13 @@ fi
 git -C "$REPO_ROOT" worktree prune
 
 # Phase-4 cleanup only runs post-merge, so reaching here means the run shipped.
-T="${WORKTREE_PATH##*/}"
+# The canonical ticket ID arrives as the explicit 4th argument (CON-64); the
+# worktree-basename inference stays only as a fallback for call sites rendered
+# before the argument existed. Inference is not reliable — a branch without
+# the <type>/<desc>/<TICKET-ID> suffix makes the basename a non-ticket, and
+# the run.end at the bottom of this script would then never be tagged, leaving
+# the run permanently non-terminal on the dashboard.
+T="${TICKET_ID:-${WORKTREE_PATH##*/}}"
 
 # ===========================================================================
 # Fast-forward local <base> to match the fetched remote (CON-25).
@@ -209,7 +216,12 @@ if [ "$FF_STATUS" = "updated" ]; then
   fi
 fi
 
-[[ "$T" =~ ^[A-Za-z#][A-Za-z0-9_-]*[0-9]$ ]] && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.end \
+# run.end is the run's terminal marker — the dashboard defines "terminal" as
+# "has emitted run.end" (lib/ui/retention.js) — so the write must always be
+# ATTEMPTED, never pre-gated here on a ticket-shape regex whose silent failure
+# is indistinguishable from success (CON-64). emit-event.sh owns ticket
+# validation and warns loudly on stderr when it cannot tag a terminal event.
+CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.end \
   "ticket=${T}" "status=delivered" || true
 
 echo "READY cleaned worktree=${WORKTREE_PATH}"

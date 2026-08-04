@@ -238,8 +238,20 @@ for kv in ${ARGS+"${ARGS[@]}"}; do
   esac
 done
 
-[ -z "$TICKET" ] && exit 0
-looks_like_ticket "$TICKET" || exit 0
+# A terminal event that cannot be ticket-tagged is the one telemetry loss the
+# dashboard can never recover from: "terminal" is defined as "has emitted
+# run.end" (lib/ui/retention.js), so silently dropping this write leaves the
+# run apparently live forever (CON-64). Warn loudly — but still exit 0, since
+# telemetry must never fail a delivery run — instead of no-op'ing without a
+# trace. Non-terminal kinds keep the silent drop: losing one of those costs a
+# log line, not the run's terminal state.
+if [ -z "$TICKET" ] || ! looks_like_ticket "$TICKET"; then
+  if [ "$KIND" = "run.end" ]; then
+    echo "emit-event.sh: WARNING: ${KIND} with missing/malformed ticket '${TICKET}' — event NOT written;" >&2
+    echo "the run will appear stuck (non-terminal) on the dashboard. Pass the canonical ticket ID explicitly." >&2
+  fi
+  exit 0
+fi
 
 RUN_DIR="${ROOT}/.concertino/runs/${TICKET}"
 mkdir -p "$RUN_DIR" 2>/dev/null || exit 0

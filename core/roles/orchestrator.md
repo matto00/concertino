@@ -618,7 +618,7 @@ After either a human "merged" confirmation or an auditor `MERGE` verdict:
    Phase 4 (post-merge)** — never during proposal, implementation, or review:
 
    ```bash
-   scripts/concertino/cleanup.sh --phase4 "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"
+   scripts/concertino/cleanup.sh --phase4 "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"
    scripts/concertino/assert-phase.sh cleanup "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"
    ```
 
