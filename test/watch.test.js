@@ -3918,3 +3918,85 @@ test('CON-55: Enter on a file-based evidence entry still opens docview, unaffect
     await h.teardown(donePromise);
   }
 });
+
+// --- CON-68: the single-writer lock refuses a second dashboard --------------
+
+test('watch() refuses to start when a live dashboard already owns the repo', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { EventEmitter } = require('node:events');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-lock-'));
+  const watchLock = require('../lib/ui/watch-lock');
+  // A live holder: this very process's pid, planted as if another dashboard
+  // owned the repo (acquire() only ever refuses on a pid that is not the
+  // caller's own, so the "other" dashboard here must be the one calling —
+  // plant the file directly instead of acquiring).
+  fs.mkdirSync(path.dirname(watchLock.lockPath(root)), { recursive: true });
+  fs.writeFileSync(watchLock.lockPath(root),
+    JSON.stringify({ pid: process.pid, startedAt: 1, heartbeatAt: 1 }));
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  delete require.cache[watchPath];
+  let sessionTouched = false;
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: {
+      hasTmux: () => true,
+      createSession: () => ({
+        ensure() { sessionTouched = true; },
+        listWindows() { sessionTouched = true; return []; },
+        capture() { return ''; }, captureFull() { return ''; },
+        spawn() {}, kill() {}, attach() { return { status: 0 }; },
+      }),
+      PLACEHOLDER: '__concertino__',
+    },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const realError = console.error;
+  let wrote = '';
+  let errs = '';
+  process.stdout.write = (s) => { wrote += s; return true; };
+  console.error = (s) => { errs += s + '\n'; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+  const prevExitCode = process.exitCode;
+
+  try {
+    // watchLock cannot see the planted pid as "another dashboard" if the
+    // module compares to OUR pid... it does: acquire(root, process.pid)
+    // finds existing.pid === process.pid and would succeed. So the planted
+    // holder must be a DIFFERENT live pid: use the parent process (pid 1 is
+    // init — always alive, never us).
+    fs.writeFileSync(watchLock.lockPath(root),
+      JSON.stringify({ pid: 1, startedAt: 1, heartbeatAt: 1 }));
+
+    const watchModule = require('../lib/ui/watch');
+    await watchModule.watch({ root, config: {} });
+
+    assert.equal(process.exitCode, 1, 'refusal must set a non-zero exit code');
+    assert.match(errs, /another dashboard \(pid 1/);
+    assert.match(errs, /watch\.lock/);
+    assert.equal(sessionTouched, false, 'must refuse before touching tmux at all');
+    assert.doesNotMatch(wrote, /\x1b\[\?1049h/, 'must never enter the alternate screen');
+    // The live holder's lock is untouched.
+    assert.equal(watchLock.readLock(root).pid, 1);
+  } finally {
+    process.exitCode = prevExitCode;
+    process.stdout.write = realWrite;
+    console.error = realError;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[sessionPath];
+  }
+});
