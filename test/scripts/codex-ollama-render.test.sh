@@ -53,6 +53,29 @@ has "config.toml uses the END merge marker" "# CONCERTINO:END" "$TOML"
 # opencode-ollama.json sets no models.codex overrides at all.
 has "executor .toml gets model_provider = \"ollama\"" 'model_provider = "ollama"' "$OUT/.codex/agents/concertino-executor.toml"
 
+# --- speeds.json carries the Ollama-resolved models -------------------------
+# renderSpeedsJson folds providers.ollama.models into the models map for every
+# Ollama-routed (harness, role) — resolve-speed.sh's runtime lookup is only
+# `explicit // tier`, so without the fold an Ollama-routed role's READY
+# models= would report the HOSTED tier model while the rendered agent files
+# say the local one.
+SPEEDS="$OUT/scripts/concertino/speeds.json"
+speeds_field() { node -e '
+  const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const v = process.argv[2].split(".").reduce((o, k) => (o == null ? o : o[k]), s.models);
+  console.log(v === undefined ? "<absent>" : v);
+' "$SPEEDS" "$1"; }
+check_eq() { [ "$2" = "$3" ] && ok "$1" || bad "$1" "expected [$3], got [$2]"; }
+check_eq "speeds.json codex.executor is the Ollama model"      "$(speeds_field codex.executor)"      "llama3.1:70b"
+check_eq "speeds.json opencode.executor is the Ollama model"   "$(speeds_field opencode.executor)"   "llama3.1:70b"
+check_eq "speeds.json keeps the explicit opencode.skeptic"     "$(speeds_field opencode.skeptic)"    "anthropic/claude-opus-4-1"
+# skeptic has no providers.ollama.models entry and no explicit codex model —
+# it must stay absent so resolve-speed.sh falls through to the tier as today.
+check_eq "speeds.json codex.skeptic stays tier-resolved (absent)" "$(speeds_field codex.skeptic)" "<absent>"
+# claude-code never routes through Ollama directly (gateway-only) — its
+# models map must stay untouched by the fold.
+check_eq "speeds.json claude-code.executor stays absent"       "$(speeds_field claude-code.executor)" "<absent>"
+
 # --- hand-authored content outside the marked region survives a re-sync ----
 printf '\n# hand-authored: keep this comment\n[my_custom_section]\nfoo = "bar"\n' >> "$TOML"
 ORIGINAL_HAND_AUTHORED_LINE_COUNT="$(grep -c 'hand-authored' "$TOML")"

@@ -214,8 +214,16 @@ trimmed.
 ```
 
 `launchCommand` is what `n` runs; `{{TICKET}}` is replaced with what you typed.
-It defaults from `harnesses` — `claude "/concertino-deliver {{TICKET}}"`, or the
-`codex` equivalent for a codex-only project — so most projects never set it.
+It defaults from `harnesses` — `claude "/concertino-deliver {{TICKET}}"` when
+claude-code is configured, otherwise the first configured harness's own CLI
+(`codex "..."`, or `opencode --prompt "..."` — OpenCode's positional argument
+is a project directory, so its prompt goes through `--prompt`) — so most
+projects never set it.
+
+A ticket labeled `harness:<value>` (see the per-ticket override in
+[`config-reference.md`](config-reference.md)) launches under that harness's
+CLI instead of the batch's, resolved per ticket at spawn time — unless you
+set a custom `launchCommand`, which pins the command for every ticket.
 
 `escalationTimeoutMinutes` bounds how long `emit-event.sh --await` blocks before
 giving up and letting the orchestrator fall back to presenting the escalation in

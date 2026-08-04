@@ -67,14 +67,27 @@ fails loudly, before any worktree is created — it never silently falls back
 to the project default. A ticket carrying more than one `harness:` label is
 treated the same way (ambiguous override), never silently picking one.
 
-This override affects only the run's **identity/telemetry** — which harness
-`run.start` and `READY harness=` report. It does **not** change which
-per-role model ids get resolved: those always reflect the harness actually
-executing the process (`resolve-speed.sh`'s `MODEL_TIER_HARNESS`), regardless
-of what any ticket declares — a contradicting override (e.g. a ticket labeled
-`harness:codex` run from inside a live Claude Code session) still gets valid
-Claude Code model ids, never Codex ones fed into a Claude Code `Agent(...)`
-call.
+**When the run is launched from the dashboard** (`concertino watch` — the
+queue, quick start, the `n` prompt, or a restart), the label also picks the
+CLI that actually runs: the dashboard resolves it at spawn time
+(`lib/ui/harness.js`) and starts that harness's own binary for just that
+ticket, while the rest of the batch keeps the batch's command. Two
+conditions apply, both falling back to the batch command when unmet: the
+labeled harness must be in this project's own `harnesses` config (its
+adapters must actually be rendered), and a custom `dashboard.launchCommand`
+override pins the command for every ticket (there is no per-harness variant
+of an operator-supplied command to safely swap to).
+
+Inside the run itself, the override affects the run's **identity/telemetry**
+— which harness `run.start` and `READY harness=` report. It does **not**
+change which per-role model ids get resolved: those always reflect the
+harness actually executing the process (`resolve-speed.sh`'s
+`MODEL_TIER_HARNESS`), regardless of what any ticket declares — a
+contradicting override (e.g. a ticket labeled `harness:codex` started by
+hand inside a live Claude Code session) still gets valid Claude Code model
+ids, never Codex ones fed into a Claude Code `Agent(...)` call. When the
+dashboard did the launching, the two agree by construction — the labeled
+harness IS the one executing.
 
 Check a specific ticket's declared override (if any) ahead of a run with:
 
@@ -275,7 +288,7 @@ string that merely *looks* like an Ollama tag.
 | `ollama.baseUrl` | string | `http://localhost:11434` | Ollama's own API root (not the OpenAI-compatible `/v1` suffix — each harness's adapter appends what it needs). |
 | `ollama.apiKeyEnv` | string | — | Name of the environment variable holding a credential for `baseUrl`, if Ollama is behind auth. Never the credential value itself — mirrors `worktree.envFiles`'s path-not-secret convention. |
 | `ollama.harnesses` | `string[]` | — | Subset of this project's configured `harnesses` that should route through Ollama. The load-bearing field: `concertino sync`/`doctor`/`validate` read this directly rather than guessing from a model-id string. |
-| `ollama.models` | object | — | Per-role fallback model id (`orchestrator`/`executor`/`evaluator`/`skeptic`/`auditor`), used when a harness in `ollama.harnesses` has no explicit `models.<harness>.<role>` override for that role. An explicit override always wins. |
+| `ollama.models` | object | — | Per-role fallback model id (`orchestrator`/`executor`/`evaluator`/`skeptic`/`auditor`), used when a harness in `ollama.harnesses` has no explicit `models.<harness>.<role>` override for that role. An explicit override always wins. `sync` folds these resolved ids into `scripts/concertino/speeds.json` for every Ollama-routed (harness, role) pair, so `resolve-speed.sh` — and through it a run's `READY models=`, `workflow-state.md` `MODELS`, and the orchestrator's call-time model overrides — reports the local model, matching the rendered agent files. |
 | `ollama.gateway` | object | — | Anthropic-compatible proxy (e.g. [LiteLLM](https://docs.litellm.ai/)) Claude Code requires to reach Ollama — **required** when `"claude-code"` appears in `ollama.harnesses`; `concertino validate` fails with an actionable error otherwise. |
 | `ollama.gateway.baseUrl` | string | — | The gateway's Anthropic-compatible base URL. Rendered into `.concertino.env` as `ANTHROPIC_BASE_URL` when set. |
 | `ollama.gateway.apiKeyEnv` | string | — | Name of the environment variable holding the gateway credential. Rendered into `.concertino.env` as `CONCERTINO_OLLAMA_GATEWAY_API_KEY_ENV` (the *name*, never the value) — the operator's own shell/secrets manager sets `ANTHROPIC_AUTH_TOKEN` from it before launching `claude`. |
@@ -303,6 +316,22 @@ string that merely *looks* like an Ollama tag.
 against `ollama.baseUrl` (and `ollama.gateway.baseUrl`, when Claude Code is
 Ollama-routed), and reports whether `apiKeyEnv`/`gateway.apiKeyEnv` are set —
 never their values.
+
+**Switching providers/models while other tickets are in flight.** A run
+resolves its models exactly once, at setup (`setup-worktree.sh` →
+`resolve-speed.sh` against the rendered `speeds.json`), and carries them in
+`workflow-state.md` for the rest of the run — so editing
+`concertino.config.json` and re-running `concertino sync` changes what the
+*next* launch resolves, not what live runs snapshotted. Live codex/opencode
+processes read `.codex/config.toml`/`opencode.json` at process start, so
+provider rewiring lands on the next launch there too. Two caveats: the
+rendered agent files (`.claude/agents/*.md`, role bodies) are re-read each
+time a live orchestrator spawns its next sub-agent, so a mid-flight sync can
+refresh their *contents* under a live run (models stay pinned — the
+orchestrator passes its snapshotted per-role model into each call); and
+`cleanup.sh` re-runs `concertino sync` at the end of every successful run,
+so a pending config edit takes effect at the next cleanup or manual sync,
+whichever comes first.
 
 ## `commitTrailer`
 

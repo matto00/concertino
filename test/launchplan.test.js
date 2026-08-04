@@ -451,3 +451,28 @@ test('parseLaunchCommand agrees with withAgentMergeFlag/withSpeedFlag round-trip
     }
   }
 });
+
+// --- per-ticket harness override annotation ---------------------------------
+// plan.ticketHarness (identifier -> CLI label, computed by watch.js at plan
+// creation from each ticket's `harness:<value>` label) renders a `⇒ <cli>`
+// marker on exactly the rows whose label re-dispatches them away from the
+// CURRENT batch harness.
+
+test('a ticket whose harness label differs from the batch harness gets a ⇒ marker', () => {
+  const out = plain(renderLaunchPlan(plan({ ticketHarness: { 'CON-341': 'opencode' } }), 0, OPTS));
+  const row = out.split('\n').find((l) => l.includes('CON-341'));
+  assert.match(row, /⇒ opencode/);
+  const other = out.split('\n').find((l) => l.includes('CON-338'));
+  assert.doesNotMatch(other, /⇒/);
+});
+
+test('a ticket whose harness label matches the batch harness renders no marker', () => {
+  const out = plain(renderLaunchPlan(plan({ ticketHarness: { 'CON-341': 'claude' } }), 0, OPTS));
+  const row = out.split('\n').find((l) => l.includes('CON-341'));
+  assert.doesNotMatch(row, /⇒/);
+});
+
+test('a plan with no ticketHarness map renders exactly as before', () => {
+  const out = plain(renderLaunchPlan(plan({}), 0, OPTS));
+  assert.doesNotMatch(out, /⇒/);
+});

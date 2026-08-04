@@ -29,7 +29,7 @@ const ADAPTERS = path.join(REPO, 'adapters');
 // down, right where cmdValidate needs them.
 const {
   DEFAULT_MODEL_TIERS, withModelDefaults, withDefaults, resolveModel, isOllamaRouted,
-  deepSet, coerce, loadConfig, collectConfigIssues, VALID_HARNESSES,
+  deepSet, coerce, loadConfig, collectConfigIssues, VALID_HARNESSES, ROLES,
   classifyHarnessOverride,
 } = require(path.join(REPO, 'lib', 'config'));
 // `concertino validate --ticket <ID>` (CON-62, design.md Decision 6) reuses
@@ -499,11 +499,33 @@ function renderEnv(c) {
 // agnostic: one file serves every harness a project configures, the same
 // way `speeds.<name>.roleTiers` and `modelTiers` themselves are.
 function renderSpeedsJson(c) {
+  // `models` is c.models PLUS the Ollama provider-model map, folded in for
+  // every Ollama-routed (harness, role) pair. resolve-speed.sh's runtime
+  // lookup is only `explicit // tier` — it has no third, provider tier of
+  // its own (deliberately: it never re-implements Node-side resolution) —
+  // so without this fold an Ollama-routed role's READY models= (and, through
+  // it, workflow-state's MODELS and the orchestrator's call-time model
+  // overrides) would report the HOSTED tier model while the rendered agent
+  // files say the local one. isOllamaRouted() already requires the explicit
+  // slot to be empty, so writing the provider model INTO that slot here is
+  // exactly resolveModel()'s own precedence, snapshotted.
+  const models = JSON.parse(JSON.stringify(c.models));
+  for (const h of VALID_HARNESSES) {
+    for (const role of ROLES) {
+      if (isOllamaRouted(c, h, role)) {
+        const m = c.providers.ollama.models && c.providers.ollama.models[role];
+        if (m) {
+          models[h] = models[h] || {};
+          models[h][role] = m;
+        }
+      }
+    }
+  }
   return JSON.stringify({
     budgets: c.budgets,
     speeds: c.speeds,
     modelTiers: c.modelTiers,
-    models: c.models,
+    models,
   }, null, 2) + '\n';
 }
 

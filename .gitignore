@@ -3,7 +3,7 @@
 # descriptions and comment threads — frequently more sensitive than the code.
 .concertino/
 scripts/concertino/.concertino.env
-concertion.config.json
+concertino.config.json
 
 # Rendered harness output when this repo is used as a consuming project
 /.claude/agents/concertino-*.md
