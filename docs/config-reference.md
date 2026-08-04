@@ -317,6 +317,24 @@ against `ollama.baseUrl` (and `ollama.gateway.baseUrl`, when Claude Code is
 Ollama-routed), and reports whether `apiKeyEnv`/`gateway.apiKeyEnv` are set —
 never their values.
 
+**Per-ticket provider routing (`provider:<value>` ticket label).** With
+`providers.ollama` configured, an individual ticket can flip between the
+local provider and the subscription default — per run, while other tickets
+stay on theirs — by carrying a `provider:<value>` label (mirroring the
+`harness:<value>` convention): `provider:ollama` (alias `local`) routes that
+run's models through the Ollama map; `provider:default` (aliases
+`subscription`, `cloud`) pins a run back to hosted models on a project whose
+default routing is Ollama. The dashboard injects the choice into that
+ticket's tmux window at spawn time (`CONCERTINO_PROVIDER`, which
+`resolve-speed.sh` honors over the project default; plus, for claude-code,
+the per-window `ANTHROPIC_BASE_URL` gateway flip — so `provider:ollama` on
+claude-code requires `ollama.gateway`, and codex rides a
+`-c model_provider=…` CLI override). Labels that can't actually route —
+no `providers.ollama` at all, claude-code without a gateway, ambiguous
+double labels — are ignored rather than half-applied, exactly like the
+harness label's own invalid cases. The launch plan annotates re-routed rows
+with `⇒ ollama` before anything starts.
+
 **Switching providers/models while other tickets are in flight.** A run
 resolves its models exactly once, at setup (`setup-worktree.sh` →
 `resolve-speed.sh` against the rendered `speeds.json`), and carries them in

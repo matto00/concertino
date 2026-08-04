@@ -224,6 +224,11 @@ A ticket labeled `harness:<value>` (see the per-ticket override in
 [`config-reference.md`](config-reference.md)) launches under that harness's
 CLI instead of the batch's, resolved per ticket at spawn time — unless you
 set a custom `launchCommand`, which pins the command for every ticket.
+Likewise a ticket labeled `provider:<value>` (`ollama`/`local` vs
+`default`/`subscription`) runs against the local or hosted provider
+independently of the rest of the fleet — the dashboard injects the routing
+into that ticket's tmux window at spawn (see config-reference.md's
+`providers` section), and the launch plan marks re-routed rows with `⇒`.
 
 `escalationTimeoutMinutes` bounds how long `emit-event.sh --await` blocks before
 giving up and letting the orchestrator fall back to presenting the escalation in

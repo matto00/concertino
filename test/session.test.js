@@ -123,3 +123,52 @@ test('spawn cleans up a pre-existing orphaned window under the same name', skip,
   require('child_process').execFileSync('sleep', ['1']);
   assert.match(s.capture('HEL-7'), /concertino-marker/, 'target(ticket) must resolve to the live window, not the orphan');
 });
+
+// --- CON-65: per-window env injection ---------------------------------------
+
+// The command reads the variable from its OWN inherited environment (an
+// inner `sh -c` with the expansion single-quoted away from the outer
+// shell) — expanding `$CONCERTINO_PROVIDER` in the outer command string
+// would resolve before `env` ever ran and prove nothing.
+test('spawn injects env into the window process', skip, () => {
+  s.spawn('HEL-ENV1', "sh -c 'echo got:$CONCERTINO_PROVIDER; sleep 300'", { CONCERTINO_PROVIDER: 'ollama' });
+  const deadline = Date.now() + 5000;
+  let out = '';
+  while (Date.now() < deadline) {
+    out = s.capture('HEL-ENV1');
+    if (out.includes('got:ollama')) break;
+    require('child_process').execFileSync('sleep', ['0.1']);
+  }
+  assert.match(out, /got:ollama/);
+});
+
+test('spawn quotes env values with spaces and single quotes intact', skip, () => {
+  s.spawn('HEL-ENV2', 'sh -c \'echo "got:$CONCERTINO_TEST_VAL"; sleep 300\'', { CONCERTINO_TEST_VAL: "it's a value" });
+  const deadline = Date.now() + 5000;
+  let out = '';
+  while (Date.now() < deadline) {
+    out = s.capture('HEL-ENV2');
+    if (out.includes("got:it's a value")) break;
+    require('child_process').execFileSync('sleep', ['0.1']);
+  }
+  assert.match(out, /got:it's a value/);
+});
+
+test('spawn refuses an unsafe env NAME outright', () => {
+  assert.throws(
+    () => s.spawn('HEL-ENV3', 'sleep 300', { 'BAD NAME; rm -rf /': 'x' }),
+    /unsafe env name/,
+  );
+});
+
+test('spawn with an empty env map behaves exactly like no env', skip, () => {
+  s.spawn('HEL-ENV4', 'echo plain-marker; sleep 300', {});
+  const deadline = Date.now() + 5000;
+  let out = '';
+  while (Date.now() < deadline) {
+    out = s.capture('HEL-ENV4');
+    if (out.includes('plain-marker')) break;
+    require('child_process').execFileSync('sleep', ['0.1']);
+  }
+  assert.match(out, /plain-marker/);
+});

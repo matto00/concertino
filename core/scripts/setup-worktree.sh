@@ -189,6 +189,14 @@ RESOLVED_SPEED_JSON="$("${SCRIPT_DIR}/resolve-speed.sh" "$SPEED" "$MODEL_TIER_HA
 }
 RESOLVED_BUDGETS_JSON="$(printf '%s' "$RESOLVED_SPEED_JSON" | jq -c '.budgets')"
 RESOLVED_MODELS_JSON="$(printf '%s' "$RESOLVED_SPEED_JSON" | jq -c '.models')"
+# CON-65: which provider this run's models resolved against — "ollama" or
+# "default". resolve-speed.sh already folded CONCERTINO_PROVIDER (the
+# per-window override the dashboard injects for a `provider:<value>` label)
+# together with the project-level routing default, so this is the one
+# truthful answer, not a re-derivation. `// "default"` keeps this script
+# compatible with a pre-CON-65 rendered resolve-speed.sh that emits no
+# .provider field at all.
+RESOLVED_PROVIDER="$(printf '%s' "$RESOLVED_SPEED_JSON" | jq -r '.provider // "default"')"
 # Not part of run.start (the spec's acceptance criterion only requires
 # speed=/models= there — see delivery-speed-presets spec.md), but the
 # orchestrator still needs both to populate workflow-state.md, and this
@@ -358,6 +366,7 @@ CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.start \
   "backend_port=${BACKEND_PORT}" \
   "harness=${HARNESS}" \
   "speed=${SPEED}" \
+  "provider=${RESOLVED_PROVIDER}" \
   "models=${RESOLVED_MODELS_JSON}" || true
 
 echo "READY worktree=${WORKTREE_PATH}"
@@ -370,4 +379,5 @@ echo "READY models=${RESOLVED_MODELS_JSON}"
 echo "READY second_final_gate_skeptic=${RESOLVED_SECOND_FINAL_GATE_SKEPTIC}"
 echo "READY evaluator_clean_worktree=${RESOLVED_EVALUATOR_CLEAN_WORKTREE}"
 echo "READY harness=${HARNESS}"
+echo "READY provider=${RESOLVED_PROVIDER}"
 echo "READY harness_source=${HARNESS_SOURCE}"

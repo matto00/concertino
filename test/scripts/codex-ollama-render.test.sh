@@ -66,15 +66,35 @@ speeds_field() { node -e '
   console.log(v === undefined ? "<absent>" : v);
 ' "$SPEEDS" "$1"; }
 check_eq() { [ "$2" = "$3" ] && ok "$1" || bad "$1" "expected [$3], got [$2]"; }
-check_eq "speeds.json codex.executor is the Ollama model"      "$(speeds_field codex.executor)"      "llama3.1:70b"
-check_eq "speeds.json opencode.executor is the Ollama model"   "$(speeds_field opencode.executor)"   "llama3.1:70b"
-check_eq "speeds.json keeps the explicit opencode.skeptic"     "$(speeds_field opencode.skeptic)"    "anthropic/claude-opus-4-1"
-# skeptic has no providers.ollama.models entry and no explicit codex model —
-# it must stay absent so resolve-speed.sh falls through to the tier as today.
-check_eq "speeds.json codex.skeptic stays tier-resolved (absent)" "$(speeds_field codex.skeptic)" "<absent>"
-# claude-code never routes through Ollama directly (gateway-only) — its
-# models map must stay untouched by the fold.
-check_eq "speeds.json claude-code.executor stays absent"       "$(speeds_field claude-code.executor)" "<absent>"
+# CON-65: the Ollama provider map is no longer folded into the explicit
+# model slots at render time — it rides along as speeds.json's own
+# `providers.ollama` block, and resolve-speed.sh applies the precedence at
+# lookup time (which is what makes a per-run CONCERTINO_PROVIDER flip
+# possible at all). The render-side contract is therefore: models stays
+# verbatim, providers block carries the map.
+check_eq "speeds.json codex.executor stays un-folded (absent)"   "$(speeds_field codex.executor)"      "<absent>"
+check_eq "speeds.json keeps the explicit opencode.skeptic"       "$(speeds_field opencode.skeptic)"    "anthropic/claude-opus-4-1"
+check_eq "speeds.json claude-code.executor stays absent"         "$(speeds_field claude-code.executor)" "<absent>"
+providers_field() { node -e '
+  const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const v = process.argv[2].split(".").reduce((o, k) => (o == null ? o : o[k]), s.providers);
+  console.log(v === undefined ? "<absent>" : (Array.isArray(v) ? v.join(",") : v));
+' "$SPEEDS" "$1"; }
+check_eq "speeds.json providers.ollama.models.executor carries the map" "$(providers_field ollama.models.executor)" "llama3.1:70b"
+check_eq "speeds.json providers.ollama.harnesses carries the routing"   "$(providers_field ollama.harnesses)"       "codex,opencode"
+
+# --- resolve-speed.sh applies the provider routing at lookup time ----------
+RESOLVE="$OUT/scripts/concertino/resolve-speed.sh"
+resolve_model() { # $1=harness $2=CONCERTINO_PROVIDER (empty = project default)
+  CONCERTINO_PROVIDER="$2" "$RESOLVE" default "$1" 2>/dev/null | node -e '
+    let d = ""; process.stdin.on("data", (c) => d += c);
+    process.stdin.on("end", () => { const j = JSON.parse(d); console.log(j.models.executor + " " + j.provider); });
+  '; }
+check_eq "resolve-speed: routed codex executor is the Ollama model"     "$(resolve_model codex '')"        "llama3.1:70b ollama"
+check_eq "resolve-speed: routed opencode executor is the Ollama model"  "$(resolve_model opencode '')"     "llama3.1:70b ollama"
+check_eq "resolve-speed: CONCERTINO_PROVIDER=default flips codex back"  "$(resolve_model codex default)"   "codex-mini-latest default"
+check_eq "resolve-speed: claude-code models never provider-substituted" "$(resolve_model claude-code '')"  "sonnet default"
+check_eq "resolve-speed: CONCERTINO_PROVIDER=ollama is explicit ollama" "$(resolve_model codex ollama)"    "llama3.1:70b ollama"
 
 # --- hand-authored content outside the marked region survives a re-sync ----
 printf '\n# hand-authored: keep this comment\n[my_custom_section]\nfoo = "bar"\n' >> "$TOML"

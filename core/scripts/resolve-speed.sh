@@ -90,6 +90,29 @@ if [ -z "$HARNESS" ]; then
   fi
 fi
 
+# CON-65: per-run provider routing. CONCERTINO_PROVIDER (injected per tmux
+# window by the dashboard's spawn layer when a ticket carries a
+# `provider:<value>` label — see lib/ui/harness.js) is the explicit
+# override; empty falls back to the project-level default rendered into
+# speeds.json's own `providers.ollama.harnesses` list. claude-code is
+# always excluded from provider-MODEL substitution regardless: its model
+# ids stay hosted-looking aliases that the Anthropic-compatible gateway
+# remaps (see isOllamaRouted's comment in lib/config.js) — for claude-code
+# the flip is carried entirely by the per-window ANTHROPIC_BASE_URL env the
+# same spawn layer injects.
+PROVIDER_OVERRIDE="${CONCERTINO_PROVIDER:-}"
+OLLAMA_ROUTED="false"
+if [ "$HARNESS" != "claude-code" ]; then
+  case "$PROVIDER_OVERRIDE" in
+    ollama) OLLAMA_ROUTED="true" ;;
+    default) OLLAMA_ROUTED="false" ;;
+    *)
+      PROJECT_ROUTED="$(jq -e --arg h "$HARNESS" '(.providers.ollama.harnesses // []) | index($h) != null' "$SPEEDS_JSON" 2>/dev/null)"
+      [ "$PROJECT_ROUTED" = "true" ] && OLLAMA_ROUTED="true"
+      ;;
+  esac
+fi
+
 SPEED_EXISTS="$(jq -e --arg s "$SPEED" '.speeds[$s] != null' "$SPEEDS_JSON" 2>/dev/null)"
 if [ "$SPEED_EXISTS" != "true" ]; then
   KNOWN="$(jq -r '.speeds | keys | join(", ")' "$SPEEDS_JSON" 2>/dev/null)"
@@ -104,24 +127,30 @@ if [ "$TIERS_EXIST" != "true" ]; then
   exit 1
 fi
 
-jq -c --arg speed "$SPEED" --arg harness "$HARNESS" '
+jq -c --arg speed "$SPEED" --arg harness "$HARNESS" --arg routed "$OLLAMA_ROUTED" '
   .speeds[$speed] as $sp
   | .modelTiers[$harness] as $tiers
   | (.models[$harness] // {}) as $explicit
+  | (if $routed == "true" then (.providers.ollama.models // {}) else {} end) as $provider
   | (.budgets // {}) as $baseBudgets
   | ($sp.budgets // {}) as $override
   | {
       speed: $speed,
       harness: $harness,
+      provider: (if $routed == "true" then "ollama" else "default" end),
       # Partial merge: any field the speed does not mention falls back to
       # the project'"'"'s top-level default, never a hardcoded number
       # (design.md Decision 2).
       budgets: ($baseBudgets + $override),
-      # Explicit models.<harness>.<role> always wins; otherwise resolve the
-      # speed'"'"'s roleTiers entry (defaulting to "standard" if the speed
-      # somehow omits a role) through modelTiers.<harness>.
+      # Explicit models.<harness>.<role> always wins; then, when this run is
+      # Ollama-routed (CON-65 — see the routing block above), the provider
+      # model map; otherwise resolve the speed'"'"'s roleTiers entry
+      # (defaulting to "standard" if the speed somehow omits a role) through
+      # modelTiers.<harness>. This is resolveModel()'"'"'s exact precedence
+      # (lib/config.js), applied at lookup time instead of baked in at
+      # render time.
       models: (reduce ("orchestrator", "executor", "evaluator", "skeptic", "auditor") as $role
-        ({}; . + { ($role): ($explicit[$role] // $tiers[($sp.roleTiers[$role] // "standard")]) })),
+        ({}; . + { ($role): ($explicit[$role] // $provider[$role] // $tiers[($sp.roleTiers[$role] // "standard")]) })),
       secondFinalGateSkeptic: ($sp.secondFinalGateSkeptic // false),
       evaluatorCleanWorktree: ($sp.evaluatorCleanWorktree // false)
     }
