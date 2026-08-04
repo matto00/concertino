@@ -165,8 +165,8 @@ leaves `concertino validate`'s output unchanged from today.
 | Field | Type | Default | Purpose |
 | ----- | ---- | ------- | ------- |
 | `base` | string | `.concertino/worktrees` | Where per-ticket worktrees are created. |
-| `ports.frontendBase` | int | — (required) | `DEV_PORT = frontendBase + ticketNumber`. |
-| `ports.backendBase` | int | — (required) | `BACKEND_PORT = backendBase + ticketNumber`. Distinct bases let parallel orchestrators never collide. |
+| `ports.frontendBase` | int | — (required) | `DEV_PORT = frontendBase + teamOffset + ticketNumber` (teamOffset: small bounded hash of the ticket's team prefix, 0–259). |
+| `ports.backendBase` | int | — (required) | `BACKEND_PORT = backendBase + teamOffset + ticketNumber`. Distinct bases (plus the team offset) let parallel orchestrators never collide, even across teams. |
 | `envFiles` | string[] | `[]` | Uncommitted files copied into each fresh worktree (e.g. `backend/.env`). |
 | `hooks` | string[] | `[]` | Commands run inside a fresh worktree (e.g. `npm ci`, `npx husky install`). |
 

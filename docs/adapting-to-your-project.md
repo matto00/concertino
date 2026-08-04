@@ -43,7 +43,7 @@ profiles under `config/examples/` are the shareable starting points, including
 | `project.name` / `project.baseBranch` | Labels in agent prose; the branch PRs target and diffs compare against. |
 | `ticketProvider.kind` | `linear` \| `github` \| `manual` — how the orchestrator fetches the ticket and sets status. Sets the MCP/CLI tools the agents get. |
 | `specProvider.kind` | `openspec` \| `none`. With `openspec`, planning/apply/archive use its commands; with `none`, the orchestrator writes plain proposal/design/tasks files in `specProvider.changeDir`. |
-| `worktree.ports` | Port bases. `DEV_PORT = frontendBase + ticketNumber`, `BACKEND_PORT = backendBase + ticketNumber`, so parallel orchestrators never collide. |
+| `worktree.ports` | Port bases. `DEV_PORT = frontendBase + teamOffset + ticketNumber`, `BACKEND_PORT = backendBase + teamOffset + ticketNumber` (teamOffset is a small bounded hash of the ticket's team prefix, 0–259), so parallel orchestrators never collide — even across teams with the same ticket number. |
 | `worktree.envFiles` | Uncommitted files copied into each worktree (e.g. `backend/.env`). |
 | `worktree.hooks` | Commands run inside a fresh worktree (e.g. `npx husky install`, `npm ci`). |
 | `devServers.{backend,frontend}` | `cwd` / `start` / `health` / `timeoutSec`. Omit a side that doesn't exist. `start`/`health` may reference `$DEV_PORT` / `$BACKEND_PORT`. |
