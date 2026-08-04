@@ -6,6 +6,16 @@
 # escalate instead. Whatever happens, `cleanup.sh --phase4` must still exit 0
 # and print its normal `READY cleaned worktree=...` line — a stale base is a
 # risk for the NEXT run, never a reason to leave THIS teardown incomplete.
+#
+# Also covers CON-64: run.end must be emitted (correctly ticket-tagged) even
+# when the worktree basename is not ticket-shaped, provided the ticket ID is
+# passed as the explicit 4th argument; and the basename-inference fallback
+# plus emit-event.sh's loud terminal-event warning when neither resolves.
+#
+# And CON-66: the post-fast-forward `concertino sync` re-render is skipped
+# (with a stderr note) whenever any OTHER run is live — run.start without
+# run.end in its events.jsonl, this run's own ticket excluded — and proceeds
+# as before when none are.
 set -uo pipefail
 
 # See escalation-loop.test.sh's identical note: some shells export
@@ -80,8 +90,20 @@ advance_remote() {
 }
 
 run_cleanup() {
-  local primary="$1" wt="$2" out="$3" err="$4"
-  ( cd "$primary" && bash scripts/concertino/cleanup.sh --phase4 "$wt" "" "" ) > "$out" 2> "$err"
+  # $5 (optional) = explicit TICKET_ID — CON-64's 4th positional script arg.
+  # Empty exercises the pre-CON-64 basename-inference fallback.
+  local primary="$1" wt="$2" out="$3" err="$4" ticket="${5:-}"
+  ( cd "$primary" && bash scripts/concertino/cleanup.sh --phase4 "$wt" "" "" "$ticket" ) > "$out" 2> "$err"
+}
+
+run_end_ticket() {
+  # Prints the ticket field of the run.end event in $1, if any.
+  node -e '
+    const fs = require("fs");
+    const lines = fs.readFileSync(process.argv[1], "utf8").trim().split("\n");
+    const line = lines.map(l => JSON.parse(l)).find(e => e.kind === "run.end");
+    console.log(line ? `${line.ticket}/${line.status}` : "<no run.end event>");
+  ' "$1" 2>/dev/null
 }
 
 # --- already current: silent no-op ------------------------------------------
@@ -234,6 +256,119 @@ check "exits 0 after a fetch-failed retry exhaustion" "$RC" "0"
 has "prints READY despite a fetch-failed retry exhaustion" "READY cleaned worktree=" "$OUT"
 has "'could not determine' note after a fetch-failed retry" "could not determine" "$ERR"
 hasnt "no 'remains behind' note after a fetch-failed retry" "remains behind" "$ERR"
+rm -rf "$BASE"
+
+# ===========================================================================
+# CON-66 — the end-of-run `concertino sync` re-render must be skipped while
+# any OTHER run is live: it rewrites every rendered artifact at the repo root
+# with no coordination, so a pending concertino.config.json edit would land
+# under live runs at an arbitrary moment. "Live" = run.start without run.end
+# in that run's events.jsonl, excluding this run's own ticket.
+# ===========================================================================
+
+new_fakebin() {
+  # A stand-in `concertino` first on PATH that records each invocation
+  # instead of rendering — the observable marker for whether cleanup.sh
+  # actually invoked sync.
+  mkdir -p "$1/fakebin"
+  cat > "$1/fakebin/concertino" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "$1/sync-invocations.txt"
+EOF
+  chmod +x "$1/fakebin/concertino"
+}
+
+run_cleanup_fakebin() {
+  local primary="$1" wt="$2" out="$3" err="$4" ticket="$5" fakebin="$6"
+  ( cd "$primary" && PATH="$fakebin:$PATH" bash scripts/concertino/cleanup.sh --phase4 "$wt" "" "" "$ticket" ) > "$out" 2> "$err"
+}
+
+fake_event() {
+  # $1 = repo, $2 = ticket, $3 = kind — appends one event line shaped exactly
+  # as emit-event.sh writes it (the fields cleanup.sh's liveness grep reads).
+  mkdir -p "$1/.concertino/runs/$2"
+  printf '{"t":1,"kind":"%s","project":"p","ticket":"%s","role":"script"}\n' "$3" "$2" \
+    >> "$1/.concertino/runs/$2/events.jsonl"
+}
+
+# --- another live run present: sync skipped, fast-forward itself unaffected -
+BASE="$(mktemp -d)"; new_pair "$BASE"; new_fakebin "$BASE"
+git -C "$BASE/primary" checkout -q -b scratch
+advance_remote "$BASE/remote.git"
+fake_event "$BASE/primary" TICK-88 run.start
+WT="$BASE/TICK-30"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup_fakebin "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-30 "$BASE/fakebin"
+check "exits 0 (sync skipped for a live run)" "$?" "0"
+check "local main still fast-forwarded (skip affects only the render)" \
+  "$(git -C "$BASE/primary" rev-parse refs/heads/main)" "$(git -C "$BASE/primary" rev-parse origin/main)"
+check "sync was NOT invoked while another run is live" \
+  "$([ -e "$BASE/sync-invocations.txt" ] && echo invoked || echo not-invoked)" "not-invoked"
+has  "stderr notes the skip and names the live run" "skipping \`concertino sync\`: run TICK-88 is still live" "$ERR"
+has  "prints READY (sync skipped)" "READY cleaned worktree=" "$OUT"
+rm -rf "$BASE"
+
+# --- other runs all terminal, own run.start excluded: sync proceeds ---------
+BASE="$(mktemp -d)"; new_pair "$BASE"; new_fakebin "$BASE"
+git -C "$BASE/primary" checkout -q -b scratch
+advance_remote "$BASE/remote.git"
+fake_event "$BASE/primary" TICK-88 run.start
+fake_event "$BASE/primary" TICK-88 run.end
+# This run's OWN log legitimately has run.start without run.end at this point
+# (cleanup.sh is what writes its run.end, later) — it must never count itself
+# as "another live run" and self-block the render.
+fake_event "$BASE/primary" TICK-31 run.start
+WT="$BASE/TICK-31"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup_fakebin "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-31 "$BASE/fakebin"
+check "exits 0 (sync proceeds)" "$?" "0"
+check "sync WAS invoked when no other run is live" \
+  "$([ -e "$BASE/sync-invocations.txt" ] && echo invoked || echo not-invoked)" "invoked"
+has  "sync invoked with --out= at the repo root" "sync --out=" "$BASE/sync-invocations.txt"
+hasnt "no skip note when no other run is live" "skipping \`concertino sync\`" "$ERR"
+check "this run's own run.end still lands afterwards" \
+  "$(run_end_ticket "$BASE/primary/.concertino/runs/TICK-31/events.jsonl")" "TICK-31/delivered"
+rm -rf "$BASE"
+
+# ===========================================================================
+# CON-64 — run.end must be emitted for a worktree whose basename is NOT a
+# ticket shape (doesn't end in a digit), when the ticket ID is passed
+# explicitly. This is the exact regression the ticket exists to close: CON-63
+# ran on branch `feature/local-llm-harnesses`, the basename inference silently
+# failed the ticket regex, and the run never terminated on the dashboard.
+# ===========================================================================
+
+# --- explicit ticket + non-ticket basename: run.end lands, correctly tagged -
+BASE="$(mktemp -d)"; new_pair "$BASE"
+WT="$BASE/local-llm-harnesses"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-9
+check "exits 0 (explicit ticket, non-ticket basename)" "$?" "0"
+has   "prints READY (explicit ticket, non-ticket basename)" "READY cleaned worktree=" "$OUT"
+check "run.end is tagged with the explicit ticket, status delivered" \
+  "$(run_end_ticket "$BASE/primary/.concertino/runs/TICK-9/events.jsonl")" "TICK-9/delivered"
+rm -rf "$BASE"
+
+# --- no explicit ticket, ticket-shaped basename: inference fallback holds ---
+BASE="$(mktemp -d)"; new_pair "$BASE"
+WT="$BASE/TICK-10"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup "$BASE/primary" "$WT" "$OUT" "$ERR"
+check "exits 0 (basename-inference fallback)" "$?" "0"
+check "run.end via basename inference still lands" \
+  "$(run_end_ticket "$BASE/primary/.concertino/runs/TICK-10/events.jsonl")" "TICK-10/delivered"
+rm -rf "$BASE"
+
+# --- no explicit ticket, non-ticket basename: no silent drop — loud warning -
+BASE="$(mktemp -d)"; new_pair "$BASE"
+WT="$BASE/local-llm-harnesses"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup "$BASE/primary" "$WT" "$OUT" "$ERR"
+check "still exits 0 when run.end cannot be tagged" "$?" "0"
+has   "prints READY even when run.end cannot be tagged" "READY cleaned worktree=" "$OUT"
+check "no run dir created for the malformed ticket" \
+  "$([ -e "$BASE/primary/.concertino/runs/local-llm-harnesses" ] && echo present || echo absent)" "absent"
+has   "emit-event.sh warns loudly about the untaggable run.end" "WARNING: run.end" "$ERR"
 rm -rf "$BASE"
 
 echo "  $PASS passed, $FAIL failed"

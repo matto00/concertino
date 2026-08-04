@@ -18,8 +18,8 @@ set -euo pipefail
 #   - the environment sentinel `CONCERTINO_PHASE4=1` is set.
 # Without the opt-in it prints a refusal to stderr and exits 0 (safe no-op).
 #
-# Usage: cleanup.sh --phase4 <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>
-#    or: CONCERTINO_PHASE4=1 cleanup.sh <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>
+# Usage: cleanup.sh --phase4 <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]
+#    or: CONCERTINO_PHASE4=1 cleanup.sh <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]
 #
 # Prints "READY cleaned worktree=<path>" on success — ALWAYS exits 0,
 # regardless of whether the fast-forward below succeeded, escalated, or was
@@ -38,9 +38,10 @@ elif [ "${CONCERTINO_PHASE4:-}" != "1" ]; then
   exit 0
 fi
 
-WORKTREE_PATH="${1:?usage: cleanup.sh --phase4 <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>}"
+WORKTREE_PATH="${1:?usage: cleanup.sh --phase4 <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]}"
 DEV_PORT="${2:-}"
 BACKEND_PORT="${3:-}"
+TICKET_ID="${4:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
@@ -68,7 +69,13 @@ fi
 git -C "$REPO_ROOT" worktree prune
 
 # Phase-4 cleanup only runs post-merge, so reaching here means the run shipped.
-T="${WORKTREE_PATH##*/}"
+# The canonical ticket ID arrives as the explicit 4th argument (CON-64); the
+# worktree-basename inference stays only as a fallback for call sites rendered
+# before the argument existed. Inference is not reliable — a branch without
+# the <type>/<desc>/<TICKET-ID> suffix makes the basename a non-ticket, and
+# the run.end at the bottom of this script would then never be tagged, leaving
+# the run permanently non-terminal on the dashboard.
+T="${TICKET_ID:-${WORKTREE_PATH##*/}}"
 
 # ===========================================================================
 # Fast-forward local <base> to match the fetched remote (CON-25).
@@ -188,6 +195,37 @@ if [ "$FF_STATUS" = "dirty" ] || [ "$FF_STATUS" = "diverged" ] || [ "$FF_STATUS"
   fi
 fi
 
+# The re-render below rewrites EVERY rendered artifact at the repo root
+# (.claude/agents/*, AGENTS.md, .codex/config.toml, opencode.json,
+# scripts/concertino/.concertino.env, speeds.json) — shared by all runs, not
+# owned by this one. Idempotent when the config is unchanged, but a pending
+# concertino.config.json edit (e.g. the TUI settings screen writes without
+# syncing) would land under other LIVE runs at an arbitrary moment, so the
+# sync is skipped whenever any other run is live (CON-66).
+#
+# "Live" here is events.jsonl state alone: a run.start with no run.end yet,
+# excluding this run's own ticket. That can overcount — a run that crashed
+# without ever writing run.end stays "live" by this test until its run dir is
+# pruned (lib/ui/retention.js prunes exactly those, by mtime) — but the
+# failure mode of overcounting is a skipped re-render plus a note pointing at
+# `concertino sync`, which is strictly safer than rewriting shared artifacts
+# under a run that really is live. Sets LIVE_RUN_TICKET to the first live
+# ticket found, for the note.
+other_runs_live() {
+  local log t
+  for log in "${REPO_ROOT}/.concertino/runs"/*/events.jsonl; do
+    [ -f "$log" ] || continue
+    t="$(basename "$(dirname "$log")")"
+    [ "$t" = "$T" ] && continue
+    if grep -q '"kind":"run.start"' "$log" 2>/dev/null \
+       && ! grep -q '"kind":"run.end"' "$log" 2>/dev/null; then
+      LIVE_RUN_TICKET="$t"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # A successful fast-forward (silent, or via retry) gets a best-effort
 # re-render so the rendered-artifact staleness this ticket exists to close
 # (the same failure mode behind `doctor`'s drift check) cannot recur
@@ -196,20 +234,37 @@ fi
 # as a real file only exists in this repo's own self-hosting case, never
 # assumed elsewhere.
 if [ "$FF_STATUS" = "updated" ]; then
-  RENDER_OK=1
-  if command -v concertino >/dev/null 2>&1; then
-    concertino sync --out="$REPO_ROOT" >/dev/null 2>&1 || RENDER_OK=0
-  elif [ -f "${REPO_ROOT}/bin/concertino" ]; then
-    node "${REPO_ROOT}/bin/concertino" sync --out="$REPO_ROOT" >/dev/null 2>&1 || RENDER_OK=0
+  if other_runs_live; then
+    echo "note: main fast-forwarded — skipping \`concertino sync\`: run ${LIVE_RUN_TICKET} is still live and the re-render would rewrite shared root artifacts under it; run \`concertino sync\` manually once it finishes" >&2
   else
-    npx --no-install concertino sync --out="$REPO_ROOT" >/dev/null 2>&1 || RENDER_OK=0
-  fi
-  if [ "$RENDER_OK" -ne 1 ]; then
-    echo "note: main fast-forwarded — re-render failed or no \`concertino\` found, run \`concertino sync\` manually" >&2
+    RENDER_OK=1
+    mkdir -p "${REPO_ROOT}/.concertino" 2>/dev/null || true
+    # Serialise the render itself: two Phase-4 cleanups finishing at once must
+    # not interleave their artifact writes. flock ships with util-linux; in
+    # the unlikely environment without it, proceed unlocked — matching the
+    # pre-CON-66 behavior rather than failing an already-merged teardown.
+    {
+      if command -v flock >/dev/null 2>&1; then flock 9 || true; fi
+      if command -v concertino >/dev/null 2>&1; then
+        concertino sync --out="$REPO_ROOT" >/dev/null 2>&1 || RENDER_OK=0
+      elif [ -f "${REPO_ROOT}/bin/concertino" ]; then
+        node "${REPO_ROOT}/bin/concertino" sync --out="$REPO_ROOT" >/dev/null 2>&1 || RENDER_OK=0
+      else
+        npx --no-install concertino sync --out="$REPO_ROOT" >/dev/null 2>&1 || RENDER_OK=0
+      fi
+    } 9>"${REPO_ROOT}/.concertino/sync.lock"
+    if [ "$RENDER_OK" -ne 1 ]; then
+      echo "note: main fast-forwarded — re-render failed or no \`concertino\` found, run \`concertino sync\` manually" >&2
+    fi
   fi
 fi
 
-[[ "$T" =~ ^[A-Za-z#][A-Za-z0-9_-]*[0-9]$ ]] && CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.end \
+# run.end is the run's terminal marker — the dashboard defines "terminal" as
+# "has emitted run.end" (lib/ui/retention.js) — so the write must always be
+# ATTEMPTED, never pre-gated here on a ticket-shape regex whose silent failure
+# is indistinguishable from success (CON-64). emit-event.sh owns ticket
+# validation and warns loudly on stderr when it cannot tag a terminal event.
+CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.end \
   "ticket=${T}" "status=delivered" || true
 
 echo "READY cleaned worktree=${WORKTREE_PATH}"
