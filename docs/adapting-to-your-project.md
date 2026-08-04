@@ -33,7 +33,10 @@ concertino init --yes              # or non-interactive generic defaults
 ## 2. Configure
 
 Edit `concertino.config.json`. The schema is `config/concertino.schema.json`
-(point your editor's JSON schema at it for completion). The fields that matter most:
+(point your editor's JSON schema at it for completion). The file is per-checkout
+state, not tracked in git (`.gitignore` covers it) — `init` writes it, and the
+profiles under `config/examples/` are the shareable starting points, including
+`concertino.json`, the config this repo runs on itself. The fields that matter most:
 
 | Field | What it controls |
 | ----- | ---------------- |
