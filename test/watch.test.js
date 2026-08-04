@@ -2075,7 +2075,11 @@ test('the launch pad\'s own ↵ -> open-ticketview -> esc still returns to the l
 
     h.fakeStdin.emit('data', '\x1b'); // esc — must return to the LAUNCH PAD, not the fleet
     const backOnLaunchPad = h.screen();
-    assert.doesNotMatch(backOnLaunchPad, /esc back/);
+    // The launch pad's EPICS pane is its discriminator — the launch pad's
+    // own footer now legitimately shows `esc back` too (the footer-wrap
+    // pass; the old single hints line lost that hint to the 80-col clamp),
+    // so absence of `esc back` no longer distinguishes it from ticketview.
+    assert.match(backOnLaunchPad, /EPICS/);
     assert.match(backOnLaunchPad, /Launch pad ticket|CON-130/);
   } finally {
     await h.teardown(donePromise);
@@ -2097,13 +2101,16 @@ test('alternating entry points each return correctly — launch pad, then fleet,
     const watchModule = require('../lib/ui/watch');
     donePromise = watchModule.watch({ root: h.root, config: LAUNCHPAD_CONFIG });
 
-    // First: open from the launch pad, esc back to the launch pad.
+    // First: open from the launch pad, esc back to the launch pad. EPICS
+    // (not absence of `esc back`) is the launch-pad discriminator — its own
+    // footer now shows `esc back` too, see the sibling test above.
     h.fakeStdin.emit('data', 'N');
     h.fakeStdin.emit('data', '\t');
     h.fakeStdin.emit('data', '\r');
     assert.match(h.screen(), /esc back/);
+    assert.doesNotMatch(h.screen(), /EPICS/);
     h.fakeStdin.emit('data', '\x1b');
-    assert.doesNotMatch(h.screen(), /esc back/);
+    assert.match(h.screen(), /EPICS/);
 
     // Leave the launch pad entirely, back to the fleet.
     h.fakeStdin.emit('data', '\x1b');

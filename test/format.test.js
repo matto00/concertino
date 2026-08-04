@@ -137,3 +137,40 @@ test('sparkline\'s output length always equals the input length', () => {
   assert.equal(sparkline([3]).length, 1);
   assert.equal(sparkline([3, 1, 4, 1, 5, 9, 2, 6]).length, 8);
 });
+
+// --- hintLines — the footer key-hint wrapper --------------------------------
+const { hintLines } = require('../lib/ui/format');
+// eslint-disable-next-line no-control-regex
+const plainHint = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+
+test('hintLines packs everything onto one line when it fits', () => {
+  const lines = hintLines(['a one', 'b two', 'c three'], 80).map(plainHint);
+  assert.deepEqual(lines, ['  a one   b two   c three']);
+});
+
+test('hintLines wraps at cols instead of overflowing — no hint is ever lost', () => {
+  const hints = ['↵ attach', 'l details', 't ticket', 'j/k move', '1-9 jump',
+    'n new run', 'N launch pad', 's settings', 'q quit'];
+  const lines = hintLines(hints, 60).map(plainHint);
+  assert.ok(lines.length > 1, 'expected the list to wrap at 60 cols');
+  for (const line of lines) {
+    assert.ok(line.length <= 60, `line exceeds cols: "${line}" (${line.length})`);
+  }
+  // Every hint survives, whole, on exactly one of the lines.
+  const joined = lines.join('\n');
+  for (const h of hints) assert.ok(joined.includes(h), `lost hint: ${h}`);
+});
+
+test('hintLines never breaks a hint internally — items are the wrap unit', () => {
+  const lines = hintLines(['aaaa bbbb', 'cccc dddd'], 12).map(plainHint);
+  assert.deepEqual(lines, ['  aaaa bbbb', '  cccc dddd']);
+});
+
+test('hintLines with unknown cols (0/absent) degrades to the old single line', () => {
+  assert.deepEqual(hintLines(['a', 'b'], 0).map(plainHint), ['  a   b']);
+});
+
+test('hintLines returns [] for an empty list and skips falsy items', () => {
+  assert.deepEqual(hintLines([], 80), []);
+  assert.deepEqual(hintLines(['a', null, 'b'], 80).map(plainHint), ['  a   b']);
+});

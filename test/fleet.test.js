@@ -503,8 +503,12 @@ test('with vertical space to spare, the last section grows to push the footer to
     { cols: 78, selected: 0, rows: 30 });
   const lines = out.split('\n');
   // rows: 30 reserves the trailing-newline row (fleet.js's existing `rows -
-  // 1` convention), so the footer must be the LAST line this frame emits.
-  assert.match(lines[lines.length - 1], /attach/);
+  // 1` convention), so the footer must END on the LAST line this frame
+  // emits. The footer wraps across rows at 78 cols (f.hintLines), so the
+  // last line carries the hint list's TAIL (q quit) and the first hint
+  // (attach) sits on one of the wrapped footer rows above it.
+  assert.match(lines[lines.length - 1], /q quit/);
+  assert.match(out, /↵ attach/);
   assert.ok(lines.length <= 30, `expected at most 30 lines, got ${lines.length}`);
   assert.ok(lines.length >= 25, `expected the frame to grow toward the 30-row budget, got only ${lines.length} lines`);
 });
@@ -931,11 +935,13 @@ test('NEEDS YOU survives when finished runs would otherwise fill the screen', ()
 
   // rows:15 was this fixture's floor before QUICK START became unconditional
   // (CON-56) — it is now ALSO an always-on, untrimmable 3-row floor (1
-  // emptyHint line + 2-row border), same as METRICS, shifting this fixture's
-  // own floor up by 3 — verified empirically (rows:17 still renders 18 lines).
-  const out = renderFleet(runs, { cols: 78, rows: 18, selected: 0 });
+  // emptyHint line + 2-row border), same as METRICS. The footer-wrap pass
+  // (f.hintLines: hints wrap at cols instead of being clamp-truncated, and
+  // t/s are now advertised) costs one more untrimmable row at 78 cols —
+  // verified empirically (rows:18 still renders 19 lines).
+  const out = renderFleet(runs, { cols: 78, rows: 19, selected: 0 });
   const lines = out.split('\n');
-  assert.ok(lines.length <= 18, `output is ${lines.length} lines, terminal is 18`);
+  assert.ok(lines.length <= 19, `output is ${lines.length} lines, terminal is 19`);
   assert.match(out, /NEEDS YOU/);
   assert.match(out, /HEL-338/);
   assert.match(out, /add zod@3\?/);
@@ -951,12 +957,13 @@ test('a tiny terminal still keeps every NEEDS YOU run', () => {
   ].concat(manyFinished(20, 'failed'));
   // rows:17 was this fixture's floor before QUICK START became unconditional
   // (CON-56) — it is now ALSO an always-on, untrimmable 3-row floor, shifting
-  // this fixture's own floor up by 3 — verified empirically that rows:20 is
-  // the new floor (rows:19 still renders 20 lines).
-  const out = renderFleet(runs, { cols: 78, rows: 20, selected: 0 });
+  // this fixture's own floor up by 3. The footer-wrap pass (f.hintLines)
+  // adds one more untrimmable row at 78 cols — verified empirically that
+  // rows:21 is the new floor (rows:20 still renders 21 lines).
+  const out = renderFleet(runs, { cols: 78, rows: 21, selected: 0 });
   assert.match(out, /HEL-1/);
   assert.match(out, /HEL-2/);
-  assert.ok(out.split('\n').length <= 20);
+  assert.ok(out.split('\n').length <= 21);
 });
 
 // Two populated sections were never enough to catch this: a section trimmed to
@@ -978,8 +985,9 @@ test('a tiny terminal still keeps every NEEDS YOU run', () => {
 // so the smallest `rows` that could hold it was 18 (rows - 1 == 17), not 14.
 // CON-56: QUICK START is now unconditional too (forceRender, empty here — no
 // quickStartTickets opt is passed), adding its own untrimmable 3-row floor
-// (1 emptyHint line + 2-row border) — the combined minimum is now 20 rows,
-// verified empirically (rows:20 renders exactly 20 lines, the smallest
+// (1 emptyHint line + 2-row border). The footer-wrap pass (f.hintLines)
+// adds one more tail row at 78 cols — the combined minimum is now 21 rows,
+// verified empirically (rows:21 renders exactly 21 lines, the smallest
 // `rows` that still satisfies output <= rows).
 test('the total-height cap holds with all four sections populated (plus the always-on METRICS and QUICK START panels)', () => {
   const runs = [
@@ -991,7 +999,7 @@ test('the total-height cap holds with all four sections populated (plus the alwa
   ].concat(manyFinished(8, 'failed'))
    .concat(manyFinished(8, 'done'));
 
-  for (const rows of [20, 22, 24, 28]) {
+  for (const rows of [21, 22, 24, 28]) {
     const out = renderFleet(runs, { cols: 78, rows, selected: 0 });
     const lines = out.split('\n');
     assert.ok(lines.length <= rows,
@@ -1039,7 +1047,10 @@ test('the total-height cap holds with all five sections (including a populated Q
    .concat(manyFinished(8, 'done'));
   const queueState = { pending: manyQueued(20), inFlight: new Set(), maxConcurrent: 1 };
 
-  for (const rows of [22, 24, 28, 32]) {
+  // Floor moved 22 -> 23 with the footer-wrap pass (f.hintLines: the queue-
+  // populated hint list wraps to a second row at 78 cols), verified
+  // empirically (rows:22 renders 23 lines; rows:23 renders exactly 23).
+  for (const rows of [23, 24, 28, 32]) {
     const out = renderFleet(runs, { cols: 78, rows, selected: 0, queueState });
     const lines = out.split('\n');
     assert.ok(lines.length <= rows,
@@ -1383,11 +1394,13 @@ test('a scroll offset that lands mid-group survives a whole-frame height-budget 
   assert.equal(unbudgeted.firstVisibleIndex, 10, 'sanity: the scroll really does land mid-group');
   assert.equal(unbudgeted.lastVisibleIndex, 14, 'sanity: selected sits exactly at the window tail');
 
-  // rows: 18 forces the budget trim to shrink FAILED further (5 shown rows
+  // rows: 19 forces the budget trim to shrink FAILED further (5 shown rows
   // down to 4) — the exact scenario the protection rule exists for. (Was
   // rows: 14 before METRICS grew from a 3-row to a 7-row untrimmable panel,
-  // this task, 2026-08-01 — the same trim outcome now needs +4 rows.)
-  const out = plain(renderFleet(runs, { cols: 100, rows: 18, selected, scrollOffset }));
+  // 2026-08-01, then 18; the footer-wrap pass adds one more tail row at
+  // 100 cols — the hint list is 104 visible cols — so the same trim
+  // outcome now needs one more.)
+  const out = plain(renderFleet(runs, { cols: 100, rows: 19, selected, scrollOffset }));
   const marked = out.split('\n').filter((l) => l.includes('▸'));
   assert.equal(marked.length, 1,
     `expected exactly one marker after the height-budget trim, got ${marked.length}`);
@@ -1422,9 +1435,10 @@ test('a small terminal at a non-zero scroll offset still renders the header + NE
   // from 3 rows to 7 rows (see the four-section "total-height cap" test
   // above for the exact breakdown), shifting this fixture's floor up by the
   // same +4 (to rows:16). CON-56: QUICK START is now unconditional too,
-  // adding its own untrimmable 3-row floor on top of that — verified
-  // empirically (rows:19 is the new floor).
-  for (const rows of [19, 20, 22]) {
+  // adding its own untrimmable 3-row floor on top of that. The footer-wrap
+  // pass (f.hintLines) adds one more tail row at 78 cols — verified
+  // empirically (rows:20 is the new floor).
+  for (const rows of [20, 21, 22]) {
     const out = renderFleet(runs, { cols: 78, rows, selected: 0, scrollOffset });
     const lines = out.split('\n');
     assert.ok(lines.length <= rows, `rows:${rows} rendered ${lines.length} lines`);
@@ -3100,4 +3114,31 @@ test('grid mode: shrinking the terminal into columnAreaHeight === 0 must never g
   // nothing actually on screen.
   assert.equal(winAt16.firstVisibleIndex, 0);
   assert.equal(winAt16.lastVisibleIndex, runs.length - 1);
+});
+
+// --- footer-wrap pass: every bound key is advertised, none lost to width ----
+
+test('the fleet footer advertises s settings and t ticket (bound in handleKey, previously unadvertised)', () => {
+  const out = plain(renderFleet([run({ ticket: 'HEL-1', status: 'running' })], { cols: 120, selected: 0 }));
+  assert.match(out, /s settings/);
+  assert.match(out, /t ticket/);
+});
+
+test('at 80 cols the footer wraps instead of truncating — q quit and s settings survive', () => {
+  const out = plain(renderFleet([run({ ticket: 'HEL-1', status: 'running' })], { cols: 80, selected: 0 }));
+  assert.match(out, /q quit/);
+  assert.match(out, /s settings/);
+  assert.match(out, /N launch pad/);
+  for (const line of out.split('\n')) {
+    assert.ok(line.length <= 80, `line exceeds 80 cols: "${line}"`);
+  }
+});
+
+test('with a populated queue the full hint set (f force-start, x clear queue) still survives 80 cols', () => {
+  const queueState = { pending: ['HEL-9'], inFlight: new Set(), maxConcurrent: 1 };
+  const out = plain(renderFleet([run({ ticket: 'HEL-1', status: 'running' })],
+    { cols: 80, selected: 0, queueState, queuedTitles: new Map() }));
+  for (const h of ['↵ attach', 'l details', 't ticket', 'f force-start', 'n new run', 'N launch pad', 's settings', 'q quit']) {
+    assert.ok(out.includes(h), `lost hint at 80 cols: ${h}`);
+  }
 });
