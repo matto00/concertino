@@ -513,7 +513,7 @@ test('a plan without rowIndex renders no cursor (legacy fixtures unchanged)', ()
   assert.doesNotMatch(out, /▸/);
 });
 
-test('a row override note shows harness, speed and provider joined with ·', () => {
+test('a row override note labels each dimension it overrides', () => {
   const p = plan({
     harnesses: ['claude', 'codex'],
     rowIndex: 0,
@@ -521,7 +521,10 @@ test('a row override note shows harness, speed and provider joined with ·', () 
   });
   const out = plain(renderLaunchPlan(p, 0, OPTS));
   const row = out.split('\n').find((l) => l.includes('│') && l.includes('CON-338'));
-  assert.match(row, /⇒ codex·fast·ollama/);
+  // Each part names its own dimension: a bare "default"/"fast" next to the
+  // batch's own `speed` line was unreadable, and 'ollama'/'default' are
+  // rendered as the operator-facing local/subscription words.
+  assert.match(row, /⇒ codex speed:fast via:local/);
 });
 
 test('a row speed override matching the batch speed shows no speed note', () => {
@@ -569,4 +572,63 @@ test('the viewport follows the row cursor past the fold', () => {
   // The header still names the batch's first ticket — only the BOX must
   // have scrolled it out.
   assert.doesNotMatch(out, /│.*CON-100\b/);
+});
+
+// --- the row uses the full terminal width; the config table explains itself
+
+test('the title column grows with the terminal instead of a fixed 30-col budget', () => {
+  const long = 'UI/UX sharpening: shared widget layer and visual polish across all screens';
+  const p = plan({ tickets: [{ identifier: 'CON-71', title: long }] });
+  const narrow = plain(renderLaunchPlan(p, 0, { cols: 78 })).split('\n').find((l) => l.includes('CON-71') && l.includes('│'));
+  const wide = plain(renderLaunchPlan(p, 0, { cols: 140 })).split('\n').find((l) => l.includes('CON-71') && l.includes('│'));
+  // The wide render shows strictly more of the title than the narrow one,
+  // and at 140 columns shows all of it.
+  assert.ok(!narrow.includes(long), 'a 78-col terminal still has to truncate this title');
+  assert.ok(wide.includes(long), `140 columns must fit the whole title, got: ${wide}`);
+});
+
+test('rows stay column-aligned whether or not they carry an override marker', () => {
+  const p = plan({
+    tickets: [ticket('CON-1', 'first'), ticket('CON-2', 'second')],
+    speed: 'fast',
+    rowOverrides: { 'CON-2': { speed: 'slow' } },
+    perRowEditable: true,
+  });
+  const rows = plain(renderLaunchPlan(p, 0, { cols: 120 })).split('\n')
+    .filter((l) => l.includes('│') && /CON-[12]\b/.test(l));
+  assert.equal(rows.length, 2);
+  // Same rendered width, and the ports column starts at the same offset —
+  // the marker takes its space out of the title, never out of alignment.
+  assert.equal(rows[0].length, rows[1].length);
+  assert.equal(rows[0].indexOf(':5'), rows[1].indexOf(':5'));
+});
+
+test('the config table says WHY H and P are unavailable, rather than hiding them silently', () => {
+  const out = plain(renderLaunchPlan(
+    plan({ harnesses: ['claude'], perRowEditable: true, providerConfigured: false }), 0, { cols: 110 }));
+  assert.match(out, /only 1 harness — add `harnesses` to use H/);
+  assert.match(out, /set `providers\.ollama` in config to use P/);
+});
+
+test('the config table advertises H and P once the project enables them', () => {
+  const out = plain(renderLaunchPlan(
+    plan({ harnesses: ['claude', 'codex'], perRowEditable: true, providerConfigured: true }), 0, { cols: 110 }));
+  assert.match(out, /harness\s+claude\s+h cycles\s+·\s+H per-row/);
+  assert.match(out, /provider\s+subscription\s+P per-row/);
+});
+
+test('the provider row names the batch default in operator vocabulary', () => {
+  const local = plain(renderLaunchPlan(plan({ providerDefault: 'ollama', providerConfigured: true }), 0, { cols: 110 }));
+  assert.match(local, /provider\s+local/);
+  const sub = plain(renderLaunchPlan(plan({ providerDefault: 'default', providerConfigured: true }), 0, { cols: 110 }));
+  assert.match(sub, /provider\s+subscription/);
+});
+
+test('a long models line wraps instead of being clipped at narrow widths', () => {
+  const models = { orchestrator: 'sonnet', executor: 'haiku', evaluator: 'haiku', skeptic: 'opus', auditor: 'sonnet' };
+  const out = plain(renderLaunchPlan(plan({ resolvedModels: { models } }), 0, { cols: 78 }));
+  // Every role survives the narrow render — the last one is what used to
+  // fall off the edge.
+  for (const [role, m] of Object.entries(models)) assert.match(out, new RegExp(role + '=' + m));
+  assert.ok(out.split('\n').filter((l) => /=/.test(l) && !l.includes('│')).length >= 2, 'expected the models value to wrap onto a second row');
 });
