@@ -250,3 +250,34 @@ test('launchSpecForTicket: custom (unrecognised) commands are never decorated', 
   assert.equal(spec.command, 'my-wrapper {{TICKET}}');
   assert.equal(spec.env, null);
 });
+
+// ---------------------------------------------------------------------------
+// CON-69: per-row choice helpers
+
+const { providerChoices, launchSpecForChoices } = require('../lib/ui/harness');
+
+test('providerChoices: null-only without config; validity mirrors the label rules', () => {
+  assert.deepEqual(providerChoices({}, 'codex'), [null]);
+  assert.deepEqual(providerChoices(OLLAMA_CFG, 'codex'), [null, 'ollama', 'default']);
+  assert.deepEqual(providerChoices(OLLAMA_CFG, 'opencode'), [null, 'ollama']);
+  // claude-code without a gateway cannot flip to ollama at all
+  assert.deepEqual(providerChoices(OLLAMA_CFG, 'claude-code'), [null]);
+  assert.deepEqual(providerChoices(GATEWAY_CFG, 'claude'), [null, 'ollama', 'default']);
+});
+
+test('launchSpecForChoices builds the batch-shaped command for explicit choices', () => {
+  const spec = launchSpecForChoices({ harness: 'codex', speed: 'fast', agentMerge: false }, OLLAMA_CFG);
+  assert.equal(spec.command, 'codex "/concertino-deliver {{TICKET}} --no-agent-merge fast"');
+  assert.equal(spec.env, null);
+});
+
+test('launchSpecForChoices decorates provider exactly like the label path', () => {
+  const spec = launchSpecForChoices(
+    { harness: 'codex', speed: 'default', agentMerge: true, provider: 'ollama' }, OLLAMA_CFG);
+  assert.match(spec.command, /^codex -c model_provider=ollama /);
+  assert.deepEqual(spec.env, { CONCERTINO_PROVIDER: 'ollama' });
+});
+
+test('launchSpecForChoices returns null for an unimplemented harness', () => {
+  assert.equal(launchSpecForChoices({ harness: 'local-llm', speed: 'fast' }, OLLAMA_CFG), null);
+});

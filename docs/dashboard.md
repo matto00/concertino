@@ -411,6 +411,18 @@ toggle the batch between starting immediately and being held for a later,
 separate confirm from the fleet view. `esc` cancels the plan without
 launching anything.
 
+On top of those batch-level knobs sits the per-row layer: `j`/`k` (or the
+arrows) move a `▸` row cursor, and the capitalised keys override just that
+row — `H` cycles its harness, `S` its speed, `P` its provider
+(local/subscription, only where the `providers` config makes the flip
+possible — see [`config-reference.md`](config-reference.md)). Overridden
+rows annotate their effective choice as `⇒ codex·fast·ollama`-style
+markers, the same notation `harness:`/`provider:` ticket labels get, and
+label-derived values show up the same way (an explicit row choice wins over
+a label). Confirming bakes each overridden row's exact launch command and
+per-window environment into the queue record, so the choices survive a
+dashboard restart along with the queue itself.
+
 This section documents the on-disk cache underneath all of that, so the cache
 file is not a mystery if you find one on disk.
 

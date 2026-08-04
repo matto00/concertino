@@ -581,3 +581,53 @@ test('clearPending carries launchCommand and restoredFrom through unchanged, sam
   assert.equal(cleared.launchCommand, 'codex "/concertino-deliver {{TICKET}}"');
   assert.deepEqual(cleared.restoredFrom, { sessionId: 'sess-9', writtenAt: 42 });
 });
+
+// --- CON-69: per-row launch specs ride the queue record ---------------------
+
+test('perTicket survives tick, forceStart and clearPending rebuilds', () => {
+  const queue = require('../lib/ui/queue');
+  const spec = { command: 'codex "/concertino-deliver {{TICKET}} fast"', env: { CONCERTINO_PROVIDER: 'ollama' } };
+  let q = queue.createQueue(['CON-1', 'CON-2'], 1, 'claude "/concertino-deliver {{TICKET}}"', true, { 'CON-2': spec });
+  assert.deepEqual(q.perTicket, { 'CON-2': spec });
+
+  const ticked = queue.tick(q, []);
+  assert.deepEqual(ticked.queue.perTicket, { 'CON-2': spec });
+
+  const forced = queue.forceStart(ticked.queue, 'CON-2');
+  assert.deepEqual(forced.queue.perTicket, { 'CON-2': spec });
+
+  const cleared = queue.clearPending(forced.queue);
+  assert.deepEqual(cleared.perTicket, { 'CON-2': spec });
+});
+
+test('a uniform batch keeps perTicket null end to end', () => {
+  const queue = require('../lib/ui/queue');
+  const q = queue.createQueue(['CON-1'], 1, 'claude "/concertino-deliver {{TICKET}}"', true);
+  assert.equal(q.perTicket, null);
+  assert.equal(queue.tick(q, []).queue.perTicket, null);
+});
+
+test('queue-cache round-trips perTicket and drops malformed entries', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const queue = require('../lib/ui/queue');
+  const queueCache = require('../lib/ui/queue-cache');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-qc-pt-'));
+  const spec = { command: 'opencode --prompt "/concertino-deliver {{TICKET}}"', env: { CONCERTINO_PROVIDER: 'ollama' } };
+  const q = queue.createQueue(['CON-9'], 1, 'claude "x {{TICKET}}"', true, { 'CON-9': spec });
+  queueCache.write(root, q, 'sess-1', Date.now());
+  const record = queueCache.read(root);
+  assert.deepEqual(record.perTicket, { 'CON-9': spec });
+  // createRestoredQueue carries it into the restored queue
+  const restored = queue.createRestoredQueue(record, [], queue.reconcileRestored(record, []));
+  assert.deepEqual(restored.perTicket, { 'CON-9': spec });
+
+  // Malformed entries are dropped, not fatal
+  const file = path.join(root, '.concertino', 'cache', 'queue.json');
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  raw.perTicket = { 'CON-9': spec, BAD: { env: {} }, WORSE: 42 };
+  fs.writeFileSync(file, JSON.stringify(raw));
+  const reread = queueCache.read(root);
+  assert.deepEqual(reread.perTicket, { 'CON-9': spec });
+});

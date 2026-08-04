@@ -188,9 +188,13 @@ test('a small batch that fits is unaffected — no scroll indicator, every ticke
   assert.match(out, /CON-349/);
 });
 
-test('j/k scroll keys emit scroll-launchplan-tickets', () => {
-  assert.deepEqual(handleKey('j', { plan: plan({}) }), { type: 'scroll-launchplan-tickets', delta: 1 });
-  assert.deepEqual(handleKey('k', { plan: plan({}) }), { type: 'scroll-launchplan-tickets', delta: -1 });
+// CON-69: j/k moved from free-scrolling to the ROW CURSOR (the viewport
+// follows the cursor at render time); page keys keep the free scroll.
+test('j/k emit move-launchplan-row; page keys keep scrolling', () => {
+  assert.deepEqual(handleKey('j', { plan: plan({}) }), { type: 'move-launchplan-row', delta: 1 });
+  assert.deepEqual(handleKey('k', { plan: plan({}) }), { type: 'move-launchplan-row', delta: -1 });
+  assert.deepEqual(handleKey('\x1b[6~', { plan: plan({}) }), { type: 'scroll-launchplan-tickets', delta: 10 });
+  assert.deepEqual(handleKey('\x1b[5~', { plan: plan({}) }), { type: 'scroll-launchplan-tickets', delta: -10 });
 });
 
 // --- lazygit-layout pass: the ticket-list box grows to fill available height
@@ -201,14 +205,14 @@ test('a small batch grows the ticket-list box to fill available height, footer l
   const lines = out.split('\n');
   // rows: 30 reserves the trailing-newline row (the same `rows - 1`
   // convention fleet.js's grow-to-fill computation already uses).
-  assert.match(lines[lines.length - 1], /↵ confirm & launch   c concurrency   s speed   n hold   esc cancel/);
+  assert.match(lines[lines.length - 1], /↵ confirm & launch   c concurrency   s speed   n hold   j\/k row   esc cancel/);
   assert.equal(lines.length, 29, `expected the frame to grow to fill the 30-row budget, got ${lines.length} lines`);
 });
 
 test('a small batch with the already-active warning (extra trailing rows) still grows to fill the budget', () => {
   const out = plain(renderLaunchPlan(plan({}), 3, { cols: 78, rows: 30 }));
   const lines = out.split('\n');
-  assert.match(lines[lines.length - 1], /↵ confirm & launch   c concurrency   s speed   n hold   esc cancel/);
+  assert.match(lines[lines.length - 1], /↵ confirm & launch   c concurrency   s speed   n hold   j\/k row   esc cancel/);
   assert.equal(lines.length, 29);
 });
 
@@ -491,4 +495,78 @@ test('a ticket whose harness label matches the batch harness renders no marker',
 test('a plan with no ticketHarness map renders exactly as before', () => {
   const out = plain(renderLaunchPlan(plan({}), 0, OPTS));
   assert.doesNotMatch(out, /⇒/);
+});
+
+// --- CON-69: per-row overrides on the launch plan ---------------------------
+
+test('the row cursor renders ▸ on the focused row only', () => {
+  const p = plan({ rowIndex: 1 });
+  const out = plain(renderLaunchPlan(p, 0, OPTS));
+  const lines = out.split('\n').filter((l) => l.includes('│') && /CON-3\d\d/.test(l));
+  assert.doesNotMatch(lines[0], /▸/);
+  assert.match(lines[1], /▸/);
+  assert.doesNotMatch(lines[2], /▸/);
+});
+
+test('a plan without rowIndex renders no cursor (legacy fixtures unchanged)', () => {
+  const out = plain(renderLaunchPlan(plan({}), 0, OPTS));
+  assert.doesNotMatch(out, /▸/);
+});
+
+test('a row override note shows harness, speed and provider joined with ·', () => {
+  const p = plan({
+    harnesses: ['claude', 'codex'],
+    rowIndex: 0,
+    rowOverrides: { 'CON-338': { harness: 'codex', speed: 'fast', provider: 'ollama' } },
+  });
+  const out = plain(renderLaunchPlan(p, 0, OPTS));
+  const row = out.split('\n').find((l) => l.includes('│') && l.includes('CON-338'));
+  assert.match(row, /⇒ codex·fast·ollama/);
+});
+
+test('a row speed override matching the batch speed shows no speed note', () => {
+  const p = plan({ speed: 'fast', rowOverrides: { 'CON-338': { speed: 'fast' } } });
+  const out = plain(renderLaunchPlan(p, 0, OPTS));
+  const row = out.split('\n').find((l) => /CON-338/.test(l));
+  assert.doesNotMatch(row, /⇒/);
+});
+
+test('H/S/P emit their cycle actions only when per-row editing is enabled', () => {
+  const editable = plan({ perRowEditable: true, providerConfigured: true, harnesses: ['claude', 'codex'] });
+  assert.deepEqual(handleKey('H', { plan: editable }), { type: 'cycle-row-harness' });
+  assert.deepEqual(handleKey('S', { plan: editable }), { type: 'cycle-row-speed' });
+  assert.deepEqual(handleKey('P', { plan: editable }), { type: 'cycle-row-provider' });
+  const pinned = plan({ perRowEditable: false, providerConfigured: true, harnesses: ['claude', 'codex'] });
+  assert.equal(handleKey('H', { plan: pinned }), null);
+  assert.equal(handleKey('S', { plan: pinned }), null);
+  assert.equal(handleKey('P', { plan: pinned }), null);
+});
+
+test('H needs a second harness; P needs a configured provider', () => {
+  const oneHarness = plan({ perRowEditable: true, providerConfigured: false });
+  assert.equal(handleKey('H', { plan: oneHarness }), null);
+  assert.equal(handleKey('P', { plan: oneHarness }), null);
+});
+
+test('per-row hints are advertised exactly when their keys are live', () => {
+  const p = plan({ perRowEditable: true, providerConfigured: true, harnesses: ['claude', 'codex'] });
+  const out = plain(renderLaunchPlan(p, 0, OPTS));
+  assert.match(out, /H row-harness/);
+  assert.match(out, /S row-speed/);
+  assert.match(out, /P row-provider/);
+  const pinned = plain(renderLaunchPlan(plan({}), 0, OPTS));
+  assert.doesNotMatch(pinned, /row-harness|row-speed|row-provider/);
+  assert.match(pinned, /j\/k row/);
+});
+
+test('the viewport follows the row cursor past the fold', () => {
+  const bigPlan = plan({
+    tickets: Array.from({ length: 30 }, (_, i) => ticketAt(i)),
+    rowIndex: 29,
+  });
+  const out = plain(renderLaunchPlan(bigPlan, 0, { cols: 78, rows: 25 }));
+  assert.match(out, /│.*CON-129\b/);
+  // The header still names the batch's first ticket — only the BOX must
+  // have scrolled it out.
+  assert.doesNotMatch(out, /│.*CON-100\b/);
 });

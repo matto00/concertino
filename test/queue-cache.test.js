@@ -184,5 +184,5 @@ test('a written record contains only ticket ids and queue metadata — no titles
   assert.doesNotMatch(raw, /sensitive ticket body text/);
   const parsed = JSON.parse(raw);
   assert.deepEqual(Object.keys(parsed).sort(),
-    ['inFlight', 'launchCommand', 'maxConcurrent', 'pending', 'sessionId', 'writtenAt']);
+    ['inFlight', 'launchCommand', 'maxConcurrent', 'pending', 'perTicket', 'sessionId', 'writtenAt']);
 });
