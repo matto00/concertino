@@ -4,16 +4,16 @@ TICKET_ID: CON-73
 CHANGE_NAME: doctor-validate-ollama-models
 WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/task/doctor-validate-ollama-models/CON-73
 BRANCH: task/doctor-validate-ollama-models/CON-73
-PHASE: Execution
+PHASE: Delivery
 CYCLE: 1
 DEV_PORT: 5320
 BACKEND_PORT: 8227
 EXECUTOR_AGENT_ID: a709bd85ff56c9e2a
-EVALUATOR_AGENT_ID: —
-LAST_EVAL_VERDICT: —
-LAST_EVAL_REPORT: —
-SKEPTIC_CYCLE: 0
-LAST_SKEPTIC_VERDICT: CONFIRM (design gate)
+EVALUATOR_AGENT_ID: ac3379e4746f7b179
+LAST_EVAL_VERDICT: PASS
+LAST_EVAL_REPORT: openspec/changes/doctor-validate-ollama-models/evaluation-1.md
+SKEPTIC_CYCLE: 1
+LAST_SKEPTIC_VERDICT: CONFIRM (final gate)
 AGENT_MERGE: true
 SPEED: default
 EXECUTION_CYCLES: 3
