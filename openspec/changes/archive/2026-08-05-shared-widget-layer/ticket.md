@@ -23,6 +23,13 @@ Follow-on from the 2026-08-04 modularization batch (watch.js → controllers + l
 * No behavior change to key bindings or event semantics; existing screen tests keep passing (facade exports preserved).
 * A new screen can be assembled from widgets + a controller without copying layout math from an existing screen.
 
+## Additional Scope (fold-in, post-delivery follow-up)
+
+The first delivery of this change (PR #63, merged 2026-08-05) deliberately scoped the icon-widget migration to a named consumer set and left three remaining inline `icon + ' ' + label` compositions untouched, flagged as a known follow-up: `drilldown.js`'s four panel titles (TICKET/TIMELINE/GATES/EVIDENCE), `ticketDetail.js`'s DESCRIPTION/COMMENTS headers, and `controllers/drilldown.js`'s evidence-reader `docTitle` composition. Per human direction (fold-in decision on the post-completion follow-up triage, answered via the dashboard escalation screen — `escalation.raised` 2026-08-05T01:07:19.816Z, `escalation.answered A: fold-in` 2026-08-05T01:09:45.098Z, see `workflow-state.md`'s provenance note), this additional scope is folded into this same change rather than filed standalone:
+
+* Migrate `drilldown.js`'s four panel titles, `ticketDetail.js`'s two headers, and `controllers/drilldown.js`'s `docTitle` composition to `lib/ui/widgets/header.js`'s `sectionHeader`, completing icon-coverage-widget-migration across every screen named in the original ticket scope.
+* No new visual/wording change — byte-for-byte equivalent output, same as the first delivery's widget-migration swaps.
+
 ## Grounding
 
 Screens are pure `render(state, opts) -> string` + `handleKey` registered in `lib/ui/router.js`; that seam stays. See CON-58's audit notes and the modularization-batch commit messages for current module boundaries.

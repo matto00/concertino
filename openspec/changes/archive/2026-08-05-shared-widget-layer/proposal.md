@@ -121,6 +121,13 @@ bounds for a "no behavior change" refactor ticket.
   already claims as a consumer, plus the ones it does not yet name.
 - No key binding or event-type changes anywhere in this change. No screen's
   `render(state, opts) -> string` / `handleKey` seam changes shape.
+- **(Fold-in, post-delivery follow-up, added after PR #63 merged.)** Migrate
+  the three remaining inline `icon + ' ' + label` compositions the first
+  delivery deliberately left out of scope: `drilldown.js`'s four panel
+  titles (TICKET/TIMELINE/GATES/EVIDENCE), `ticketDetail.js`'s DESCRIPTION/
+  COMMENTS headers, and `controllers/drilldown.js`'s `docTitle`. See
+  design.md Decision 7. Same "byte-for-byte swap, no wording/behavior
+  change" contract as every other widget-migration site in this change.
 
 ## Capabilities
 
@@ -136,7 +143,11 @@ bounds for a "no behavior change" refactor ticket.
 - `dashboard-iconography`: extends icon coverage from
   `drilldown.js`/`launchpad.js`/`ticketDetail.js` to every screen's
   section/pane headers, via the new `header.js` widget rather than each
-  screen inlining icon-prefix composition independently.
+  screen inlining icon-prefix composition independently. (Fold-in
+  follow-up: further widened to also cover `drilldown.js`'s own four panel
+  titles, `ticketDetail.js`'s two headers, and `controllers/drilldown.js`'s
+  `docTitle` — the requirement's SHALL is no longer scoped away from these
+  three files.)
 
 ## Impact
 
@@ -145,7 +156,9 @@ bounds for a "no behavior change" refactor ticket.
   `lib/ui/banner.js`, `lib/ui/screens/ticketdraft.js`,
   `lib/ui/screens/docview.js`, `lib/ui/screens/ticketview.js`,
   `lib/ui/screens/launchplan.js`, `lib/ui/screens/settings.js`,
-  `lib/ui/icons.js` (consumers only, glyph table itself likely unchanged).
+  `lib/ui/icons.js` (consumers only, glyph table itself likely unchanged),
+  `lib/ui/ticketDetail.js`, `lib/ui/controllers/drilldown.js` (fold-in
+  follow-up scope).
 - No API, storage format, or CLI surface changes. No new external
   dependencies.
 - Existing screen tests must keep passing unchanged (facade exports
