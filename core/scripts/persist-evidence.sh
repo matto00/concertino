@@ -5,7 +5,7 @@ set -uo pipefail
 # persist-evidence.sh — copy an evidence artifact into the main checkout and
 # return a durable ref.
 #
-# Usage: persist-evidence.sh <TICKET_ID> <SOURCE_PATH>
+# Usage: persist-evidence.sh <TICKET_ID> <SOURCE_PATH> [--no-clobber]
 #
 # Callers (the orchestrator's per-planning-artifact `evidence` event, and the
 # evaluator/skeptic's `verdict.ref`) all write their artifact under
@@ -33,12 +33,32 @@ set -uo pipefail
 # worse than no evidence event, so a caller must only emit one once this
 # script has confirmed the copy exists at a collision-safe destination.
 #
-# Idempotent/re-runnable: re-persisting the same source overwrites the
-# previous copy with its current content.
+# Idempotent/re-runnable when `--no-clobber` is omitted (the default, and
+# every existing caller's behavior, unchanged): re-persisting the same source
+# overwrites the previous copy with its current content unconditionally.
+#
+# `--no-clobber` (CON-81, opt-in, optional third argument): when the
+# destination already exists, compare its content to the source instead of
+# overwriting blindly. Identical content → proceed to the same `READY ref=`
+# success path as a no-op (this is what a genuine retried call for the same
+# artifact looks like — nothing is actually at risk). Different content →
+# `FAIL <reason>` to stderr, no `READY` line, non-zero exit, destination left
+# untouched. This exists so a report that is write-once by contract (the
+# evaluator's/skeptic's `verdict.ref` persist call) can't silently overwrite
+# an earlier sub-run's persisted evidence copy on a `fold-in` reopen — see
+# `next-report-number.sh` for the filename-collision half of that fix. Every
+# other caller (planning artifacts, which are legitimately revised and
+# re-persisted to the same destination during planning) omits the flag and
+# keeps today's unconditional-overwrite behavior exactly as above.
 # ===========================================================================
 
-TICKET_ID="${1:?usage: persist-evidence.sh <TICKET_ID> <SOURCE_PATH>}"
-SOURCE_PATH="${2:?usage: persist-evidence.sh <TICKET_ID> <SOURCE_PATH>}"
+TICKET_ID="${1:?usage: persist-evidence.sh <TICKET_ID> <SOURCE_PATH> [--no-clobber]}"
+SOURCE_PATH="${2:?usage: persist-evidence.sh <TICKET_ID> <SOURCE_PATH> [--no-clobber]}"
+NO_CLOBBER="${3:-}"
+if [ -n "$NO_CLOBBER" ] && [ "$NO_CLOBBER" != "--no-clobber" ]; then
+  echo "FAIL unknown third argument: ${NO_CLOBBER} (expected: --no-clobber)" >&2
+  exit 1
+fi
 
 # A ticket id feeds directly into DEST_DIR below; unvalidated, a traversal
 # shape (`../../../..`) walks out of the runs directory. Same pattern
@@ -113,6 +133,17 @@ fi
 
 DEST_DIR="${ROOT}/.concertino/runs/${TICKET_ID}/evidence"
 DEST_PATH="${DEST_DIR}/${SRC_REL}"
+
+if [ "$NO_CLOBBER" = "--no-clobber" ] && [ -e "$DEST_PATH" ]; then
+  if cmp -s "$SOURCE_PATH" "$DEST_PATH"; then
+    # Identical content: this is a harmless retried call for the same
+    # artifact, not a collision — proceed as a no-op success below.
+    echo "READY ref=${DEST_PATH}"
+    exit 0
+  fi
+  echo "FAIL --no-clobber: destination already exists with different content: ${DEST_PATH}" >&2
+  exit 1
+fi
 
 if ! mkdir -p "$(dirname "$DEST_PATH")" 2>/dev/null; then
   echo "FAIL could not create evidence directory: $(dirname "$DEST_PATH")" >&2

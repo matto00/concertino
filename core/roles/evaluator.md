@@ -170,10 +170,20 @@ intervention. Do not debug the dev environment as a code change request.
 
 ### Step 1: Write report
 
-Write to `WORKTREE_PATH/<change-dir>/evaluation-<CYCLE>.md`:
+Get a collision-safe filename first — this scans the change dir for what a
+prior sub-run (e.g. a `fold-in` reopen) may already have left there, so your
+report never overwrites an earlier sub-run's `evaluation-*.md`:
+
+```bash
+scripts/concertino/next-report-number.sh "WORKTREE_PATH/<change-dir>" evaluation
+# READY number=<M> path=<change-dir>/evaluation-<M>.md
+```
+
+If it prints `FAIL`, see "Guardrails" below — do not guess a fallback
+filename. Otherwise, write your report to the `path=` it returned:
 
 ```
-## Evaluation Report — Cycle N
+## Evaluation Report — Cycle N (evaluation-<M>.md)
 
 ### Phase 1: Spec Review — PASS | FAIL
 Issues: (each issue, or "none")
@@ -203,18 +213,22 @@ Return only:
 
 ```
 Overall: PASS | FAIL | BLOCKER
-Report: WORKTREE_PATH/<change-dir>/evaluation-<CYCLE>.md
+Report: WORKTREE_PATH/<change-dir>/evaluation-<M>.md
 ```
 
-Do not reproduce the report — orchestrator and executor read it from file.
+(the actual path `next-report-number.sh` returned and you wrote to — not a
+reconstruction from `CYCLE`). Do not reproduce the report — orchestrator and
+executor read it from file.
 
 Immediately after writing your report, persist it so `ref` survives
 `cleanup.sh --phase4` removing this worktree, then emit the verdict for the
 dashboard using that durable path — never the raw `WORKTREE_PATH`-relative
-report path:
+report path. Pass `--no-clobber`: this report's filename is already
+collision-safe by construction (the `next-report-number.sh` call above), so
+`--no-clobber` here is strictly a backstop in case that ever fails:
 
 ```bash
-scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/evaluation-<CYCLE>.md"
+scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/evaluation-<M>.md" --no-clobber
 # READY ref=<durable path>
 scripts/concertino/emit-event.sh verdict \
   ticket=$TICKET_ID role=evaluator verdict=<PASS|FAIL|BLOCKER> ref=<durable path from READY ref=>
@@ -255,6 +269,11 @@ to resolve for a pass, plus a recommendation for the human.
 - Phase 3 is mandatory when its triggers match — not optional.
 - Non-blocking suggestions don't cause FAIL — a PASS with suggestions is still a PASS.
 - `BLOCKER` is for environmental failures only — code issues go in Change Requests.
+- If `scripts/concertino/next-report-number.sh` prints `FAIL`, tag `BLOCKER`
+  with the script's stderr — environmental, same as a `persist-evidence.sh`
+  or `start-servers.sh` `FAIL`. Never guess a fallback `evaluation-<N>.md`
+  filename; a guessed fallback is exactly the silent-collision risk this
+  step exists to close.
 - **Never invoke `scripts/concertino/cleanup.sh`** (or any teardown of the worktree).
   It is a Phase-4 orchestrator-only, post-merge teardown; running it mid-review
   destroys the live worktree (git-admin metadata + checkout) you are evaluating.

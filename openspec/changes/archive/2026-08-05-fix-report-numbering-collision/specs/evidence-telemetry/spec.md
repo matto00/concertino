@@ -1,12 +1,5 @@
-# evidence-telemetry Specification
+## MODIFIED Requirements
 
-## Purpose
-Give every planning artifact, evaluation report, and skeptic report a durable
-`ref` that the dashboard can still resolve after `cleanup.sh --phase4`
-destroys the run's worktree, by copying each artifact into the main
-checkout via `persist-evidence.sh` before it is referenced from an `evidence`
-or `verdict` event.
-## Requirements
 ### Requirement: persist-evidence.sh copies an artifact into the main checkout and returns a durable ref
 `core/scripts/persist-evidence.sh <TICKET_ID> <SOURCE_PATH> [--no-clobber]` SHALL copy
 `SOURCE_PATH` into `<main checkout>/.concertino/runs/<TICKET_ID>/evidence/`, preserving
@@ -61,25 +54,6 @@ created, so a rejected `TICKET_ID` produces no filesystem side effect of any kin
   inside any git working tree (so no worktree-relative path can be derived)
 - **THEN** it prints `FAIL <reason>` to stderr, exits non-zero, and prints no `READY` line
 
-### Requirement: The orchestrator emits one evidence event per planning artifact
-The orchestrator SHALL, at the point it writes `workflow-state.md` transitioning out of
-Planning, persist each planning artifact created that phase (`ticket.md`, `proposal.md`,
-`design.md`, `tasks.md`, and any spec delta files) via `persist-evidence.sh`, and for each one
-whose `persist-evidence.sh` call succeeds, emit `scripts/concertino/emit-event.sh evidence
-ticket=<TICKET_ID> role=orchestrator ref=<persisted path> label=<artifact name>`.
-
-#### Scenario: A successful planning phase emits evidence for its artifacts
-- **WHEN** the orchestrator completes Phase 1 having written `ticket.md`, `proposal.md`,
-  `design.md`, and `tasks.md`
-- **THEN** the run's event log contains an `evidence` event for each of the four artifacts, each
-  with a `ref` that resolves from the main checkout
-
-#### Scenario: A failed persist does not produce a broken evidence event
-- **WHEN** `persist-evidence.sh` fails for one planning artifact (e.g. it was never written
-  because Planning escalated first)
-- **THEN** no `evidence` event is emitted for that artifact, and the orchestrator's other
-  telemetry calls are unaffected
-
 ### Requirement: verdict.ref is durable; evaluator and skeptic reports do not also emit a redundant evidence event
 When the evaluator or skeptic emits its `verdict` event, `ref` SHALL be the path returned by
 `persist-evidence.sh --no-clobber` for that report file, not the report's original (worktree
@@ -110,37 +84,7 @@ have.
   REFUTE>` field, and that event carries no `ref` field — never the report's raw
   `WORKTREE_PATH`-relative path
 
-### Requirement: The drill-down's EVIDENCE panel and its "no evidence recorded" fallback are unchanged
-Emitting `evidence` events SHALL NOT require any change to `lib/ui/reducer.js` or
-`lib/ui/screens/drilldown.js` — a run with no `evidence` events SHALL continue to render "no
-evidence recorded", and a run with one or more SHALL continue to list them, exactly as already
-implemented.
-
-#### Scenario: A run with planning-artifact evidence lists them in the drill-down
-- **WHEN** a run's event log contains `evidence` events emitted by the orchestrator
-- **THEN** the drill-down's EVIDENCE panel lists each one and does not show "no evidence
-  recorded"
-
-#### Scenario: A run with no evidence events still degrades honestly
-- **WHEN** a run's event log contains no `evidence` events
-- **THEN** the drill-down's EVIDENCE panel shows "no evidence recorded"
-
-### Requirement: The orchestrator emits a `pr` evidence event once a run's PR exists
-The orchestrator SHALL, immediately after successfully creating a run's pull request (Phase 3
-Delivery), emit `scripts/concertino/emit-event.sh pr ticket=<TICKET_ID> role=orchestrator
-url=<PR_URL> label=<a short label identifying the PR>`. This is a distinct event kind from
-`evidence` — it carries a `url`, not a local-file `ref`, and is never accompanied by a
-`persist-evidence.sh` call (there is no local file to persist; the URL itself is the durable
-reference).
-
-#### Scenario: A successful PR creation emits a pr event
-- **WHEN** the orchestrator successfully creates a run's PR in Phase 3 Delivery
-- **THEN** the run's event log contains a `pr` event carrying that PR's URL
-
-#### Scenario: A pr event carries no local-file ref
-- **WHEN** the orchestrator emits a `pr` event
-- **THEN** that event has a `url` field and no `ref` field, and no corresponding
-  `persist-evidence.sh` call is made for it
+## ADDED Requirements
 
 ### Requirement: persist-evidence.sh --no-clobber refuses to silently overwrite differing content
 When invoked with `--no-clobber` as a third argument, `persist-evidence.sh` SHALL, before copying,
@@ -172,4 +116,3 @@ documented in the script's pre-existing "Idempotent/re-runnable" behavior.
 - **THEN** the call succeeds, prints `READY ref=<path>`, and the destination is overwritten with
   the source's current content — unchanged from this script's behavior before this requirement was
   added
-

@@ -116,10 +116,21 @@ binding doc):
 
 ### Step 1: Write report
 
-Write to `WORKTREE_PATH/<change-dir>/skeptic-<GATE>-<N>.md`:
+Get a collision-safe filename first — this scans the change dir for what a
+prior sub-run (e.g. a `fold-in` reopen) may already have left there, so your
+report never overwrites an earlier sub-run's `skeptic-<GATE>-*.md`:
+
+```bash
+scripts/concertino/next-report-number.sh "WORKTREE_PATH/<change-dir>" skeptic-<GATE>
+# READY number=<M> path=<change-dir>/skeptic-<GATE>-<M>.md
+```
+
+(`skeptic-<GATE>` is `skeptic-design` or `skeptic-final`, matching your
+`GATE` input.) If it prints `FAIL`, see "Guardrails" below — do not guess a
+fallback filename. Otherwise, write your report to the `path=` it returned:
 
 ```
-## Skeptic Report — <GATE> gate (round N)
+## Skeptic Report — <GATE> gate (round N, skeptic-<GATE>-<M>.md)
 
 ### What I verified (with evidence)
 - (each check + the command/file/screenshot that grounds it)
@@ -139,10 +150,12 @@ instead of guessing a verdict.
 Immediately after writing your report, persist it so `ref` survives
 `cleanup.sh --phase4` removing this worktree, then emit the verdict for the
 dashboard using that durable path — never the raw `WORKTREE_PATH`-relative
-report path:
+report path. Pass `--no-clobber`: this report's filename is already
+collision-safe by construction (the `next-report-number.sh` call above), so
+`--no-clobber` here is strictly a backstop in case that ever fails:
 
 ```bash
-scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/skeptic-<GATE>-<N>.md"
+scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/skeptic-<GATE>-<M>.md" --no-clobber
 # READY ref=<durable path>
 scripts/concertino/emit-event.sh verdict \
   ticket=$TICKET_ID role=skeptic verdict=<CONFIRM|REFUTE|BLOCKER> ref=<durable path from READY ref=>
@@ -163,10 +176,12 @@ reasoning) — don't "fix" this into duplication.
 
 ```
 Verdict: CONFIRM | REFUTE | BLOCKER
-Report: <path>
+Report: WORKTREE_PATH/<change-dir>/skeptic-<GATE>-<M>.md
 ```
 
-Do not reproduce the report — the orchestrator reads it from file.
+(the actual path `next-report-number.sh` returned and you wrote to — not a
+reconstruction from `N`.) Do not reproduce the report — the orchestrator
+reads it from file.
 
 ---
 
@@ -181,6 +196,11 @@ Do not reproduce the report — the orchestrator reads it from file.
 - **REFUTE must be specific and actionable** — name the file:line / AC / screenshot
   and what's wrong, never "feels off".
 - `BLOCKER` is for environmental failures only — code/design issues are Change Requests.
+- If `scripts/concertino/next-report-number.sh` prints `FAIL`, tag `BLOCKER`
+  with the script's stderr — environmental, same as a `persist-evidence.sh`
+  or `start-servers.sh` `FAIL`. Never guess a fallback `skeptic-<GATE>-<N>.md`
+  filename; a guessed fallback is exactly the silent-collision risk this
+  step exists to close.
 - **Never invoke `scripts/concertino/cleanup.sh`** (or any teardown of the worktree).
   It is a Phase-4 orchestrator-only, post-merge teardown; running it mid-review
   destroys the live worktree (git-admin metadata + checkout) you are reviewing.
