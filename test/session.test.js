@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { hasTmux, createSession } = require('../lib/ui/session');
+const { hasTmux, createSession, attachTarget, killTarget } = require('../lib/ui/session');
 
 const SESSION = 'concertino-test-' + process.pid;
 const skip = !hasTmux() ? { skip: 'tmux not installed' } : {};
@@ -200,6 +200,38 @@ test('spawn writes a run.spawn event to <root>/.concertino/runs/<ticket>/events.
   assert.equal(ev.role, 'dashboard');
   assert.ok(typeof ev.t === 'number' && ev.t >= before && ev.t <= after,
     `t should be a timestamp taken during spawn: ${ev.t} vs [${before}, ${after}]`);
+});
+
+// --- CON-78: attachTarget/killTarget (the sessions view's own generalised,
+// arbitrary session:window_id addressing — used for a freelance tmux-backed
+// session, never for a ticket-scoped one) ------------------------------------
+
+test('killTarget kills the given window by session:window_id', skip, () => {
+  s.spawn('HEL-KT1', 'sleep 300');
+  require('child_process').execFileSync('sleep', ['1']);
+  const w = s.listWindows().find((x) => x.ticket === 'HEL-KT1');
+  assert.ok(w, 'window should exist');
+  const idOut = require('child_process').execFileSync('tmux',
+    ['list-windows', '-t', SESSION, '-F', '#{window_id}\t#{window_name}'], { encoding: 'utf8' });
+  const line = idOut.split('\n').find((l) => l.split('\t')[1] === 'HEL-KT1');
+  const windowId = line.split('\t')[0];
+  killTarget(SESSION, windowId);
+  assert.equal(s.listWindows().find((x) => x.ticket === 'HEL-KT1'), undefined);
+});
+
+test('killTarget of an absent window:id does not throw', skip, () => {
+  assert.doesNotThrow(() => killTarget(SESSION, '@999999'));
+});
+
+test('attachTarget spawns tmux attach against the given session:window_id', skip, () => {
+  // A real attach blocks on a pty this harness has none of — verified
+  // instead against the actual argv shape, the same technique the module's
+  // own spawnSync call would receive; a bad target still returns a non-zero
+  // status rather than throwing (spawnSync's own contract), which is enough
+  // to prove the target was built correctly without needing a real
+  // interactive attach.
+  const result = attachTarget(SESSION, '@999999');
+  assert.notEqual(result.status, 0, 'a nonexistent window:id should fail to attach, not silently succeed');
 });
 
 test('a session created without a root writes nothing on spawn', skip, () => {

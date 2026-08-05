@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {
   buildFrame, attachAndRestore, computeLiveEscalations, idleMsFromActivity,
-  canonicalHarness, resolveModelsForPlan, openInBrowser,
+  canonicalHarness, resolveModelsForPlan, openInBrowser, sessionsAutoRefreshDue,
   CURSOR_HOME, ALT_SCREEN_ENTER, ALT_SCREEN_EXIT,
 } = require('../lib/ui/watch');
 const { padTo, visibleLength } = require('../lib/ui/format');
@@ -672,6 +672,121 @@ test('resolveModelsForPlan returns null (never throws) on malformed JSON output'
     assert.doesNotThrow(() => resolveModelsForPlan(root, 'fast', 'claude-code'));
     assert.equal(resolveModelsForPlan(root, 'fast', 'claude-code'), null);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ===========================================================================
+// CON-78 — sessionsAutoRefreshDue(), the pure gating check the poll timer's
+// own setInterval callback uses to decide whether THIS tick re-runs sessions
+// discovery (design.md Decision 1). Tested directly, as a pure function,
+// rather than by actually waiting on the real POLL_MS timer — see this
+// file's own flushRefresh() comment (further down) on why a real wall-clock
+// wait around this file's stdout-capturing harness is deliberately avoided
+// (it corrupts node:test's own pass/fail accounting for an adjacent test).
+// ===========================================================================
+
+test('sessionsAutoRefreshDue is false on every tick while mode is fleet', () => {
+  for (let tick = 1; tick <= 12; tick++) {
+    assert.equal(sessionsAutoRefreshDue('fleet', tick), false, `tick ${tick}`);
+  }
+});
+
+test('sessionsAutoRefreshDue is true only on every 3rd tick while mode is sessions', () => {
+  const due = [];
+  for (let tick = 1; tick <= 9; tick++) {
+    if (sessionsAutoRefreshDue('sessions', tick)) due.push(tick);
+  }
+  assert.deepEqual(due, [3, 6, 9]);
+});
+
+test('sessionsAutoRefreshDue is false for any other mode, even on a multiple-of-3 tick', () => {
+  assert.equal(sessionsAutoRefreshDue('drilldown', 3), false);
+  assert.equal(sessionsAutoRefreshDue('settings', 6), false);
+  assert.equal(sessionsAutoRefreshDue(undefined, 3), false);
+});
+
+// --- CON-78: the sessions screen wired end to end (open/close, no real
+// POLL_MS wait needed — a keypress-driven redraw is enough to prove the
+// mode transition and the fresh discovery pass on open) --------------------
+
+test('v opens the sessions screen from the fleet, populated with a fresh discovery pass; Escape returns to the fleet', async () => {
+  const { EventEmitter } = require('node:events');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-sessions-'));
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const discoveryPath = require.resolve('../lib/ui/discovery');
+
+  const fakeSessionObj = {
+    name: 'concertino',
+    ensure() {},
+    listWindows() { return []; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const discoverCalls = [];
+
+  delete require.cache[watchPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: {
+      hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__',
+      attachTarget: () => ({ status: 0 }), killTarget: () => {},
+    },
+  };
+  require.cache[discoveryPath] = {
+    id: discoveryPath, filename: discoveryPath, loaded: true,
+    exports: {
+      discover(opts) { discoverCalls.push(opts); return [{ pid: 1, harness: 'claude', managed: false, tmux: null, cwd: '/a', ageMs: 1000, version: null, nearTicket: null }]; },
+    },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  try {
+    const watchModule = require('../lib/ui/watch');
+    const donePromise = watchModule.watch({ root, config: {} });
+
+    assert.equal(discoverCalls.length, 0, 'discovery must not run before the sessions screen is ever opened');
+
+    written.length = 0;
+    fakeStdin.emit('data', 'v');
+    assert.equal(discoverCalls.length, 1, 'opening the sessions screen runs discovery exactly once, synchronously');
+
+    const screenAfterOpen = written.join('');
+    assert.match(screenAfterOpen, /claude/, 'the freshly discovered session is on screen immediately');
+
+    fakeStdin.emit('data', '\x1b');
+    written.length = 0;
+    fakeStdin.emit('data', 'j'); // a harmless no-op keypress that still redraws via move (fleet mode)
+    const screenAfterBack = written.join('');
+    assert.doesNotMatch(screenAfterBack, /SESSIONS/, 'Escape must have returned to the fleet screen');
+
+    fakeStdin.emit('end');
+    await donePromise;
+  } finally {
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[sessionPath];
+    delete require.cache[discoveryPath];
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

@@ -116,6 +116,20 @@ test('the launch plan renders through the router', () => {
   assert.match(out, /CON-338/);
 });
 
+// --- CON-78: the sessions screen ---------------------------------------------
+
+test('the sessions screen renders through the router', () => {
+  const state = { mode: 'sessions', sessionsData: [{ pid: 1, harness: 'claude', managed: false, tmux: null, cwd: '/a', ageMs: 1000, version: null, nearTicket: null }], sessionsSelected: 0 };
+  const out = plain(router.render(state, { cols: 100 }));
+  assert.match(out, /claude/);
+  assert.match(out, /sessions/i);
+});
+
+test('handleKey dispatches to the sessions screen', () => {
+  const state = { mode: 'sessions', sessionsData: [] };
+  assert.deepEqual(router.handleKey('\x1b', state), { type: 'back' });
+});
+
 test('a run whose escalation cleared still renders through the escalation screen honestly', () => {
   // The router does not know the escalation cleared — that transition is
   // watch.js's job (see draw() falling back to 'fleet'). Rendering the
