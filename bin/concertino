@@ -8,6 +8,7 @@
  *   concertino init [--example=helio|generic|opencode-ollama] [--out=DIR]
  *   concertino sync [--config=PATH] [--out=DIR] [--harness=claude-code,codex,opencode] [--dry-run]
  *   concertino update <key=value> [...] [--config=PATH] [--out=DIR] [--dry-run]
+ *   concertino answer <ticket> <value> [--sub <index> --total <n>] [--out=DIR]
  *   concertino help
  *
  * This file is the executable entry point only: arg parsing, the command
@@ -32,6 +33,7 @@ const { cmdGates } = require('../lib/cli/gates');
 const { cmdCompletion } = require('../lib/cli/completion');
 const { cmdEject } = require('../lib/cli/eject');
 const { cmdMigrate } = require('../lib/cli/migrate');
+const { cmdAnswer } = require('../lib/cli/answer');
 const { help } = require('../lib/cli/help');
 
 const args = parseArgs(process.argv.slice(2));
@@ -52,6 +54,13 @@ if (args.version) { console.log('concertino v' + VERSION); process.exit(0); }
     else if (cmd === 'completion') cmdCompletion(args);
     else if (cmd === 'eject')      cmdEject(args);
     else if (cmd === 'migrate')    cmdMigrate(args);
+    // `answer` gets the raw argv tokens following the subcommand name, not
+    // the globally-parsed `args` object every other command above uses:
+    // `--sub <index> --total <n>` are value-bearing flags interleaved with
+    // two positionals (ticket, value), which parseArgs' `--k=v`-only
+    // convention can't represent without losing the flag/value association
+    // (see lib/cli/answer.js's own header comment).
+    else if (cmd === 'answer')     await cmdAnswer(process.argv.slice(3));
     else help();
   } catch (e) {
     console.error(red('error: ') + e.message);

@@ -61,7 +61,41 @@ toolbox for this session.
 
 **If `--inline` is absent (default):**
 
-- Relay any `ESCALATION` / `BLOCKER` to the human and collect their answer.
+- **If the result is an `ESCALATION-PENDING` payload (CON-76)** — rather than a
+  normal pause or completion — the orchestrator subagent has bubbled a raised
+  escalation instead of blocking its own turn on it (see
+  `core/roles/orchestrator.md`'s "How to raise one" and "Receiving a bubbled
+  escalation" sections, and the `escalation-bubble-up` capability). You are the
+  root: follow that same procedure yourself, in this turn, rather than treating
+  the return as a normal pause:
+  1. Present the question/options/context in your own chat transcript
+     immediately, before doing anything else — if the escalation is one you
+     already saw presented in this same payload, this is that same
+     presentation, not a second one.
+  2. Poll for a dashboard answer with repeated short `--wait-only` calls
+     (`scripts/concertino/emit-event.sh escalation --wait-only max_wait_sec=30
+     ticket=<id>`), looping on exit 2, stopping on exit 0 (resolved) or exit 1
+     (the escalation's real deadline reached — handle exactly like a normal
+     `--await` timeout: never an approval, keep waiting in chat for a reply).
+     Between calls, remain able to accept a direct chat reply.
+  3. The moment the human replies in chat, write it through `concertino answer
+     <ticket> <value> [--sub <index> --total <n>]` rather than acting on it
+     directly, and branch on its result exactly as `core/roles/orchestrator.md`
+     describes: refused (report which channel won, keep polling), resolving
+     (proceed to step 4), or a non-resolving partial multi-part sub-answer
+     (keep polling for the rest, do not proceed to step 4 yet).
+  4. Once resolved (by either channel), **SendMessage** the same waiting
+     `concertino-orchestrator` agent with the question, the answer, which
+     channel resolved it, and the timestamp, and wait for its next result
+     within this same turn before proceeding — this is an ordinary warm
+     resume, not a further bubble, and does not restart the workflow.
+  5. **Fallback when `SendMessage` is unavailable:** re-spawn
+     `concertino-orchestrator` with a prompt beginning `TICKET_ID=<id>. RESUME —
+     do not start over`, pointing it at `workflow-state.md` (its
+     `PENDING_ESCALATION` field holds the still-open question) plus the
+     resolution you were just given, so it continues without re-raising the
+     same question.
+- Relay any other `ESCALATION` / `BLOCKER` to the human and collect their answer.
 - If it pauses awaiting input (e.g. after PR creation, before cleanup), wait for the
   human's "merged" confirmation, then **SendMessage** the same orchestrator to
   continue — do not re-spawn. It keeps state in `workflow-state.md` and resumes from
@@ -81,4 +115,10 @@ you *are* the orchestrator for this run. Surface any `ESCALATION`, `BLOCKER`, or
 pause awaiting a "merged" confirmation directly to the human, in your own turn,
 and continue the workflow yourself once you have their answer (still driving your
 own spawned executor/evaluator/skeptic/auditor sub-agents as needed) rather than
-sending or re-spawning anything.
+sending or re-spawning anything. Per the `inline-orchestrator-mode` capability
+(CON-76), this session never receives — and never needs to handle — an
+`ESCALATION-PENDING` payload: there is no subagent hop to bubble across, so you
+always present to chat and call `--await` directly, exactly as
+`core/roles/orchestrator.md`'s "How to raise one" describes for the root branch.
+The `ESCALATION-PENDING` handling above applies only to the default (non-inline)
+branch.

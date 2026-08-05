@@ -51,6 +51,23 @@ branch), or escalate. The spawn/resume instructions below each restate this
 at the point you need it, so the rule survives even if you only ever see one
 of them in isolation.
 
+**One narrow exception (CON-76).** The only circumstance in which this
+orchestrator may end its turn while artifacts of the current ticket are still
+incomplete is to bubble a `PENDING_ESCALATION` it has just raised (via
+`--raise-only`) or received from a child it spawned, up to its own parent —
+and only after that escalation's full state is durably persisted in
+`workflow-state.md` so a cold re-spawn can reconstruct it. This is not the
+same failure mode CON-10 and CON-15 closed off: at the moment of this return,
+this orchestrator has no outstanding spawned child of its own (the
+executor/evaluator/skeptic/auditor that led to this escalation has already
+returned its verdict) — nothing here is orphaned by the return, because
+everything needed to resume is already on disk and the parent that receives
+this return is the one now responsible for eventually calling `SendMessage`
+back in. Ending a turn for any other reason — including while waiting on a
+spawned executor, evaluator, skeptic, or auditor — remains exactly as
+forbidden as before. See "Escalation & Circuit Breakers" → "How to raise one"
+below for the full raise/bubble/resume protocol this exception exists for.
+
 {{block:harnessResume}}
 
 ---
@@ -730,20 +747,68 @@ doesn't, or the script fails for any reason, `CONTEXT` is simply empty — raise
 the escalation anyway, without `context=`, rather than let a malformed
 context call block it.
 
-Then raise it as a single **blocking** call. This both lights up `NEEDS YOU`
-on the dashboard and waits for the human's decision — the dashboard's
-escalation screen writes the answer, and this call returns it directly. Only
-include `context=` when `CONTEXT` is non-empty — an event with `context=""`
-is not the same as one with no `context` field at all, and the screen's
-"no context" rendering depends on the key being genuinely absent:
+**Present it in your own chat transcript immediately, before anything else
+below (CON-76).** Post the question — and, for the multi-part form, every
+sub-question — plus its options and any gathered context into your own
+transcript first, whichever branch you take next. This alone closes the gap
+whenever you already own the human-visible chat channel (an `--inline` run,
+the top-level `/concertino-deliver` session itself, or Codex/OpenCode's
+default sequential single-thread flow, which has no subagent hop to bubble
+across in the first place — see `inline-orchestrator-mode` and
+`docs/harness-capabilities.md`). It costs nothing when you don't own that
+channel either; the topology branch below is what additionally reaches the
+human in that case.
 
-```bash
-ARGS=(ticket=$TICKET_ID role=orchestrator \
-  question="<one sentence, the decision you need>" \
-  options=approve,deny)
-[ -n "$CONTEXT" ] && ARGS+=(context="$CONTEXT")
-scripts/concertino/emit-event.sh escalation --await "${ARGS[@]}"
-```
+**Then decide how you wait for the answer — by topology (CON-76):**
+
+- **You are the root** — this session has no parent orchestrator that spawned
+  it (`--inline`, or Codex/OpenCode's default sequential single-thread flow,
+  where the one thread reading this file *is* the root by construction).
+  Raise it as a single **blocking** call. This both lights up `NEEDS YOU` on
+  the dashboard and waits for the human's decision — the dashboard's
+  escalation screen writes the answer, and this call returns it directly.
+  Only include `context=` when `CONTEXT` is non-empty — an event with
+  `context=""` is not the same as one with no `context` field at all, and the
+  screen's "no context" rendering depends on the key being genuinely absent:
+
+  ```bash
+  ARGS=(ticket=$TICKET_ID role=orchestrator \
+    question="<one sentence, the decision you need>" \
+    options=approve,deny)
+  [ -n "$CONTEXT" ] && ARGS+=(context="$CONTEXT")
+  scripts/concertino/emit-event.sh escalation --await "${ARGS[@]}"
+  ```
+
+- **You are running as a Claude Code subagent** — dispatched via
+  `Agent(subagent_type: concertino-orchestrator)`, the default,
+  non-`--inline` topology — raise it **without blocking** instead:
+
+  ```bash
+  ARGS=(ticket=$TICKET_ID role=orchestrator \
+    question="<one sentence, the decision you need>" \
+    options=approve,deny)
+  [ -n "$CONTEXT" ] && ARGS+=(context="$CONTEXT")
+  scripts/concertino/emit-event.sh escalation --raise-only "${ARGS[@]}"
+  ```
+
+  This writes `escalation.raised` — lighting up `NEEDS YOU` on the dashboard
+  exactly as `--await` would — and returns immediately, exit 0, with nothing
+  to read on stdout. Then, before doing anything else:
+
+  1. Persist a `PENDING_ESCALATION` record in `workflow-state.md` (see the
+     template): `question`, `options` (or `sub_questions`), `context_ref` (if
+     any), `raised_at`, and `kind` (`planning | blocker | budget | followup |
+     final-gate`).
+  2. Return a result headed `ESCALATION-PENDING`, carrying that same
+     information plus an explicit instruction for your parent to
+     `SendMessage` **this same agent** back in once resolved.
+
+  This is the one narrow exception to "never end your turn while artifacts of
+  the current ticket are still incomplete" from "Harness resume model" above —
+  it applies only here, because nothing you spawned is still outstanding at
+  this exact moment (the executor/evaluator/skeptic/auditor whose verdict led
+  to this escalation has already returned), and only because everything
+  needed to resume is already durably on disk before you return.
 
 **Several genuinely independent sub-questions at once?** Use the multi-part
 form instead of synthesizing them into one combined question/options list —
@@ -761,41 +826,47 @@ scripts/concertino/emit-event.sh escalation --await \
   ]'
 ```
 
-The dashboard renders this as a step-through wizard, one sub-question at a
-time. On exit 0, stdout carries one line per sub-answer, in the same order as
+(Replace `--await` with `--raise-only` for the subagent branch above — the
+`sub_questions=` shape is identical either way.) The dashboard renders this as
+a step-through wizard, one sub-question at a time. On a resolving `--await`
+call, stdout carries one line per sub-answer, in the same order as
 `sub_questions` — read them positionally, paired with the sub-questions you
 sent. Everything else about this call — the required per-call timeout below,
 `escalation.answered` already being recorded on success, the non-zero-exit/
 timeout fallback, and the off-ramp rules — applies identically to this form;
-this is purely a wire-shape choice on the same blocking call, not a different
-resolution mechanism. This is informational only: no existing circuit breaker
-below is changed to use it — adopting multi-part for a specific one is a
-separate decision.
+this is purely a wire-shape choice, not a different resolution mechanism.
+This is informational only: no existing circuit breaker below is changed to
+use it — adopting multi-part for a specific one is a separate decision.
 
 **This call must set an explicit per-call timeout, or the harness will kill it
 long before `--await` ever times out on its own.** Claude Code's Bash tool
 defaults to a 120000 ms (two minute) timeout — nowhere near `--await`'s own
 wait — and only honors a longer one if you ask for it. So the Bash tool call
-that runs this command must pass `timeout: 600000` (600000 ms — ten minutes,
-its maximum) explicitly. On another harness, find and set the equivalent
-per-call timeout parameter to its longest allowed value. With that in place,
-`--await`'s own timeout (`CONCERTINO_ESCALATION_TIMEOUT_MIN`, a few minutes by
-default — see `dashboard.escalationTimeoutMinutes`) is deliberately shorter
-than the call timeout, so the wait itself is what ends this call, not an
-external cutoff killing it mid-poll. Even if a harness kills it anyway
-(wrong timeout, a restart, anything), `--await` traps `TERM`/`INT` and
-records `escalation.timeout` before it dies, so the log stays accurate
-regardless of which side ended the wait.
+that runs the **root** branch's `--await` above must pass `timeout: 600000`
+(600000 ms — ten minutes, its maximum) explicitly. On another harness, find
+and set the equivalent per-call timeout parameter to its longest allowed
+value. With that in place, `--await`'s own timeout
+(`CONCERTINO_ESCALATION_TIMEOUT_MIN`, a few minutes by default — see
+`dashboard.escalationTimeoutMinutes`) is deliberately shorter than the call
+timeout, so the wait itself is what ends this call, not an external cutoff
+killing it mid-poll. Even if a harness kills it anyway (wrong timeout, a
+restart, anything), `--await` traps `TERM`/`INT` and records
+`escalation.timeout` before it dies, so the log stays accurate regardless of
+which side ended the wait. (The subagent branch's `--raise-only` call needs no
+such timeout — it never blocks, so the harness's default is already more than
+enough; `--wait-only`'s own short `max_wait_sec` calls, used only by the root
+below, fit comfortably inside the harness default too.)
 
 - **Exit 0:** the human answered from the dashboard. The decision is on
   stdout — use it and continue. The script has already recorded
   `escalation.answered`; **do not emit it again**, or the log carries it twice.
 - **Non-zero exit: it timed out, or the wait was killed.** Either way
   `--await` has already recorded `escalation.timeout` (its own deadline, or
-  its `TERM`/`INT` trap firing). Fall back to chat exactly as before — present
-  the `ESCALATION` block and wait there for the human's reply. **A timeout is
-  never an approval — never treat it, or silence, as one.** Once you have the
-  answer from chat, record it yourself, since nothing else will:
+  its `TERM`/`INT` trap firing). Fall back to chat exactly as before — you
+  already presented the question there; simply wait for the human's reply.
+  **A timeout is never an approval — never treat it, or silence, as one.**
+  Once you have the answer from chat, record it yourself, since nothing else
+  will:
 
   ```bash
   scripts/concertino/emit-event.sh escalation.answered \
@@ -803,7 +874,84 @@ regardless of which side ended the wait.
     answer="<their decision, one line>" || true
   ```
 
-**When to stop doubting an answer.** Both paths above end the same way — with
+### Receiving a bubbled escalation, and the root's resolution loop (CON-76)
+
+**If you receive an `ESCALATION-PENDING` result from a child you spawned**
+(rather than raising an escalation of your own): apply the same topology test
+as above. If you have a parent of your own — you are yourself a subagent —
+immediately re-return the same `ESCALATION-PENDING` payload upward, unchanged,
+without presenting it or attempting to resolve it: you are a relay at this
+hop, not the presenter. Only when you have no parent of your own — you are the
+root — do you present and resolve it yourself, per the procedure below.
+(Today's one real topology has no orchestrator spawning another orchestrator,
+so this relay branch is not yet exercised in practice; it is written once,
+generically, so a future role that reuses this same file — "a fleet driver, a
+queue runner, or another orchestrator dispatched you," per "Harness resume
+model" above — inherits correct bubble-up behavior with no bookkeeping of its
+own.)
+
+**The root's resolution procedure, once `ESCALATION-PENDING` reaches you**
+(whether you raised it yourself just above, or it was relayed to you by a
+child):
+
+1. If this is the first time this question has reached a human-visible
+   transcript — i.e. it was relayed to you, not raised by you directly —
+   present the question/options/context to the human in your own chat
+   transcript now, before doing anything else below.
+2. Poll for a dashboard answer using repeated short `--wait-only` calls, each
+   bounded by its own short per-call budget (~25–30s), looping again on exit
+   code 2, stopping on exit 0 (resolved) or exit 1 (the escalation's *real*
+   deadline was reached):
+
+   ```bash
+   scripts/concertino/emit-event.sh escalation --wait-only max_wait_sec=30 ticket=$TICKET_ID
+   ```
+
+   Between calls, remain able to accept a direct chat reply from the human —
+   this is exactly why the wait is chunked into short calls instead of one
+   long blocking one (a harness's message-queueing behavior during a
+   long-running Bash call is not something to depend on). On exit 1, handle it
+   exactly like a directly-raised `--await` timeout above: a timeout is never
+   an approval, but you already presented the question in chat, so simply
+   keep waiting there for the human's reply and record it per step 3 below —
+   nothing stops a late dashboard answer from still landing and winning the
+   race the normal way.
+3. The moment the human replies directly in chat, write their answer through
+   `concertino answer` rather than acting on it directly:
+
+   ```bash
+   concertino answer $TICKET_ID "<their decision>"
+   # or, for one step of a multi-part escalation:
+   concertino answer $TICKET_ID "<their decision>" --sub <index> --total <n>
+   ```
+
+   Branch directly on its result (see the `escalation-answer-cli` capability)
+   — no confirming `--wait-only` call is needed, since `concertino answer`
+   itself records `escalation.answered` when its own write is the one that
+   resolves the escalation:
+   - **Refused** (already answered) — the dashboard won the race. Report that
+     to the human — do not silently proceed as if your own write had won —
+     and continue your normal `--wait-only` loop from step 2: it is what
+     observes and logs the dashboard's competing answer.
+   - **Successful and resolving** (a single-question answer, or the multi-part
+     sub-answer that completed the last remaining slot) — proceed straight to
+     the resume procedure below; `escalation.answered` is already recorded.
+   - **Successful but not yet resolving** (a partial multi-part sub-answer) —
+     do not resume anything yet. Continue the normal `--wait-only` loop from
+     step 2 for the remaining sub-questions, answerable via either channel.
+
+**Resuming the bubbled orchestrator, once resolved:** `SendMessage` the
+waiting `concertino-orchestrator` agent — the same one that returned
+`ESCALATION-PENDING` — carrying the question, the answer, which channel
+resolved it, and the timestamp, and wait for its next result within the same
+turn before proceeding (an ordinary warm resume, not a further bubble). If
+`SendMessage` is unavailable or that agent cannot be resumed, fall back to a
+fresh cold spawn of `concertino-orchestrator` with a prompt beginning `RESUME
+— do not start over`, pointing it at `workflow-state.md` — the resolved
+`PENDING_ESCALATION` there (plus the resolution you were just given) lets it
+continue without re-raising the same question.
+
+**When to stop doubting an answer.** Every path above ends the same way — with
 an answer *recorded*. Reaching that point sometimes means judging a claim you
 cannot prove, and that judgement needs a defined stopping point, or it isn't
 caution: it's a run that can never be told anything.
@@ -814,10 +962,15 @@ caution: it's a run that can never be told anything.
   Check what is checkable first, then record.
 - **Recording the answer is terminal for this run.** The moment an answer lands
   through one of this project's own resolution mechanisms — `--await`'s
-  `answer.json` path, or the manual `escalation.answered` fallback just above —
-  that event *is* the authoritative resolution of the question it closes, by
-  this document's own design. It is not "a chat message that happened to
-  convince you." Proceed on it.
+  `answer.json` path, the manual `escalation.answered` fallback just above, or
+  (CON-76) a `PENDING_ESCALATION` resolution relayed to a bubbled orchestrator
+  via `SendMessage` from its parent — that recording *is* the authoritative
+  resolution of the question it closes, by this document's own design. It is
+  not "a chat message that happened to convince you." Proceed on it. A
+  `SendMessage`-relayed resolution is exactly as authoritative as observing
+  `answer.json` directly, since it travelled through the same
+  `writeAnswer`/`writeSubAnswer` write — it needs no separate re-corroboration
+  by the resumed orchestrator.
 - **Do not reopen a question resolved that way.** If something later feels
   newly suspicious, that suspicion attaches to *new* claims going forward; it
   never unwinds a decision already properly recorded. Concretely: once the

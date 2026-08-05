@@ -179,6 +179,22 @@ harness genuinely cannot wait for a sub-agent inline, poll for the artefact
 the sub-agent was told to produce (its report path, or a new commit on the
 branch) instead of returning control speculatively, or escalate.
 
+**One narrow, deliberate exception (CON-76).** A `concertino-orchestrator`
+subagent may end its turn early in exactly one case: bubbling a
+`PENDING_ESCALATION` it has just raised (via `--raise-only`) or received from
+a child it spawned, up to its own parent — and only once that escalation's
+full state is durably persisted in `workflow-state.md` so a cold re-spawn can
+reconstruct it. This is not the CON-10 failure mode: at the moment of the
+return, the orchestrator has no outstanding spawned child of its own (the
+executor/evaluator/skeptic/auditor that led to the escalation has already
+returned its verdict), so nothing is orphaned — the parent that receives the
+return is the one now responsible for `SendMessage`-resuming the orchestrator
+once the escalation resolves. Ending a turn while a spawned child (executor,
+evaluator, skeptic, or auditor) is genuinely still outstanding remains exactly
+as forbidden as this section describes. See `core/roles/orchestrator.md`'s
+"How to raise one" / "Receiving a bubbled escalation" and the
+`escalation-bubble-up` capability for the full protocol.
+
 **Codex and OpenCode finding (see above):** the default sequential single-thread
 flow has no spawn/suspend boundary at all — the one thread reading `AGENTS.md`
 (Codex) or `.opencode/agents/concertino-orchestrator.md` (OpenCode) plays every

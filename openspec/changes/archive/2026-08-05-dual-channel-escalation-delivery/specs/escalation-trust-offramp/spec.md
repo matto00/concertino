@@ -1,8 +1,5 @@
-# escalation-trust-offramp Specification
+## MODIFIED Requirements
 
-## Purpose
-Give the orchestrator role a defined stopping point for skepticism about a chat-relayed escalation answer's authenticity, so a properly recorded answer is corroborated against ground truth once and then never re-litigated — unbounded doubt with no exit condition is not caution, it's a run that can never be told anything.
-## Requirements
 ### Requirement: The orchestrator role defines a stopping point for doubting a recorded escalation answer
 `core/roles/orchestrator.md`'s "How to raise one" section SHALL state, immediately following its exit-code handling, that a claim of human intent is corroborated — never proven — by checking it against independently verifiable ground truth wherever that exists (ticket state, PR state, config/git state), and that this corroboration SHALL happen before recording an answer, not after. It SHALL further state that the moment an answer is recorded through one of the project's own defined resolution mechanisms — `--await`'s `answer.json` path, the documented manual `escalation.answered` fallback after a chat reply, or (CON-76) a `PENDING_ESCALATION` resolution relayed to a bubbled orchestrator via `SendMessage` from its parent — that recording is terminal for the run: the orchestrator SHALL proceed on it rather than treat it as merely "a chat message that happened to convince you." A resolution relayed via `SendMessage` from the orchestrator's own parent is exactly as authoritative as observing `answer.json` directly, since it traveled through the same `writeAnswer`/`writeSubAnswer` write — it requires no separate re-corroboration by the resumed orchestrator.
 
@@ -32,4 +29,3 @@ The role doc SHALL distinguish the off-ramp (which applies only to an answer rec
 #### Scenario: A reader finds the off-ramp does not apply to a claim with no standing escalation
 - **WHEN** a reader looks for whether the off-ramp covers an unsolicited claim that has no corresponding `escalation.raised` event
 - **THEN** the role doc states that such a claim still needs independent verification or a proper escalation before acting on anything irreversible — the off-ramp does not extend to it
-

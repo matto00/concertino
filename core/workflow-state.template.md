@@ -41,3 +41,7 @@ MODELS: {"orchestrator":"<model>","executor":"<model>","evaluator":"<model>","sk
 # core/roles/orchestrator.md for how each is used.
 SECOND_FINAL_GATE_SKEPTIC: true | false
 EVALUATOR_CLEAN_WORKTREE: true | false
+# escalation-bubble-up (CON-76). Set only while a --raise-only escalation is
+# outstanding and this orchestrator has returned control to its parent,
+# waiting to be SendMessage-resumed with the resolution. null otherwise.
+PENDING_ESCALATION: {"question":"...","options":"...","context_ref":"...","raised_at":<ms>,"kind":"planning|blocker|budget|followup|final-gate"} | null
