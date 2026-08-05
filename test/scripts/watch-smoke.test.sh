@@ -32,9 +32,23 @@ rows_of() { sed 's/\x1b\[[0-9]\{1,\};1H/\n&/g' "$1"; }
 
 echo "concertino watch (smoke)"
 
+# CON-59: `concertino help` and `concertino --version` must stay explicit —
+# unaffected by the bare-invocation default. Neither needs tmux, so these run
+# unconditionally, before the tmux-availability skip below.
+HELP_OUT="$(node "$ROOT/bin/concertino" help 2>&1)"
+grep -q 'concertino watch' <<<"$HELP_OUT" \
+  && ok "concertino help still prints help text" \
+  || bad "concertino help still prints help text" "no 'concertino watch' entry in help output"
+VERSION_OUT="$(node "$ROOT/bin/concertino" --version 2>&1)"
+grep -q '^concertino v' <<<"$VERSION_OUT" \
+  && ok "concertino --version still prints the version" \
+  || bad "concertino --version still prints the version" "got: $VERSION_OUT"
+
 if ! command -v tmux >/dev/null 2>&1; then
-  echo "  skip (tmux not installed)"
-  exit 0
+  echo "  skip (rest of suite — tmux not installed)"
+  echo "  $PASS passed, $FAIL failed"
+  [ "$FAIL" -eq 0 ]
+  exit $?
 fi
 
 # Session name is unique per test process, never the default "concertino" —
@@ -100,6 +114,15 @@ check "no full-rewrite cursor-home (\\x1b[H) in the session (q)" "$(esc_count $'
   && ok "redraws position each written row individually (differential path)" \
   || bad "redraws position each written row individually (differential path)" \
        "no \\x1b[<row>;1H placements in a real session's output"
+
+# --- CON-59: bare `concertino` (no subcommand) launches the same dashboard
+# as `concertino watch`, including --out flag resolution ---------------------
+printf q | timeout 10 node "$ROOT/bin/concertino" --out="$WORK" > "$OUT" 2>&1
+STATUS=$?
+check "bare concertino (no subcommand) exits 0 on q" "$STATUS" "0"
+grep -q 'SMOKE-1' "$OUT" \
+  && ok "bare concertino renders the live window (same as concertino watch)" \
+  || bad "bare concertino renders the live window" "no SMOKE-1 in output"
 
 echo q | timeout 10 node "$ROOT/bin/concertino" watch --out="$WORK" > "$OUT" 2>&1
 STATUS=$?

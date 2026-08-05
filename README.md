@@ -82,13 +82,17 @@ After editing `concertino.config.json`, re-render with `concertino sync`.
 ## CLI reference
 
 ```
-concertino init       [--out=DIR] [--example=helio|generic] [--yes]
+concertino            [--config=PATH] [--out=DIR]
+                      Launch the live fleet dashboard. Default when no subcommand is
+                      given — same as `concertino watch` below. See docs/dashboard.md.
+
+concertino init       [--out=DIR] [--example=helio|generic] [--yes] [--core=PATH]
                       Interactive setup: config → scripts → agent files (all in one).
 
-concertino sync       [--config=PATH] [--out=DIR] [--harness=claude-code,codex,opencode] [--dry-run]
+concertino sync       [--config=PATH] [--out=DIR] [--harness=claude-code,codex,opencode] [--core=PATH] [--dry-run]
                       Render harness files from core + config. Re-run after every edit.
 
-concertino update     <key=value> [...] [--config=PATH] [--out=DIR] [--dry-run]
+concertino update     <key=value> [...] [--config=PATH] [--out=DIR] [--core=PATH] [--dry-run]
                       Update one or more config fields via dot-notation, then re-sync.
                       Example: concertino update models.claude-code.skeptic=opus budgets.executionCycles=5
                       Example: concertino update agentMerge.enabled=true agentMerge.mergeMethod=squash
@@ -97,10 +101,10 @@ concertino validate   [--config=PATH] [--out=DIR]
                       Validate concertino.config.json — structure, gate commands, model
                       aliases, devServer health URLs, canonicalDocs paths.
 
-concertino diff       [--config=PATH] [--out=DIR] [--harness=...]
+concertino diff       [--config=PATH] [--out=DIR] [--harness=...] [--core=PATH]
                       Show a unified diff between what sync would write and what's on disk.
 
-concertino doctor     [--config=PATH] [--out=DIR]
+concertino doctor     [--config=PATH] [--out=DIR] [--core=PATH]
                       Check the environment: node, git identity, gh auth, each selected
                       harness's CLI (claude/codex/opencode), Linear MCP, Playwright, and
                       Ollama/gateway reachability (if providers.ollama is configured).
@@ -110,7 +114,12 @@ concertino doctor     [--config=PATH] [--out=DIR]
 
 concertino watch      [--config=PATH] [--out=DIR]
                       Live fleet dashboard — every active run, its phase, gates,
-                      and escalations. Needs tmux. See docs/dashboard.md.
+                      and escalations. Needs tmux. Explicit alias for bare
+                      `concertino` above. See docs/dashboard.md.
+
+concertino prune      [--dry-run] [--config=PATH] [--out=DIR]
+                      Remove event logs under .concertino/runs/ that are both terminal
+                      and older than dashboard.retentionDays (default 30).
 
 concertino upgrade    [--out=DIR]
                       Scan generated files for stale version markers; report which need
@@ -119,13 +128,16 @@ concertino upgrade    [--out=DIR]
 concertino gates      [--run=NAME] [--config=PATH] [--out=DIR]
                       List all configured gates, or run one by name.
 
-concertino eject      --role=<role> [--harness=claude-code|codex|opencode] [--config=PATH] [--out=DIR]
+concertino eject      --role=<role> [--harness=claude-code|codex|opencode] [--config=PATH] [--out=DIR] [--core=PATH]
                       Print the fully-rendered agent file for a role to stdout.
                       Respects local overrides in .concertino/roles/. Good for debugging.
 
 concertino migrate    [--config=PATH] [--out=DIR] [--dry-run]
                       Back-fill any config fields added in a newer version of concertino.
                       Never overwrites existing values.
+
+concertino answer     <ticket> <value> [--sub <index> --total <n>] [--out=DIR]
+                      Answer a pending escalation from outside the dashboard TUI.
 
 concertino completion [fish|zsh|bash]
                       Print a shell completion script (defaults to fish).

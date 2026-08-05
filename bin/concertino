@@ -37,7 +37,7 @@ const { cmdAnswer } = require('../lib/cli/answer');
 const { help } = require('../lib/cli/help');
 
 const args = parseArgs(process.argv.slice(2));
-const cmd = args._[0] || 'help';
+const cmd = args._[0] || 'watch';
 if (args.version) { console.log('concertino v' + VERSION); process.exit(0); }
 (async () => {
   try {
