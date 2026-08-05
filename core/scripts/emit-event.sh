@@ -11,10 +11,28 @@ set -uo pipefail
 # Usage:
 #   emit-event.sh <kind> k=v [k=v ...]
 #   emit-event.sh escalation --await ticket=<ID> question=<text> options=a,b
+#   emit-event.sh escalation --raise-only ticket=<ID> question=<text> options=a,b
+#   emit-event.sh escalation --wait-only max_wait_sec=<n> ticket=<ID>
 #
 # `ticket=<ID>` is required; everything else is written through to the JSON
 # object verbatim. Values matching an integer or true/false are emitted
 # unquoted; everything else is a JSON string.
+#
+# `escalation` supports three composable modes (CON-76 — see design.md
+# Decision 1 for the full rationale):
+#   --await       (unchanged) write escalation.raised (+ the one-time stale-
+#                 answer.json-discard check), then block-poll to resolution.
+#   --raise-only  write escalation.raised (+ that same discard check), then
+#                 return immediately, exit 0, no polling. Used by a subagent
+#                 orchestrator that is about to bubble instead of block.
+#   --wait-only max_wait_sec=<n> ticket=<id>
+#                 skip the write AND the discard check (both already ran once
+#                 in the --raise-only/--await call that raised this escalation),
+#                 and poll for up to <n> seconds. Exit 0 (resolved), 1 (the
+#                 escalation's real deadline reached — escalation.timeout
+#                 recorded, terminal), or 2 (still open — this call's own
+#                 short budget simply elapsed; call again). Installs no
+#                 TERM/INT trap — see design.md Decision 1c.
 #
 # Writes to  <main checkout>/.concertino/runs/<TICKET>/events.jsonl
 # — the MAIN checkout, never the worktree, because cleanup.sh --phase4
@@ -58,9 +76,16 @@ KIND="${1:-}"
 shift || true
 
 AWAIT=0
+RAISE_ONLY=0
+WAIT_ONLY=0
 ARGS=()
 for a in "$@"; do
-  if [ "$a" = "--await" ]; then AWAIT=1; else ARGS+=("$a"); fi
+  case "$a" in
+    --await)      AWAIT=1 ;;
+    --raise-only) RAISE_ONLY=1 ;;
+    --wait-only)  WAIT_ONLY=1 ;;
+    *)            ARGS+=("$a") ;;
+  esac
 done
 
 # Resolve the main checkout. `git rev-parse --git-common-dir` points at the
@@ -194,15 +219,21 @@ OTHER_FIELDS=""
 # FIELDS/OTHER_FIELDS exactly like any other caller field for the write
 # itself — this needs no new encoding path, only the extra raw copy.
 SUB_QUESTIONS=""
+# --wait-only only (CON-76 design.md Decision 1b) — this call's own short
+# per-call poll budget, distinct from the escalation's real deadline. Never
+# folded into FIELDS/OTHER_FIELDS: it is a --wait-only invocation parameter,
+# not part of any event payload.
+MAX_WAIT_SEC=""
 
 for kv in ${ARGS+"${ARGS[@]}"}; do
   key="${kv%%=*}"
   val="${kv#*=}"
   [ "$key" = "$kv" ] && continue          # no '=' — ignore
   case "$key" in
-    ticket)  TICKET="$val" ;;
-    role)    ROLE="$val" ;;
-    project) PROJECT="$val" ;;
+    ticket)       TICKET="$val" ;;
+    role)         ROLE="$val" ;;
+    project)      PROJECT="$val" ;;
+    max_wait_sec) MAX_WAIT_SEC="$val" ;;
     # `t` and `kind` are written by build_line and are structural, not payload.
     # Letting a caller pass them through emits the key twice; JSON.parse keeps
     # the LAST, so a stray `t=` silently reorders the whole log (the reducer
@@ -256,6 +287,10 @@ fi
 RUN_DIR="${ROOT}/.concertino/runs/${TICKET}"
 mkdir -p "$RUN_DIR" 2>/dev/null || exit 0
 LOG="${RUN_DIR}/events.jsonl"
+# Defined here (not just before the poll loop, as before CON-76) so
+# --wait-only — which never runs write_escalation_raised() or the discard
+# check — can still reference it.
+ANSWER_FILE="${RUN_DIR}/answer.json"
 
 build_line() {
   printf '{"t":%s,"kind":%s,"project":%s,"ticket":%s,"role":%s%s}' \
@@ -289,7 +324,7 @@ write_line() {
   return 0
 }
 
-if [ "$AWAIT" -eq 0 ]; then
+if [ "$AWAIT" -eq 0 ] && [ "$RAISE_ONLY" -eq 0 ] && [ "$WAIT_ONLY" -eq 0 ]; then
   write_line "$KIND" || true      # a lost event never fails the run
   exit 0
 fi
@@ -418,6 +453,188 @@ write_escalation_raised() {
   return $?
 }
 
+# A previous --await was killed after a human answered but before this script
+# consumed it (exactly the scenario `on_kill` below now closes off). That
+# answer may belong to a different, earlier escalation — acting on it here
+# would apply a stale approval to a question nobody meant to answer, which is
+# worse than discarding it. So: never consume it, but never vanish it silently
+# either — record that it existed and was thrown away, so the dashboard and
+# `tail -f` both show it rather than a human's decision disappearing with no
+# trace.
+#
+# CON-76 design.md Decision 1a: this check belongs to the *write*
+# (--await/--raise-only), not the poll (--wait-only) — it is safe only
+# because it runs once, immediately after that same call's own raise, before
+# anything could have legitimately answered the escalation that raise just
+# created. Repeating it on every --wait-only poll (Decision 3 calls it
+# repeatedly against the SAME still-open escalation) would discard a genuine
+# answer landing in the gap between two polls, mistaking it for stale leftover
+# state from an earlier escalation. So this runs exactly once per escalation,
+# as part of the write, never as part of --wait-only.
+discard_stale_answer() {
+  if [ -e "$ANSWER_FILE" ]; then
+    FIELDS=""
+    write_line escalation.answer_discarded || true
+  fi
+  rm -f "$ANSWER_FILE" 2>/dev/null || true
+}
+
+# Shared by --await's and --wait-only's poll loops (CON-76): checks
+# ANSWER_FILE for a resolution matching MULTI_PART/TOTAL (both already set by
+# the caller). On a genuine resolution: disarms any kill trap (a no-op when
+# none is installed, as for --wait-only — see design.md Decision 1c), records
+# escalation.answered, prints the answer(s) to stdout exactly as before this
+# refactor, and returns 0. Returns 1 (no output, no write) when not yet
+# resolved — the caller keeps polling.
+try_resolve() {
+  if [ "$MULTI_PART" -eq 1 ]; then
+    # design.md Decision 2/spec.md: resolved ONLY when the file parses AND
+    # `complete === true` — never on file-presence alone, and never by
+    # independently re-deriving completeness from `subAnswers.length`. A
+    # parseable file with `complete: false` (or missing/malformed) is treated
+    # identically to the file not existing yet: keep polling.
+    [ -f "$ANSWER_FILE" ] || return 1
+    local sub_answers_json
+    sub_answers_json="$(node -e '
+      try {
+        const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+        if (a && a.complete === true) {
+          process.stdout.write(JSON.stringify(Array.isArray(a.subAnswers) ? a.subAnswers : []));
+        }
+      } catch { /* not resolved yet — keep polling */ }
+    ' "$ANSWER_FILE" 2>/dev/null)"
+    [ -n "$sub_answers_json" ] || return 1
+    # Disarm before the final write — same reasoning as the single-question
+    # path just below.
+    trap - TERM INT
+    # `sub_answers` mirrors the existing singular `answer` field — a
+    # JSON-string-encoded value through the same generic mechanism
+    # `sub_questions` itself uses (design.md Decision 5).
+    FIELDS=",\"sub_answers\":$(json_value "$sub_answers_json")"
+    write_line escalation.answered
+    # One sub-answer per line, in sub-question order — the stdout contract
+    # stays "read stdout, get the answer(s)" without inventing a second
+    # output channel (design.md Decision 5).
+    printf '%s' "$sub_answers_json" | node -e '
+      let s = "";
+      process.stdin.on("data", (d) => { s += d; });
+      process.stdin.on("end", () => {
+        let arr;
+        try { arr = JSON.parse(s); } catch { arr = []; }
+        for (const a of arr) process.stdout.write(String(a == null ? "" : a) + "\n");
+      });
+    '
+    return 0
+  fi
+
+  [ -f "$ANSWER_FILE" ] || return 1
+  local answer
+  answer="$(node -e '
+    try {
+      const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      process.stdout.write(String(a.answer == null ? "" : a.answer));
+    } catch { process.stdout.write(""); }
+  ' "$ANSWER_FILE" 2>/dev/null)"
+  [ -n "$answer" ] || return 1
+  # Disarm before the final write: from here on we are exiting 0 with a real
+  # answer, so a signal landing in this last stretch must not overwrite that
+  # outcome with a spurious escalation.timeout.
+  trap - TERM INT
+  # $answer is free text a human typed at the escalation screen — unbounded by
+  # construction, so this write needs the cap as much as any other.
+  FIELDS=",\"answer\":$(json_value "$answer")"
+  write_line escalation.answered
+  printf '%s\n' "$answer"
+  return 0
+}
+
+# --- --wait-only: poll an already-raised escalation, bounded by this call's
+# own short budget (CON-76 design.md Decisions 1b/1c/2/3) ------------------
+if [ "$WAIT_ONLY" -eq 1 ]; then
+  # design.md Decision 1b: default a missing/malformed max_wait_sec rather
+  # than let arithmetic below fail on an empty or non-numeric value.
+  case "$MAX_WAIT_SEC" in
+    ''|*[!0-9]*) MAX_WAIT_SEC=25 ;;
+  esac
+
+  # Reads the LAST escalation.raised event logged for $TICKET and prints one
+  # field of it ("raised_at" or "sub_questions"); empty if none is found.
+  # Re-derived fresh on every call (design.md Decision 2) — never cached
+  # across --wait-only invocations, since each is its own process.
+  read_raised_field() {
+    node -e '
+      try {
+        const fs = require("fs");
+        const raw = fs.readFileSync(process.argv[1], "utf8");
+        const ticket = process.argv[2];
+        const field = process.argv[3];
+        let last = null;
+        for (const line of raw.split("\n")) {
+          if (!line.trim()) continue;
+          let ev;
+          try { ev = JSON.parse(line); } catch { continue; }
+          if (ev && ev.kind === "escalation.raised" && ev.ticket === ticket) last = ev;
+        }
+        if (!last) { process.stdout.write(""); process.exit(0); }
+        const v = field === "raised_at" ? last.t : last.sub_questions;
+        process.stdout.write(v == null ? "" : String(v));
+      } catch (e) { process.stdout.write(""); }
+    ' "$LOG" "$TICKET" "$1" 2>/dev/null
+  }
+
+  RAISED_AT="$(read_raised_field raised_at)"
+  # design.md Decision 1b: sub_questions/total detection reads from the same
+  # already-logged escalation.raised event raised_at is read from — the same
+  # source, never a separately-supplied total= argument.
+  SUB_QUESTIONS="$(read_raised_field sub_questions)"
+
+  MULTI_PART=0
+  TOTAL=0
+  if [ -n "$SUB_QUESTIONS" ]; then
+    MULTI_PART=1
+    TOTAL="$(printf '%s' "$SUB_QUESTIONS" | node -e '
+      try {
+        const arr = JSON.parse(require("fs").readFileSync(0, "utf8"));
+        process.stdout.write(String(Array.isArray(arr) ? arr.length : 0));
+      } catch { process.stdout.write("0"); }
+    ' 2>/dev/null)"
+    [ -z "$TOTAL" ] && TOTAL=0
+  fi
+
+  # design.md Decision 2: the REAL deadline is anchored to the persisted
+  # raise time, not to this call's own start time — it survives being split
+  # across many short --wait-only calls. Left unset (never reached) when no
+  # escalation.raised event is found for this ticket at all — a caller error,
+  # not a case this call can usefully treat as "timed out".
+  TIMEOUT_MIN="${CONCERTINO_ESCALATION_TIMEOUT_MIN:-60}"
+  if [ -n "$RAISED_AT" ]; then
+    REAL_DEADLINE_MS=$(( RAISED_AT + TIMEOUT_MIN * 60 * 1000 ))
+  fi
+
+  # design.md Decision 1c: no on_kill trap here — a TERM/INT during this call
+  # simply ends the process with no event written, leaving the escalation
+  # exactly as open as it was before this poll attempt.
+
+  CALL_DEADLINE=$(( $(date +%s) + MAX_WAIT_SEC ))
+  while [ "$(date +%s)" -lt "$CALL_DEADLINE" ]; do
+    if try_resolve; then
+      exit 0
+    fi
+    if [ -n "$RAISED_AT" ] && [ "$(now_ms)" -ge "$REAL_DEADLINE_MS" ]; then
+      # The escalation's own real deadline — not this call's max_wait_sec —
+      # has been reached: terminal, exactly as --await's own timeout is.
+      FIELDS=""
+      write_line escalation.timeout || true
+      exit 1
+    fi
+    sleep 1
+  done
+
+  # This call's own short budget elapsed first — still open, neither resolved
+  # nor timed out. No discard, no write. The caller calls --wait-only again.
+  exit 2
+fi
+
 # An escalation always lands in the log as `escalation.raised`, whatever kind
 # the caller passed, so the reducer has one thing to look for. Relabelling
 # before the write is deliberate: the longer kind string has to be inside the
@@ -431,6 +648,14 @@ write_escalation_raised() {
 if ! write_escalation_raised; then
   exit 1
 fi
+discard_stale_answer
+
+# --- --raise-only: write escalation.raised (above) and return immediately -
+if [ "$RAISE_ONLY" -eq 1 ]; then
+  exit 0
+fi
+
+# --- --await from here down: unchanged behavior ----------------------------
 
 # design.md Decision 1/2: when raised with `sub_questions`, --await is in
 # multi-part mode. Learn `total` (the sub-question count) up front, before
@@ -482,83 +707,12 @@ trap on_kill TERM INT
 # Poll for the answer file the dashboard writes. This is the whole control
 # plane: no keystroke injection, no detecting when a harness is at a prompt,
 # and identical on Codex or a local-model harness.
-ANSWER_FILE="${RUN_DIR}/answer.json"
-if [ -e "$ANSWER_FILE" ]; then
-  # A previous --await was killed after a human answered but before this
-  # script consumed it (exactly the scenario `on_kill` above now closes off).
-  # That answer may belong to a different, earlier escalation — acting on it
-  # here would apply a stale approval to a question nobody meant to answer,
-  # which is worse than discarding it. So: never consume it, but never vanish
-  # it silently either — record that it existed and was thrown away, so the
-  # dashboard and `tail -f` both show it rather than a human's decision
-  # disappearing with no trace.
-  FIELDS=""
-  write_line escalation.answer_discarded || true
-fi
-rm -f "$ANSWER_FILE" 2>/dev/null || true
-
 TIMEOUT_MIN="${CONCERTINO_ESCALATION_TIMEOUT_MIN:-60}"
 DEADLINE=$(( $(date +%s) + TIMEOUT_MIN * 60 ))
 
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-  if [ "$MULTI_PART" -eq 1 ]; then
-    # design.md Decision 2/spec.md: resolved ONLY when the file parses AND
-    # `complete === true` — never on file-presence alone, and never by
-    # independently re-deriving completeness from `subAnswers.length`. A
-    # parseable file with `complete: false` (or missing/malformed) is treated
-    # identically to the file not existing yet: keep polling.
-    if [ -f "$ANSWER_FILE" ]; then
-      SUB_ANSWERS_JSON="$(node -e '
-        try {
-          const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-          if (a && a.complete === true) {
-            process.stdout.write(JSON.stringify(Array.isArray(a.subAnswers) ? a.subAnswers : []));
-          }
-        } catch { /* not resolved yet — keep polling */ }
-      ' "$ANSWER_FILE" 2>/dev/null)"
-      if [ -n "$SUB_ANSWERS_JSON" ]; then
-        # Disarm before the final write — same reasoning as the
-        # single-question path just below.
-        trap - TERM INT
-        # `sub_answers` mirrors the existing singular `answer` field — a
-        # JSON-string-encoded value through the same generic mechanism
-        # `sub_questions` itself uses (design.md Decision 5).
-        FIELDS=",\"sub_answers\":$(json_value "$SUB_ANSWERS_JSON")"
-        write_line escalation.answered
-        # One sub-answer per line, in sub-question order — --await's stdout
-        # contract stays "read stdout, get the answer(s)" without inventing a
-        # second output channel (design.md Decision 5).
-        printf '%s' "$SUB_ANSWERS_JSON" | node -e '
-          let s = "";
-          process.stdin.on("data", (d) => { s += d; });
-          process.stdin.on("end", () => {
-            let arr;
-            try { arr = JSON.parse(s); } catch { arr = []; }
-            for (const a of arr) process.stdout.write(String(a == null ? "" : a) + "\n");
-          });
-        '
-        exit 0
-      fi
-    fi
-  elif [ -f "$ANSWER_FILE" ]; then
-    ANSWER="$(node -e '
-      try {
-        const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-        process.stdout.write(String(a.answer == null ? "" : a.answer));
-      } catch { process.stdout.write(""); }
-    ' "$ANSWER_FILE" 2>/dev/null)"
-    if [ -n "$ANSWER" ]; then
-      # Disarm before the final write: from here on we are exiting 0 with a
-      # real answer, so a signal landing in this last stretch must not
-      # overwrite that outcome with a spurious escalation.timeout.
-      trap - TERM INT
-      # $ANSWER is free text a human typed at the escalation screen — unbounded
-      # by construction, so this write needs the cap as much as any other.
-      FIELDS=",\"answer\":$(json_value "$ANSWER")"
-      write_line escalation.answered
-      printf '%s\n' "$ANSWER"
-      exit 0
-    fi
+  if try_resolve; then
+    exit 0
   fi
   sleep 1
 done
