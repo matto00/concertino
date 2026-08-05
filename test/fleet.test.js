@@ -58,10 +58,33 @@ test('a partially instrumented run says so instead of inventing a phase', () => 
   assert.doesNotMatch(out, /Evaluation/);
 });
 
+// --- CON-77: spawn visibility -----------------------------------------------
+
+test('a live, spawned-but-not-started run reads "starting" with elapsed time, not "no telemetry"', () => {
+  const out = renderFleet([run({
+    telemetry: 'none', phase: null, status: 'running',
+    spawnedAt: 12000, startingMs: 12000,
+    window: { alive: true, idleMs: 0 },
+  })], OPTS);
+  assert.match(out, /starting/);
+  assert.doesNotMatch(out, /no telemetry/);
+});
+
 test('an uninstrumented run reports no telemetry and its idle time', () => {
   const out = renderFleet([run({ telemetry: 'none', phase: null, window: { alive: true, idleMs: 11 * 60000 } })], OPTS);
   assert.match(out, /no telemetry/);
   assert.match(out, /idle 11m/);
+});
+
+test('a dead, spawn-only run reads "failed to start", not "window exited"', () => {
+  const out = renderFleet([run({
+    telemetry: 'none', phase: null, status: 'failed',
+    spawnedAt: 1, startingMs: null,
+    endedAt: null, endStatus: null,
+    window: { alive: false, idleMs: null },
+  })], OPTS);
+  assert.match(out, /failed to start/);
+  assert.doesNotMatch(out, /window exited/);
 });
 
 test('a stale escalation on a dead run renders safely — its question no longer surfaces on the dense FAILED row', () => {

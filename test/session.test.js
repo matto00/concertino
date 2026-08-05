@@ -1,6 +1,9 @@
 'use strict';
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { hasTmux, createSession } = require('../lib/ui/session');
 
 const SESSION = 'concertino-test-' + process.pid;
@@ -171,4 +174,42 @@ test('spawn with an empty env map behaves exactly like no env', skip, () => {
     require('child_process').execFileSync('sleep', ['0.1']);
   }
   assert.match(out, /plain-marker/);
+});
+
+// --- CON-77: spawn writes a run.spawn event when a root is supplied ---------
+
+function tmpRoot() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-session-'));
+}
+
+test('spawn writes a run.spawn event to <root>/.concertino/runs/<ticket>/events.jsonl', skip, () => {
+  const root = tmpRoot();
+  const sr = createSession(SESSION, root);
+  sr.ensure();
+  const before = Date.now();
+  sr.spawn('HEL-SPAWN1', 'sleep 300');
+  const after = Date.now();
+
+  const eventsPath = path.join(root, '.concertino', 'runs', 'HEL-SPAWN1', 'events.jsonl');
+  assert.ok(fs.existsSync(eventsPath), 'events.jsonl should exist immediately after spawn');
+  const lines = fs.readFileSync(eventsPath, 'utf8').trim().split('\n');
+  assert.equal(lines.length, 1);
+  const ev = JSON.parse(lines[0]);
+  assert.equal(ev.kind, 'run.spawn');
+  assert.equal(ev.ticket, 'HEL-SPAWN1');
+  assert.equal(ev.role, 'dashboard');
+  assert.ok(typeof ev.t === 'number' && ev.t >= before && ev.t <= after,
+    `t should be a timestamp taken during spawn: ${ev.t} vs [${before}, ${after}]`);
+});
+
+test('a session created without a root writes nothing on spawn', skip, () => {
+  // s (module-level) was created with createSession(SESSION) — no root
+  // argument at all — mirroring every existing caller in this suite. If
+  // spawn() fell back to some default location (e.g. process.cwd()) instead
+  // of genuinely no-op'ing, a .concertino directory would appear there.
+  const before = fs.existsSync(path.join(process.cwd(), '.concertino'));
+  s.spawn('HEL-SPAWN2', 'sleep 300');
+  const after = fs.existsSync(path.join(process.cwd(), '.concertino'));
+  assert.equal(after, before,
+    'omitting root must be a no-op — no run.spawn event written anywhere');
 });

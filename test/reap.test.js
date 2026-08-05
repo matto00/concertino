@@ -62,6 +62,41 @@ test('a dead window with no run.end is never reaped, and still resolves to statu
     'a run with no run.end must never be selected for reaping, no matter how long its window has been dead');
 });
 
+// --- CON-77: a run.spawn-only run (no run.start, no run.end) ---------------
+// A window the dashboard just spawned — before the agent has reached
+// run.start, let alone run.end — must never be reaped as though terminal,
+// whether that window is still alive (still booting) or has already died
+// (failed to start).
+
+test('a run.spawn-only run is never reaped, alive window', () => {
+  const eventsByTicket = new Map([
+    ['HEL-30', { events: [{ t: 1, kind: 'run.spawn' }], malformed: 0 }],
+  ]);
+  const windows = [{ ticket: 'HEL-30', alive: true, idleMs: 0 }];
+  const runs = reduce(eventsByTicket, windows, 1000);
+
+  const run30 = runs.find((r) => r.ticket === 'HEL-30');
+  assert.ok(run30, 'run should be present');
+  assert.equal(run30.endStatus, null, 'no run.end was ever parsed');
+  assert.deepEqual(reap.selectReapable(runs), [],
+    'a run.spawn-only run must never be selected for reaping while its window is alive');
+});
+
+test('a run.spawn-only run is never reaped, dead window', () => {
+  const eventsByTicket = new Map([
+    ['HEL-31', { events: [{ t: 1, kind: 'run.spawn' }], malformed: 0 }],
+  ]);
+  const windows = [{ ticket: 'HEL-31', alive: false, idleMs: null }];
+  const runs = reduce(eventsByTicket, windows, 1000);
+
+  const run31 = runs.find((r) => r.ticket === 'HEL-31');
+  assert.ok(run31, 'run should be present');
+  assert.equal(run31.endStatus, null, 'no run.end was ever parsed');
+  assert.equal(run31.status, 'failed', 'a dead window that never started must still resolve to failed');
+  assert.deepEqual(reap.selectReapable(runs), [],
+    'a run.spawn-only run must never be selected for reaping, however long its dead window sits there');
+});
+
 // --- reapFinished against a fake session ------------------------------------
 
 test('reapFinished writes the scrollback file to disk before session.kill is called', () => {

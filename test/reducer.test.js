@@ -260,6 +260,34 @@ test('malformed count is carried through to the run', () => {
   assert.equal(run.malformed, 3);
 });
 
+// --- CON-77: run.spawn / spawnedAt / startingMs ----------------------------
+
+test('a run whose only event is run.spawn reports no telemetry with spawnedAt set', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 500, kind: 'run.spawn', ticket: 'HEL-1', project: 'helio', role: 'dashboard' },
+  ]), [], NOW);
+  assert.equal(run.telemetry, 'none');
+  assert.equal(run.spawnedAt, 500);
+  assert.equal(run.startedAt, null);
+});
+
+test('startingMs reflects now - spawnedAt while startedAt is still null', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 500, kind: 'run.spawn', ticket: 'HEL-1', role: 'dashboard' },
+  ]), [], NOW);
+  assert.equal(run.startingMs, NOW - 500);
+});
+
+test('startingMs reverts to null once run.start also lands', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 500, kind: 'run.spawn', ticket: 'HEL-1', role: 'dashboard' },
+    { t: 700, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+  ]), [], NOW);
+  assert.equal(run.startingMs, null);
+  assert.equal(run.startedAt, 700);
+  assert.equal(run.elapsedMs, NOW - 700);
+});
+
 // --- CON-3: an unrecognised phase.enter value is rejected, not applied ------
 
 test('an unrecognised phase value does not set run.phase and increments run.malformed', () => {
