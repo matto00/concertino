@@ -6,6 +6,9 @@ A terminal fleet view for watching orchestrator runs at a high level.
 concertino watch
 ```
 
+Bare `concertino` (no subcommand) launches the same dashboard — `watch` is a
+fully-supported, explicit alias for it.
+
 Requires **tmux**. Runs live in a tmux session (one window per ticket), so they
 survive the dashboard crashing, an ssh drop, or a closed laptop.
 
