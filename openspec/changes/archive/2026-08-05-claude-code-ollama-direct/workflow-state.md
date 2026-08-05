@@ -4,16 +4,16 @@ TICKET_ID: CON-75
 CHANGE_NAME: claude-code-ollama-direct
 WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/feature/claude-code-ollama-direct-route/CON-75
 BRANCH: feature/claude-code-ollama-direct-route/CON-75
-PHASE: Execution
+PHASE: Delivery
 CYCLE: 1
 DEV_PORT: 5322
 BACKEND_PORT: 8229
-EXECUTOR_AGENT_ID: —
-EVALUATOR_AGENT_ID: —
-LAST_EVAL_VERDICT: —
-LAST_EVAL_REPORT: —
-SKEPTIC_CYCLE: 0
-LAST_SKEPTIC_VERDICT: CONFIRM (design gate, round 3)
+EXECUTOR_AGENT_ID: a713e4aae4a99efc6
+EVALUATOR_AGENT_ID: aef2705ac7befa803
+LAST_EVAL_VERDICT: PASS
+LAST_EVAL_REPORT: /home/matt/Development/concertino/.concertino/worktrees/feature/claude-code-ollama-direct-route/CON-75/openspec/changes/claude-code-ollama-direct/evaluation-1.md
+SKEPTIC_CYCLE: 1
+LAST_SKEPTIC_VERDICT: CONFIRM (final gate)
 AGENT_MERGE: true
 SPEED: default
 EXECUTION_CYCLES: 3

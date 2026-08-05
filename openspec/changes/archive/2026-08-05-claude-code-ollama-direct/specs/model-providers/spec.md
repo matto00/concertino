@@ -77,7 +77,7 @@ Ollama model, so the model id itself must stay a hosted alias on that route.
   through the existing tier-based/hardcoded default (a hosted-looking
   alias), unchanged from today's behavior — NOT `"qwen3:8b"`
 
-### Requirement: Claude Code can reach Ollama either directly or through a configured gateway
+### Requirement: Claude Code requires a configured gateway to use Ollama
 `concertino validate` SHALL accept a config where `"claude-code"` appears in
 `providers.ollama.harnesses` and `providers.ollama.gateway` is absent — this
 is the **direct** route, valid because Ollama serves a native
