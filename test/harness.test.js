@@ -324,3 +324,73 @@ test('resolveModelsForPlan passes the provider through as CONCERTINO_PROVIDER', 
     { speed: 'fast', harness: 'codex', provider: 'unset' });
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+// --- session naming: make a fleet legible in Remote Control ----------------
+// With Remote Control on for all sessions, every spawned run registers with
+// claude.ai under its own name. Unnamed, they arrive as
+// `<hostname>-graceful-unicorn` or a summary of the first prompt, which is
+// unreadable on a phone — the surface RC exists to serve.
+
+const { sessionNameFor, withSessionName, SESSION_NAME_MAX } = require('../lib/ui/harness');
+
+test('sessionNameFor combines the ticket id and title', () => {
+  assert.equal(sessionNameFor('CON-79', 'Codex prompt not expanded'),
+    'CON-79 Codex prompt not expanded');
+});
+
+test('sessionNameFor falls back to the bare id when no title is known', () => {
+  assert.equal(sessionNameFor('CON-79', null), 'CON-79');
+  assert.equal(sessionNameFor('CON-79', '   '), 'CON-79');
+});
+
+test('sessionNameFor strips what would break a quoted shell word, keeping ordinary punctuation', () => {
+  const n = sessionNameFor('CON-1', 'He said "hi" `rm -rf` $HOME \\ done');
+  assert.doesNotMatch(n, /["`$\\]/);
+  assert.match(n, /^CON-1 /);
+  // Hyphens/parens/slashes are ordinary title text and must survive.
+  assert.equal(sessionNameFor('CON-62', 'Per-ticket harness (claude-code / codex)'),
+    'CON-62 Per-ticket harness (claude-code / codex)');
+});
+
+test('sessionNameFor flattens control characters and collapses whitespace', () => {
+  assert.equal(sessionNameFor('CON-1', 'tab\there\nand   spaces'), 'CON-1 tab here and spaces');
+});
+
+test('sessionNameFor truncates long titles with an ellipsis', () => {
+  const n = sessionNameFor('CON-1', 'x'.repeat(200));
+  assert.ok(n.length <= SESSION_NAME_MAX, `got ${n.length}`);
+  assert.match(n, /…$/);
+});
+
+test('withSessionName inserts -n immediately after the claude binary', () => {
+  assert.equal(
+    withSessionName('claude "/concertino-deliver {{TICKET}}"', 'CON-79 title'),
+    'claude -n "CON-79 title" "/concertino-deliver {{TICKET}}"');
+});
+
+test('withSessionName leaves the {{TICKET}} placeholder intact for submitTicket', () => {
+  const out = withSessionName('claude "/concertino-deliver {{TICKET}} --agent-merge"', 'CON-1 t');
+  assert.match(out, /\{\{TICKET\}\}/);
+});
+
+test('withSessionName is a no-op for harnesses that cannot be named at launch', () => {
+  // codex exposes --name only for `codex remote-control` server mode;
+  // opencode has no equivalent. Guessing a flag would break the spawn.
+  const codex = 'codex "/concertino-deliver {{TICKET}}"';
+  const oc = 'opencode --prompt "/concertino-deliver {{TICKET}}"';
+  assert.equal(withSessionName(codex, 'CON-1 t'), codex);
+  assert.equal(withSessionName(oc, 'CON-1 t'), oc);
+});
+
+test('withSessionName defers to a name the operator already set', () => {
+  const named = 'claude -n "mine" "/concertino-deliver {{TICKET}}"';
+  assert.equal(withSessionName(named, 'CON-1 t'), named);
+  const long = 'claude --name mine "/concertino-deliver {{TICKET}}"';
+  assert.equal(withSessionName(long, 'CON-1 t'), long);
+});
+
+test('withSessionName is a no-op with no name, and on an unrecognised binary', () => {
+  const c = 'claude "/concertino-deliver {{TICKET}}"';
+  assert.equal(withSessionName(c, ''), c);
+  assert.equal(withSessionName('my-wrapper {{TICKET}}', 'CON-1 t'), 'my-wrapper {{TICKET}}');
+});

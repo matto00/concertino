@@ -1833,7 +1833,13 @@ test('a second quickstart-add onto an already-active queue appends via enqueueOn
     // Both launches share the identical command TEMPLATE (only the ticket id
     // substituted in) — proving the append preserved the original queue's
     // own launchCommand rather than resetting it.
-    assert.equal(h.spawnCalls[0].cmd.replace('CON-200', '{{TICKET}}'), h.spawnCalls[1].cmd.replace('CON-201', '{{TICKET}}'));
+    // The `-n "<id> <title>"` session name is a PER-TICKET decoration
+    // applied at spawn (lib/ui/launcher.js), like the harness/provider
+    // ones — the queue itself still stores one undecorated template, which
+    // is what this assertion is actually guarding. Strip the name before
+    // comparing, or two different tickets can never match by construction.
+    const tmpl = (cmd, id) => cmd.replace(/ -n "[^"]*"/, '').split(id).join('{{TICKET}}');
+    assert.equal(tmpl(h.spawnCalls[0].cmd, 'CON-200'), tmpl(h.spawnCalls[1].cmd, 'CON-201'));
     // maxConcurrent: 1 was preserved across the append — proven by CON-201
     // only launching on the SECOND poll (once CON-200's slot freed), not
     // alongside it in the same tick, which is what a reset to some larger
@@ -2393,7 +2399,10 @@ test('a second add-to-queue (q) onto an already-active queue appends via enqueue
     // Both launches share the identical command TEMPLATE (only the ticket id
     // substituted in) — proving the append preserved the original queue's
     // own launchCommand rather than resetting it.
-    assert.equal(h.spawnCalls[0].cmd.replace('CON-60', '{{TICKET}}'), h.spawnCalls[1].cmd.replace('CON-61', '{{TICKET}}'));
+    // See the quickstart-add sibling: the session name is per-ticket by
+    // design; the queue's own launchCommand is what must be preserved.
+    const tmpl2 = (cmd, id) => cmd.replace(/ -n "[^"]*"/, '').split(id).join('{{TICKET}}');
+    assert.equal(tmpl2(h.spawnCalls[0].cmd, 'CON-60'), tmpl2(h.spawnCalls[1].cmd, 'CON-61'));
   } finally {
     await h.teardown(donePromise);
   }

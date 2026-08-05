@@ -230,6 +230,16 @@ independently of the rest of the fleet — the dashboard injects the routing
 into that ticket's tmux window at spawn (see config-reference.md's
 `providers` section), and the launch plan marks re-routed rows with `⇒`.
 
+Each spawned Claude Code session is also named after the ticket it is
+delivering — `claude -n "CON-79 Codex launches never receive…"` — so a fleet
+is legible in [Remote Control](https://code.claude.com/docs/en/remote-control),
+where every session otherwise registers as `<hostname>-graceful-unicorn` or a
+summary of its first prompt. The name is applied per ticket at spawn time, so
+one queue's shared launch command still covers every row. Codex exposes
+`--name` only for its `remote-control` server mode and OpenCode has no
+equivalent, so this is claude-code-only by necessity; a `launchCommand` that
+already sets `-n`/`--name` is left alone.
+
 `escalationTimeoutMinutes` bounds how long `emit-event.sh --await` blocks before
 giving up and letting the orchestrator fall back to presenting the escalation in
 chat. `concertino sync` renders it into `CONCERTINO_ESCALATION_TIMEOUT_MIN` in
