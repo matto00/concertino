@@ -17,7 +17,7 @@ identical behavior across all three.
 | Warm resume / inter-agent messaging | ✅ `SendMessage`, persisted transcripts | ❌ workers `report_agent_job_result`; no routing | ❓ no documented warm-resume-across-turns contract equivalent to `SendMessage` |
 | Orchestrator → executor → evaluator → skeptic → (agent-merge) auditor topology | ✅ first-class | ❌ not supported directly | ❌ not assumed (treated conservatively — see below) |
 | Background / parallel agents | ✅ | ⚠️ threads run, coordination is manual | ⚠️ Task tool calls are synchronous per invocation |
-| Custom instructions | `.claude/agents/*.md` (per-agent) | `AGENTS.md` (single shared doc) | `.opencode/agents/*.md` (per-agent) + `AGENTS.md` (read automatically if present) |
+| Custom instructions | `.claude/agents/*.md` (per-agent) | `AGENTS.md` (index + Iron Laws) + `.codex/roles/*.md` (per-role, read on entering a phase) | `.opencode/agents/*.md` (per-agent) + `AGENTS.md` (read automatically if present) |
 | Slash commands / prompts | `.claude/commands/*.md` | `.codex/prompts/*.md` | `.opencode/commands/*.md` |
 | Native local-model (Ollama) support | ⚠️ only via an Anthropic-compatible gateway (e.g. LiteLLM) — see `model-providers` below | ✅ `[model_providers.ollama]` in `.codex/config.toml` | ✅ `provider.ollama` (OpenAI-compatible) in `opencode.json` |
 | Plugin distribution | ✅ `.claude-plugin/plugin.json` + marketplace | n/a (config files) | n/a (config files) |

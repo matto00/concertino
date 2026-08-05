@@ -39,7 +39,16 @@ These govern every role. The full text is in `.concertino/laws/`:
 
 ## How to run
 
-When asked to deliver a ticket, follow the **Orchestrator** role below, switching
-into the Executor / Evaluator / Skeptic / Auditor roles as it directs.
+When asked to deliver a ticket, **read the Orchestrator role file listed below**
+and follow it, switching into the Executor / Evaluator / Skeptic / Auditor roles
+as it directs — reading each one's file at the moment you switch into it.
+
+The role specs are separate files rather than inlined here **on purpose**. This
+file is part of your instructions on every single turn, so anything inlined here
+is re-sent with every request for the whole run; the five role bodies together
+are roughly ten times the size of this header. Reading a role when you enter its
+phase keeps the standing cost small — which is what makes a local model with a
+32k context window able to run this workflow at all. Read the file you need, when
+you need it; do not read all five up front.
 
 <!-- CONCERTINO:ROLES -->

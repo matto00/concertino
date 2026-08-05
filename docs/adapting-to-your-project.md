@@ -71,7 +71,12 @@ What gets written:
 - **Claude Code:** `.claude/agents/concertino-{orchestrator,executor,evaluator,skeptic,auditor}.md`
   and `.claude/commands/concertino-deliver.md`.
 - **Codex:** a `<!-- CONCERTINO:BEGIN -->…<!-- CONCERTINO:END -->` block in `AGENTS.md`
-  (replaced in place on re-sync, so your other AGENTS.md content is preserved),
+  (replaced in place on re-sync, so your other AGENTS.md content is preserved)
+  holding the overview, the Iron Laws and an **index** of the five role specs —
+  whose bodies are separate files under `.codex/roles/`, read as each phase
+  begins. `AGENTS.md` is re-sent on every request, so keeping the bodies out of
+  it takes a Codex turn from ~23k standing tokens to ~1k; see
+  [`harness-capabilities.md`](harness-capabilities.md),
   plus `.codex/agents/*.toml` and `.codex/prompts/concertino-deliver.md` — and,
   when `"codex"` is in `providers.ollama.harnesses`, a merge-marker-guarded
   `[model_providers.ollama]` block in `.codex/config.toml`.

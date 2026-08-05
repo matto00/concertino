@@ -18,6 +18,7 @@ scripts/concertino/speeds.json
 /AGENTS.md
 /.codex/agents/concertino-*.toml
 /.codex/prompts/concertino-*.md
+/.codex/roles/concertino-*.md
 /.codex/config.toml
 /.opencode/agents/concertino-*.md
 /.opencode/commands/concertino-*.md

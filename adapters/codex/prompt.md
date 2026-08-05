@@ -21,9 +21,14 @@ just not a different model per role — a stated, documented limit of this
 feature on Codex, not a silent gap.
 
 You have no warm sub-agents here. Run the loop **sequentially in a single thread**,
-playing each role from `AGENTS.md` in turn:
+playing each role in turn. Each role's spec is its OWN file under
+`.codex/roles/` (listed in `AGENTS.md`) — **read the file for a phase as you
+enter that phase**, and do not read all five up front. They total roughly ten
+times the size of `AGENTS.md` itself, and anything you pull in stays in context
+for the rest of the run; on a local model that is the difference between a run
+that completes and one that dies mid-stream when the context fills.
 
-1. **Orchestrator** — fetch the ticket, run `scripts/concertino/setup-worktree.sh`
+1. **Orchestrator** (`.codex/roles/concertino-orchestrator.md`) — fetch the ticket, run `scripts/concertino/setup-worktree.sh`
    with the extracted speed (or omit for `default`) as its third argument,
    then `assert-phase.sh setup`. Parse the extended `READY` output
    (`speed=`/`budgets=`/`models=`/`second_final_gate_skeptic=`/
@@ -32,13 +37,13 @@ playing each role from `AGENTS.md` in turn:
    one call already resolved the run's speed; never call
    `resolve-speed.sh` again yourself. Plan the change. Persist
    `workflow-state.md`.
-2. **Skeptic (design gate)** — re-read the plan from scratch; CONFIRM or list required revisions.
-3. **Executor** — implement; run the verification gates; commit.
-4. **Evaluator** — re-run the gates yourself; three-phase review; PASS or change requests.
-5. **Skeptic (final gate)** — re-establish ground truth, trace each AC, run the app,
+2. **Skeptic (design gate)** (`.codex/roles/concertino-skeptic.md`) — re-read the plan from scratch; CONFIRM or list required revisions.
+3. **Executor** (`.codex/roles/concertino-executor.md`) — implement; run the verification gates; commit.
+4. **Evaluator** (`.codex/roles/concertino-evaluator.md`) — re-run the gates yourself; three-phase review; PASS or change requests.
+5. **Skeptic (final gate)** (same file as step 2) — re-establish ground truth, trace each AC, run the app,
    judge the UI; CONFIRM or change requests (bounded loop back to Executor).
-6. **Orchestrator** — squash, archive, push, open PR, comment on the ticket.
-7. **Auditor** — when agent-merge is enabled for this run, verify the four merge
+6. **Orchestrator** (same file as step 1) — squash, archive, push, open PR, comment on the ticket.
+7. **Auditor** (`.codex/roles/concertino-auditor.md`) — when agent-merge is enabled for this run, verify the four merge
    conditions (`check-merge-readiness.sh` plus a cold AC trace) and merge, or
    escalate with the reason. This stage runs strictly after step 6, never before —
    it operates on the PR step 6 just created. On `ESCALATE`/`BLOCKER`, there is no

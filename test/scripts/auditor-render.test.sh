@@ -45,7 +45,11 @@ has "a.3 auditor model resolved from models[\"claude-code\"].auditor" "model: op
 has "a.4 auditor has its own tools: frontmatter" "tools:" "$AUDITOR_MD"
 hasnt "a.5 auditor is not the skeptic's UI tool grant" "mcp__playwright__browser_navigate" "$AUDITOR_MD"
 
-has "a.6 AGENTS.md documents the auditor role" "## Role: Auditor" "$OUT/AGENTS.md"
+# CON-74: role bodies are no longer inlined into AGENTS.md — it carries an
+# INDEX and each body is its own file, so a Codex turn pays for one role
+# rather than all five. Assert both halves of that contract.
+has "a.6 AGENTS.md indexes the auditor role file" ".codex/roles/concertino-auditor.md" "$OUT/AGENTS.md"
+has "a.6b the auditor role body lives in its own file" "Auditor" "$OUT/.codex/roles/concertino-auditor.md"
 has "a.7 AGENTS.md describes agent-merge as the seventh sequential stage" "Auditor" "$OUT/.codex/prompts/concertino-deliver.md"
 
 AUDITOR_TOML="$OUT/.codex/agents/concertino-auditor.toml"
