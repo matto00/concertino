@@ -210,11 +210,16 @@ test('resolveModel: explicit models.<harness>.<role> override wins over the prov
   assert.equal(configLib.resolveModel(c, 'codex', 'executor'), 'codex-mini-latest');
 });
 
-test('resolveModel: claude-code is never routed through the provider model map, even when listed in providers.ollama.harnesses', () => {
+test('resolveModel: claude-code is NOT routed through the provider model map on the gateway route', () => {
   const c = ollamaBase({ harnesses: ['claude-code'], models: { executor: 'llama3.1:70b' }, gateway: { baseUrl: 'http://gw' } });
   const model = configLib.resolveModel(c, 'claude-code', 'executor');
   assert.notEqual(model, 'llama3.1:70b');
   assert.equal(model, 'sonnet');
+});
+
+test('resolveModel: claude-code IS routed through the provider model map on the direct route (CON-75, no gateway configured)', () => {
+  const c = ollamaBase({ harnesses: ['claude-code'], models: { executor: 'qwen3:8b' } });
+  assert.equal(configLib.resolveModel(c, 'claude-code', 'executor'), 'qwen3:8b');
 });
 
 test('resolveModel: a fourth/unknown harness falls back to FALLBACK_MODEL[\'claude-code\'], never a bare ternary default', () => {
@@ -232,22 +237,84 @@ test('isOllamaRouted: true only when harness is in providers.ollama.harnesses an
   assert.equal(configLib.isOllamaRouted(c, 'codex', 'executor'), false);
 });
 
-test('validation fails when claude-code is Ollama-routed without a configured gateway (exact error path)', () => {
+// --- CON-75: claude-code direct route (no gateway) ---------------------
+
+test('isOllamaRouted: claude-code IS routed on the direct route (no gateway configured)', () => {
+  const c = ollamaBase({ harnesses: ['claude-code'] });
+  assert.equal(configLib.isOllamaRouted(c, 'claude-code', 'executor'), true);
+});
+
+test('isOllamaRouted: claude-code is excluded on the gateway route', () => {
+  const c = ollamaBase({ harnesses: ['claude-code'], gateway: { baseUrl: 'http://gw' } });
+  assert.equal(configLib.isOllamaRouted(c, 'claude-code', 'executor'), false);
+});
+
+test('isOllamaRouted: claude-code with an explicit override is excluded on either route', () => {
+  const direct = ollamaBase({ harnesses: ['claude-code'] });
+  direct.models['claude-code'].executor = 'sonnet';
+  assert.equal(configLib.isOllamaRouted(direct, 'claude-code', 'executor'), false);
+
+  const gateway = ollamaBase({ harnesses: ['claude-code'], gateway: { baseUrl: 'http://gw' } });
+  gateway.models['claude-code'].executor = 'sonnet';
+  assert.equal(configLib.isOllamaRouted(gateway, 'claude-code', 'executor'), false);
+});
+
+test('isOllamaRouted: non-claude-code harnesses are unaffected by the gateway key', () => {
+  const c = ollamaBase({ harnesses: ['codex'], gateway: { baseUrl: 'http://gw' } });
+  assert.equal(configLib.isOllamaRouted(c, 'codex', 'executor'), true);
+});
+
+// Regression: the Models section's alias check pre-dates CON-75 and assumed
+// claude-code ALWAYS resolves to a hosted alias (opus/sonnet/haiku or a
+// claude-* string) — true unconditionally back when isOllamaRouted excluded
+// claude-code entirely. On the direct route resolveModel can now legitimately
+// return a real Ollama model id (e.g. "qwen3:8b"), which must not be flagged
+// as an "unrecognized alias".
+test('validation: a real Ollama model id for claude-code on the direct route is not warned as an unrecognized alias', () => {
+  const { warnings } = configLib.collectConfigIssues(baseConfig({
+    harnesses: ['claude-code'],
+    providers: {
+      ollama: {
+        baseUrl: 'http://localhost:11434',
+        harnesses: ['claude-code'],
+        models: { orchestrator: 'qwen3:8b', executor: 'qwen3:8b', evaluator: 'qwen3:8b', skeptic: 'qwen3:8b', auditor: 'qwen3:8b' },
+      },
+    },
+  }), { out: __dirname });
+  assert.equal(warnings.filter((w) => w.path.startsWith('models.claude-code')).length, 0);
+});
+
+test('validation: a genuinely bad claude-code model still warns on the gateway route (baseline unchanged)', () => {
+  const { warnings } = configLib.collectConfigIssues(baseConfig({
+    harnesses: ['claude-code'],
+    models: { 'claude-code': { executor: 'not-a-real-alias' } },
+  }), { out: __dirname });
+  assert.ok(warnings.some((w) => w.path === 'models.claude-code.executor'));
+});
+
+test('validation passes on the direct route: claude-code + baseUrl + no gateway (CON-75)', () => {
   const { errors } = configLib.collectConfigIssues(baseConfig({
     harnesses: ['claude-code'],
     providers: { ollama: { baseUrl: 'http://localhost:11434', harnesses: ['claude-code'] } },
   }), { out: __dirname });
-  const err = errors.find((e) => e.path === 'providers.ollama.gateway');
-  assert.ok(err, 'expected an error at providers.ollama.gateway');
-  assert.match(err.message, /claude-code.*cannot connect to Ollama directly/i);
+  assert.equal(errors.filter((e) => e.path.startsWith('providers.ollama.gateway')).length, 0);
 });
 
-test('validation passes once providers.ollama.gateway is added', () => {
+test('validation fails when providers.ollama.gateway is configured but incomplete (no baseUrl)', () => {
+  const { errors } = configLib.collectConfigIssues(baseConfig({
+    harnesses: ['claude-code'],
+    providers: { ollama: { baseUrl: 'http://localhost:11434', harnesses: ['claude-code'], gateway: {} } },
+  }), { out: __dirname });
+  const err = errors.find((e) => e.path === 'providers.ollama.gateway.baseUrl');
+  assert.ok(err, 'expected an error at providers.ollama.gateway.baseUrl');
+});
+
+test('validation passes with a complete gateway configured (unchanged)', () => {
   const { errors } = configLib.collectConfigIssues(baseConfig({
     harnesses: ['claude-code'],
     providers: { ollama: { baseUrl: 'http://localhost:11434', harnesses: ['claude-code'], gateway: { baseUrl: 'http://localhost:4000' } } },
   }), { out: __dirname });
-  assert.equal(errors.filter((e) => e.path === 'providers.ollama.gateway').length, 0);
+  assert.equal(errors.filter((e) => e.path.startsWith('providers.ollama.gateway')).length, 0);
 });
 
 test('providers.ollama.harnesses naming a harness this project has not configured is rejected', () => {

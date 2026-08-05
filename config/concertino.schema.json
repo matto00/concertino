@@ -188,7 +188,7 @@
             "gateway": {
               "type": "object",
               "additionalProperties": false,
-              "description": "Anthropic-compatible proxy (e.g. LiteLLM) Claude Code requires to reach Ollama. Required when claude-code appears in providers.ollama.harnesses.",
+              "description": "Optional Anthropic-compatible proxy (e.g. LiteLLM) fronting Ollama. NOT required for claude-code to appear in providers.ollama.harnesses — Ollama serves a native Anthropic-compatible endpoint, so claude-code can reach it directly via baseUrl alone (the 'direct' route). Configure gateway only to front Ollama with a real proxy (auth, multi-model remapping, request logging); when present, claude-code's model ids stay hosted-looking aliases the gateway remaps (the 'gateway' route), and baseUrl must be set — an incomplete gateway object fails validation.",
               "properties": {
                 "baseUrl": { "type": "string", "description": "The gateway's Anthropic-compatible base URL." },
                 "apiKeyEnv": { "type": "string", "description": "Name of the environment variable holding the gateway credential — never the credential value itself." }

@@ -94,15 +94,28 @@ fi
 # window by the dashboard's spawn layer when a ticket carries a
 # `provider:<value>` label — see lib/ui/harness.js) is the explicit
 # override; empty falls back to the project-level default rendered into
-# speeds.json's own `providers.ollama.harnesses` list. claude-code is
-# always excluded from provider-MODEL substitution regardless: its model
-# ids stay hosted-looking aliases that the Anthropic-compatible gateway
-# remaps (see isOllamaRouted's comment in lib/config.js) — for claude-code
-# the flip is carried entirely by the per-window ANTHROPIC_BASE_URL env the
-# same spawn layer injects.
+# speeds.json's own `providers.ollama.harnesses` list. CON-75: claude-code is
+# excluded from provider-MODEL substitution only on the **gateway** route —
+# its model ids stay hosted-looking aliases that the Anthropic-compatible
+# gateway remaps (see isOllamaRouted's comment in lib/config.js) and the flip
+# is carried entirely by the per-window ANTHROPIC_BASE_URL env the same spawn
+# layer injects. On the **direct** route (no gateway — Ollama now serves a
+# native Anthropic-compatible endpoint) claude-code participates in
+# provider-model substitution exactly like any other harness. This script has
+# no access to raw config (only the already-defaulted speeds.json snapshot —
+# see the file header), so it reads the route from
+# `providers.ollama.gatewayConfigured`, which `concertino sync`'s
+# renderSpeedsJson renders alongside the rest of the provider block (design.md
+# Decision 5) rather than re-deriving "does this project have a gateway"
+# against data it does not have.
 PROVIDER_OVERRIDE="${CONCERTINO_PROVIDER:-}"
 OLLAMA_ROUTED="false"
-if [ "$HARNESS" != "claude-code" ]; then
+CLAUDE_CODE_GATEWAY_ROUTE="false"
+if [ "$HARNESS" = "claude-code" ]; then
+  GATEWAY_CONFIGURED="$(jq -e '.providers.ollama.gatewayConfigured // false' "$SPEEDS_JSON" 2>/dev/null)"
+  [ "$GATEWAY_CONFIGURED" = "true" ] && CLAUDE_CODE_GATEWAY_ROUTE="true"
+fi
+if [ "$CLAUDE_CODE_GATEWAY_ROUTE" != "true" ]; then
   case "$PROVIDER_OVERRIDE" in
     ollama) OLLAMA_ROUTED="true" ;;
     default) OLLAMA_ROUTED="false" ;;

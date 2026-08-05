@@ -181,5 +181,56 @@ check "h.1 missing speeds.json exits non-zero" "$RC" "1"
 has   "h.1 missing speeds.json message says so" "$ERR" "speeds.json"
 rm -rf "$SCRIPTS"
 
+# --- CON-75: claude-code direct route (no gateway) vs. gateway route -------
+# A fixture with providers.ollama.harnesses including claude-code, a
+# provider model map, and gatewayConfigured set either way — mirrors exactly
+# what renderSpeedsJson (lib/cli/render.js) now writes into speeds.json.
+new_scripts_ollama_claude_code() {
+  # $1 = "true" | "false" for providers.ollama.gatewayConfigured
+  local d; d="$(mktemp -d)"
+  cp "$ROOT/core/scripts/resolve-speed.sh" "$d/"
+  chmod +x "$d/resolve-speed.sh"
+  cat > "$d/speeds.json" <<JSON
+{
+  "budgets": { "executionCycles": 3, "skepticDesignRounds": 3, "skepticFinalRounds": 2, "debugAttempts": 2 },
+  "speeds": {
+    "default": {
+      "budgets": {},
+      "roleTiers": { "orchestrator": "standard", "executor": "standard", "evaluator": "standard", "skeptic": "standard", "auditor": "standard" }
+    }
+  },
+  "modelTiers": {
+    "claude-code": { "cheap": "haiku", "standard": "sonnet", "capable": "opus" }
+  },
+  "models": { "claude-code": {} },
+  "providers": {
+    "ollama": {
+      "harnesses": ["claude-code"],
+      "models": { "executor": "qwen3:8b" },
+      "gatewayConfigured": $1
+    }
+  }
+}
+JSON
+  printf "CONCERTINO_HARNESS=''\n" > "$d/.concertino.env"
+  printf '%s' "$d"
+}
+
+# gatewayConfigured=false (direct route): claude-code IS provider-substituted,
+# same as any other Ollama-routed harness.
+SCRIPTS="$(new_scripts_ollama_claude_code false)"
+OUT="$("$SCRIPTS/resolve-speed.sh" default claude-code)"
+check "i.1 direct route: claude-code executor resolves the provider model" "$(field "$OUT" .models.executor)" "qwen3:8b"
+check "i.1 direct route: provider reported as ollama"                     "$(field "$OUT" .provider)" "ollama"
+rm -rf "$SCRIPTS"
+
+# gatewayConfigured=true (gateway route): claude-code is NOT provider-
+# substituted — unchanged pre-CON-75 behavior — the tier model wins instead.
+SCRIPTS="$(new_scripts_ollama_claude_code true)"
+OUT="$("$SCRIPTS/resolve-speed.sh" default claude-code)"
+check "i.2 gateway route: claude-code executor is NOT provider-substituted" "$(field "$OUT" .models.executor)" "sonnet"
+check "i.2 gateway route: provider reported as default"                    "$(field "$OUT" .provider)" "default"
+rm -rf "$SCRIPTS"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
