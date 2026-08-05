@@ -1,9 +1,0 @@
-- `core/scripts/next-report-number.sh` — new script: scans a change dir for existing `<kind>-<N>.md` report files and returns the next collision-safe number (disk-derived, not run-local-counter-derived).
-- `scripts/concertino/next-report-number.sh` — byte-identical copy of the above, per this repo's `core/scripts/` → `scripts/concertino/` sync contract.
-- `core/scripts/persist-evidence.sh` — adds an opt-in `--no-clobber` third argument: when the destination already exists, proceed as a no-op if content is identical, otherwise `FAIL` instead of overwriting. Default (no flag) behavior is unchanged.
-- `scripts/concertino/persist-evidence.sh` — byte-identical copy of the above.
-- `core/roles/evaluator.md` — Output/Step 1 now calls `next-report-number.sh` to get a collision-safe filename instead of writing unconditionally to `evaluation-<CYCLE>.md`; the `persist-evidence.sh` call for `verdict.ref` now passes `--no-clobber`; adds a guardrail for `next-report-number.sh` `FAIL` → `BLOCKER`.
-- `core/roles/skeptic.md` — same set of changes as `evaluator.md`, for `skeptic-<GATE>-<N>.md` report filenames.
-- `test/scripts/next-report-number.test.sh` — new tests: empty dir → 1; existing files → continues the sequence; independent numbering per kind; missing/unreadable change dir → FAIL; unknown kind → FAIL; the "unexpected pre-existing target" FAIL safety re-check (fabricated via a `basename`-stubbed sourced invocation, since the scan itself can't produce that state in practice).
-- `test/scripts/persist-evidence.test.sh` — new cases for `--no-clobber`: no existing destination, identical existing content (no-op success), differing existing content (FAIL, destination untouched), the flag omitted still unconditionally overwrites (regression guard), and an unrecognized third argument fails loudly.
-- `package.json` — adds `test/scripts/next-report-number.test.sh` to the hand-maintained `test` script chain so it runs under `npm test`.
