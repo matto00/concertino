@@ -240,6 +240,42 @@ unit test file 1:1 with its source file
 (`test/widgets/confirm.test.js` etc.), consistent with how `format.test.js`/
 `layout.test.js` are organised today.
 
+**Decision 7 (fold-in, post-delivery follow-up) — migrate the three
+remaining inline `icon + ' ' + label` compositions.** The first delivery
+(PR #63) deliberately left `drilldown.js`'s four panel titles
+(`drilldown.js:476,516,519,520` — TICKET/TIMELINE/GATES/EVIDENCE),
+`ticketDetail.js`'s two headers (`:54,68` — DESCRIPTION/COMMENTS), and
+`controllers/drilldown.js`'s `docTitle` composition (`:116`) out of scope,
+flagged as a known follow-up. Per human fold-in direction (a real,
+dashboard-answered decision — see ticket.md's "Additional Scope" and
+workflow-state.md's provenance note), this change now also migrates those
+seven call sites to `sectionHeader()`:
+- `drilldown.js:476` (`icons.ticket + ' [1] TICKET'`) → `sectionHeader({
+  icon: icons.ticket, label: '[1] TICKET' })`.
+- `drilldown.js:516/519/520` (`timelineTitle`/`gatesTitle`/`evidenceTitle`)
+  each compose a base `icon + ' [n] LABEL'` string, with `timelineTitle` and
+  `gatesTitle` appending a further dynamic suffix (malformed-count / cycle
+  number) AFTER that base. `sectionHeader({ icon, label: '[n] LABEL' })`
+  replaces only the base composition; the dynamic suffix continues to be
+  string-concatenated onto its result exactly as today — Decision 4's
+  contract is scoped to the icon+label pair, not to a title's entire
+  string, so this is not a widening of that contract.
+- `ticketDetail.js:54/68` (`icons.description + ' DESCRIPTION'` /
+  `icons.comments + ' COMMENTS' + optional count`) → same pattern:
+  `sectionHeader({ icon, label })` for the base pair, with `:68`'s dynamic
+  comment-count suffix still appended after, unchanged.
+- `controllers/drilldown.js:116` (`icons.evidence + ' ' + (action.label ||
+  action.ref || '(untitled)')`) → `sectionHeader({ icon: icons.evidence,
+  label: action.label || action.ref || '(untitled)' })`.
+
+Two call sites verified NOT to be part of this migration (both already
+correctly excluded by `dashboard-iconography`'s existing "Icons are
+additive" requirement, not by Decision 4): `drilldown.js:302`'s
+`icons.pr + ' '` prefix and `drilldown.js:413`'s `icons.branch + ' ' +
+(run.branch || ...)` are mid-row content prefixing a per-row dynamic value,
+not a static section/pane header title — outside `sectionHeader`'s "icon +
+static label" contract, unchanged by this change.
+
 ## Risks / Trade-offs
 
 - [Risk] A screen's inline construction differs from the new widget's output
@@ -247,7 +283,17 @@ unit test file 1:1 with its source file
   Mitigation: every widget extraction is verified against that screen's
   existing test fixtures/snapshots before and after the swap; the evaluator's
   spec-conformance pass re-runs the full existing test suite, which is the
-  concrete check for "no behavior change."
+  concrete check for "no behavior change." **(Design-gate round 5
+  correction, fold-in scope):** this mitigation held for six of Decision 7's
+  seven call sites (`drilldown.js`'s four panel titles and `ticketDetail.js`'s
+  two headers all have direct existing assertions on their exact rendered
+  strings — `test/drilldown.test.js:104-107`, `test/ticketDetail.test.js:
+  78-96`), but NOT for `controllers/drilldown.js:116`'s `docTitle`
+  composition — no existing test in the suite exercises that controller
+  line at all. Task 7.0 adds that missing regression test, against the
+  pre-swap composition, before task 7.4's swap lands, so this mitigation
+  now genuinely holds for all seven sites rather than overstating coverage
+  for the one it didn't.
 - [Risk] Widening icon coverage to more screens could visually clutter a
   screen not designed with icon-prefixed headers in mind → Mitigation:
   `dashboard-iconography`'s own existing requirements ("Icons are additive,"
