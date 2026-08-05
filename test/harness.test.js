@@ -161,6 +161,18 @@ const GATEWAY_CFG = JSON.parse(JSON.stringify(OLLAMA_CFG));
 GATEWAY_CFG.providers.ollama.gateway = { baseUrl: 'http://127.0.0.1:4000' };
 GATEWAY_CFG.providers.ollama.harnesses = ['claude-code', 'codex'];
 
+// CON-75: claude-code DIRECT route — no gateway at all, claude-code IS in
+// providers.ollama.harnesses, ANTHROPIC_BASE_URL points straight at
+// providers.ollama.baseUrl.
+const DIRECT_CFG = JSON.parse(JSON.stringify(OLLAMA_CFG));
+DIRECT_CFG.providers.ollama.harnesses = ['claude-code', 'codex'];
+
+// Gateway configured but incomplete (no baseUrl) — the one claude-code
+// half-state that still refuses 'ollama' on either route.
+const INCOMPLETE_GATEWAY_CFG = JSON.parse(JSON.stringify(OLLAMA_CFG));
+INCOMPLETE_GATEWAY_CFG.providers.ollama.gateway = {};
+INCOMPLETE_GATEWAY_CFG.providers.ollama.harnesses = ['claude-code', 'codex'];
+
 test('harnessOfCommand maps a command back to its canonical harness', () => {
   assert.equal(harnessOfCommand('claude "/concertino-deliver {{TICKET}}"'), 'claude-code');
   assert.equal(harnessOfCommand('codex -c model_provider=ollama "x"'), 'codex');
@@ -179,9 +191,17 @@ test('provider label is refused without providers.ollama config', () => {
   assert.equal(resolveTicketProvider(['provider:ollama'], { harnesses: ALL }, 'codex'), null);
 });
 
-test('provider:ollama on claude-code requires a configured gateway', () => {
-  assert.equal(resolveTicketProvider(['provider:ollama'], OLLAMA_CFG, 'claude-code'), null);
+test('provider:ollama on claude-code no longer requires a gateway (CON-75 direct route)', () => {
+  assert.equal(resolveTicketProvider(['provider:ollama'], DIRECT_CFG, 'claude-code'), 'ollama');
   assert.equal(resolveTicketProvider(['provider:ollama'], GATEWAY_CFG, 'claude-code'), 'ollama');
+});
+
+test('provider:ollama on claude-code still refuses an incomplete gateway (no baseUrl)', () => {
+  assert.equal(resolveTicketProvider(['provider:ollama'], INCOMPLETE_GATEWAY_CFG, 'claude-code'), null);
+});
+
+test('provider:ollama on claude-code refuses when providers.ollama is entirely absent', () => {
+  assert.equal(resolveTicketProvider(['provider:ollama'], { harnesses: ALL }, 'claude-code'), null);
 });
 
 test('provider:default is a no-op (null) on a harness the project does not route', () => {
@@ -204,6 +224,40 @@ test('providerSpawnEnv sets/empties ANTHROPIC_BASE_URL for gateway claude-code',
     { CONCERTINO_PROVIDER: 'ollama', ANTHROPIC_BASE_URL: 'http://127.0.0.1:4000' });
   assert.deepEqual(providerSpawnEnv('default', GATEWAY_CFG, 'claude-code'),
     { CONCERTINO_PROVIDER: 'default', ANTHROPIC_BASE_URL: '' });
+});
+
+// CON-75: direct route — ANTHROPIC_BASE_URL points at providers.ollama.baseUrl
+// itself, and (verified, design.md Decision 4) a placeholder
+// ANTHROPIC_AUTH_TOKEN is required because the Claude Code CLI itself falls
+// back to interactive OAuth login without a non-empty token, even though
+// Ollama's own endpoint needs no credential.
+test('providerSpawnEnv sets ANTHROPIC_BASE_URL + placeholder ANTHROPIC_AUTH_TOKEN for direct-route claude-code', () => {
+  assert.deepEqual(providerSpawnEnv('ollama', DIRECT_CFG, 'claude-code'), {
+    CONCERTINO_PROVIDER: 'ollama',
+    ANTHROPIC_BASE_URL: 'http://127.0.0.1:11434',
+    ANTHROPIC_AUTH_TOKEN: 'ollama-local',
+  });
+});
+
+test('providerSpawnEnv empties ANTHROPIC_BASE_URL and sets no token for "default" on the direct route', () => {
+  assert.deepEqual(providerSpawnEnv('default', DIRECT_CFG, 'claude-code'),
+    { CONCERTINO_PROVIDER: 'default', ANTHROPIC_BASE_URL: '' });
+});
+
+test('providerSpawnEnv omits the placeholder token when providers.ollama.apiKeyEnv names a real credential', () => {
+  const withKeyEnv = JSON.parse(JSON.stringify(DIRECT_CFG));
+  withKeyEnv.providers.ollama.apiKeyEnv = 'MY_OLLAMA_TOKEN';
+  assert.deepEqual(providerSpawnEnv('ollama', withKeyEnv, 'claude-code'), {
+    CONCERTINO_PROVIDER: 'ollama',
+    ANTHROPIC_BASE_URL: 'http://127.0.0.1:11434',
+  });
+});
+
+test('providerSpawnEnv prefers the gateway route\'s ANTHROPIC_BASE_URL when both baseUrl and gateway are configured', () => {
+  const both = JSON.parse(JSON.stringify(GATEWAY_CFG));
+  both.providers.ollama.baseUrl = 'http://127.0.0.1:11434';
+  assert.deepEqual(providerSpawnEnv('ollama', both, 'claude-code'),
+    { CONCERTINO_PROVIDER: 'ollama', ANTHROPIC_BASE_URL: 'http://127.0.0.1:4000' });
 });
 
 // Codex ignores `model_providers` in a project-local config.toml, so the
@@ -277,9 +331,13 @@ test('providerChoices: null-only without config; validity mirrors the label rule
   assert.deepEqual(providerChoices({}, 'codex'), [null]);
   assert.deepEqual(providerChoices(OLLAMA_CFG, 'codex'), [null, 'ollama', 'default']);
   assert.deepEqual(providerChoices(OLLAMA_CFG, 'opencode'), [null, 'ollama']);
-  // claude-code without a gateway cannot flip to ollama at all
-  assert.deepEqual(providerChoices(OLLAMA_CFG, 'claude-code'), [null]);
+  // CON-75: claude-code with no gateway at all (OLLAMA_CFG has no
+  // providers.ollama.gateway key) CAN flip to ollama now — the direct route.
+  assert.deepEqual(providerChoices(OLLAMA_CFG, 'claude-code'), [null, 'ollama']);
+  assert.deepEqual(providerChoices(DIRECT_CFG, 'claude-code'), [null, 'ollama', 'default']);
   assert.deepEqual(providerChoices(GATEWAY_CFG, 'claude'), [null, 'ollama', 'default']);
+  // Only an incomplete gateway (configured but no baseUrl) still refuses.
+  assert.deepEqual(providerChoices(INCOMPLETE_GATEWAY_CFG, 'claude-code'), [null, 'default']);
 });
 
 test('launchSpecForChoices builds the batch-shaped command for explicit choices', () => {

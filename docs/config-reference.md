@@ -289,7 +289,7 @@ string that merely *looks* like an Ollama tag.
 | `ollama.apiKeyEnv` | string | — | Name of the environment variable holding a credential for `baseUrl`, if Ollama is behind auth. Never the credential value itself — mirrors `worktree.envFiles`'s path-not-secret convention. |
 | `ollama.harnesses` | `string[]` | — | Subset of this project's configured `harnesses` that should route through Ollama. The load-bearing field: `concertino sync`/`doctor`/`validate` read this directly rather than guessing from a model-id string. |
 | `ollama.models` | object | — | Per-role fallback model id (`orchestrator`/`executor`/`evaluator`/`skeptic`/`auditor`), used when a harness in `ollama.harnesses` has no explicit `models.<harness>.<role>` override for that role. An explicit override always wins. `sync` folds these resolved ids into `scripts/concertino/speeds.json` for every Ollama-routed (harness, role) pair, so `resolve-speed.sh` — and through it a run's `READY models=`, `workflow-state.md` `MODELS`, and the orchestrator's call-time model overrides — reports the local model, matching the rendered agent files. |
-| `ollama.gateway` | object | — | Anthropic-compatible proxy (e.g. [LiteLLM](https://docs.litellm.ai/)) Claude Code requires to reach Ollama — **required** when `"claude-code"` appears in `ollama.harnesses`; `concertino validate` fails with an actionable error otherwise. |
+| `ollama.gateway` | object | — | **Optional.** Anthropic-compatible proxy (e.g. [LiteLLM](https://docs.litellm.ai/)) fronting Ollama. NOT required for `"claude-code"` to appear in `ollama.harnesses` — Ollama serves a native Anthropic-compatible endpoint, so Claude Code can reach it directly. Configure a gateway only to front Ollama with a real proxy (auth, multi-model remapping, request logging); when present, `baseUrl` must be set on it or `concertino validate` fails with an actionable error. |
 | `ollama.gateway.baseUrl` | string | — | The gateway's Anthropic-compatible base URL. Rendered into `.concertino.env` as `ANTHROPIC_BASE_URL` when set. |
 | `ollama.gateway.apiKeyEnv` | string | — | Name of the environment variable holding the gateway credential. Rendered into `.concertino.env` as `CONCERTINO_OLLAMA_GATEWAY_API_KEY_ENV` (the *name*, never the value) — the operator's own shell/secrets manager sets `ANTHROPIC_AUTH_TOKEN` from it before launching `claude`. |
 
@@ -320,17 +320,39 @@ string that merely *looks* like an Ollama tag.
 - **OpenCode** — when `"opencode"` is in `ollama.harnesses`, `sync` merges a
   `provider.ollama` entry (OpenAI-compatible, pointed at `ollama.baseUrl` +
   `/v1`) into `opencode.json`, exposing any explicit `ollama.models` ids.
-- **Claude Code** — never speaks to Ollama directly, even when `"claude-code"`
-  appears in `ollama.harnesses`: an Anthropic-compatible gateway remaps the
-  model id, so `.claude/agents/*.md`'s `model:` frontmatter stays an ordinary
-  hosted alias/string. `ollama.models`'s per-role fallback tier also does not
-  apply to Claude Code for the same reason — only the gateway env vars above
-  are rendered.
+- **Claude Code** — two routes, mutually exclusive per project, chosen purely
+  by whether `ollama.gateway` is configured (no separate route key):
+  - **direct** (`"claude-code"` in `ollama.harnesses`, no `ollama.gateway`
+    configured) — Ollama serves a native Anthropic-compatible `/v1/messages`
+    endpoint, so `ANTHROPIC_BASE_URL` points straight at `ollama.baseUrl`, and
+    Claude Code's role models resolve through `ollama.models.<role>` exactly
+    like every other Ollama-routed harness (real Ollama model ids, e.g.
+    `qwen3:8b`, in `.claude/agents/*.md`'s `model:` frontmatter). Ollama's own
+    endpoint needs no credential, but the `claude` CLI itself falls back to
+    interactive OAuth login without a non-empty `ANTHROPIC_AUTH_TOKEN` —
+    `sync` renders a placeholder (`ollama-local`) by default, or, when
+    `ollama.apiKeyEnv` names a real credential instead, only that variable's
+    *name* (never its value, never the placeholder) — see
+    `CONCERTINO_OLLAMA_API_KEY_ENV` below.
+  - **gateway** (`ollama.gateway` configured) — unchanged pre-CON-75
+    behavior: an Anthropic-compatible gateway remaps the model id, so
+    `.claude/agents/*.md`'s `model:` frontmatter stays an ordinary hosted
+    alias/string, and `ollama.models`'s per-role fallback tier does not apply
+    — only the gateway env vars above are rendered.
+
+  `.concertino.env` accordingly gets, on the direct route,
+  `ANTHROPIC_BASE_URL=<ollama.baseUrl>` plus either
+  `ANTHROPIC_AUTH_TOKEN='ollama-local'` (no `apiKeyEnv`) or
+  `CONCERTINO_OLLAMA_API_KEY_ENV=<ollama.apiKeyEnv>` (name only — the
+  operator's own shell/secrets manager is responsible for having that named
+  variable, and `ANTHROPIC_AUTH_TOKEN` itself, already set before launching).
 
 `concertino doctor` performs a best-effort, non-fatal reachability check
 against `ollama.baseUrl` (and `ollama.gateway.baseUrl`, when Claude Code is
-Ollama-routed), and reports whether `apiKeyEnv`/`gateway.apiKeyEnv` are set —
-never their values.
+gateway-routed), reports whether `apiKeyEnv`/`gateway.apiKeyEnv` are set —
+never their values — and, whenever `"claude-code"` appears in
+`ollama.harnesses`, reports which route (`direct` or `gateway`) it resolves
+to.
 
 **Per-ticket provider routing (`provider:<value>` ticket label).** With
 `providers.ollama` configured, an individual ticket can flip between the
@@ -342,13 +364,16 @@ run's models through the Ollama map; `provider:default` (aliases
 default routing is Ollama. The dashboard injects the choice into that
 ticket's tmux window at spawn time (`CONCERTINO_PROVIDER`, which
 `resolve-speed.sh` honors over the project default; plus, for claude-code,
-the per-window `ANTHROPIC_BASE_URL` gateway flip — so `provider:ollama` on
-claude-code requires `ollama.gateway`, and codex rides a
-`-c model_provider=…` CLI override). Labels that can't actually route —
-no `providers.ollama` at all, claude-code without a gateway, ambiguous
-double labels — are ignored rather than half-applied, exactly like the
-harness label's own invalid cases. The launch plan annotates re-routed rows
-with `⇒ ollama` before anything starts.
+the per-window `ANTHROPIC_BASE_URL` flip — `providers.ollama.baseUrl` on the
+direct route, `ollama.gateway.baseUrl` on the gateway route, plus a
+placeholder `ANTHROPIC_AUTH_TOKEN` on the direct route — and codex rides a
+`--oss --local-provider ollama` CLI override instead). Labels that can't
+actually route — no `providers.ollama` at all, or `ollama.gateway`
+configured but incomplete (no `baseUrl`), or ambiguous double labels — are
+ignored rather than half-applied, exactly like the harness label's own
+invalid cases. `provider:ollama` on claude-code works on either route now
+(direct or gateway) — it no longer requires a gateway to be configured. The
+launch plan annotates re-routed rows with `⇒ ollama` before anything starts.
 
 **Switching providers/models while other tickets are in flight.** A run
 resolves its models exactly once, at setup (`setup-worktree.sh` →

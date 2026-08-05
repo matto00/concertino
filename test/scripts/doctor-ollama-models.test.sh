@@ -215,5 +215,55 @@ hasnt "no pulled warning for a fully-capable config" "not pulled locally" "$OUT4
 hasnt "no tools warning for a fully-capable config" "\"tools\" capability" "$OUT4"
 hasnt "no thinking warning for a fully-capable config" "\"thinking\" capability" "$OUT4"
 
+# =============================================================================
+# Scenario 5 (CON-75): claude-code on the DIRECT route (no gateway) — doctor
+# reports providers.ollama.route: direct.
+# =============================================================================
+PRIMARY5="$WORK/primary5"
+mkdir -p "$PRIMARY5"
+write_config "$PRIMARY5/concertino.config.json" '{
+  "baseUrl": "http://localhost:11434",
+  "harnesses": ["claude-code"]
+}'
+node -e '
+  const fs = require("fs");
+  const p = process.argv[1];
+  const c = JSON.parse(fs.readFileSync(p, "utf8"));
+  c.harnesses = ["claude-code"];
+  fs.writeFileSync(p, JSON.stringify(c));
+' "$PRIMARY5/concertino.config.json"
+sync_project "$PRIMARY5"
+
+OUT5="$WORK/doctor5.txt"
+node "$ROOT/bin/concertino" doctor --out="$PRIMARY5" > "$OUT5" 2>&1
+has   "reports the direct route for claude-code" "providers.ollama.route" "$OUT5"
+has   "direct route value is \"direct\"" "direct" "$OUT5"
+hasnt "does not report a gateway route" "gateway" "$OUT5"
+
+# =============================================================================
+# Scenario 6 (CON-75): claude-code on the GATEWAY route — doctor reports
+# providers.ollama.route: gateway (unchanged reachability check alongside it).
+# =============================================================================
+PRIMARY6="$WORK/primary6"
+mkdir -p "$PRIMARY6"
+write_config "$PRIMARY6/concertino.config.json" '{
+  "baseUrl": "http://localhost:11434",
+  "harnesses": ["claude-code"],
+  "gateway": { "baseUrl": "http://localhost:4000" }
+}'
+node -e '
+  const fs = require("fs");
+  const p = process.argv[1];
+  const c = JSON.parse(fs.readFileSync(p, "utf8"));
+  c.harnesses = ["claude-code"];
+  fs.writeFileSync(p, JSON.stringify(c));
+' "$PRIMARY6/concertino.config.json"
+sync_project "$PRIMARY6"
+
+OUT6="$WORK/doctor6.txt"
+node "$ROOT/bin/concertino" doctor --out="$PRIMARY6" > "$OUT6" 2>&1
+has "reports the gateway route for claude-code" "providers.ollama.route" "$OUT6"
+has "gateway route value is \"gateway\"" "gateway" "$OUT6"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

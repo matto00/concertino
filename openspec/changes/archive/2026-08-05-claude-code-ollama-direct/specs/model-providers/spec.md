@@ -1,14 +1,5 @@
-# model-providers Specification
+## MODIFIED Requirements
 
-## Purpose
-Defines provider-aware model configuration — today, a single `providers.ollama`
-block — so any role on Codex, OpenCode, or Claude Code can be routed to a
-locally-hosted Ollama model per-role through config alone. Claude Code can
-reach Ollama either directly (Ollama's native Anthropic-compatible endpoint)
-or through a configured Anthropic-compatible gateway (e.g. LiteLLM), the
-latter reserved for operators who need real proxy features such as request
-remapping, auth, or logging.
-## Requirements
 ### Requirement: `providers.ollama` config block
 `concertino.config.json` SHALL accept an optional top-level `providers`
 object with an optional `ollama` key: `baseUrl` (string), `apiKeyEnv`
@@ -86,64 +77,7 @@ Ollama model, so the model id itself must stay a hosted alias on that route.
   through the existing tier-based/hardcoded default (a hosted-looking
   alias), unchanged from today's behavior — NOT `"qwen3:8b"`
 
-### Requirement: Codex renders Ollama provider configuration
-`concertino sync` SHALL render Codex's local-model provider configuration
-when `"codex"` appears in `providers.ollama.harnesses` (a
-`model_provider`-style reference pointed at `providers.ollama.baseUrl`, plus
-any configured `apiKeyEnv`) into the project's rendered Codex configuration,
-using a merge-marker convention so any hand-authored content in the same file
-outside the marked region is preserved. When `"codex"` does not appear in
-`providers.ollama.harnesses` (including when `providers` is absent
-entirely), no Ollama provider configuration SHALL be rendered for Codex, and
-Codex's rendered agent files SHALL be byte-identical to their
-pre-this-capability form.
-
-#### Scenario: codex ollama provider rendered when opted in
-- **WHEN** `concertino sync` runs for a project with `"codex"` in
-  `harnesses` and `"codex"` in `providers.ollama.harnesses`
-- **THEN** the rendered Codex configuration includes a provider entry
-  pointed at `providers.ollama.baseUrl`
-
-#### Scenario: codex rendering unaffected when not opted in
-- **WHEN** `concertino sync` runs for a project with `"codex"` in
-  `harnesses` and no `providers` block at all
-- **THEN** the rendered Codex agent files contain no Ollama provider
-  configuration and match today's existing rendered output
-
-#### Scenario: a role with an explicit hosted-model override is not Ollama-routed
-- **WHEN** `concertino sync` runs for a project with `"codex"` in
-  `providers.ollama.harnesses` and an explicit
-  `models.codex.executor: "gpt-5.1-codex"` override set
-- **THEN** the `[model_providers.ollama]` block is still rendered into the
-  project's Codex configuration (other Codex roles without an explicit
-  override remain Ollama-routed), but the executor role's own rendered
-  per-role file has no `model_provider = "ollama"` reference and uses
-  `"gpt-5.1-codex"` as its model id, unmodified from today's behavior for an
-  explicit override
-
-### Requirement: OpenCode renders Ollama provider configuration
-`concertino sync` SHALL render an OpenCode provider entry for Ollama's
-OpenAI-compatible API when `"opencode"` appears in
-`providers.ollama.harnesses`, using `providers.ollama.baseUrl` and any
-explicit model ids from `providers.ollama.models`, into OpenCode's native
-project configuration. When `"opencode"` does not appear in
-`providers.ollama.harnesses`, no Ollama provider entry SHALL be rendered into
-OpenCode's configuration.
-
-#### Scenario: opencode ollama provider rendered when opted in
-- **WHEN** `concertino sync` runs for a project with `"opencode"` in
-  `harnesses` and `"opencode"` in `providers.ollama.harnesses`
-- **THEN** OpenCode's rendered native configuration includes a provider
-  entry for Ollama pointed at `providers.ollama.baseUrl`, exposing the
-  configured model ids
-
-#### Scenario: opencode ollama provider absent when not opted in
-- **WHEN** `concertino sync` runs for a project with `"opencode"` in
-  `harnesses` and no `providers.ollama` block
-- **THEN** OpenCode's rendered native configuration contains no Ollama
-  provider entry
-
-### Requirement: Claude Code can reach Ollama either directly or through a configured gateway
+### Requirement: Claude Code requires a configured gateway to use Ollama
 `concertino validate` SHALL accept a config where `"claude-code"` appears in
 `providers.ollama.harnesses` and `providers.ollama.gateway` is absent — this
 is the **direct** route, valid because Ollama serves a native
@@ -282,6 +216,8 @@ produce no new warnings beyond today's output.
   `providers.ollama.harnesses` and `providers.ollama.gateway.baseUrl` set
 - **THEN** doctor reports `providers.ollama.route: gateway`
 
+## ADDED Requirements
+
 ### Requirement: A claude-code ticket can be routed to Ollama directly via label or launch-plan cycle without a gateway configured
 Concertino SHALL treat `ollama` as an available provider for a claude-code ticket's `provider:<value>` label and the launch-plan's per-row provider cycle (`P`/`p`) whenever `providers.ollama.baseUrl` is configured — regardless of whether `providers.ollama.gateway` is configured. A `provider:ollama` label on a claude-code ticket SHALL NOT silently no-op merely because no gateway is configured, as it did before this change.
 
@@ -298,4 +234,3 @@ Concertino SHALL treat `ollama` as an available provider for a claude-code ticke
   `providers.ollama.baseUrl` configured and no `providers.ollama.gateway`
 - **THEN** the row's provider choices include `ollama` (offered via the
   `P`/`p` keys), not just `null`
-
