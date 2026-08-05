@@ -171,7 +171,7 @@ Never let telemetry block delivery: if a call fails, continue.
    unsupported `HARNESS_OVERRIDE`, re-validated here independently of step 1's
    own check as defense in depth), treat it as a `BLOCKER`: surface to the
    human rather than guessing a resolution.
-4. **Gate before advancing:** `scripts/concertino/assert-phase.sh setup "$WORKTREE_PATH"`.
+4. **Gate before advancing:** `scripts/concertino/assert-phase.sh setup "$WORKTREE_PATH" "$TICKET_ID"`.
    If it prints `FAIL`, do not proceed — re-run setup or escalate.
 5. **Resolve `AGENT_MERGE` once, for the whole run.** `AGENT_MERGE_OVERRIDE`
    takes precedence when it is `true` or `false`; otherwise fall back to the
@@ -568,7 +568,7 @@ Run directly (no subagent).
    doesn't trip hygiene checks):
    {{block:specArchive}}
 3. **Push the branch:** `git push -u origin <branch>`, then gate:
-   `scripts/concertino/assert-phase.sh delivery "$WORKTREE_PATH" "<branch>"`. Do not
+   `scripts/concertino/assert-phase.sh delivery "$WORKTREE_PATH" "<branch>" "$TICKET_ID"`. Do not
    create the PR until this passes.
 4. **Create the PR** (`gh pr create` targeting the base branch): title
    `{{var:_ticketPrefixExample}} <brief description>`; body links the ticket and
@@ -636,7 +636,7 @@ After either a human "merged" confirmation or an auditor `MERGE` verdict:
 
    ```bash
    scripts/concertino/cleanup.sh --phase4 "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"
-   scripts/concertino/assert-phase.sh cleanup "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"
+   scripts/concertino/assert-phase.sh cleanup "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"
    ```
 
    `cleanup.sh` also fast-forwards local `<base>` now (bringing it up to date

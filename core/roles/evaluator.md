@@ -145,8 +145,8 @@ Start servers with the **canonical script** (it owns the env-copy, port/CORS
 injection, and health-waits — including reusing a server already healthy):
 
 ```bash
-scripts/concertino/start-servers.sh "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"
-scripts/concertino/assert-phase.sh servers "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"
+scripts/concertino/start-servers.sh "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"
+scripts/concertino/assert-phase.sh servers "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"
 ```
 
 If the script prints `FAIL` (a server never became healthy): include the

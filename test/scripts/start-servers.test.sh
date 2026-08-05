@@ -136,5 +136,85 @@ check "sub-second server-start run reports true ms resolution (non-1000-multiple
 
 rm -rf "$REPO"
 
+# ===========================================================================
+# CON-80: explicit trailing TICKET_ID argument (mirrors CON-64's fix to
+# cleanup.sh, and assert-phase.sh's identical fix above). Without it,
+# start-servers.sh infers the ticket id from the worktree path's basename —
+# a branch whose ticket suffix is lowercase (or non-ticket-shaped altogether)
+# makes that inference wrong or a silent no-op.
+# ===========================================================================
+
+echo "start-servers.sh (CON-80: explicit ticket id)"
+
+# --- non-ticket-shaped basename + explicit ticket id: gate.result still
+#     lands, tagged with the explicit id ------------------------------------
+REPO="$(new_repo)"
+WT="$REPO/local-llm-harnesses"     # basename is NOT ticket-shaped
+mkdir -p "$WT"
+(
+  cd "$REPO" && \
+  CONCERTINO_BACKEND_CWD="." \
+  CONCERTINO_BACKEND_START="true" \
+  CONCERTINO_BACKEND_HEALTH="http://127.0.0.1:${LISTENER_PORT}/" \
+  CONCERTINO_BACKEND_TIMEOUT="5" \
+  "$SCRIPT" "$WT" 0 0 TICK-9
+) > "$REPO/out.txt" 2>"$REPO/err.txt"
+RC=$?
+LOG="$REPO/.concertino/runs/TICK-9/events.jsonl"
+check "exit 0 (explicit ticket id, non-ticket basename)" "$RC" "0"
+check "gate.result lands under the explicit ticket id" \
+  "$([ -f "$LOG" ] && echo yes || echo no)" "yes"
+check "gate.result ticket field is the explicit id" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).ticket)' "$LOG")" \
+  "TICK-9"
+rm -rf "$REPO"
+
+# --- same non-ticket-shaped basename, NO explicit ticket id: no event at
+#     all — proves the explicit argument above is what makes the difference -
+REPO="$(new_repo)"
+WT="$REPO/local-llm-harnesses"
+mkdir -p "$WT"
+(
+  cd "$REPO" && \
+  CONCERTINO_BACKEND_CWD="." \
+  CONCERTINO_BACKEND_START="true" \
+  CONCERTINO_BACKEND_HEALTH="http://127.0.0.1:${LISTENER_PORT}/" \
+  CONCERTINO_BACKEND_TIMEOUT="5" \
+  "$SCRIPT" "$WT" 0 0
+) > "$REPO/out.txt" 2>"$REPO/err.txt"
+RC=$?
+LOG="$REPO/.concertino/runs/local-llm-harnesses/events.jsonl"
+check "exit 0 (no explicit ticket id, non-ticket basename)" "$RC" "0"
+check "no run dir created when the basename isn't ticket-shaped and no id was passed" \
+  "$([ -e "$LOG" ] && echo present || echo absent)" "absent"
+rm -rf "$REPO"
+
+# --- the ticket's own regression scenario: a lowercase-suffix branch, with
+#     the explicit id passed, produces exactly one (canonically-cased) run
+#     directory rather than splitting across a phantom lowercase one --------
+REPO="$(new_repo)"
+WT="$REPO/con-79"        # lowercase, ticket-shaped (Linear's own gitBranchName case)
+mkdir -p "$WT"
+(
+  cd "$REPO" && \
+  CONCERTINO_BACKEND_CWD="." \
+  CONCERTINO_BACKEND_START="true" \
+  CONCERTINO_BACKEND_HEALTH="http://127.0.0.1:${LISTENER_PORT}/" \
+  CONCERTINO_BACKEND_TIMEOUT="5" \
+  "$SCRIPT" "$WT" 0 0 CON-79
+) > "$REPO/out.txt" 2>"$REPO/err.txt"
+RC=$?
+LOG="$REPO/.concertino/runs/CON-79/events.jsonl"
+PHANTOM="$REPO/.concertino/runs/con-79"
+check "exit 0 (lowercase-suffix branch, explicit canonical id)" "$RC" "0"
+check "gate.result lands under the canonical (uppercase) ticket dir" \
+  "$([ -f "$LOG" ] && echo yes || echo no)" "yes"
+check "gate.result ticket field is the canonical id, not the lowercase basename" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).ticket)' "$LOG")" \
+  "CON-79"
+check "no phantom lowercase run dir is created" \
+  "$([ -e "$PHANTOM" ] && echo present || echo absent)" "absent"
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

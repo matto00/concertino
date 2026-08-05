@@ -8,7 +8,12 @@ set -euo pipefail
 # server already healthy on the target port. Backend and/or frontend are
 # optional — if a project has no backend, leave CONCERTINO_BACKEND_START empty.
 #
-# Usage: start-servers.sh <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>
+# Usage: start-servers.sh <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]
+#
+# [TICKET_ID], when passed, is used verbatim to tag every gate.result event
+# this script emits (CON-80, mirroring cleanup.sh's CON-64 shape). When
+# omitted, the ticket id is inferred from the worktree path's basename as a
+# documented fallback — see start_one()'s local T below.
 #
 # Reads from .concertino.env (next to this script):
 #   CONCERTINO_BACKEND_CWD / CONCERTINO_FRONTEND_CWD     dir (worktree-relative)
@@ -25,9 +30,10 @@ set -euo pipefail
 # server that never becomes healthy is an environmental BLOCKER.
 # ===========================================================================
 
-WORKTREE_PATH="${1:?usage: start-servers.sh <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>}"
-DEV_PORT="${2:?usage: start-servers.sh <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>}"
-BACKEND_PORT="${3:?usage: start-servers.sh <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>}"
+WORKTREE_PATH="${1:?usage: start-servers.sh <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]}"
+DEV_PORT="${2:?usage: start-servers.sh <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]}"
+BACKEND_PORT="${3:?usage: start-servers.sh <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]}"
+TICKET_ID="${4:-}"
 export DEV_PORT BACKEND_PORT
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,7 +69,12 @@ start_one() {
   local label="$1" cwd="$2" cmd="$3" health="$4" timeout="$5" log="$6"
   [ -z "$cmd" ] && return 0
   local start_ts; start_ts="$(now_ms)"
-  local T="${WORKTREE_PATH##*/}"
+  # The canonical ticket id arrives as the explicit trailing argument
+  # (CON-80, mirroring cleanup.sh's CON-64 shape); worktree-basename
+  # inference stays only as a fallback for call sites rendered before the
+  # argument existed — see assert-phase.sh's GATE_TICKET for the identical
+  # pattern and rationale.
+  local T="${TICKET_ID:-${WORKTREE_PATH##*/}}"
   local url; url="$(eval "echo \"$health\"")"
   if curl -sf "$url" >/dev/null 2>&1; then
     echo "note: ${label} already healthy at ${url}, reusing" >&2

@@ -90,8 +90,8 @@ binding doc):
 {{block:docsSkeptic}}
 
 - Start the app:
-  `scripts/concertino/start-servers.sh "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"`,
-  then `scripts/concertino/assert-phase.sh servers "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"`.
+  `scripts/concertino/start-servers.sh "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"`,
+  then `scripts/concertino/assert-phase.sh servers "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"`.
   If it `FAIL`s, that's an environmental `BLOCKER` — report it, don't guess.
 - Navigate to **each changed view**. **Take screenshots and look at them** — this
   is a visual-judgment task, not an accessibility-tree task.

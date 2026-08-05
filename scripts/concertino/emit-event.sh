@@ -284,6 +284,17 @@ if [ -z "$TICKET" ] || ! looks_like_ticket "$TICKET"; then
   exit 0
 fi
 
+# Canonicalise case UNCONDITIONALLY, not only when a differently-cased run
+# directory is already found to exist (CON-80 design.md Decision 2). Runs
+# after the shape check above, never widening it — only the letters
+# looks_like_ticket already permits (`[A-Za-z#][A-Za-z0-9_-]*[0-9]`) are
+# touched by `tr`; `#`, digits, `_`, `-` pass through unchanged. This is what
+# makes a lowercase-suffix branch (whose basename-inferring caller never
+# passes the canonical id) still land in the same RUN_DIR as a call site that
+# was told the ticket id explicitly — a second, independent line of defense
+# under the explicit-argument fix in assert-phase.sh/start-servers.sh.
+TICKET="$(printf '%s' "$TICKET" | tr '[:lower:]' '[:upper:]')"
+
 RUN_DIR="${ROOT}/.concertino/runs/${TICKET}"
 mkdir -p "$RUN_DIR" 2>/dev/null || exit 0
 LOG="${RUN_DIR}/events.jsonl"
