@@ -126,5 +126,67 @@ check "FAIL printed to stderr when source is outside any git working tree" "$(gr
 rm -f /tmp/persist-evidence-test-err
 rm -rf "$OUTSIDE"
 
+# --- --no-clobber with no existing destination succeeds like the default ---
+REPO="$(new_repo)"
+printf 'first write\n' > "$REPO/report.md"
+OUT="$(cd "$REPO" && "$SCRIPT" TICKET-7 "$REPO/report.md" --no-clobber)"
+RC=$?
+REF="$(printf '%s' "$OUT" | sed -n 's/^READY ref=//p')"
+check "--no-clobber, no existing dest: exit 0"      "$RC" "0"
+check "--no-clobber, no existing dest: ref exists"  "$([ -f "$REF" ] && echo yes || echo no)" "yes"
+check "--no-clobber, no existing dest: content matches" "$(cat "$REF")" "first write"
+rm -rf "$REPO"
+
+# --- --no-clobber + identical existing content is a no-op success ----------
+REPO="$(new_repo)"
+printf 'same content\n' > "$REPO/report.md"
+OUT1="$(cd "$REPO" && "$SCRIPT" TICKET-8 "$REPO/report.md" --no-clobber)"
+REF1="$(printf '%s' "$OUT1" | sed -n 's/^READY ref=//p')"
+OUT2="$(cd "$REPO" && "$SCRIPT" TICKET-8 "$REPO/report.md" --no-clobber)"
+RC2=$?
+REF2="$(printf '%s' "$OUT2" | sed -n 's/^READY ref=//p')"
+check "--no-clobber, identical re-run: exit 0"        "$RC2" "0"
+check "--no-clobber, identical re-run: same ref"      "$REF2" "$REF1"
+check "--no-clobber, identical re-run: content intact" "$(cat "$REF2")" "same content"
+rm -rf "$REPO"
+
+# --- --no-clobber + differing existing content fails, destination untouched -
+REPO="$(new_repo)"
+printf 'sub-run 1 report\n' > "$REPO/report.md"
+OUT1="$(cd "$REPO" && "$SCRIPT" TICKET-9 "$REPO/report.md" --no-clobber)"
+REF1="$(printf '%s' "$OUT1" | sed -n 's/^READY ref=//p')"
+printf 'sub-run 2 report (different)\n' > "$REPO/report.md"
+OUT2="$(cd "$REPO" && "$SCRIPT" TICKET-9 "$REPO/report.md" --no-clobber 2>/tmp/persist-evidence-test-err)"
+RC2=$?
+check "--no-clobber, differing content: exit non-zero" "$([ "$RC2" -ne 0 ] && echo yes || echo no)" "yes"
+check "--no-clobber, differing content: no READY line" "$(printf '%s' "$OUT2" | grep -c '^READY')" "0"
+check "--no-clobber, differing content: FAIL on stderr" "$(grep -c '^FAIL' /tmp/persist-evidence-test-err)" "1"
+check "--no-clobber, differing content: destination unchanged" "$(cat "$REF1")" "sub-run 1 report"
+rm -f /tmp/persist-evidence-test-err
+rm -rf "$REPO"
+
+# --- omitting --no-clobber still unconditionally overwrites (regression) ---
+REPO="$(new_repo)"
+printf 'v1\n' > "$REPO/report.md"
+OUT1="$(cd "$REPO" && "$SCRIPT" TICKET-10 "$REPO/report.md")"
+REF1="$(printf '%s' "$OUT1" | sed -n 's/^READY ref=//p')"
+printf 'v2 (different)\n' > "$REPO/report.md"
+OUT2="$(cd "$REPO" && "$SCRIPT" TICKET-10 "$REPO/report.md")"
+RC2=$?
+check "no flag: exit 0 despite differing content" "$RC2" "0"
+check "no flag: destination overwritten"          "$(cat "$REF1")" "v2 (different)"
+rm -rf "$REPO"
+
+# --- an unrecognized third argument fails loudly rather than being ignored -
+REPO="$(new_repo)"
+printf 'content\n' > "$REPO/report.md"
+OUT="$(cd "$REPO" && "$SCRIPT" TICKET-11 "$REPO/report.md" --bogus-flag 2>/tmp/persist-evidence-test-err)"
+RC=$?
+check "unknown third arg: exit non-zero" "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
+check "unknown third arg: no READY line" "$(printf '%s' "$OUT" | grep -c '^READY')" "0"
+check "unknown third arg: FAIL on stderr" "$(grep -c '^FAIL' /tmp/persist-evidence-test-err)" "1"
+rm -f /tmp/persist-evidence-test-err
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
