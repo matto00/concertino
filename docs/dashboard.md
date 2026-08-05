@@ -240,6 +240,19 @@ timeout risks the harness killing the wait before `--await` gets to log
 `escalation.timeout` and return control cleanly. Lower it further for a fleet
 you expect to check in on constantly; there is little reason to raise it.
 
+`reapDeliveredAfterMinutes` bounds how long a **delivered** run's tmux window
+stays open after it finishes. A harness returns to its prompt rather than
+exiting when the workflow ends, so a clean delivery leaves an idle session
+holding a process, a window, and — if you run Claude Code with Remote Control
+enabled for all sessions — a registration that keeps the finished run visible
+on your phone indefinitely. The dashboard captures the full scrollback (to
+`.concertino/runs/<TICKET>/session-scrollback.txt`, same as for a dead window)
+and then closes it. The default is **10 minutes**; `0` disables this and closes
+only windows that are already dead. A run still waiting on an escalation is
+never closed regardless of age — `cleanup.sh` emits `run.end` mid-Phase-4 and
+the orchestrator can raise a question afterwards, and killing a session waiting
+on a human is worse than leaving it open.
+
 `retentionDays` bounds how long a **terminal** run's event log under
 `.concertino/runs/<TICKET>/` is kept before it becomes eligible for pruning.
 The default is **30 days**. A run that has not yet emitted a `run.end` event

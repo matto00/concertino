@@ -124,6 +124,12 @@
         "launchCommand": { "type": "string", "description": "Command `n` runs in a new tmux window. `{{TICKET}}` is substituted with the ticket id. Defaults from the configured harness: `claude \"/concertino-deliver {{TICKET}}\"` when claude-code is configured, else the first configured harness's CLI (`codex \"...\"`, or `opencode --prompt \"...\"`). Setting it pins the command for every ticket — per-ticket `harness:<value>` label dispatch only applies when this is unset." },
         "maxConcurrent": { "type": "integer", "minimum": 1, "description": "Cap on simultaneously running orchestrators launched from the launch pad's queue runner (lib/ui/queue.js). Sequential batches use maxConcurrent 1 — the same code path, not a separate one. Editable per-batch on the launch plan screen ('c'); this is only the default.", "default": 2 },
         "escalationTimeoutMinutes": { "type": "integer", "minimum": 0, "description": "How long `emit-event.sh --await` blocks before giving up and letting the agent fall back to presenting the escalation in chat. Rendered into CONCERTINO_ESCALATION_TIMEOUT_MIN in .concertino.env by `concertino sync`. The orchestrator invokes --await inside a single harness command call, which has its own outer timeout (Claude Code caps a Bash call at ~10 minutes) — keep this comfortably under that, or the harness kills the wait before --await's own timeout can fire and log escalation.timeout cleanly.", "default": 8 },
+        "reapDeliveredAfterMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 10,
+          "description": "Minutes to leave a DELIVERED run's tmux window open after it finishes, before the dashboard closes it. A harness returns to its prompt rather than exiting when the workflow ends, so without this an idle session holds a process, a window, and (with Remote Control enabled for all sessions) a phone-visible registration indefinitely. Scrollback is captured before the window is closed. A run still waiting on an escalation is never closed regardless. Set 0 to disable and only ever close windows that are already dead."
+        },
         "retentionDays": { "type": "integer", "minimum": 1, "description": "How long, in days, a terminal run's event log under `.concertino/runs/<TICKET>/` is kept before `concertino prune` (or the best-effort prune at `concertino watch` startup) removes it. A run that has not yet emitted a `run.end` event is never pruned, regardless of age.", "default": 30 },
         "launchPad": {
           "type": "object",

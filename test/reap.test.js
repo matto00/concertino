@@ -160,3 +160,75 @@ test('reapFinished closes a dead, terminal run\'s real tmux window and writes it
     try { require('child_process').execFileSync('tmux', ['kill-session', '-t', SESSION]); } catch (e) {}
   }
 });
+
+// --- reaping a DELIVERED run whose harness never exited ---------------------
+// A harness returns to its prompt when the workflow finishes rather than
+// exiting, so condition 1 (window already dead) never fires for a clean
+// delivery. Observed live: CON-71 delivered and merged its PR, then held an
+// idle session — and a Remote Control registration — indefinitely.
+
+const MIN = 60 * 1000;
+const delivered = (over) => Object.assign({
+  ticket: 'CON-71', endStatus: 'delivered', endedAt: 1000,
+  window: { alive: true },
+}, over);
+
+test('selectReapable: a delivered run whose window is still alive IS reaped once the grace has passed', () => {
+  const runs = [delivered({})];
+  assert.deepEqual(reap.selectReapable(runs, 1000 + 10 * MIN, 10 * MIN), ['CON-71']);
+});
+
+test('selectReapable: it is left alone until the grace has passed', () => {
+  const runs = [delivered({})];
+  assert.deepEqual(reap.selectReapable(runs, 1000 + 9 * MIN, 10 * MIN), []);
+});
+
+// CON-48: cleanup.sh emits run.end mid-Phase-4 and the orchestrator can ask
+// a question afterwards — reducer.js's status() gives that escalation
+// precedence over endStatus for exactly this reason. Killing it would
+// destroy a session waiting on a human.
+test('selectReapable: a delivered run with a LIVE escalation is never idle-reaped', () => {
+  const runs = [delivered({ escalation: { question: 'merge?', raisedAt: 1 } })];
+  assert.deepEqual(reap.selectReapable(runs, 1000 + 60 * MIN, 10 * MIN), []);
+});
+
+test('selectReapable: a STALE escalation does not protect it — nobody is waiting', () => {
+  const runs = [delivered({ escalation: { question: 'merge?', raisedAt: 1 }, escalationStale: true })];
+  assert.deepEqual(reap.selectReapable(runs, 1000 + 60 * MIN, 10 * MIN), ['CON-71']);
+});
+
+// The invariant the original predicate exists to protect, re-asserted for
+// the new path: a crashed run's window is its only surviving evidence.
+test('selectReapable: an ALIVE window whose run never emitted run.end is never idle-reaped', () => {
+  const runs = [{ ticket: 'CON-9', endStatus: null, endedAt: null, window: { alive: true } }];
+  assert.deepEqual(reap.selectReapable(runs, 1000 + 60 * MIN, 10 * MIN), []);
+});
+
+test('selectReapable: without a clock, only already-dead windows are reaped (unchanged legacy behaviour)', () => {
+  const runs = [delivered({}), { ticket: 'CON-8', endStatus: 'failed', endedAt: 5, window: { alive: false } }];
+  assert.deepEqual(reap.selectReapable(runs), ['CON-8']);
+});
+
+test('selectReapable: a zero grace disables the idle path rather than reaping instantly', () => {
+  // 0 is the documented "disable" value; a delivered-and-alive run must
+  // survive it, while a dead window is still reaped.
+  const runs = [delivered({})];
+  assert.deepEqual(reap.selectReapable(runs, 1000, 0), ['CON-71']);
+});
+
+test('reapFinished captures scrollback before killing an idle delivered window', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-reap-idle-'));
+  const order = [];
+  const session = {
+    captureFull(t) { order.push('capture:' + t); return 'the tail'; },
+    kill(t) { order.push('kill:' + t); },
+  };
+  const reaped = reap.reapFinished(root, session, [delivered({})], 1000 + 10 * MIN, 10 * MIN);
+  assert.deepEqual(reaped, ['CON-71']);
+  assert.deepEqual(order, ['capture:CON-71', 'kill:CON-71']);
+  assert.equal(fs.readFileSync(path.join(root, '.concertino', 'runs', 'CON-71', 'session-scrollback.txt'), 'utf8'), 'the tail');
+  fs.rmSync(root, { recursive: true, force: true });
+});
