@@ -2,12 +2,26 @@
 # This must keep covering .concertino/cache/, which holds full Linear ticket
 # descriptions and comment threads — frequently more sensitive than the code.
 .concertino/
-scripts/concertino/.concertino.env
 concertino.config.json
+# Config-derived renders (the .sh files beside them come from core/ and stay
+# tracked; these two are generated from concertino.config.json, so they carry
+# whatever this checkout happens to be configured for — local model ids and
+# endpoints included).
+scripts/concertino/.concertino.env
+scripts/concertino/speeds.json
 
-# Rendered harness output when this repo is used as a consuming project
+# Rendered harness output when this repo is used as a consuming project.
+# Scoped to the concertino-* files each adapter writes, so the openspec
+# skills/commands tracked under .codex/ and .opencode/ are unaffected.
 /.claude/agents/concertino-*.md
 /.claude/commands/concertino-*.md
+/AGENTS.md
+/.codex/agents/concertino-*.toml
+/.codex/prompts/concertino-*.md
+/.codex/config.toml
+/.opencode/agents/concertino-*.md
+/.opencode/commands/concertino-*.md
+/opencode.json
 
 # Git worktrees live inside the repo; committing one records a gitlink to a
 # local-only checkout that no clone can resolve.
