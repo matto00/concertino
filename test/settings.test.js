@@ -79,25 +79,37 @@ test('project/dashboard/budgets/agentMerge/commitTrailer leaf fields are editabl
   assert.equal(fieldMeta.get('models.claude-code.orchestrator').editable, true);
 });
 
-test('worktree.ports.* is editable but the rest of worktree is not', () => {
+// CON-72 removed the per-section allowlist: a field's TYPE is the only
+// thing that decides now. These three cases were all read-only purely
+// because their section was outside CON-57's first slice.
+test('every scalar leaf is editable regardless of which section it lives in', () => {
   const fieldMeta = buildFieldMeta(schema, HELIO_CONFIG);
-  assert.equal(fieldMeta.get('worktree.ports.frontendBase').editable, true);
-  assert.equal(fieldMeta.get('worktree.base').editable, false);
-  assert.equal(fieldMeta.get('worktree.envFiles').editable, false);
+  for (const path of [
+    'worktree.ports.frontendBase', 'worktree.base',
+    'devServers.backend.start', 'ticketProvider.kind', 'ticketProvider.teamKey',
+    'specProvider.kind', 'providers.ollama.baseUrl', 'providers.ollama.models.executor',
+  ]) {
+    assert.equal(fieldMeta.get(path).editable, true, path + ' should be editable');
+  }
 });
 
-test('harnesses/gates/canonicalDocs/devServers are read-only', () => {
+test('arrays get an editor matched to their element type', () => {
   const fieldMeta = buildFieldMeta(schema, HELIO_CONFIG);
-  assert.equal(fieldMeta.get('harnesses').editable, false);
+  // enum elements -> multi-select
+  assert.equal(fieldMeta.get('harnesses').kind, 'enum-list');
+  assert.equal(fieldMeta.get('providers.ollama.harnesses').kind, 'enum-list');
+  // scalar elements -> one delimited line
+  assert.equal(fieldMeta.get('worktree.envFiles').kind, 'scalar-list');
+  assert.equal(fieldMeta.get('ui.breakpoints').kind, 'scalar-list');
+  for (const p of ['harnesses', 'providers.ollama.harnesses', 'worktree.envFiles', 'ui.breakpoints']) {
+    assert.equal(fieldMeta.get(p).editable, true, p + ' should be editable');
+  }
+});
+
+test('only arrays of multi-field records stay read-only', () => {
+  const fieldMeta = buildFieldMeta(schema, HELIO_CONFIG);
   assert.equal(fieldMeta.get('gates').editable, false);
   assert.equal(fieldMeta.get('canonicalDocs').editable, false);
-  assert.equal(fieldMeta.get('devServers.backend.start').editable, false);
-});
-
-test('ticketProvider/specProvider leaf fields are read-only even though they are plain scalars', () => {
-  const fieldMeta = buildFieldMeta(schema, HELIO_CONFIG);
-  assert.equal(fieldMeta.get('ticketProvider.kind').editable, false);
-  assert.equal(fieldMeta.get('specProvider.kind').editable, false);
 });
 
 // --- current-value resolution ------------------------------------------------
@@ -162,12 +174,21 @@ test('an unset field visibly shows "(default)"', () => {
   assert.match(out, /\(default\)/);
 });
 
-test('a read-only field is hinted with the concertino update / hand-edit escape hatch', () => {
+test('a read-only field says WHY it has no editor, naming the file to edit', () => {
   const sections = configLib.schemaSectionOrder(schema);
   const state = settingsState({ sectionIndex: sections.indexOf('gates'), focus: 'fields' });
   const out = plain(renderSettings(state, { cols: 100 }));
   assert.match(out, /read-only/);
-  assert.match(out, /concertino update/);
+  assert.match(out, /multi-field record/);
+  assert.match(out, /concertino\.config\.json/);
+});
+
+test('an editable field says when the edit will actually take effect', () => {
+  const sections = configLib.schemaSectionOrder(schema);
+  const models = settingsState({ sectionIndex: sections.indexOf('models'), focus: 'fields' });
+  assert.match(plain(renderSettings(models, { cols: 100 })), /applies to runs launched after the next `concertino sync`/);
+  const dash = settingsState({ sectionIndex: sections.indexOf('dashboard'), focus: 'fields' });
+  assert.match(plain(renderSettings(dash, { cols: 100 })), /applies when the dashboard next starts/);
 });
 
 test('the footer always shows both esc discard and S save', () => {
@@ -240,4 +261,114 @@ test('j/k move the field cursor while focus is fields; h/tab moves focus back to
   const state = settingsState({ focus: 'fields' });
   assert.deepEqual(handleKey('j', { settings: state }), { type: 'settings-move-field', delta: 1 });
   assert.deepEqual(handleKey('h', { settings: state }), { type: 'settings-focus-sections' });
+});
+
+// --- CON-72: the enum-list multi-select and the scalar-list prompt ----------
+
+const settingsCtl = require('../lib/ui/controllers/settings');
+
+// Drives the real controller against a real settings session, so these
+// exercise the same path a keypress takes in the dashboard.
+function session(overrides) {
+  const cfg = JSON.parse(JSON.stringify(overrides && overrides.config ? overrides.config : HELIO_CONFIG));
+  return {
+    S: {
+      settings: Object.assign({
+        cfgPath: '/tmp/concertino.config.json',
+        raw: cfg,
+        candidate: cfg,
+        schema,
+        fieldMeta: buildFieldMeta(schema, cfg),
+        sections: configLib.schemaSectionOrder(schema),
+        sectionIndex: 0, fieldIndex: 0, focus: 'fields',
+        prompt: null, chooser: null, saveError: null,
+      }, (overrides && overrides.settings) || {}),
+    },
+    root: '/tmp',
+  };
+}
+const apply = (ctx, action) => settingsCtl.handle(action, ctx);
+
+test('Enter on an enum-list opens a chooser pre-ticked from the current value', () => {
+  const ctx = session({});
+  apply(ctx, { type: 'settings-open-chooser', path: 'harnesses' });
+  const ch = ctx.S.settings.chooser;
+  assert.deepEqual(ch.options, ['claude-code', 'codex', 'opencode']);
+  assert.deepEqual(ch.selected, HELIO_CONFIG.harnesses);
+});
+
+test('space toggles membership and Enter writes it in SCHEMA order, not toggle order', () => {
+  const ctx = session({ config: Object.assign({}, HELIO_CONFIG, { harnesses: [] }) });
+  apply(ctx, { type: 'settings-open-chooser', path: 'harnesses' });
+  // Tick opencode (index 2) first, then claude-code (index 0).
+  apply(ctx, { type: 'settings-chooser-move', delta: 2 });
+  apply(ctx, { type: 'settings-chooser-toggle' });
+  apply(ctx, { type: 'settings-chooser-move', delta: -2 });
+  apply(ctx, { type: 'settings-chooser-toggle' });
+  apply(ctx, { type: 'settings-commit-chooser' });
+  assert.equal(ctx.S.settings.chooser, null);
+  assert.deepEqual(ctx.S.settings.candidate.harnesses, ['claude-code', 'opencode']);
+});
+
+test('the chooser can produce an empty list, and Escape discards it entirely', () => {
+  const ctx = session({});
+  const before = ctx.S.settings.candidate.harnesses.slice();
+  apply(ctx, { type: 'settings-open-chooser', path: 'harnesses' });
+  apply(ctx, { type: 'settings-chooser-toggle' });
+  apply(ctx, { type: 'settings-cancel-chooser' });
+  assert.equal(ctx.S.settings.chooser, null);
+  assert.deepEqual(ctx.S.settings.candidate.harnesses, before, 'cancel must not mutate the candidate');
+});
+
+test('the chooser cursor is clamped to the option list', () => {
+  const ctx = session({});
+  apply(ctx, { type: 'settings-open-chooser', path: 'harnesses' });
+  apply(ctx, { type: 'settings-chooser-move', delta: 99 });
+  assert.equal(ctx.S.settings.chooser.index, 2);
+  apply(ctx, { type: 'settings-chooser-move', delta: -99 });
+  assert.equal(ctx.S.settings.chooser.index, 0);
+});
+
+test('a scalar-list seeds as comma-separated text and commits back as an array', () => {
+  const ctx = session({});
+  apply(ctx, { type: 'settings-open-field-prompt', path: 'worktree.envFiles' });
+  assert.equal(ctx.S.settings.prompt.value, (HELIO_CONFIG.worktree.envFiles || []).join(', '));
+  ctx.S.settings.prompt.value = 'backend/.env, frontend/.env.local,  ';
+  apply(ctx, { type: 'settings-commit-prompt' });
+  // Trailing/blank entries dropped, whitespace trimmed.
+  assert.deepEqual(configLib.getAtPath(ctx.S.settings.candidate, 'worktree.envFiles'),
+    ['backend/.env', 'frontend/.env.local']);
+});
+
+test('an integer scalar-list coerces its elements to numbers', () => {
+  const ctx = session({});
+  apply(ctx, { type: 'settings-open-field-prompt', path: 'ui.breakpoints' });
+  ctx.S.settings.prompt.value = '375, 1024, 1440';
+  apply(ctx, { type: 'settings-commit-prompt' });
+  assert.deepEqual(configLib.getAtPath(ctx.S.settings.candidate, 'ui.breakpoints'), [375, 1024, 1440]);
+});
+
+test('a nested provider model is editable like any other string', () => {
+  const cfg = Object.assign({}, HELIO_CONFIG, {
+    providers: { ollama: { baseUrl: 'http://127.0.0.1:11434', harnesses: [], models: { executor: 'old:7b' } } },
+  });
+  const ctx = session({ config: cfg });
+  apply(ctx, { type: 'settings-open-field-prompt', path: 'providers.ollama.models.executor' });
+  assert.equal(ctx.S.settings.prompt.value, 'old:7b');
+  ctx.S.settings.prompt.value = 'qwen3-coder:30b';
+  apply(ctx, { type: 'settings-commit-prompt' });
+  assert.equal(configLib.getAtPath(ctx.S.settings.candidate, 'providers.ollama.models.executor'), 'qwen3-coder:30b');
+});
+
+test('the chooser owns every keystroke while open, and advertises its own keys', () => {
+  const st = settingsState({ focus: 'fields' });
+  st.chooser = { path: 'harnesses', options: ['claude-code', 'codex', 'opencode'], selected: ['codex'], index: 1 };
+  assert.deepEqual(handleKey('j', { settings: st }), { type: 'settings-chooser-move', delta: 1 });
+  assert.deepEqual(handleKey(' ', { settings: st }), { type: 'settings-chooser-toggle' });
+  assert.deepEqual(handleKey('\r', { settings: st }), { type: 'settings-commit-chooser' });
+  assert.deepEqual(handleKey('\x1b', { settings: st }), { type: 'settings-cancel-chooser' });
+  const out = plain(renderSettings(st, { cols: 100 }));
+  assert.match(out, /\[x\] codex/);
+  assert.match(out, /\[ \] claude-code/);
+  assert.match(out, /space toggle/);
 });
