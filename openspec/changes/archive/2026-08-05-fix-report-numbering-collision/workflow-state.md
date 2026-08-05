@@ -6,6 +6,10 @@ WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/bug/fix-r
 BRANCH: bug/fix-report-numbering-collision/CON-81
 PHASE: Delivery
 CYCLE: 1
+# Auditor ESCALATE (2026-08-05): PR #67 mergeStateStatus=DIRTY, real conflict
+# in package.json's scripts.test line vs. main (CON-76/#66 merged after this
+# branch diverged). Falling back to wait-for-"merged" flow per circuit
+# breaker table — awaiting human direction.
 DEV_PORT: 5328
 BACKEND_PORT: 8235
 EXECUTOR_AGENT_ID: —
