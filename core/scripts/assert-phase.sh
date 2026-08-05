@@ -9,10 +9,15 @@ set -euo pipefail
 # means the phase did NOT actually complete and it must not advance.
 #
 # Usage:
-#   assert-phase.sh setup    <WORKTREE_PATH>
-#   assert-phase.sh servers  <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>
-#   assert-phase.sh delivery <WORKTREE_PATH> <BRANCH>
-#   assert-phase.sh cleanup  <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>
+#   assert-phase.sh setup    <WORKTREE_PATH> [TICKET_ID]
+#   assert-phase.sh servers  <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]
+#   assert-phase.sh delivery <WORKTREE_PATH> <BRANCH> [TICKET_ID]
+#   assert-phase.sh cleanup  <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]
+#
+# [TICKET_ID], when passed, is used verbatim to tag every gate.result/
+# gate.warning event this script emits (CON-80, mirroring cleanup.sh's CON-64
+# shape). When omitted, the ticket id is inferred from the worktree path's
+# basename as a documented fallback — see GATE_TICKET below.
 #
 # Prints "PASS <phase>" on success, "FAIL <reason>" (one per line) + non-zero
 # exit on failure.
@@ -84,18 +89,20 @@ resolve_url() { eval "echo \"$1\""; }
 
 START_TS="$(now_ms)"
 
-# The ticket id is not an argument here, so derive it from the worktree path —
-# worktrees are created at <base>/<branch> and branches end in /<TICKET-ID>.
-# A branch that doesn't follow that convention (`chore/cleanup-old-logs`) would
-# otherwise write this run's events into a different ticket's log, silently
-# splitting one run's history in two. Emitting nothing is the safe failure.
-# Computed here (before the phase dispatch) rather than after it, so the
-# `delivery` case's own best-effort telemetry (CON-31) can use it too.
-GATE_TICKET="${WORKTREE_PATH##*/}"
 looks_like_ticket() { [[ "$1" =~ ^[A-Za-z#][A-Za-z0-9_-]*[0-9]$ ]]; }
 
 case "$PHASE" in
   setup)
+    TICKET_ID="${3:-}"
+    # The canonical ticket id arrives as the explicit trailing argument
+    # (CON-80, mirroring cleanup.sh's CON-64 shape); worktree-basename
+    # inference stays only as a fallback for call sites rendered before the
+    # argument existed. Inference is not reliable — a branch without the
+    # <type>/<desc>/<TICKET-ID> suffix makes the basename a non-ticket, and a
+    # branch whose ticket suffix is lowercase (Linear's own `gitBranchName`
+    # convention) makes the basename a different-cased, differently-addressed
+    # run directory (the defect this ticket exists to close).
+    GATE_TICKET="${TICKET_ID:-${WORKTREE_PATH##*/}}"
     [ -d "$WORKTREE_PATH" ]                 || fail "worktree dir missing: $WORKTREE_PATH"
     [ -d "$WORKTREE_PATH/.git" ] || [ -f "$WORKTREE_PATH/.git" ] \
                                             || fail "worktree not a git work tree: $WORKTREE_PATH"
@@ -107,6 +114,8 @@ case "$PHASE" in
   servers)
     DEV_PORT="${3:?servers assert needs <DEV_PORT> <BACKEND_PORT>}"
     BACKEND_PORT="${4:?servers assert needs <DEV_PORT> <BACKEND_PORT>}"
+    TICKET_ID="${5:-}"
+    GATE_TICKET="${TICKET_ID:-${WORKTREE_PATH##*/}}"
     if [ -n "${CONCERTINO_BACKEND_HEALTH:-}" ]; then
       curl -sf "$(resolve_url "$CONCERTINO_BACKEND_HEALTH")" >/dev/null 2>&1 \
           || fail "backend not healthy on ${BACKEND_PORT}"
@@ -119,6 +128,8 @@ case "$PHASE" in
 
   delivery)
     BRANCH="${3:?delivery assert needs <BRANCH>}"
+    TICKET_ID="${4:-}"
+    GATE_TICKET="${TICKET_ID:-${WORKTREE_PATH##*/}}"
     git -C "$WORKTREE_PATH" rev-parse --verify --quiet "refs/remotes/origin/${BRANCH}" >/dev/null \
         || fail "branch ${BRANCH} not pushed to origin"
     [ -z "$(git -C "$WORKTREE_PATH" status --porcelain)" ] \
@@ -168,6 +179,8 @@ case "$PHASE" in
   cleanup)
     DEV_PORT="${3:-}"
     BACKEND_PORT="${4:-}"
+    TICKET_ID="${5:-}"
+    GATE_TICKET="${TICKET_ID:-${WORKTREE_PATH##*/}}"
     if [ -n "$DEV_PORT" ] && [ -n "${CONCERTINO_FRONTEND_HEALTH:-}" ]; then
       curl -sf "$(resolve_url "$CONCERTINO_FRONTEND_HEALTH")" >/dev/null 2>&1 \
           && fail "frontend still serving on ${DEV_PORT}" || true

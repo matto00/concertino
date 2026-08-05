@@ -160,6 +160,83 @@ check "sub-second setup run reports true ms resolution (non-1000-multiple durati
   "$SAW_NON_MULTIPLE" "yes"
 rm -rf "$REPO"
 
+# ===========================================================================
+# CON-80: explicit trailing TICKET_ID argument (mirrors CON-64's fix to
+# cleanup.sh). Without it, assert-phase.sh infers the ticket id from the
+# worktree path's basename — a branch whose ticket suffix is lowercase (or a
+# branch that doesn't carry a ticket-shaped suffix at all) makes that
+# inference wrong or a silent no-op. Passing the id explicitly fixes both.
+# ===========================================================================
+
+echo "assert-phase.sh (CON-80: explicit ticket id)"
+
+# --- non-ticket-shaped basename + explicit ticket id: gate.result still
+#     lands, tagged with the explicit id (mirrors cleanup.test.sh's identical
+#     CON-64 regression case) ---------------------------------------------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/local-llm-harnesses"     # basename is NOT ticket-shaped
+mkdir -p "$WT/.git"
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" TICK-9)"
+RC=$?
+LOG="$REPO/.concertino/runs/TICK-9/events.jsonl"
+check "exit 0 (explicit ticket id, non-ticket basename)" "$RC" "0"
+check "stdout is PASS setup (explicit ticket id)"        "$OUT" "PASS setup"
+check "gate.result lands under the explicit ticket id" \
+  "$([ -f "$LOG" ] && echo yes || echo no)" "yes"
+check "gate.result ticket field is the explicit id" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).ticket)' "$LOG")" \
+  "TICK-9"
+rm -rf "$REPO"
+
+# --- same non-ticket-shaped basename, NO explicit ticket id: no event at
+#     all (the pre-CON-80, pre-CON-64-style baseline — proves the fix above
+#     is what makes the difference, not some other change) -----------------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/local-llm-harnesses"
+mkdir -p "$WT/.git"
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT")"
+RC=$?
+LOG="$REPO/.concertino/runs/local-llm-harnesses/events.jsonl"
+check "exit 0 (no explicit ticket id, non-ticket basename)" "$RC" "0"
+check "no run dir created when the basename isn't ticket-shaped and no id was passed" \
+  "$([ -e "$LOG" ] && echo present || echo absent)" "absent"
+rm -rf "$REPO"
+
+# --- the ticket's own regression scenario: a lowercase-suffix branch, with
+#     the explicit id passed, produces exactly one (canonically-cased) run
+#     directory rather than splitting across a phantom lowercase one --------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/con-79"        # lowercase, ticket-shaped (Linear's own gitBranchName case)
+mkdir -p "$WT/.git"
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" CON-79)"
+RC=$?
+LOG="$REPO/.concertino/runs/CON-79/events.jsonl"
+PHANTOM="$REPO/.concertino/runs/con-79"
+check "exit 0 (lowercase-suffix branch, explicit canonical id)" "$RC" "0"
+check "gate.result lands under the canonical (uppercase) ticket dir" \
+  "$([ -f "$LOG" ] && echo yes || echo no)" "yes"
+check "gate.result ticket field is the canonical id, not the lowercase basename" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).ticket)' "$LOG")" \
+  "CON-79"
+check "no phantom lowercase run dir is created" \
+  "$([ -e "$PHANTOM" ] && echo present || echo absent)" "absent"
+rm -rf "$REPO"
+
+# --- no explicit ticket id, ticket-shaped basename: basename-inference
+#     fallback is unchanged (same shape as the very first test in this file,
+#     re-asserted here under the CON-80 heading for clarity) ----------------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/HEL-20"
+mkdir -p "$WT/.git"
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT")"
+RC=$?
+LOG="$REPO/.concertino/runs/HEL-20/events.jsonl"
+check "exit 0 (no explicit ticket id, fallback)" "$RC" "0"
+check "gate.result ticket field is the inferred basename" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).ticket)' "$LOG")" \
+  "HEL-20"
+rm -rf "$REPO"
+
 has()  { grep -qF "$2" "$3" && ok "$1" || bad "$1" "expected to find [$2] in $3"; }
 hasnt(){ grep -qF "$2" "$3" && bad "$1" "unexpectedly found [$2] in $3" || ok "$1"; }
 

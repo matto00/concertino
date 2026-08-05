@@ -48,8 +48,8 @@ file — so they stay generic and the config is the single source of truth.
 | ------------------- | ---------------------------------------------------------- | ----------------------------------------------------------- |
 | `setup-worktree.sh` | Create worktree, copy env files, derive ports, run hooks, resolve speed | `<TICKET_ID> <BRANCH> [SPEED]`                 |
 | `resolve-speed.sh`  | (speed, harness) -> resolved budgets + per-role models + slow-only flags | `[SPEED] [HARNESS]`                          |
-| `start-servers.sh`  | Start backend/frontend dev servers, health-wait            | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>`                 |
-| `assert-phase.sh`   | Postcondition gate per phase                               | `<setup\|servers\|delivery\|cleanup> <WORKTREE_PATH> [...]` |
+| `start-servers.sh`  | Start backend/frontend dev servers, health-wait            | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]`     |
+| `assert-phase.sh`   | Postcondition gate per phase                               | `<setup\|servers\|delivery\|cleanup> <WORKTREE_PATH> [...] [TICKET_ID]` |
 | `cleanup.sh`        | Stop servers, remove worktree                              | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>`                 |
 | `emit-event.sh`     | Append a dashboard event; `--await` blocks for an answer   | `<kind> [--await] k=v ...`                                  |
 | `persist-evidence.sh` | Copy an artifact into the main checkout, print a durable ref | `<TICKET_ID> <SOURCE_PATH>`                               |

@@ -440,6 +440,76 @@ check "well-formed sibling ticket id still writes its event" \
   "$([ -f "$REPO/.concertino/runs/CON-14/events.jsonl" ] && echo yes || echo no)" "yes"
 rm -rf "$REPO"
 
+# ===========================================================================
+# CON-80: unconditional case canonicalisation. A validated ticket=, once past
+# looks_like_ticket, is upper-cased before it addresses RUN_DIR or is written
+# into the event — on EVERY call, not only when a differently-cased run
+# directory is already found to exist (design.md Decision 2). This is the
+# second, independent line of defense under assert-phase.sh/start-servers.sh's
+# explicit-argument fix: even a caller that still infers a lowercase ticket id
+# converges on the same directory as one that was told the canonical id.
+# ===========================================================================
+
+# --- a lowercase ticket writes to the uppercase run directory --------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" note ticket=con-79 msg=hi ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/CON-79/events.jsonl"
+LOWER_LOG="$REPO/.concertino/runs/con-79/events.jsonl"
+check "lowercase ticket writes under the uppercase run dir" \
+  "$([ -f "$LOG" ] && echo yes || echo no)" "yes"
+check "no lowercase run dir is created" \
+  "$([ -e "$LOWER_LOG" ] && echo present || echo absent)" "absent"
+check "the written event's ticket field is itself upper-cased" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).ticket)' "$LOG")" \
+  "CON-79"
+rm -rf "$REPO"
+
+# --- a mixed-case ticket is likewise canonicalised --------------------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" note ticket=Con-80 msg=hi ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/CON-80/events.jsonl"
+check "mixed-case ticket writes under the uppercase run dir" \
+  "$([ -f "$LOG" ] && echo yes || echo no)" "yes"
+check "mixed-case ticket's event ticket field is upper-cased" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).ticket)' "$LOG")" \
+  "CON-80"
+rm -rf "$REPO"
+
+# --- two invocations differing only by case converge on ONE directory ------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" note ticket=con-81 msg=first ) >/dev/null 2>&1
+( cd "$REPO" && "$SCRIPT" note ticket=CON-81 msg=second ) >/dev/null 2>&1
+( cd "$REPO" && "$SCRIPT" note ticket=Con-81 msg=third ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/CON-81/events.jsonl"
+check "only one run directory exists for the ticket regardless of caller case" \
+  "$(find "$REPO/.concertino/runs" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')" "1"
+check "all three events landed in that one directory" \
+  "$(wc -l < "$LOG" | tr -d ' ')" "3"
+rm -rf "$REPO"
+
+# --- an already-uppercase ticket is unaffected ------------------------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" note ticket=CON-82 msg=hi ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/CON-82/events.jsonl"
+check "already-uppercase ticket writes exactly where before" \
+  "$([ -f "$LOG" ] && echo yes || echo no)" "yes"
+check "already-uppercase ticket's event ticket field is unchanged" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).ticket)' "$LOG")" \
+  "CON-82"
+rm -rf "$REPO"
+
+# --- canonicalisation runs strictly AFTER the shape check, never widening it
+#     — a still-malformed ticket is still dropped/warned exactly as before --
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" run.end ticket=not-shaped status=delivered ) >"$REPO/out.txt" 2>"$REPO/err.txt"
+RC=$?
+check "exit 0 even for malformed run.end" "$RC" "0"
+check "no run dir created for a malformed ticket" \
+  "$([ -d "$REPO/.concertino/runs" ] && echo present || echo absent)" "absent"
+check "loud WARNING still fires for a malformed run.end ticket" \
+  "$(grep -c 'WARNING: run.end' "$REPO/err.txt")" "1"
+rm -rf "$REPO"
+
 # --- .concertino.env sourcing (CON-47) --------------------------------------
 # `--await`'s deadline comes from CONCERTINO_ESCALATION_TIMEOUT_MIN, which the
 # script only sees if it actually sources `.concertino.env`. Every case below
