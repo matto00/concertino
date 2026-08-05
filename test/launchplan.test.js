@@ -607,14 +607,14 @@ test('the config table says WHY H and P are unavailable, rather than hiding them
   const out = plain(renderLaunchPlan(
     plan({ harnesses: ['claude'], perRowEditable: true, providerConfigured: false }), 0, { cols: 110 }));
   assert.match(out, /only 1 harness — add `harnesses` to use H/);
-  assert.match(out, /set `providers\.ollama` in config to use P/);
+  assert.match(out, /set `providers\.ollama` in config to use p\/P/);
 });
 
 test('the config table advertises H and P once the project enables them', () => {
   const out = plain(renderLaunchPlan(
     plan({ harnesses: ['claude', 'codex'], perRowEditable: true, providerConfigured: true }), 0, { cols: 110 }));
   assert.match(out, /harness\s+claude\s+h cycles\s+·\s+H per-row/);
-  assert.match(out, /provider\s+subscription\s+P per-row/);
+  assert.match(out, /provider\s+subscription\s+p cycles\s+·\s+P per-row/);
 });
 
 test('the provider row names the batch default in operator vocabulary', () => {
@@ -631,4 +631,43 @@ test('a long models line wraps instead of being clipped at narrow widths', () =>
   // fall off the edge.
   for (const [role, m] of Object.entries(models)) assert.match(out, new RegExp(role + '=' + m));
   assert.ok(out.split('\n').filter((l) => /=/.test(l) && !l.includes('│')).length >= 2, 'expected the models value to wrap onto a second row');
+});
+
+// --- batch-level provider (lowercase p), mirroring h/m/s --------------------
+
+test('lowercase p cycles the batch provider, gated like h is on a second harness', () => {
+  const on = plan({ perRowEditable: true, providerConfigured: true });
+  assert.deepEqual(handleKey('p', { plan: on }), { type: 'cycle-provider' });
+  // No provider configured -> nothing to cycle to, so p is unbound.
+  assert.equal(handleKey('p', { plan: plan({ perRowEditable: true, providerConfigured: false }) }), null);
+  // A pinned launchCommand disables the whole provider layer, as for H/S/P.
+  assert.equal(handleKey('p', { plan: plan({ perRowEditable: false, providerConfigured: true }) }), null);
+});
+
+test('the header shows the batch provider choice, not just the project default', () => {
+  const local = plain(renderLaunchPlan(
+    plan({ providerConfigured: true, perRowEditable: true, providerDefault: 'default', provider: 'ollama' }),
+    0, { cols: 110 }));
+  assert.match(local, /provider\s+local/);
+  assert.match(local, /p cycles/);
+});
+
+test('a row is not tagged for merely matching the batch provider', () => {
+  const p = plan({
+    tickets: [ticket('CON-1', 'first'), ticket('CON-2', 'second')],
+    providerConfigured: true, perRowEditable: true, provider: 'ollama',
+    rowOverrides: { 'CON-1': { provider: 'ollama' }, 'CON-2': { provider: 'default' } },
+  });
+  const rows = plain(renderLaunchPlan(p, 0, { cols: 120 })).split('\n')
+    .filter((l) => l.includes('│') && /CON-[12]\b/.test(l));
+  // CON-1 agrees with the batch -> no marker; CON-2 diverges -> marked.
+  assert.doesNotMatch(rows[0], /via:/);
+  assert.match(rows[1], /via:subscription/);
+});
+
+test('the footer advertises p only alongside the per-row keys it belongs with', () => {
+  const out = plain(renderLaunchPlan(
+    plan({ perRowEditable: true, providerConfigured: true, harnesses: ['claude', 'codex'] }), 0, { cols: 120 }));
+  assert.match(out, /p provider/);
+  assert.match(out, /P row-provider/);
 });

@@ -298,3 +298,29 @@ test('launchSpecForChoices decorates provider exactly like the label path', () =
 test('launchSpecForChoices returns null for an unimplemented harness', () => {
   assert.equal(launchSpecForChoices({ harness: 'local-llm', speed: 'fast' }, OLLAMA_CFG), null);
 });
+
+// --- the models preview must follow the provider (CON-65 follow-up) ---------
+
+test('resolveModelsForPlan passes the provider through as CONCERTINO_PROVIDER', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { resolveModelsForPlan } = require('../lib/ui/launcher');
+  // A stub resolve-speed.sh that simply echoes what it was given, so this
+  // pins the SEAM (env reaches the script) without depending on jq or on a
+  // rendered speeds.json.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-rsp-'));
+  const dir = path.join(root, 'scripts', 'concertino');
+  fs.mkdirSync(dir, { recursive: true });
+  const script = path.join(dir, 'resolve-speed.sh');
+  fs.writeFileSync(script,
+    '#!/usr/bin/env bash\nprintf \'{"speed":"%s","harness":"%s","provider":"%s"}\' "$1" "$2" "${CONCERTINO_PROVIDER:-unset}"\n');
+  fs.chmodSync(script, 0o755);
+
+  assert.deepEqual(resolveModelsForPlan(root, 'fast', 'codex', 'ollama'),
+    { speed: 'fast', harness: 'codex', provider: 'ollama' });
+  // Omitted -> the script sees no override and falls back to project routing.
+  assert.deepEqual(resolveModelsForPlan(root, 'fast', 'codex'),
+    { speed: 'fast', harness: 'codex', provider: 'unset' });
+  fs.rmSync(root, { recursive: true, force: true });
+});

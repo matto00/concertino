@@ -411,6 +411,12 @@ toggle the batch between starting immediately and being held for a later,
 separate confirm from the fleet view. `esc` cancels the plan without
 launching anything.
 
+`p` cycles the batch's provider between subscription and local, whenever
+`providers.ollama` is configured — the header's `models` row re-resolves as
+you cycle, so the local model ids you are about to launch on are visible
+before anything starts, and the `each runs:` line shows the flags that
+produce them.
+
 On top of those batch-level knobs sits the per-row layer: `j`/`k` (or the
 arrows) move a `▸` row cursor, and the capitalised keys override just that
 row — `H` cycles its harness, `S` its speed, `P` its provider
