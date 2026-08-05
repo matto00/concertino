@@ -151,7 +151,10 @@ const OLLAMA_CFG = {
   providers: { ollama: {
     baseUrl: 'http://127.0.0.1:11434',
     harnesses: ['codex'],
-    models: { executor: 'llama3.1:70b' },
+    // orchestrator is what the codex --oss launch passes to -m (the
+    // top-level session plays that role); executor proves the map is
+    // per-role, not a single id.
+    models: { orchestrator: 'gpt-oss:latest', executor: 'llama3.1:70b' },
   } },
 };
 const GATEWAY_CFG = JSON.parse(JSON.stringify(OLLAMA_CFG));
@@ -203,11 +206,23 @@ test('providerSpawnEnv sets/empties ANTHROPIC_BASE_URL for gateway claude-code',
     { CONCERTINO_PROVIDER: 'default', ANTHROPIC_BASE_URL: '' });
 });
 
-test('providerCommandFlags decorates only codex', () => {
-  assert.equal(providerCommandFlags('ollama', 'codex'), '-c model_provider=ollama');
-  assert.equal(providerCommandFlags('default', 'codex'), '-c model_provider=openai');
-  assert.equal(providerCommandFlags('ollama', 'claude-code'), '');
-  assert.equal(providerCommandFlags('ollama', 'opencode'), '');
+// Codex ignores `model_providers` in a project-local config.toml, so the
+// original `-c model_provider=ollama` named a provider it could not resolve
+// and killed the run with `unknown input item type: "additional_tools"`.
+// The supported route is the --oss flag pair, with -m passed explicitly so a
+// spawned window never blocks on Codex's interactive model picker.
+test('providerCommandFlags emits codex\'s supported --oss flags, and only for codex', () => {
+  assert.equal(providerCommandFlags('ollama', 'codex', OLLAMA_CFG),
+    '--oss --local-provider ollama -m gpt-oss:latest');
+  // Nothing for the hosted default — naming a provider is what broke before.
+  assert.equal(providerCommandFlags('default', 'codex', OLLAMA_CFG), '');
+  assert.equal(providerCommandFlags('ollama', 'claude-code', OLLAMA_CFG), '');
+  assert.equal(providerCommandFlags('ollama', 'opencode', OLLAMA_CFG), '');
+});
+
+test('providerCommandFlags omits -m when no orchestrator model is configured', () => {
+  const noModel = { providers: { ollama: { baseUrl: 'http://x', harnesses: [], models: {} } } };
+  assert.equal(providerCommandFlags('ollama', 'codex', noModel), '--oss --local-provider ollama');
 });
 
 test('launchSpecForTicket: unlabelled ticket is byte-identical, env null', () => {
@@ -223,10 +238,11 @@ test('launchSpecForTicket: provider:ollama on an opencode batch injects env only
   assert.deepEqual(spec.env, { CONCERTINO_PROVIDER: 'ollama' });
 });
 
-test('launchSpecForTicket: provider:ollama on codex injects the -c flag after the binary', () => {
+test('launchSpecForTicket: provider:ollama on codex injects the --oss flags after the binary', () => {
   const spec = launchSpecForTicket(['provider:ollama'],
     'codex "/concertino-deliver {{TICKET}}"', OLLAMA_CFG);
-  assert.equal(spec.command, 'codex -c model_provider=ollama "/concertino-deliver {{TICKET}}"');
+  assert.equal(spec.command,
+    'codex --oss --local-provider ollama -m gpt-oss:latest "/concertino-deliver {{TICKET}}"');
   assert.deepEqual(spec.env, { CONCERTINO_PROVIDER: 'ollama' });
 });
 
@@ -234,7 +250,8 @@ test('launchSpecForTicket: harness + provider labels compose against the ACTUAL 
   // Batch is claude, label swaps to codex — the provider decoration must be
   // codex's flag form, not claude-code's gateway env form.
   const spec = launchSpecForTicket(['harness:codex', 'provider:ollama'], CLAUDE_BATCH, GATEWAY_CFG);
-  assert.equal(spec.command, 'codex -c model_provider=ollama "/concertino-deliver {{TICKET}}"');
+  assert.equal(spec.command,
+    'codex --oss --local-provider ollama -m gpt-oss:latest "/concertino-deliver {{TICKET}}"');
   assert.deepEqual(spec.env, { CONCERTINO_PROVIDER: 'ollama' });
 });
 
@@ -274,7 +291,7 @@ test('launchSpecForChoices builds the batch-shaped command for explicit choices'
 test('launchSpecForChoices decorates provider exactly like the label path', () => {
   const spec = launchSpecForChoices(
     { harness: 'codex', speed: 'default', agentMerge: true, provider: 'ollama' }, OLLAMA_CFG);
-  assert.match(spec.command, /^codex -c model_provider=ollama /);
+  assert.match(spec.command, /^codex --oss --local-provider ollama -m /);
   assert.deepEqual(spec.env, { CONCERTINO_PROVIDER: 'ollama' });
 });
 

@@ -43,9 +43,15 @@ RC=$?
 
 TOML="$OUT/.codex/config.toml"
 [ -f "$TOML" ] && ok "renders .codex/config.toml" || bad "renders .codex/config.toml" "not found"
-has "config.toml has the model_providers.ollama block" "[model_providers.ollama]" "$TOML"
-has "config.toml carries base_url from providers.ollama.baseUrl" 'base_url = "http://localhost:11434"' "$TOML"
-has "config.toml carries env_key from providers.ollama.apiKeyEnv" 'env_key = "OLLAMA_API_KEY"' "$TOML"
+# CON-73: Codex IGNORES `model_providers` in a project-local config.toml
+# (verified against codex-cli 0.146.0, which warns on every launch), so the
+# managed region must NOT define one — pairing it with `-c
+# model_provider=ollama` killed runs with `unknown input item type:
+# "additional_tools"`. Local routing goes through `--oss` flags instead.
+lacks() { if grep -qF "$2" "$3"; then bad "$1" "did NOT expect [$2] in $3"; else ok "$1"; fi; }
+lacks "config.toml does NOT define model_providers (codex ignores it project-local)" "[model_providers.ollama]" "$TOML"
+has "config.toml documents the endpoint for a human reading it" "http://localhost:11434" "$TOML"
+has "config.toml points at the supported --oss route" "codex --oss --local-provider ollama" "$TOML"
 has "config.toml uses the BEGIN merge marker" "# CONCERTINO:BEGIN" "$TOML"
 has "config.toml uses the END merge marker" "# CONCERTINO:END" "$TOML"
 
@@ -107,7 +113,7 @@ RC=$?
 has "re-sync preserves the hand-authored comment" "hand-authored: keep this comment" "$TOML"
 has "re-sync preserves the hand-authored section" "[my_custom_section]" "$TOML"
 has "re-sync preserves the hand-authored value" 'foo = "bar"' "$TOML"
-has "re-sync still has the managed block" "[model_providers.ollama]" "$TOML"
+has "re-sync still has the managed block" "CONCERTINO:BEGIN" "$TOML"
 NEW_HAND_AUTHORED_LINE_COUNT="$(grep -c 'hand-authored' "$TOML")"
 if [ "$ORIGINAL_HAND_AUTHORED_LINE_COUNT" = "$NEW_HAND_AUTHORED_LINE_COUNT" ]; then
   ok "hand-authored content is not duplicated across re-syncs"

@@ -295,13 +295,28 @@ string that merely *looks* like an Ollama tag.
 
 **Per harness:**
 
-- **Codex** — when `"codex"` is in `ollama.harnesses`, `sync` renders a
-  `[model_providers.ollama]` block into `.codex/config.toml` (merge-marker
-  guarded, so hand-authored content outside it survives a re-sync), and each
+- **Codex** — routed with Codex's own first-class local flags:
+  `codex --oss --local-provider ollama -m <ollama.models.orchestrator>`.
+  Concertino does **not** write a `[model_providers.ollama]` block, because
+  Codex ignores `model_providers` in a *project-local* `config.toml` (it is a
+  user-level key) and warns about it on every launch; pairing that with a
+  `-c model_provider=ollama` override made runs fail outright with
+  `unknown input item type: "additional_tools"`. `sync` writes only a
+  documentation block into `.codex/config.toml` (merge-marker guarded, so
+  hand-authored content outside it survives a re-sync), and each
   Ollama-routed role's `.codex/agents/concertino-<role>.toml` gets a
   `model_provider = "ollama"` line. A role is Ollama-routed iff its harness is
   in `ollama.harnesses` **and** it has no explicit `models.codex.<role>`
   override — an override always keeps that one role on its hosted provider.
+
+  **Codex's `--oss` path requires a THINKING-capable model.** It refuses
+  anything else with `"<model>" does not support thinking`, so a strong coding
+  model without a reasoning mode (e.g. `qwen3-coder`, `devstral`,
+  `qwen2.5-coder`) cannot drive Codex locally. Check before configuring:
+
+  ```bash
+  ollama show <model> | grep -A5 Capabilities   # needs: tools, thinking
+  ```
 - **OpenCode** — when `"opencode"` is in `ollama.harnesses`, `sync` merges a
   `provider.ollama` entry (OpenAI-compatible, pointed at `ollama.baseUrl` +
   `/v1`) into `opencode.json`, exposing any explicit `ollama.models` ids.
