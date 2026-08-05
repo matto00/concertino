@@ -29,6 +29,9 @@ function writeRun(root, ticket, lines, ageDays) {
 
 const RUN_END = '{"t":1,"kind":"run.end","ticket":"X"}\n';
 const RUN_START_ONLY = '{"t":1,"kind":"run.start","ticket":"X"}\n';
+// CON-77: a window the dashboard just spawned, before the agent has reached
+// run.start, let alone run.end.
+const RUN_SPAWN_ONLY = '{"t":1,"kind":"run.spawn","ticket":"X"}\n';
 
 // --- eligibility predicate ---------------------------------------------------
 
@@ -50,6 +53,13 @@ test('isEligible: run.end present but within the window is not eligible', () => 
   const root = tmpRoot();
   writeRun(root, 'HEL-3', RUN_END, 5);
   const eligible = retention.isEligible(root, 'HEL-3', { retentionDays: 30, now: NOW });
+  assert.equal(eligible, false);
+});
+
+test('isEligible: a run.spawn-only log is never eligible, regardless of mtime age', () => {
+  const root = tmpRoot();
+  writeRun(root, 'HEL-1b', RUN_SPAWN_ONLY, 9999); // absurdly old
+  const eligible = retention.isEligible(root, 'HEL-1b', { retentionDays: 30, now: NOW });
   assert.equal(eligible, false);
 });
 

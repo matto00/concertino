@@ -297,6 +297,49 @@ test('no telemetry at all: the header says so and the pipeline refuses to guess'
   assert.match(out, /no evidence recorded/);
 });
 
+// --- CON-77: spawn visibility -----------------------------------------------
+
+test('a live, spawned-but-not-started run\'s header reads "starting…", not "no telemetry"', () => {
+  const out = plain(renderDrillDown(run({
+    telemetry: 'none', phase: null, cycle: null, gates: [], events: [],
+    branch: null, changeName: null, worktree: null, devPort: null, backendPort: null,
+    harness: null, model: null, startedAt: null, status: 'running',
+    spawnedAt: 3000, startingMs: 2000,
+    window: { alive: true, idleMs: 0 },
+  }), OPTS));
+  // headerLines()'s own phaseRight text, on the header's first row — must
+  // read "starting…", not "no telemetry" (the phase-pipeline fallback
+  // below it, which this proposal deliberately leaves unchanged — see
+  // tasks.md §4 — legitimately still says "no telemetry" of its own).
+  const headerRow1 = out.split('\n')[0];
+  assert.match(headerRow1, /starting…/);
+  assert.doesNotMatch(headerRow1, /no telemetry/);
+  // elapsedText()'s own "starting · <dur>" text, in the header's third row.
+  assert.match(out, /starting · /);
+});
+
+test('a run predating this feature (no spawnedAt) still renders today\'s "no telemetry" wording', () => {
+  const out = plain(renderDrillDown(run({
+    telemetry: 'none', phase: null, cycle: null, gates: [], events: [],
+    branch: null, changeName: null, worktree: null, devPort: null, backendPort: null,
+    harness: null, model: null, startedAt: null, status: 'running',
+    window: { alive: true, idleMs: 0 },
+  }), OPTS));
+  assert.match(out, /no telemetry/);
+  assert.doesNotMatch(out, /starting/);
+});
+
+test('a dead run that never emitted run.start reads "failed to start", not "window exited"', () => {
+  const out = plain(renderDrillDown(run({
+    telemetry: 'none', phase: null, cycle: null, gates: [], events: [],
+    startedAt: null, status: 'failed', endedAt: null, endStatus: null,
+    spawnedAt: 1, startingMs: null,
+    window: { alive: false, idleMs: null },
+  }), OPTS));
+  assert.match(out, /failed to start/);
+  assert.doesNotMatch(out, /window exited/);
+});
+
 test('a missing run renders safely rather than throwing', () => {
   assert.doesNotThrow(() => renderDrillDown(null, OPTS));
   assert.match(plain(renderDrillDown(null, OPTS)), /no longer available/);
