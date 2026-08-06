@@ -19,7 +19,7 @@
  * modules are.
  */
 
-const { VERSION, red, parseArgs } = require('../lib/cli/shared');
+const { VERSION, red, parseArgs, hasHelpFlag } = require('../lib/cli/shared');
 const { cmdInit } = require('../lib/cli/init');
 const { cmdSync } = require('../lib/cli/sync');
 const { cmdUpdate } = require('../lib/cli/update');
@@ -39,6 +39,14 @@ const { help } = require('../lib/cli/help');
 const args = parseArgs(process.argv.slice(2));
 const cmd = args._[0] || 'watch';
 if (args.version) { console.log('concertino v' + VERSION); process.exit(0); }
+// Bare `concertino --help`/`-h` (no subcommand token) — without this check,
+// a bare `--help` would fall through to `cmd = 'watch'` above and, once
+// cmdWatch gains its own --help check, print watch's single-command usage
+// instead of launching the dashboard; bare `-h` already falls through today
+// to the `else help()` branch below since `-h` never matches `args._[0]` of
+// any recognized command. This makes both consistently show the aggregate
+// `concertino help` output (design.md Decision 5).
+if (!args._[0] && hasHelpFlag(args)) { help(); process.exit(0); }
 (async () => {
   try {
     if (cmd === 'init')           await cmdInit(args);

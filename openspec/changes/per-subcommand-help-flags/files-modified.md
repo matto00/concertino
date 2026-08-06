@@ -1,0 +1,18 @@
+- `lib/cli/shared.js` — added and exported `hasHelpFlag(args)`, the shared `--help`/`-h` detector used by the 13 `parseArgs`-based commands.
+- `lib/cli/help.js` — split the single monolithic usage template string into a per-command `USAGE` map + `USAGE_ORDER`, exported `printUsage(cmdName)`, and rewrote `help()` to compose from the same map (byte-for-byte parity verified against a pre-refactor capture).
+- `lib/cli/init.js` — added the `hasHelpFlag(args)` check as the first line of `cmdInit`.
+- `lib/cli/sync.js` — added the `hasHelpFlag(args)` check as the first line of `cmdSync`.
+- `lib/cli/update.js` — added the `hasHelpFlag(args)` check as the first line of `cmdUpdate`, taking precedence over the `key=value` positional validation error.
+- `lib/cli/validate.js` — added the `hasHelpFlag(args)` check as the first line of `cmdValidate`.
+- `lib/cli/diff.js` — added the `hasHelpFlag(args)` check as the first line of `cmdDiff`.
+- `lib/cli/doctor.js` — added the `hasHelpFlag(args)` check as the first line of `cmdDoctor`.
+- `lib/cli/watch.js` — added the `hasHelpFlag(args)` check as the first line of `cmdWatch` (the command the bare-invocation carve-out in `bin/concertino` exists to protect against).
+- `lib/cli/prune.js` — added the `hasHelpFlag(args)` check as the first line of `cmdPrune`.
+- `lib/cli/upgrade.js` — added the `hasHelpFlag(args)` check as the first line of `cmdUpgrade`.
+- `lib/cli/gates.js` — added the `hasHelpFlag(args)` check as the first line of `cmdGates`.
+- `lib/cli/completion.js` — added the `hasHelpFlag(args)` check as the first line of `cmdCompletion`.
+- `lib/cli/eject.js` — added the `hasHelpFlag(args)` check as the first line of `cmdEject`.
+- `lib/cli/migrate.js` — added the `hasHelpFlag(args)` check as the first line of `cmdMigrate`.
+- `lib/cli/answer.js` — added the divergent raw-argv `--help`/`-h` check (before `parseAnswerArgv` runs) at the top of `cmdAnswer`, per design.md Decision 2.
+- `bin/concertino` — imported `hasHelpFlag`, and added the one-line bare-invocation carve-out (`if (!args._[0] && hasHelpFlag(args)) { help(); process.exit(0); }`) before the dispatch chain, per design.md Decision 5.
+- `test/cli-help-flags.test.js` (new) — covers `--help`/`-h` on `sync`/`update`/`answer` (one representative per argument-shape family), a normal-invocation regression for `gates --run` and `update`, `concertino help`'s unchanged aggregate output/ordering, bare `--help`/`-h` vs. explicit `watch --help`, and an in-process regression confirming a bare/no-flag `cmdWatch` still dispatches into the real `lib/ui/watch`.
