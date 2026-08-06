@@ -1,10 +1,5 @@
-# cli-default-command Specification
+## MODIFIED Requirements
 
-## Purpose
-Defines the CLI's default entry-point behavior — bare `concertino` launches
-the fleet dashboard — and requires every registered subcommand to be
-discoverable from top-level help, shell completions, and the README.
-## Requirements
 ### Requirement: Bare `concertino` launches the fleet dashboard
 Running `concertino` with no subcommand SHALL launch the fleet dashboard
 through the exact same code path as `concertino watch` — the same
@@ -44,29 +39,3 @@ typed explicitly and SHALL be unaffected by this default.
 - **THEN** the CLI prints the same aggregate output as `concertino help` and
   exits 0, without launching the dashboard — consistent with bare `--help`
   above (both flags behave identically on the bare form)
-
-### Requirement: Every registered subcommand is discoverable
-Every subcommand dispatched in `bin/concertino`'s command table SHALL appear
-in the top-level help text (`lib/cli/help.js`), every shell completion
-script (`lib/cli/completion.js`'s fish/zsh/bash output), and `README.md`'s
-`## CLI reference` section.
-
-#### Scenario: Completion covers every dispatched subcommand
-- **WHEN** the set of subcommands in `lib/cli/completion.js`'s `CMDS` list is
-  compared against `bin/concertino`'s dispatch `if/else` chain
-- **THEN** every dispatched subcommand (including `prune`, `eject`,
-  `migrate`, and `answer`) appears in `CMDS`
-
-#### Scenario: Help text covers every dispatched subcommand
-- **WHEN** the top-level help text is compared against `bin/concertino`'s
-  dispatch `if/else` chain
-- **THEN** every dispatched subcommand, including `answer`, has a
-  corresponding entry in the help output
-
-#### Scenario: README's CLI reference covers every dispatched subcommand
-- **WHEN** `README.md`'s `## CLI reference` section is compared against
-  `bin/concertino`'s dispatch `if/else` chain
-- **THEN** every dispatched subcommand, including `prune` and `answer`, has
-  a corresponding entry, and the bare-invocation/`watch` relationship is
-  documented there too
-
