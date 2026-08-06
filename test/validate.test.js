@@ -153,6 +153,19 @@ test('--ticket against a non-linear ticketProvider prints an informational note,
   assert.match(out, /"manual"/);
 });
 
+// --- CON-88: agent-merge-permission-preflight -------------------------------
+// tasks.md 3.3: confirm the pre-existing byte-identical-output contract this
+// file already checks (teamKey/gateway/ticket sections above) still holds
+// for the default config (agentMerge.enabled: false, via withDefaults()) —
+// the new "Agent-merge" section must add nothing to that output.
+
+test('agentMerge.enabled defaults to false — validate prints no "Agent-merge" section at all', () => {
+  const { out, status } = runValidate(baseConfig({}));
+  assert.equal(status, 0, out);
+  assert.doesNotMatch(out, /Agent-merge/);
+  assert.doesNotMatch(out, /agentMerge\.permissions/);
+});
+
 test('--ticket against a linear provider with no LINEAR_API_KEY fails clearly, before any network call', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-validate-'));
   const cfgPath = path.join(dir, 'concertino.config.json');

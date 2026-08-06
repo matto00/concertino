@@ -599,7 +599,9 @@ Run directly (no subagent).
      "merged" confirmation before Phase 4. (A `fold-in` answer here is
      handled per that sub-procedure's step 5, above, before Delivery
      resumes.)
-   - **`AGENT_MERGE = true`:** spawn the **auditor fresh** (cold — never
+   - **`AGENT_MERGE = true`:** {{block:agentMergePermissionCheck}}
+
+     Then spawn the **auditor fresh** (cold — never
      resumed, matching the skeptic's pattern) with `WORKTREE_PATH,
      CHANGE_NAME, TICKET_ID, BRANCH, PR_URL`. Emit
      `agent.spawn role=orchestrator agent=auditor` at the spawn point.
@@ -1011,6 +1013,11 @@ Every bound named below is `workflow-state.md`'s resolved value for this run
 - **BLOCKER (environmental):** dev server won't start, creds missing, infra/tooling
   failure. Never retried as a code change.
 - **Contradiction:** a change request that is impossible or contradicts the spec.
+- **Agent-merge permission grant missing** (agent-merge runs on claude-code
+  only, before the auditor spawn — a distinct, earlier check from the row
+  below, not a modification of it): `options=retry,fallback` —
+  `retry` re-runs `check-agent-merge-permission.sh` after the human grants
+  it; `fallback` lands on the identical `AGENT_MERGE = false` flow.
 - **Auditor `ESCALATE`/`BLOCKER`** (agent-merge runs only): one attempt, no
   retry — fall back to the wait-for-"merged" flow (see Non-Goals of the
   agent-merge design: an `ESCALATE` reflects a merge-time fact the executor
@@ -1035,6 +1042,7 @@ model a role runs on move.
 | Executor debug (per symptom) | `DEBUG_ATTEMPTS` ({{var:budgets.debugAttempts}})             | executor escalates the symptom         |
 | Server start                 | 1 attempt (health-wait timeout)        | `BLOCKER` → human                      |
 | Speed resolution (`resolve-speed.sh`, via `setup-worktree.sh`) | 1 attempt | `BLOCKER` → human (unrecognized speed, or a harness with no model-tier data) |
+| Agent-merge permission grant (pre-check, claude-code only) | 1 attempt per ask (`retry` re-runs the check, does not consume a budget) | `FAIL` → escalate `options=retry,fallback`; `fallback` lands on the `AGENT_MERGE = false` flow |
 | Agent-merge (auditor)        | 1 attempt, no retry                    | `ESCALATE`/`BLOCKER` → human decides next step |
 
 ---

@@ -262,6 +262,46 @@ human instead of thrashing.
 | `skepticFinalRounds` | `2` | Final-gate REFUTE rounds. |
 | `debugAttempts` | `2` | Executor root-cause attempts per symptom. |
 
+## `agentMerge`
+
+```json
+"agentMerge": { "enabled": true, "mergeMethod": "squash" }
+```
+
+Whether a verified run may merge its own PR via the cold `auditor` role,
+instead of stopping for a human "merged" confirmation. This is a **two-part
+opt-in**, not one:
+
+1. **This config key** (`agentMerge.enabled: true`) is the project-level
+   default. A per-run override (`--agent-merge`/`--no-agent-merge`, the `n`
+   prompt, the launch plan) takes precedence over it for that one run.
+2. **A matching Claude Code permission grant.** `agentMerge.enabled: true`
+   alone is **not sufficient authorization to actually merge under Claude
+   Code's auto mode** — the harness's own permission classifier has no
+   visibility into `concertino.config.json`, so from its point of view the
+   config opt-in is only the agent's own assertion, not evidence a human
+   authorized anything. `concertino sync` closes this gap by additively
+   merging the two allow rules the auditor spawn and its one mutating
+   command need — `Bash(gh pr merge:*)` and `Task(concertino-auditor)` —
+   into `.claude/settings.json`'s `permissions.allow` array, every time it
+   runs while `agentMerge.enabled` is `true` (never removed if you later set
+   it back to `false`; a stale grant is inert, not harmful). `concertino
+   doctor`/`concertino validate` warn, in a dedicated "Agent-merge" section,
+   if this config key is `true` but the harness grant is missing or has
+   drifted (e.g. `.claude/settings.json` was hand-edited or never synced) —
+   run `concertino sync` to add it. The orchestrator itself also checks for
+   the grant immediately before spawning the auditor and asks the human
+   *before* attempting the spawn if it's missing, rather than discovering a
+   classifier denial only after the PR already exists.
+
+Codex and OpenCode have no comparable auto-mode permission classifier today,
+so part 2 is a no-op on those harnesses — part 1 alone is sufficient there.
+
+| Field | Type | Default | Purpose |
+| ----- | ---- | ------- | ------- |
+| `enabled` | boolean | `false` | Project-level default. `false` preserves today's human-confirms-merge flow for every run that doesn't explicitly override it. |
+| `mergeMethod` | `squash` \| `merge` \| `rebase` | `squash` | Passed to `gh pr merge --<mergeMethod>` when the auditor merges. |
+
 ## `providers`
 
 ```json
