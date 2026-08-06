@@ -1,6 +1,10 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execSync } = require('child_process');
 const configLib = require('../lib/config');
 
 // CON-57: lib/config.js is the shared extraction (design.md Decision 2/3)
@@ -447,4 +451,244 @@ test('ticketHarnessCheck kind=unsupported-provider -> informational, no error', 
     ticketHarnessCheck: { ticketId: 'CON-1', kind: 'unsupported-provider', providerKind: 'manual' },
   });
   assert.equal(errors.filter((e) => e.path === 'ticket.harness').length, 0);
+});
+
+// --- Agent-merge (CON-88 agent-merge-permission-preflight) -----------------
+// collectConfigIssues' new "Agent-merge" section shells out to the real
+// scripts/concertino/check-agent-merge-permission.sh against `opts.out` — a
+// throwaway git repo with a real copy of the script is built per test
+// (never this checkout's own .claude/), mirroring the isolation
+// check-merge-readiness.test.sh already uses at the shell-test layer.
+const REPO_SCRIPT = path.join(__dirname, '..', 'core', 'scripts', 'check-agent-merge-permission.sh');
+
+function agentMergeProject({ settings, noScript } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-agentmerge-'));
+  execSync('git init -q -b main', { cwd: dir });
+  execSync('git -c user.email=t@t.test -c user.name=t commit -q --allow-empty -m init', { cwd: dir });
+  // `noScript`: the actual first-touch state for this whole feature — a
+  // project that turned `agentMerge.enabled: true` on but has never run
+  // `concertino sync` yet, so `scripts/concertino/` doesn't exist at all.
+  // Every OTHER helper call below (and every pre-existing test in this
+  // file) pre-copies the script first — this is deliberately the one path
+  // that does not (skeptic-final-1.md Change Request 1: none of the
+  // pre-fix tests exercised "the script itself is missing", only "the
+  // script runs and reports FAIL").
+  if (!noScript) {
+    fs.mkdirSync(path.join(dir, 'scripts', 'concertino'), { recursive: true });
+    fs.copyFileSync(REPO_SCRIPT, path.join(dir, 'scripts', 'concertino', 'check-agent-merge-permission.sh'));
+    fs.chmodSync(path.join(dir, 'scripts', 'concertino', 'check-agent-merge-permission.sh'), 0o755);
+  }
+  if (settings !== undefined) {
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify(settings));
+  }
+  return dir;
+}
+
+const BOTH_RULES_SETTINGS = { permissions: { allow: ['Bash(gh pr merge:*)', 'Task(concertino-auditor)'] } };
+const ONE_RULE_SETTINGS = { permissions: { allow: ['Bash(gh pr merge:*)'] } };
+
+test('agentMergePermissionRules returns the two required Claude Code allow rules', () => {
+  assert.deepEqual(configLib.agentMergePermissionRules(), ['Bash(gh pr merge:*)', 'Task(concertino-auditor)']);
+});
+
+test('Agent-merge section: enabled + claude-code + grant present -> ok, no warning', () => {
+  const dir = agentMergeProject({ settings: BOTH_RULES_SETTINGS });
+  try {
+    const emitted = { ok: [], warn: [] };
+    const { errors, warnings } = configLib.collectConfigIssues(
+      baseConfig({ agentMerge: { enabled: true, mergeMethod: 'squash' } }),
+      { out: dir, emit: { section: () => {}, ok: (l, v) => emitted.ok.push([l, v]), warn: (m) => emitted.warn.push(m) } },
+    );
+    assert.equal(errors.length, 0);
+    assert.equal(warnings.filter((w) => w.path === 'agentMerge.permissions').length, 0);
+    assert.ok(emitted.ok.some(([label]) => label === 'agentMerge.permissions'));
+    assert.equal(emitted.warn.length, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Agent-merge section: enabled + claude-code + grant missing one rule -> warning naming it', () => {
+  const dir = agentMergeProject({ settings: ONE_RULE_SETTINGS });
+  try {
+    const { warnings } = configLib.collectConfigIssues(
+      baseConfig({ agentMerge: { enabled: true, mergeMethod: 'squash' } }),
+      { out: dir },
+    );
+    const w = warnings.find((w) => w.path === 'agentMerge.permissions');
+    assert.ok(w, 'expected an agentMerge.permissions warning');
+    assert.match(w.message, /Task\(concertino-auditor\)/);
+    assert.match(w.message, /concertino sync/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Agent-merge section: enabled + claude-code + no settings.json -> warning', () => {
+  const dir = agentMergeProject();
+  try {
+    const { warnings } = configLib.collectConfigIssues(
+      baseConfig({ agentMerge: { enabled: true, mergeMethod: 'squash' } }),
+      { out: dir },
+    );
+    const w = warnings.find((w) => w.path === 'agentMerge.permissions');
+    assert.ok(w, 'expected an agentMerge.permissions warning');
+    assert.match(w.message, /no \.claude\/settings\.json/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Agent-merge section: disabled -> section entirely silent', () => {
+  const dir = agentMergeProject();
+  try {
+    const emitted = { section: [] };
+    const { warnings } = configLib.collectConfigIssues(
+      baseConfig({ agentMerge: { enabled: false, mergeMethod: 'squash' } }),
+      { out: dir, emit: { section: (t) => emitted.section.push(t) } },
+    );
+    assert.equal(warnings.filter((w) => w.path === 'agentMerge.permissions').length, 0);
+    assert.ok(!emitted.section.includes('Agent-merge'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Agent-merge section: claude-code absent from harnesses -> section entirely silent', () => {
+  const dir = agentMergeProject();
+  try {
+    const emitted = { section: [] };
+    const { warnings } = configLib.collectConfigIssues(
+      baseConfig({ harnesses: ['codex'], agentMerge: { enabled: true, mergeMethod: 'squash' } }),
+      { out: dir, emit: { section: (t) => emitted.section.push(t) } },
+    );
+    assert.equal(warnings.filter((w) => w.path === 'agentMerge.permissions').length, 0);
+    assert.ok(!emitted.section.includes('Agent-merge'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkAgentMergePermission returns null (not applicable) when agentMerge is disabled', () => {
+  assert.equal(configLib.checkAgentMergePermission(baseConfig({ agentMerge: { enabled: false } }), __dirname), null);
+});
+
+test('checkAgentMergePermission returns null (not applicable) when claude-code is not configured', () => {
+  assert.equal(
+    configLib.checkAgentMergePermission(baseConfig({ harnesses: ['codex'], agentMerge: { enabled: true } }), __dirname),
+    null,
+  );
+});
+
+test('checkAgentMergePermission returns { ok: true } when the grant is present', () => {
+  const dir = agentMergeProject({ settings: BOTH_RULES_SETTINGS });
+  try {
+    const result = configLib.checkAgentMergePermission(baseConfig({ agentMerge: { enabled: true } }), dir);
+    assert.deepEqual(result, { ok: true });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- CON-88 skeptic-final-1.md Change Request 1 ----------------------------
+// A project that turned agentMerge.enabled on but has never run
+// `concertino sync` yet has no scripts/concertino/ at all — the check
+// script itself is missing, not merely reporting FAIL. Before the fix,
+// execFileSync's raw `spawnSync ... ENOENT` leaked into the reason text;
+// the fix must return a clean, on-brand reason instead, naming what's
+// missing (AC1's own wording) rather than an internal path/errno.
+
+test('checkAgentMergePermission: the check script itself missing (never synced) returns a clean reason, not a raw ENOENT', () => {
+  const dir = agentMergeProject({ noScript: true });
+  try {
+    const result = configLib.checkAgentMergePermission(baseConfig({ agentMerge: { enabled: true } }), dir);
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /check-agent-merge-permission\.sh not found/);
+    assert.doesNotMatch(result.reason, /ENOENT/);
+    assert.doesNotMatch(result.reason, /spawnSync/);
+    // The raw reason deliberately does NOT carry its own "run `concertino
+    // sync`" clause any more (skeptic-final-2.md Change Request 2) — that's
+    // withAgentMergeFixHint's job, exercised below and in the
+    // "Agent-merge section" test, so it's said exactly once at render time.
+    assert.doesNotMatch(result.reason, /concertino sync/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Agent-merge section: the check script itself missing (never synced) warns cleanly, not with a raw ENOENT', () => {
+  const dir = agentMergeProject({ noScript: true });
+  try {
+    const { warnings } = configLib.collectConfigIssues(
+      baseConfig({ agentMerge: { enabled: true, mergeMethod: 'squash' } }),
+      { out: dir },
+    );
+    const w = warnings.find((w) => w.path === 'agentMerge.permissions');
+    assert.ok(w, 'expected an agentMerge.permissions warning');
+    assert.match(w.message, /check-agent-merge-permission\.sh not found/);
+    assert.doesNotMatch(w.message, /ENOENT/);
+    assert.doesNotMatch(w.message, /spawnSync/);
+    // The rendered message carries exactly one "run `concertino sync`"
+    // instruction, not zero and not two.
+    const hits = (w.message.match(/concertino sync/g) || []).length;
+    assert.equal(hits, 1, `expected exactly one "concertino sync" mention, got ${hits}: ${w.message}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- CON-88 skeptic-final-2.md Change Request 2 -----------------------------
+// withAgentMergeFixHint must never double the "run `concertino sync`"
+// instruction when the underlying reason already carries one of its own
+// (e.g. the shell script's own "no .claude/settings.json found" message, if
+// it or a future message ever embeds that phrase again).
+
+test('withAgentMergeFixHint appends the instruction once when reason has none', () => {
+  const msg = configLib.withAgentMergeFixHint('missing permission rule: Bash(gh pr merge:*)');
+  const hits = (msg.match(/concertino sync/g) || []).length;
+  assert.equal(hits, 1);
+});
+
+test('withAgentMergeFixHint does not double the instruction when reason already has one', () => {
+  const msg = configLib.withAgentMergeFixHint('no .claude/settings.json found — run `concertino sync`');
+  const hits = (msg.match(/concertino sync/g) || []).length;
+  assert.equal(hits, 1);
+});
+
+// --- CON-88 skeptic-final-2.md Change Request 1 -----------------------------
+// Both required permission rules missing at once (an empty/irrelevant
+// permissions.allow) is at least as likely a first-touch scenario as either
+// state the round-1 regression tests cover — the check script writes one
+// "FAIL <msg>" line per missing rule, and the fix must collapse that into a
+// single-line reason before it ever reaches a single-line warn() renderer.
+
+test('checkAgentMergePermission: both rules missing collapses the two-line stderr into one clean, single-line reason', () => {
+  const dir = agentMergeProject({ settings: { permissions: { allow: [] } } });
+  try {
+    const result = configLib.checkAgentMergePermission(baseConfig({ agentMerge: { enabled: true } }), dir);
+    assert.equal(result.ok, false);
+    assert.doesNotMatch(result.reason, /\n/, 'reason must not contain an embedded newline');
+    assert.doesNotMatch(result.reason, /^FAIL /, 'reason must not carry a leading FAIL token');
+    assert.match(result.reason, /Bash\(gh pr merge:\*\)/);
+    assert.match(result.reason, /Task\(concertino-auditor\)/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Agent-merge section: both rules missing renders as one coherent single-line warning', () => {
+  const dir = agentMergeProject({ settings: { permissions: { allow: [] } } });
+  try {
+    const { warnings } = configLib.collectConfigIssues(
+      baseConfig({ agentMerge: { enabled: true, mergeMethod: 'squash' } }),
+      { out: dir },
+    );
+    const w = warnings.find((w) => w.path === 'agentMerge.permissions');
+    assert.ok(w, 'expected an agentMerge.permissions warning');
+    assert.doesNotMatch(w.message, /\n/, 'rendered warning must not contain an embedded newline');
+    assert.doesNotMatch(w.message, /^FAIL /);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -30,7 +30,7 @@ Three structural properties — none requiring a human — make the loop self-co
 
 Every loop is bounded by a circuit breaker with a defined escalation — nothing thrashes forever, nothing fails silently. That property ("fails loudly into a known escalation state") is what makes it safe to run a *fleet* of orchestrators unattended.
 
-**Agent-merge** is the opt-in toggle (`agentMerge.enabled` in config, overridable per-run with `--agent-merge`/`--no-agent-merge`) that replaces the fourth checkpoint — a human confirming "merged" — with the auditor's cold verification. Disabled by default: existing projects and runs are byte-for-byte unchanged until a project (or a single run) opts in.
+**Agent-merge** is the opt-in toggle (`agentMerge.enabled` in config, overridable per-run with `--agent-merge`/`--no-agent-merge`) that replaces the fourth checkpoint — a human confirming "merged" — with the auditor's cold verification. Disabled by default: existing projects and runs are byte-for-byte unchanged until a project (or a single run) opts in. Under Claude Code, this config key alone does not authorize a merge — see [`docs/config-reference.md`'s `agentMerge` section](docs/config-reference.md#agentmerge) for the harness-level permission grant it also requires.
 
 ## Architecture
 
