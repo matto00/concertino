@@ -1,0 +1,11 @@
+- `lib/cli/shared.js` — adds `resolveOut(args)` and `resolveConfigPath(args, out)` helpers (copy-pasted verbatim from the previously-duplicated logic) and exports both.
+- `lib/cli/sync.js` — switches to `resolveOut`/`resolveConfigPath` from `./shared`, replacing the hand-written two-line resolution.
+- `lib/cli/diff.js` — same.
+- `lib/cli/eject.js` — same.
+- `lib/cli/update.js` — same.
+- `lib/cli/gates.js` — same.
+- `lib/cli/doctor.js` — same; downstream reads of `out` (unrelated drift/artifact checks) left untouched.
+- `lib/cli/watch.js` — same.
+- `lib/cli/validate.js` — same.
+- `lib/cli/prune.js` — same.
+- `lib/cli/migrate.js` — same.
