@@ -1,4 +1,0 @@
-- `lib/cli/completion.js` — added per-command flag/value completion entries for `prune` (`--dry-run`), `eject` (`--role` completing the five role names, `--harness`), `migrate` (`--dry-run`), and `answer` (`--sub`/`--total`) in all three shells (fish, zsh, bash); added a `watch` entry to zsh's `args_map` (fish/bash already cover `watch`'s `--out`/`--config` globally); added bash `--role`/`--sub`/`--total` handling to the flag-name catch-all plus dedicated `case "$prev"` branches so `--sub`/`--total` suggest no value.
-- `test/completion.test.js` — new regression coverage (auto-discovered by `node --test`) asserting the new per-command entries are present in each shell's generated output and that the pre-existing `sync`/`diff`/`init`/`gates`/`completion` entries remain unchanged.
-- `docs/cli-audit-2026-08.md` — marked finding 5 resolved by CON-86, with a summary of what was added.
-- `openspec/changes/shell-completion-flag-tables/tasks.md` — marked all tasks complete.
