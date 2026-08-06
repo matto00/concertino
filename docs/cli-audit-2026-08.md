@@ -89,7 +89,7 @@ uniformly touches all thirteen `cmd*` functions' argument handling and is
 exactly the kind of "individually-sizable gap" the ticket's own scope-check
 clause says to file separately. **Ticket: CON-85.**
 
-## 5. Shell-completion flag tables don't cover `watch`, `prune`, `eject`, `migrate`, `answer`
+## 5. Shell-completion flag tables don't cover `watch`, `prune`, `eject`, `migrate`, `answer` — RESOLVED (CON-86)
 
 Beyond the `CMDS`/`DESC` top-level list (fixed in finding 1, which makes the
 five subcommands complete at all), none of the three completion scripts'
@@ -118,6 +118,14 @@ names) are a design decision with several reasonable shapes, not a
 mechanical addition to an existing list — outside the "obviously safe,
 mechanically verifiable" bar this change's design doc sets for inline
 audit fixes (Decision 4). **Ticket: CON-86.**
+
+**Resolved by CON-86** (`shell-completion-flag-tables`): all three shells'
+per-command flag/value tables now cover `prune` (`--dry-run`), `eject`
+(`--role` completing the five role names, `--harness`), `migrate`
+(`--dry-run`), and `answer` (`--sub`/`--total`); zsh additionally gained a
+dedicated `watch` entry (`--out`/`--config`) since, unlike fish/bash, it has
+no subcommand-independent global completion mechanism. See
+`test/completion.test.js` for regression coverage.
 
 ## 6. `answer`'s `--sub`/`--total` flags use a different syntax convention — reviewed, no fix needed
 
