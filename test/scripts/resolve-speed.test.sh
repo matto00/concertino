@@ -130,7 +130,17 @@ rm -rf "$SCRIPTS"
 SCRIPTS="$(new_scripts)"
 OUT="$("$SCRIPTS/resolve-speed.sh" '' claude-code)"
 check "d.1 empty speed arg resolves default" "$(field "$OUT" .speed)" "default"
-OUT2="$("$SCRIPTS/resolve-speed.sh")"
+# A genuinely empty static default (no $2, no runtime signal, no
+# .concertino.env override) resolves HARNESS to the literal "unknown",
+# which resolve-speed.sh correctly treats as fatal (see g.2) — so this
+# assertion can only be exercised with a static default actually in place,
+# same fixture e.3 below uses to check .harness. Bare CLAUDECODE/etc.
+# stripping alone still resolved harness "for free" via whatever ambient
+# signal happened to be set in the shell running the suite, never actually
+# reaching this fallback path — invisible until a CI runner with none of
+# those signals set exercises it for real.
+sed -i "s/CONCERTINO_HARNESS=''/CONCERTINO_HARNESS='claude-code'/" "$SCRIPTS/.concertino.env"
+OUT2="$(env -u CLAUDECODE -u CODEX_SANDBOX -u CODEX_SANDBOX_NETWORK_DISABLED -u OPENCODE "$SCRIPTS/resolve-speed.sh")"
 check "d.2 no args at all resolves default (harness from empty static default)" "$(field "$OUT2" .speed)" "default"
 rm -rf "$SCRIPTS"
 
