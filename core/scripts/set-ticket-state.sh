@@ -12,6 +12,15 @@ set -uo pipefail
 # Usage:
 #   set-ticket-state.sh <tickets-dir> <TICKET_ID> <state>
 #
+# <tickets-dir> exists only so this script's own test suite
+# (test/scripts/set-ticket-state.test.sh) can exercise it against an
+# isolated mktemp -d scratch directory, never to let production choose a
+# different tickets location — the design doc's Decision 3 documents this
+# as a deliberate exception, and the only production call site
+# (lib/cli/render.js's rendered orchestrator prose) always passes the
+# literal string "tickets". See
+# docs/superpowers/specs/2026-08-07-local-ticket-provider-design.md.
+#
 # <state> is one of: backlog unstarted started completed canceled
 # — Linear's own state.type vocabulary, shared so both providers agree.
 #

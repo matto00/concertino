@@ -40,6 +40,13 @@ ORCH="$OUT/.claude/agents/concertino-orchestrator.md"
 
 has   "names the ticket file"        'tickets/$TICKET_ID.md'   "$ORCH"
 has   "names the write-back script"  'set-ticket-state.sh'     "$ORCH"
+# CON-94: the design doc's Decision 3 documents the tickets-dir argument as
+# a test-only exception — pin the only production call site to the literal
+# "tickets" it always passes, so a future edit that made the directory
+# genuinely configurable would break this test rather than silently
+# reopening the surface Decision 3 excludes.
+has   "pins the write-back call to the literal tickets-dir argument" \
+      'set-ticket-state.sh tickets "$TICKET_ID"' "$ORCH"
 has   "keeps the no-store fallback"  'provided inline'         "$ORCH"
 
 # "Grants" means the frontmatter `tools:` list specifically — not a blanket
