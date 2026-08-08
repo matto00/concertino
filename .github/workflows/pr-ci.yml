@@ -1,0 +1,45 @@
+name: PR CI
+
+# Runs the test suite on every pull request against main and on every push
+# to main, so `check-merge-readiness.sh` condition 1 ("CI green") reflects a
+# real check run instead of an empty statusCheckRollup. Separate from
+# publish.yml, whose filename is pinned on npmjs.com's Trusted Publishing
+# config — this file has no such constraint.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 16 is the engines.node floor declared in package.json; 22 is the
+        # version publish.yml publishes from. Both must actually pass.
+        node-version: [16, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      # GitHub-hosted runners have no git identity configured by default.
+      # test/answer.test.js, test/cli-help-flags.test.js, and
+      # test/ticket-text.test.js build throwaway git repos via `git init` +
+      # `git commit --allow-empty` as fixtures, which fails without one.
+      - name: Configure git identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      # Zero-dependency CLI: no install step, nothing to lock.
+      - name: Self-test
+        run: npm test
