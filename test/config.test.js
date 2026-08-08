@@ -694,7 +694,7 @@ test('Agent-merge section: both rules missing renders as one coherent single-lin
 });
 
 // --- CON-44: local ticket provider — withDefaults normalises manual -------
-const { withDefaults, collectConfigIssues } = require('../lib/config');
+const { withDefaults } = require('../lib/config');
 
 test('withDefaults normalises the deprecated manual kind to local', () => {
   const c = withDefaults(baseConfig({ ticketProvider: { kind: 'manual', idExample: 'ABC-123' } }));
