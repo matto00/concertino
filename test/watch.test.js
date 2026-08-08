@@ -524,6 +524,7 @@ test('reap.reapFinished runs once per draw(), against the runs snapshot reduce()
   const reapCalls = [];
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -575,6 +576,7 @@ test('reap.reapFinished runs once per draw(), against the runs snapshot reduce()
     process.stdout.write = realWrite;
     Object.defineProperty(process, 'stdin', realStdinDescriptor);
     delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
     delete require.cache[sessionPath];
     delete require.cache[reapPath];
   }
@@ -733,6 +735,7 @@ test('v opens the sessions screen from the fleet, populated with a fresh discove
   const discoverCalls = [];
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: {
@@ -785,6 +788,7 @@ test('v opens the sessions screen from the fleet, populated with a fresh discove
     process.stdout.write = realWrite;
     Object.defineProperty(process, 'stdin', realStdinDescriptor);
     delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
     delete require.cache[sessionPath];
     delete require.cache[discoveryPath];
     fs.rmSync(root, { recursive: true, force: true });
@@ -830,6 +834,7 @@ test('ticket-text.resolve runs once per draw() while mode is drilldown, and not 
   const resolveCalls = [];
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -895,6 +900,7 @@ test('ticket-text.resolve runs once per draw() while mode is drilldown, and not 
     process.stdout.removeAllListeners('resize');
     Object.defineProperty(process, 'stdin', realStdinDescriptor);
     delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
     delete require.cache[sessionPath];
     delete require.cache[ticketTextPath];
   }
@@ -962,6 +968,7 @@ test('repeated j past the visible window scrolls the fleet view and keeps the ma
   Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -1004,6 +1011,7 @@ test('repeated j past the visible window scrolls the fleet view and keeps the ma
     process.stdout.write = realWrite;
     Object.defineProperty(process, 'stdin', realStdinDescriptor);
     delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
     delete require.cache[sessionPath];
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1078,6 +1086,7 @@ test('scrolling back up with k brings a short RUNNING section back into view whe
   Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -1119,6 +1128,7 @@ test('scrolling back up with k brings a short RUNNING section back into view whe
     process.stdout.write = realWrite;
     Object.defineProperty(process, 'stdin', realStdinDescriptor);
     delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
     delete require.cache[sessionPath];
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1185,6 +1195,7 @@ test('a digit press jumps directly to a scrolled-past section and scrolls it bac
   Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -1217,6 +1228,7 @@ test('a digit press jumps directly to a scrolled-past section and scrolls it bac
     process.stdout.write = realWrite;
     Object.defineProperty(process, 'stdin', realStdinDescriptor);
     delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
     delete require.cache[sessionPath];
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1272,6 +1284,7 @@ test('jumping into QUEUED focus, moving the cursor, and exiting leaves the run s
   Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -1317,6 +1330,7 @@ test('jumping into QUEUED focus, moving the cursor, and exiting leaves the run s
     process.stdout.write = realWrite;
     Object.defineProperty(process, 'stdin', realStdinDescriptor);
     delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
     delete require.cache[sessionPath];
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1363,6 +1377,7 @@ test('force-start: f opens a confirmation, any key cancels, y actually starts th
   Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -1414,6 +1429,7 @@ test('force-start: f opens a confirmation, any key cancels, y actually starts th
     process.stdout.write = realWrite;
     Object.defineProperty(process, 'stdin', realStdinDescriptor);
     delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
     delete require.cache[sessionPath];
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1458,6 +1474,7 @@ test('Clear Queue: C opens a confirmation, any key cancels, y drops pending and 
   Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -1502,6 +1519,7 @@ test('Clear Queue: C opens a confirmation, any key cancels, y drops pending and 
     process.stdout.write = realWrite;
     Object.defineProperty(process, 'stdin', realStdinDescriptor);
     delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
     delete require.cache[sessionPath];
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1535,6 +1553,7 @@ test('every frame begins with the persistent top bar naming the project and curr
   Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -1554,6 +1573,7 @@ test('every frame begins with the persistent top bar naming the project and curr
     process.stdout.write = realWrite;
     Object.defineProperty(process, 'stdin', realStdinDescriptor);
     delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
     delete require.cache[sessionPath];
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1645,6 +1665,7 @@ function withWatchHarness({ tickets, rows, cols, attach }, body) {
   Object.defineProperty(process.stdout, 'columns', { value: cols, configurable: true });
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -1663,6 +1684,7 @@ function withWatchHarness({ tickets, rows, cols, attach }, body) {
     process.stdout.removeAllListeners('resize');
     for (const l of parkedResizeListeners) process.stdout.on('resize', l);
     delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
     delete require.cache[sessionPath];
     fs.rmSync(root, { recursive: true, force: true });
   };
@@ -1847,6 +1869,7 @@ function setupQuickStartHarness(tickets, over) {
   Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -1865,6 +1888,7 @@ function setupQuickStartHarness(tickets, over) {
       process.stdout.write = realWrite;
       Object.defineProperty(process, 'stdin', realStdinDescriptor);
       delete require.cache[watchPath];
+      delete require.cache[require.resolve('../lib/ui/ticket-provider')];
       delete require.cache[sessionPath];
       fs.rmSync(root, { recursive: true, force: true });
     },
@@ -2069,7 +2093,13 @@ test('t on the QUICK START-focused ticket opens the ticket detail view (view-tic
   let donePromise;
   try {
     const watchModule = require('../lib/ui/watch');
-    donePromise = watchModule.watch({ root: h.root, config: {} });
+    // CON-44: a real config always carries a resolved ticketProvider.kind
+    // (config.js's withDefaults guarantees it) — 't' opens the ticket detail
+    // view via ensureLaunchPad(), which now goes through the resolver, so an
+    // empty config here would throw on the resolver's own "unknown kind"
+    // check before ever reaching the QUICK START behaviour this test is
+    // actually about.
+    donePromise = watchModule.watch({ root: h.root, config: { ticketProvider: { kind: 'linear' } } });
 
     // CON-56: digit-jump into QUICK START (always on screen, digit 1 here —
     // no runs, no queue). quickStartFocus: 0 -> CON-100 (top priority).
@@ -2304,7 +2334,10 @@ test('t on a RUNNING row opens the ticket detail view (view-ticket), and esc ret
   let donePromise;
   try {
     const watchModule = require('../lib/ui/watch');
-    donePromise = watchModule.watch({ root: h.root, config: {} });
+    // CON-44: 't' opens the ticket detail view via ensureLaunchPad(), which
+    // now goes through the resolver — see the sibling QUICK START test above
+    // for why an empty config no longer works here.
+    donePromise = watchModule.watch({ root: h.root, config: { ticketProvider: { kind: 'linear' } } });
 
     // CON-500 is already `▲ running`, so RUNNING (not QUICK START) is the
     // first section — `selected: 0` (the default) already lands on it, no
@@ -2339,7 +2372,10 @@ test('t on a DONE row opens the ticket detail view (view-ticket), and esc return
   let donePromise;
   try {
     const watchModule = require('../lib/ui/watch');
-    donePromise = watchModule.watch({ root: h.root, config: {} });
+    // CON-44: 't' opens the ticket detail view via ensureLaunchPad(), which
+    // now goes through the resolver — see the QUICK START test above for why
+    // an empty config no longer works here.
+    donePromise = watchModule.watch({ root: h.root, config: { ticketProvider: { kind: 'linear' } } });
 
     // CON-501 has already ended (run.end, no live window) — it lands in
     // DONE, the only runs-backed section on screen, so `selected: 0` (the
@@ -2417,6 +2453,7 @@ function setupLaunchPadHarness(tickets, epics, over) {
   process.env.LINEAR_API_KEY = 'dummy-not-a-real-key';
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -2433,6 +2470,7 @@ function setupLaunchPadHarness(tickets, epics, over) {
       if (prevKey === undefined) delete process.env.LINEAR_API_KEY;
       else process.env.LINEAR_API_KEY = prevKey;
       delete require.cache[watchPath];
+      delete require.cache[require.resolve('../lib/ui/ticket-provider')];
       delete require.cache[sessionPath];
       fs.rmSync(root, { recursive: true, force: true });
     },
@@ -2677,6 +2715,49 @@ test('a ticket that becomes queued (via q) before L is pressed is excluded from 
   }
 });
 
+// --- CON-44: a local project auto-refreshes the launch pad on open --------
+// openLaunchPad's new branch (watch.js) fires refreshLaunchPad() itself, with
+// no 'r' keypress, when the resolved provider is 'local' — a directory read
+// costs nothing, unlike linear's network round trip, so there is nothing for
+// the "press r to fetch" hint to protect against. Exercised end to end,
+// against the REAL (unfaked) ticket-provider.js/tickets/local.js modules —
+// unlike the linear-focused refresh tests below, no fetchTickets/resolveTeam
+// fake is needed at all, since a local fetch never leaves the filesystem.
+test('a local project opens the launch pad already refreshed, with no r keypress', async () => {
+  const h = setupLaunchPadHarness([], []);
+  const ticketsDir = path.join(h.root, 'tickets');
+  fs.mkdirSync(ticketsDir, { recursive: true });
+  fs.writeFileSync(path.join(ticketsDir, 'CON-1.md'), '---\ntitle: One\nstate: backlog\n---\n\nbody\n');
+
+  const LOCAL_LAUNCHPAD_CONFIG = {
+    dashboard: { launchPad: { enabled: true } },
+    ticketProvider: { kind: 'local', teamKey: 'CON' },
+  };
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LOCAL_LAUNCHPAD_CONFIG });
+
+    const cacheModule = require('../lib/ui/cache');
+    // setupLaunchPadHarness seeds the on-disk cache directly (no fetch
+    // involved) with zero tickets — so CON-1 actually showing up on disk
+    // afterwards proves a real refresh ran, not just that the pre-seeded
+    // cache was read back unchanged.
+    assert.equal(cacheModule.read(h.root).tickets.length, 0);
+
+    h.fakeStdin.emit('data', 'N'); // open the launch pad — no 'r' keypress follows
+    await flushRefresh();
+
+    const onDisk = cacheModule.read(h.root);
+    assert.equal(typeof onDisk.fetchedAt, 'number', 'opening a local project\'s launch pad must refresh it on its own');
+    assert.equal(onDisk.tickets.length, 1);
+    assert.equal(onDisk.tickets[0].identifier, 'CON-1');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
 // --- CON-20: launch pad refresh distinguishes an empty team from a
 // not-found team key ---------------------------------------------------------
 // `refreshLaunchPad` is a private closure inside watch(opts) (same
@@ -2726,6 +2807,7 @@ function setupLaunchPadRefreshHarness(linearOverrides) {
   process.env.LINEAR_API_KEY = 'dummy-not-a-real-key';
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -2746,6 +2828,7 @@ function setupLaunchPadRefreshHarness(linearOverrides) {
       if (prevKey === undefined) delete process.env.LINEAR_API_KEY;
       else process.env.LINEAR_API_KEY = prevKey;
       delete require.cache[watchPath];
+      delete require.cache[require.resolve('../lib/ui/ticket-provider')];
       delete require.cache[sessionPath];
       delete require.cache[linearPath];
       fs.rmSync(root, { recursive: true, force: true });
@@ -3020,6 +3103,7 @@ function setupTicketDraftHarness(overrides) {
   process.env.LINEAR_API_KEY = 'dummy-not-a-real-key';
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -3044,6 +3128,7 @@ function setupTicketDraftHarness(overrides) {
       if (prevKey === undefined) delete process.env.LINEAR_API_KEY;
       else process.env.LINEAR_API_KEY = prevKey;
       delete require.cache[watchPath];
+      delete require.cache[require.resolve('../lib/ui/ticket-provider')];
       delete require.cache[sessionPath];
       delete require.cache[linearPath];
       delete require.cache[draftPath];
@@ -3371,6 +3456,7 @@ test('the scrollOffset re-clamp forwards every tail-lengthening opt to gridModeE
   Object.defineProperty(process.stdout, 'columns', { value: 150, configurable: true });
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -3464,6 +3550,7 @@ test('the scrollOffset re-clamp forwards every tail-lengthening opt to gridModeE
     process.stdout.removeAllListeners('resize');
     for (const l of parkedResizeListeners) process.stdout.on('resize', l);
     delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
     delete require.cache[sessionPath];
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -3522,6 +3609,7 @@ test('scrollToShow forwards every tail-lengthening opt (including forceStartConf
   Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -3560,6 +3648,7 @@ test('scrollToShow forwards every tail-lengthening opt (including forceStartConf
     process.stdout.write = realWrite;
     Object.defineProperty(process, 'stdin', realStdinDescriptor);
     delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
     delete require.cache[sessionPath];
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -3613,6 +3702,7 @@ function setupSettingsHarness(config) {
   Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -3629,6 +3719,7 @@ function setupSettingsHarness(config) {
       process.stdout.write = realWrite;
       Object.defineProperty(process, 'stdin', realStdinDescriptor);
       delete require.cache[watchPath];
+      delete require.cache[require.resolve('../lib/ui/ticket-provider')];
       delete require.cache[sessionPath];
       fs.rmSync(root, { recursive: true, force: true });
     },
@@ -3927,6 +4018,7 @@ function setupPrEvidenceHarness() {
   Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
 
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
     exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
@@ -3953,6 +4045,7 @@ function setupPrEvidenceHarness() {
       process.stdout.write = realWrite;
       Object.defineProperty(process, 'stdin', realStdinDescriptor);
       delete require.cache[watchPath];
+      delete require.cache[require.resolve('../lib/ui/ticket-provider')];
       delete require.cache[sessionPath];
       fs.rmSync(root, { recursive: true, force: true });
     },
@@ -4064,6 +4157,7 @@ test('watch() refuses to start when a live dashboard already owns the repo', asy
   const watchPath = require.resolve('../lib/ui/watch');
   const sessionPath = require.resolve('../lib/ui/session');
   delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
   let sessionTouched = false;
   require.cache[sessionPath] = {
     id: sessionPath, filename: sessionPath, loaded: true,
@@ -4121,6 +4215,7 @@ test('watch() refuses to start when a live dashboard already owns the repo', asy
     console.error = realError;
     Object.defineProperty(process, 'stdin', realStdinDescriptor);
     delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
     delete require.cache[sessionPath];
   }
 });
