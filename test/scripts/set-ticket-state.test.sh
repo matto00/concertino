@@ -27,6 +27,45 @@ seed() {
     > "$D/CON-12.md"
 }
 
+# CRLF-terminated variant of seed(): every line, frontmatter and body alike,
+# ends \r\n. lib/ui/tickets/local.js's FRONTMATTER_RE accepts \r?\n, so the
+# store parses this fine — the write-back script must too.
+seed_crlf() {
+  D="$(mktemp -d)"
+  printf '%s\r\n' \
+    '---' \
+    'id: CON-12' \
+    'title: A ticket' \
+    'state: unstarted' \
+    'priority: 2' \
+    '---' \
+    '' \
+    '## Description' \
+    '' \
+    'Body text with a state: word that must not be rewritten.' \
+    > "$D/CON-12.md"
+}
+
+# CRLF ticket whose BODY has its own line starting literally with `state:` —
+# the shape that exposes a closing-fence match too narrow to see \r: if the
+# loop never recognises the closing `---\r` line, it keeps treating body
+# lines as frontmatter and rewrites this one too.
+seed_crlf_body_state() {
+  D="$(mktemp -d)"
+  printf '%s\r\n' \
+    '---' \
+    'id: CON-14' \
+    'title: A ticket' \
+    'state: unstarted' \
+    'priority: 2' \
+    '---' \
+    '' \
+    '## Notes' \
+    '' \
+    'state: this line starts with state: in the body' \
+    > "$D/CON-14.md"
+}
+
 # --- happy path -------------------------------------------------------------
 seed
 OUT="$("$SCRIPT" "$D" CON-12 started)"; RC=$?
@@ -75,6 +114,53 @@ seed
 printf '%s\n' 'no frontmatter at all' > "$D/CON-13.md"
 "$SCRIPT" "$D" CON-13 started >/dev/null 2>&1; RC=$?
 check "no frontmatter: exit 1" "$RC" "1"
+rm -rf "$D"
+
+# --- CRLF tickets -------------------------------------------------------------
+seed_crlf
+OUT="$("$SCRIPT" "$D" CON-12 started)"; RC=$?
+check "CRLF: exit 0"  "$RC"  "0"
+check "CRLF: reports" "$OUT" "OK CON-12 started"
+check "CRLF: rewrote frontmatter, CR preserved" \
+  "$(grep -c $'^state: started\r$' "$D/CON-12.md")" "1"
+check "CRLF: left the body alone" \
+  "$(grep -c 'state: word that must not be rewritten' "$D/CON-12.md")" "1"
+check "CRLF: body line still ends in CR" \
+  "$(grep -c $'Body text with a state: word that must not be rewritten.\r$' "$D/CON-12.md")" "1"
+check "CRLF: title intact" \
+  "$(grep -c $'^title: A ticket\r$' "$D/CON-12.md")" "1"
+rm -rf "$D"
+
+# CRLF ticket with a body line starting `state:` — exercises the
+# closing-fence \r blind spot directly: if the loop fails to recognise the
+# closing `---\r`, this body line gets overwritten to `state: started` too,
+# and the count below comes back 2 instead of 1.
+seed_crlf_body_state
+"$SCRIPT" "$D" CON-14 started >/dev/null
+check "CRLF body-state-line: frontmatter rewritten" \
+  "$(grep -c $'^state: started\r$' "$D/CON-14.md")" "1"
+check "CRLF body-state-line: body line preserved verbatim" \
+  "$(grep -c 'state: this line starts with state: in the body' "$D/CON-14.md")" "1"
+rm -rf "$D"
+
+# --- ticket id path traversal ------------------------------------------------
+seed
+OUTSIDE="$(mktemp -d)"
+BAD_ID="../$(basename "$OUTSIDE")/pwned"
+OUT="$("$SCRIPT" "$D" "$BAD_ID" started 2>&1)"; RC=$?
+check "path traversal: exit 1" "$RC" "1"
+case "$OUT" in *"$BAD_ID"*) ok "path traversal: names the bad value";;
+  *) bad "path traversal: names the bad value" "got [$OUT]";; esac
+check "path traversal: no file written outside tickets-dir" \
+  "$([ -e "$OUTSIDE/pwned.md" ] && echo yes || echo no)" "no"
+check "path traversal: original ticket untouched" \
+  "$(grep -c '^state: unstarted$' "$D/CON-12.md")" "1"
+rm -rf "$OUTSIDE"
+rm -rf "$D"
+
+seed
+OUT="$("$SCRIPT" "$D" '..' started 2>&1)"; RC=$?
+check "bare .. id: exit 1" "$RC" "1"
 rm -rf "$D"
 
 # --- no leftover temp files -------------------------------------------------
