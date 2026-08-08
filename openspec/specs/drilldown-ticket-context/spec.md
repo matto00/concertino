@@ -69,7 +69,7 @@ before this change, unaffected by the TICKET panel's own content length.
 Ticket text (title and description) for a run SHALL be resolved by first checking for a file
 named `ticket.md` located anywhere under `.concertino/runs/<TICKET_ID>/evidence/` in the main
 checkout, and — only if no such file is found, is unreadable, or its parsed title is blank once
-trimmed of whitespace — falling back to the launch pad cache (`.concertino/cache/linear.json`),
+trimmed of whitespace — falling back to the launch pad cache (`.concertino/cache/tickets.json`),
 matched by ticket identifier. If neither source yields text, resolution SHALL return an absent
 result (rendered per the fallback requirements above), never a thrown error.
 

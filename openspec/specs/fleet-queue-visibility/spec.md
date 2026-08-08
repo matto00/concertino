@@ -90,7 +90,7 @@ and metadata (`maxConcurrent`, `launchCommand`, a session id, and a write
 timestamp) to `.concertino/cache/queue.json` whenever `lib/ui/watch.js`
 calls `queue.tick()` and the resulting queue is not idle (per
 `queue.isIdle`), using a temp-file-then-rename write identical in pattern to
-`lib/ui/cache.js`'s `linear.json` write. When the resulting queue is idle,
+`lib/ui/cache.js`'s `tickets.json` write. When the resulting queue is idle,
 the dashboard SHALL remove `.concertino/cache/queue.json` if present. The
 persisted record SHALL contain only ticket ids and queue metadata — no
 ticket titles, descriptions, or other Linear payload.
