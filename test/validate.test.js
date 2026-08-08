@@ -184,3 +184,16 @@ test('--ticket against a linear provider with no LINEAR_API_KEY fails clearly, b
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// --- CON-44: local ticket provider — accepted, manual deprecated -----------
+test('ticketProvider.kind local is accepted', () => {
+  const { out } = runValidate(baseConfig({ ticketProvider: { kind: 'local', idExample: 'CON-1' } }));
+  assert.match(out, /ticketProvider/);
+  assert.doesNotMatch(out, /must be linear\|github\|local/);
+});
+
+test('ticketProvider.kind manual is accepted but warns that it is deprecated', () => {
+  const { out } = runValidate(baseConfig({ ticketProvider: { kind: 'manual', idExample: 'ABC-123' } }));
+  assert.match(out, /deprecated/);
+  assert.match(out, /local/);
+});

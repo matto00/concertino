@@ -28,7 +28,7 @@
       "required": ["kind"],
       "additionalProperties": false,
       "properties": {
-        "kind": { "enum": ["linear", "github", "manual"] },
+        "kind": { "enum": ["linear", "github", "local"] },
         "idExample": { "type": "string", "description": "Sample ticket id, e.g. HEL-26, used in rendered examples." },
         "teamKey": { "type": "string", "description": "Linear team key the launch pad fetches tickets for, e.g. CON. Distinct from idExample, which is only a sample id for agent prose and is often a placeholder. Falls back to the idExample prefix when unset; LINEAR_TEAM_KEY overrides both." }
       }

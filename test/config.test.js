@@ -692,3 +692,16 @@ test('Agent-merge section: both rules missing renders as one coherent single-lin
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// --- CON-44: local ticket provider — withDefaults normalises manual -------
+const { withDefaults, collectConfigIssues } = require('../lib/config');
+
+test('withDefaults normalises the deprecated manual kind to local', () => {
+  const c = withDefaults(baseConfig({ ticketProvider: { kind: 'manual', idExample: 'ABC-123' } }));
+  assert.equal(c.ticketProvider.kind, 'local');
+});
+
+test('withDefaults leaves linear and github alone', () => {
+  assert.equal(withDefaults(baseConfig({ ticketProvider: { kind: 'linear' } })).ticketProvider.kind, 'linear');
+  assert.equal(withDefaults(baseConfig({ ticketProvider: { kind: 'github' } })).ticketProvider.kind, 'github');
+});
