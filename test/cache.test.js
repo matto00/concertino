@@ -14,7 +14,7 @@ function tmpRoot() {
 function seed(root, raw) {
   const dir = path.join(root, '.concertino', 'cache');
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'linear.json'), raw);
+  fs.writeFileSync(path.join(dir, 'tickets.json'), raw);
   return root;
 }
 
@@ -26,8 +26,22 @@ const SAMPLE = {
 
 // --- path ------------------------------------------------------------------
 
-test('the cache lives at .concertino/cache/linear.json', () => {
-  assert.equal(cache.cachePath('/repo'), path.join('/repo', '.concertino', 'cache', 'linear.json'));
+test('the cache lives at .concertino/cache/tickets.json', () => {
+  assert.equal(cache.cachePath('/repo'), path.join('/repo', '.concertino', 'cache', 'tickets.json'));
+});
+
+test('a stale linear.json is ignored entirely — the rename is the migration', () => {
+  const root = tmpRoot();
+  const dir = path.join(root, '.concertino', 'cache');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'linear.json'), JSON.stringify(
+    Object.assign({ schemaVersion: 3, fetchedAt: 1 }, SAMPLE)));
+  assert.deepEqual(cache.read(root), { fetchedAt: null, tickets: [], epics: [] });
+});
+
+test('a row written at the previous schema version reads as empty', () => {
+  const root = seed(tmpRoot(), JSON.stringify(Object.assign({ schemaVersion: 3, fetchedAt: 1 }, SAMPLE)));
+  assert.deepEqual(cache.read(root), { fetchedAt: null, tickets: [], epics: [] });
 });
 
 // --- cold reads are never errors -------------------------------------------
@@ -151,7 +165,7 @@ test('write creates the cache directory', () => {
 test('write leaves no temp files behind', () => {
   const root = tmpRoot();
   cache.write(root, SAMPLE, 1);
-  assert.deepEqual(fs.readdirSync(cache.cacheDir(root)), ['linear.json']);
+  assert.deepEqual(fs.readdirSync(cache.cacheDir(root)), ['tickets.json']);
 });
 
 test('a second write replaces the first', () => {

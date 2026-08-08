@@ -85,7 +85,7 @@ preference order:
    ticket.md` in the main checkout — a snapshot of exactly what the run
    worked from, written during Planning and durable past `cleanup.sh
    --phase4` destroying the worktree.
-2. The **launch pad cache** (`.concertino/cache/linear.json`), matched by
+2. The **launch pad cache** (`.concertino/cache/tickets.json`), matched by
    ticket identifier, for a run whose `ticket.md` was never persisted (e.g. a
    run from before this feature shipped).
 
@@ -460,7 +460,7 @@ file is not a mystery if you find one on disk.
 
 ```
 .concertino/cache/
-  linear.json     { fetchedAt, tickets: [...], epics: [...] }
+  tickets.json    { fetchedAt, tickets: [...], epics: [...] }
 ```
 
 ### Why a cache at all
