@@ -300,7 +300,7 @@ Which lands the orchestrator's existing steps as:
 | Store | `lib/ui/tickets/local.js` |
 | Cache | `cache.js:45` filename; `CACHE_SCHEMA_VERSION` 3 → 4 |
 | Dashboard | `watch.js` require swap; `teamNotFoundMessage` moves out of `watch.js:156` into the provider modules; auto-refresh on open; `draft.js:26`'s message stops naming linear as the only option |
-| Agents | `render.js:139` `manual` case → `local`; `adapters/claude-code/agents.json` `mcpTools` key rename (empty either way) |
+| Agents | `render.js:139` `manual` case → `local`. **`adapters/claude-code/agents.json` needs no change** — its `mcpTools` maps only ever had `linear` and `github` keys, never `manual`, and `emit.js:56`'s `(r.mcpTools && r.mcpTools[kind]) \|\| []` already yields `[]` for an absent key |
 | Script | `core/scripts/set-ticket-state.sh` |
 | Spec | `openspec/specs/ticket-draft/spec.md:38` amended |
 | Docs | `config-reference.md:126`, `adapting-to-your-project.md:44`, `ROADMAP.md:11` |
