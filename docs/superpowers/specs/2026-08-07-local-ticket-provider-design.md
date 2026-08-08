@@ -150,6 +150,16 @@ surgery at all.
 The path is fixed, not configurable. A `ticketProvider.dir` knob would add
 config surface and a test matrix for a choice nobody has asked to make.
 
+**Exception:** `core/scripts/set-ticket-state.sh` accepts `<tickets-dir>`
+as its first positional argument, not because the path is configurable in
+production, but so `test/scripts/set-ticket-state.test.sh` can exercise
+the script against an isolated `mktemp -d` scratch directory rather than
+a real project's `tickets/`. The only production call site
+(`lib/cli/render.js`'s rendered orchestrator prose) always passes the
+literal string `tickets`; `test/scripts/local-provider-render.test.sh`
+gains an assertion pinning that literal so this exception cannot silently
+widen into an actual configurable surface.
+
 ## Decision 4 — the ticket file format
 
 `tickets/CON-12.md`:

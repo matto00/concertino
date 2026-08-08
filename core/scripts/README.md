@@ -50,11 +50,14 @@ file — so they stay generic and the config is the single source of truth.
 | `resolve-speed.sh`  | (speed, harness) -> resolved budgets + per-role models + slow-only flags | `[SPEED] [HARNESS]`                          |
 | `start-servers.sh`  | Start backend/frontend dev servers, health-wait            | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]`     |
 | `assert-phase.sh`   | Postcondition gate per phase                               | `<setup\|servers\|delivery\|cleanup> <WORKTREE_PATH> [...] [TICKET_ID]` |
+| `check-merge-readiness.sh` | Deterministic pre-merge gate for the auditor (agent-merge): CI green, PR mergeable, this run's gates passed | `<WORKTREE_PATH> <BRANCH> <TICKET_ID>` |
 | `cleanup.sh`        | Stop servers, remove worktree                              | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>`                 |
 | `emit-event.sh`     | Append a dashboard event; `--await` blocks for an answer   | `<kind> [--await] k=v ...`                                  |
 | `persist-evidence.sh` | Copy an artifact into the main checkout, print a durable ref | `<TICKET_ID> <SOURCE_PATH>`                               |
+| `set-ticket-state.sh` | Set a local ticket's state (write-back seam for `ticketProvider.kind: "local"`) | `<tickets-dir> <TICKET_ID> <state>`               |
 | `gather-escalation-context.sh` | Format a structured context block for an escalation kind | `<dependency\|api-change\|budget\|blocker\|contradiction\|ticket-ambiguity> k=v ...` |
 | `triage-followup.sh` | Classify a suggested follow-up as fold-in/standalone from file overlap + caller-supplied judgment | `description=... files=... ac_relevant=<yes\|no> effort=<small\|large> worktree=... [base=...]` |
+| `next-report-number.sh` | Collision-safe, disk-derived filename number for the evaluator's/skeptic's next review report | `<change-dir> <kind>`                    |
 
 `resolve-speed.sh` reads `scripts/concertino/speeds.json` (rendered by
 `concertino sync` alongside `.concertino.env`, from the config's `budgets`/

@@ -1,0 +1,8 @@
+- `lib/ui/tickets/local.js` — `stateTypesFromConfig` is now imported from `lib/ui/linear.js` (destructured alongside `deriveEpics`, `OPEN_STATE_TYPES`) instead of a duplicated local implementation; the now-true "reused rather than reimplemented" comment on the old function was removed along with the function body.
+- `test/scripts/ticket-state-vocabulary.test.sh` — new drift test coupling `lib/ui/tickets/local.js`'s `STATES` array to `core/scripts/set-ticket-state.sh`'s `STATES` shell string (byte-compares both, ordered), following `test/scripts/ticket-pattern.test.sh`'s precedent; includes self-verifying fixture cases proving the comparison actually catches drift.
+- `package.json` — wired `test/scripts/ticket-state-vocabulary.test.sh` into the `test` script, next to `ticket-pattern.test.sh`.
+- `docs/superpowers/specs/2026-08-07-local-ticket-provider-design.md` — Decision 3 gains an "Exception" paragraph documenting `set-ticket-state.sh`'s `<tickets-dir>` argument as a deliberate, test-only exception (never a production-configurable surface).
+- `core/scripts/set-ticket-state.sh` — header comment gains a pointer to the same documented exception near its `Usage:` line; no behavioral change.
+- `test/scripts/local-provider-render.test.sh` — new assertion pinning the rendered orchestrator prose's `set-ticket-state.sh` invocation to the literal `set-ticket-state.sh tickets "$TICKET_ID"` call shape, so the exception above cannot silently widen.
+- `core/scripts/README.md` — Scripts table gains rows for `set-ticket-state.sh`, `check-merge-readiness.sh`, and `next-report-number.sh`.
+- `openspec/changes/local-provider-drift-tests/tasks.md` — all 13 tasks marked complete.
