@@ -90,10 +90,12 @@ test('local.fetchTickets is what the resolver reaches for under local', () => {
 
 // CON-44: `manual` is the pre-local name for the same provider, and
 // `concertino validate` tells the user it "reads as local". lib/config.js's
-// withDefaults rewrites it, but lib/cli/watch.js's cmdWatch never calls
-// withDefaults — it JSON.parses the file and passes it straight to watch() —
-// so the alias has to resolve HERE for that promise to be true of the
-// dashboard and not just the agent half.
+// withDefaults rewrites it, and lib/cli/watch.js's cmdWatch now calls
+// withDefaults on its common path (CON-92) — but cmdWatch falls back to the
+// raw, un-normalised parsed object when there's no config file, the JSON
+// fails to parse, or withDefaults itself throws — so the alias still has to
+// resolve HERE for that promise to be true of the dashboard on every path,
+// not just the normalised one.
 test('a raw, un-normalised "manual" config resolves to the local module', () => {
   const raw = { ticketProvider: { kind: 'manual' } };
   assert.equal(provider.moduleFor(raw), local);

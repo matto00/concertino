@@ -2469,12 +2469,15 @@ const LAUNCHPAD_CONFIG = { dashboard: { launchPad: { enabled: true } }, ticketPr
 
 // --- CON-44: ensureLaunchPad must never let an unresolvable
 // ticketProvider.kind escape the stdin listener as an uncaught throw --------
-// lib/cli/watch.js's cmdWatch parses concertino.config.json straight off
-// disk and never runs it through lib/config.js's loadConfig/withDefaults
-// ("watch works without config" — cmdWatch's own comment) — so
-// ticketProvider.kind reaching here can be absent (no config file, or
-// malformed JSON), typo'd, or "github" (which `concertino validate` reports
-// OK, but MODULES in ticket-provider.js has no module for). moduleFor()'s
+// lib/cli/watch.js's cmdWatch now runs a successfully-parsed config through
+// lib/config.js's withDefaults on its common path (CON-92), but falls back
+// to the raw parsed object (or `{}`) when there's no config file, the JSON
+// fails to parse, or withDefaults itself throws ("watch works without
+// config" — cmdWatch's own comment) — so ticketProvider.kind reaching here
+// can still be absent (no config file, or malformed JSON), typo'd, or
+// "github" (which `concertino validate` reports OK, but MODULES in
+// ticket-provider.js has no module for): withDefaults only resolves the one
+// known-deprecated alias, it never validates `kind`. moduleFor()'s
 // throw on an unresolvable kind is deliberate and correct (task-3's own
 // design); what is NOT correct is letting it escape uncaught: onKey/
 // applyAction have no try/catch of their own, so an uncaught throw here
@@ -2899,12 +2902,15 @@ test('a minimal local config — kind only, no teamKey — lists its tickets wit
 
 // CON-44: `concertino validate` tells a project still on `manual` that it
 // "reads as local", and config-reference.md says the same. lib/config.js's
-// withDefaults is the only normaliser, and lib/cli/watch.js's cmdWatch never
-// calls it — it JSON.parses the file and hands the raw object to watch(). So
-// the promise was true of the agent half and false of the dashboard: the gate
-// refused, and no local launch pad appeared even with a populated tickets/.
-// The alias now resolves inside the resolver, which every consumer goes
-// through regardless of how the config was loaded.
+// withDefaults is the only normaliser, and — before CON-92 — lib/cli/watch.js's
+// cmdWatch never called it: it JSON.parsed the file and handed the raw object
+// to watch(). So the promise was true of the agent half and false of the
+// dashboard: the gate refused, and no local launch pad appeared even with a
+// populated tickets/. The alias resolves inside the resolver, which every
+// consumer goes through regardless of how the config was loaded — this test
+// exercises watch() directly with a raw, un-normalised config (what cmdWatch's
+// own fallback path can still produce post-CON-92, and all it ever produced
+// before), which remains a valid and necessary scenario either way.
 test('a project still configured "manual" gets the local launch pad it was promised', async () => {
   const h = setupLaunchPadHarness([], []);
   const ticketsDir = path.join(h.root, 'tickets');
