@@ -205,5 +205,145 @@ seed
 check "no temp files left behind" "$(find "$D" -name '*.tmp*' | wc -l | tr -d ' ')" "0"
 rm -rf "$D"
 
+# =============================================================================
+# CON-90: commit + best-effort push (local-ticket-state-durability).
+#
+# Every case above this point deliberately seeds a bare `mktemp -d` scratch
+# dir with NO `git init` — that stays true unmodified, so those cases now
+# exercise the "not a git working tree" no-op path (design.md Decision 4)
+# implicitly. The cases below seed a REAL git repo instead.
+# =============================================================================
+
+write_ticket_file() {
+  # $1 = full path to write CON-12.md-shaped content to.
+  printf '%s\n' \
+    '---' \
+    'id: CON-12' \
+    'title: A ticket' \
+    'state: unstarted' \
+    'priority: 2' \
+    '---' \
+    '' \
+    '## Description' \
+    '' \
+    'Body text.' \
+    > "$1"
+}
+
+# Seeds $D as a real git repo (repo root == tickets dir) on branch `main`,
+# with CON-12.md already committed, and a throwaway identity scoped to this
+# repo only (git config, not --global).
+seed_git() {
+  D="$(mktemp -d)"
+  git -C "$D" init -q -b main
+  git -C "$D" config user.email "concertino-test@example.invalid"
+  git -C "$D" config user.name "Concertino Test"
+  write_ticket_file "$D/CON-12.md"
+  git -C "$D" add -- CON-12.md
+  git -C "$D" commit -q -m "seed CON-12"
+}
+
+# --- commits the write when tickets-dir is a real git working tree ---------
+seed_git
+"$SCRIPT" "$D" CON-12 started >/dev/null
+check "git repo: exactly one new commit" \
+  "$(git -C "$D" log --oneline | wc -l | tr -d ' ')" "2"
+check "git repo: commit touches only CON-12.md" \
+  "$(git -C "$D" show --name-only --format= -1 | tr -d '[:space:]')" "CON-12.md"
+check "git repo: working tree clean after commit" \
+  "$(git -C "$D" status --porcelain)" ""
+check "git repo: state actually rewritten" \
+  "$(grep -c '^state: started$' "$D/CON-12.md")" "1"
+rm -rf "$D"
+
+# --- an unrelated uncommitted change is left exactly as it was -------------
+seed_git
+printf 'orig\n' > "$D/OTHER.md"
+git -C "$D" add -- OTHER.md
+git -C "$D" commit -q -m "seed OTHER"
+printf 'orig\nchanged\n' > "$D/OTHER.md"
+"$SCRIPT" "$D" CON-12 started >/dev/null
+check "unrelated file: still modified and uncommitted" \
+  "$(git -C "$D" status --porcelain -- OTHER.md)" " M OTHER.md"
+check "unrelated file: ticket commit still landed" \
+  "$(git -C "$D" log -1 --format=%s)" "tickets: CON-12 -> started"
+rm -rf "$D"
+
+# --- push succeeds -----------------------------------------------------------
+seed_git
+BARE="$(mktemp -d)"
+git init -q --bare "$BARE"
+git -C "$D" remote add origin "$BARE"
+git -C "$D" push -q origin HEAD:main
+"$SCRIPT" "$D" CON-12 started >/dev/null
+check "push succeeds: remote branch has the new commit" \
+  "$(git --git-dir="$BARE" log -1 --format=%s main)" "tickets: CON-12 -> started"
+rm -rf "$D" "$BARE"
+
+# --- push is rejected (remote has diverged) ---------------------------------
+seed_git
+BARE="$(mktemp -d)"
+git init -q --bare "$BARE"
+git -C "$D" remote add origin "$BARE"
+git -C "$D" push -q origin HEAD:main
+CLONE="$(mktemp -d)"
+git clone -q "$BARE" "$CLONE"
+git -C "$CLONE" config user.email "concertino-test@example.invalid"
+git -C "$CLONE" config user.name "Concertino Test"
+printf 'divergent\n' > "$CLONE/DIVERGE.md"
+git -C "$CLONE" add -- DIVERGE.md
+git -C "$CLONE" commit -q -m "divergent commit"
+git -C "$CLONE" push -q origin HEAD:main
+ERRFILE="$(mktemp)"
+OUT="$("$SCRIPT" "$D" CON-12 started 2>"$ERRFILE")"; RC=$?
+check "push rejected: exit 0" "$RC" "0"
+check "push rejected: still reports OK" "$OUT" "OK CON-12 started"
+check "push rejected: local commit still present" \
+  "$(git -C "$D" log -1 --format=%s)" "tickets: CON-12 -> started"
+check "push rejected: remote NOT force-pushed over" \
+  "$(git --git-dir="$BARE" log -1 --format=%s main)" "divergent commit"
+check "push rejected: a stderr note was printed" \
+  "$([ -s "$ERRFILE" ] && echo yes || echo no)" "yes"
+rm -rf "$D" "$BARE" "$CLONE"
+rm -f "$ERRFILE"
+
+# --- detached HEAD: commit happens, push is skipped, no error --------------
+seed_git
+git -C "$D" checkout -q --detach
+OUT="$("$SCRIPT" "$D" CON-12 started 2>&1)"; RC=$?
+check "detached HEAD: exit 0" "$RC" "0"
+check "detached HEAD: still reports OK" "$OUT" "OK CON-12 started"
+check "detached HEAD: commit still happened" \
+  "$(git -C "$D" log -1 --format=%s)" "tickets: CON-12 -> started"
+rm -rf "$D"
+
+# --- REQUIRED regression (design.md Decision 2): relative <tickets-dir> ----
+# Mirrors the orchestrator's actual production call shape exactly:
+# `set-ticket-state.sh tickets "$TICKET_ID" started` with cwd = the repo
+# root. A naive `git -C "$DIR" add -- "$FILE"` implementation (reusing the
+# already-$DIR-prefixed $FILE variable as the pathspec) fails here with
+# "pathspec 'tickets/CON-12.md' did not match any files" because -C tickets
+# already changed the root the pathspec resolves against — this case is the
+# only one in this file that can catch that defect; every other case above
+# uses an absolute mktemp -d path and would pass either way.
+REPO="$(mktemp -d)"
+git -C "$REPO" init -q -b main
+git -C "$REPO" config user.email "concertino-test@example.invalid"
+git -C "$REPO" config user.name "Concertino Test"
+mkdir -p "$REPO/tickets"
+write_ticket_file "$REPO/tickets/CON-12.md"
+git -C "$REPO" add -- tickets/CON-12.md
+git -C "$REPO" commit -q -m "seed CON-12"
+OUT="$(cd "$REPO" && "$SCRIPT" tickets CON-12 started)"; RC=$?
+check "relative tickets-dir: exit 0" "$RC" "0"
+check "relative tickets-dir: reports OK" "$OUT" "OK CON-12 started"
+check "relative tickets-dir: commit landed" \
+  "$(git -C "$REPO" log -1 --format=%s)" "tickets: CON-12 -> started"
+check "relative tickets-dir: commit touches only tickets/CON-12.md" \
+  "$(git -C "$REPO" show --name-only --format= -1 | tr -d '[:space:]')" "tickets/CON-12.md"
+check "relative tickets-dir: working tree clean after commit" \
+  "$(git -C "$REPO" status --porcelain)" ""
+rm -rf "$REPO"
+
 echo "  ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

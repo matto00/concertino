@@ -209,35 +209,43 @@ checks above, is skipped rather than crashing the whole launch pad. The
 dashboard reports the count above the list — `N ticket file(s) unreadable —
 check frontmatter (title, state, matching id)` — and keeps showing the rest.
 
-### Status write-back leaves the main checkout dirty
-
-Know this before your first local-provider run, because it looks like a
-failure and isn't.
+### Status write-back commits (and best-effort pushes) each transition
 
 `tickets/` is tracked in git (above), and status write-back edits those files
 in place. At the start of a run, setup calls
 `set-ticket-state.sh tickets "$TICKET_ID" started` **against the main
-checkout**, not the worktree — so from that moment on, `git status` in your
-main checkout shows a modified `tickets/<ID>.md` for the rest of the run.
+checkout**, not the worktree; cleanup makes the matching `completed` call
+after the worktree has already been removed. Both call sites run against a
+real git working tree in the ordinary local-provider case, so
+`set-ticket-state.sh` now makes each transition durable itself:
 
-Nothing commits that change — not the `started` write at setup, and not the
-`completed` write at cleanup. The rewrite happens, the dashboard and the
-orchestrator both read the new state, and the file stays modified in the
-working tree indefinitely. The tracked backlog therefore never records a
-status transition in history; if you want `started` / `completed` in the git
-log, you commit it yourself.
+1. After rewriting the ticket file's `state:` line, it commits **only that
+   file** (a pathspec-limited `git commit`, never a whole-tree commit) —
+   the main checkout is never left dirty because of its own write.
+2. It then makes exactly one best-effort, non-forced push of that commit to
+   the checked-out branch's remote (`project.baseRemote` /
+   `CONCERTINO_BASE_REMOTE`, defaulting to `origin` — the same resolution
+   `cleanup.sh` uses). Nothing is retried, rebased, or forced.
 
-The visible consequence lands at the end of the run. Phase 4 cleanup tries to
-fast-forward your local base branch, finds the main checkout's working tree
-dirty because of that same uncommitted ticket file, and raises a **blocking
-escalation** — `can't fast-forward local main (main is checked out at
-<path> with uncommitted changes)`, offering `retry` and `skip`. On a repo with
-a remote, every local-provider delivery run ends this way.
+In the common case — an unprotected remote you can push to directly — this
+means a local-provider delivery run completes with local `<base>` already in
+lockstep with its remote, so Phase 4 cleanup's fast-forward check finds a
+clean, non-diverged tree and never escalates. The tracked backlog also now
+actually records `started` / `completed` in git history, on both this
+checkout and the remote, without you having to commit it yourself.
 
-It is not a real merge problem. Run `git status` in the main checkout: if the
-only modification is the `tickets/<ID>.md` this run just transitioned, either
-answer `skip` and deal with the base branch later, or commit/stash the file
-and answer `retry`.
+**Residual case: a push-protected base branch.** If the configured remote
+branch rejects direct pushes (e.g. it requires PRs, or you simply have no
+push access), the best-effort push above never lands. The commit still
+happens locally — the write is durable in your checkout's history — but
+local `<base>` is now durably ahead of its remote by these ticket-state
+commits. The next `cleanup.sh --phase4` run's fast-forward check finds that
+divergence and raises the existing (unmodified) `diverged` escalation,
+offering `retry`/`skip`. This is not a bug: it is the direct, harder-to-avoid
+consequence of a protected branch, not the old bug's spurious every-run
+dirty-tree escalation. When it happens, `skip` and push the pending
+ticket-state commits to the remote manually (or grant push access and
+`retry`).
 
 ## `specProvider`
 
