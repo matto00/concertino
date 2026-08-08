@@ -4,16 +4,16 @@ TICKET_ID: CON-95
 CHANGE_NAME: local-provider-hardening
 WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/task/local-provider-test-hardening/CON-95
 BRANCH: task/local-provider-test-hardening/CON-95
-PHASE: Execution
+PHASE: Delivery
 CYCLE: 1
 DEV_PORT: 5342
 BACKEND_PORT: 8249
-EXECUTOR_AGENT_ID: —
-EVALUATOR_AGENT_ID: —
-LAST_EVAL_VERDICT: —
-LAST_EVAL_REPORT: —
-SKEPTIC_CYCLE: 0
-LAST_SKEPTIC_VERDICT: CONFIRM (design gate)
+EXECUTOR_AGENT_ID: a024908017d6d9339
+EVALUATOR_AGENT_ID: ab43b66f62f28a77a
+LAST_EVAL_VERDICT: PASS
+LAST_EVAL_REPORT: openspec/changes/local-provider-hardening/evaluation-1.md
+SKEPTIC_CYCLE: 1
+LAST_SKEPTIC_VERDICT: CONFIRM (final gate)
 AGENT_MERGE: true
 SPEED: default
 EXECUTION_CYCLES: 3
