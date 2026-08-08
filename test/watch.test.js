@@ -2534,6 +2534,36 @@ test('ticketProvider.kind "github" — accepted by concertino validate, but with
   }
 });
 
+// CON-95: the sibling guard, one line down from the three just above — a
+// persisted `teamFound: false` cache row (a PRIOR process's confirmed
+// team-not-found refresh, see the "stale team-not-found cache" tests further
+// below) makes ensureLaunchPad also call `linear.teamNotFoundMessage(config,
+// initialCache.teamKey)`, which itself calls through the same moduleFor() —
+// so an unresolvable `ticketProvider.kind` throws there too, and must be
+// caught exactly like the `launchPadStatus` throw just above is. Removing
+// that second try/catch leaves the whole suite passing (nothing else seeds
+// BOTH a `teamFound: false` cache row AND an unresolvable kind together) —
+// this is the one test that would then fail, with an uncaught throw escaping
+// the 'N' keypress instead of a rendered gate message.
+test('a persisted team-not-found cache row together with an unresolvable ticketProvider.kind renders a gate message, not a crash', async () => {
+  const h = setupLaunchPadHarness([], []);
+  const cacheModule = require('../lib/ui/cache');
+  cacheModule.write(h.root, { teamKey: 'ABC', tickets: [], epics: [], teamFound: false }, Date.now());
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: { ticketProvider: { kind: 'github' } } });
+
+    h.fakeStdin.emit('data', 'N'); // must not throw
+    const frame = h.screen();
+    assert.match(frame, /esc back/, 'the launch pad screen must still render its own gate message, not crash');
+    assert.match(frame, /launch pad needs ticketProvider\.kind "linear" or "local" — not "github"/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
 test('add-to-queue (q) with no active queue creates a single-ticket maxConcurrent:1 queue, keyed by the ticket\'s identifier string', async () => {
   const queueCache = require('../lib/ui/queue-cache');
   const h = setupLaunchPadHarness(

@@ -69,17 +69,46 @@ test('the unresolvable-kind message reads as a provider gate and names the confi
   assert.throws(() => provider.launchPadStatus({}, {}), /— none is set$/);
 });
 
-// launchpad.js truncates the gate message to one line, so a message longer
-// than an 80-column terminal hides the very kind it exists to name — which is
-// what a longer, chattier wording here would silently do.
-test('the gate message still fits an 80-column terminal, kind and all', () => {
+// launchpad.js truncates the gate message to one line via
+// `f.truncate(msg, cols - 4)` (screens/launchpad.js's own gate-message
+// render, `cols` defaulting to 80 — see renderLaunchPad's own
+// `Math.max(50, (opts && opts.cols) || 80)`), so a message longer than that
+// real budget hides the very kind it exists to name. Short kinds (typos,
+// real provider names) fit comfortably and render whole; a kind longer than
+// ~11 characters does not — 80 - 4 (the real budget) minus the fixed
+// wording around `not "<kind>"` leaves roughly that much room for the kind
+// itself, so this also exercises a kind past that length to prove the
+// truncation is real, not just assert a budget nothing here ever approaches.
+test('the gate message fits the launch pad\'s own truncation budget for a short kind, and is actually truncated for a long one', () => {
+  const { truncate } = require('../lib/ui/format');
+  // screens/launchpad.js's own `cols - 4`, with `cols` at its 80-column
+  // default — the SAME expression the renderer truncates against, not a
+  // second, independently-maintained magic number.
+  const GATE_MESSAGE_BUDGET = 80 - 4;
+
   for (const kind of ['github', 'jira', undefined]) {
     try {
       provider.launchPadStatus(kind ? { ticketProvider: { kind } } : {}, {});
       assert.fail('expected a throw for kind ' + kind);
     } catch (e) {
-      assert.ok(e.message.length <= 74, 'gate message too long to render: ' + e.message.length);
+      assert.equal(truncate(e.message, GATE_MESSAGE_BUDGET), e.message,
+        'a short kind must render whole, not truncated: ' + e.message);
     }
+  }
+
+  // Long enough (> ~11 characters) to overflow GATE_MESSAGE_BUDGET once the
+  // fixed `launch pad needs ticketProvider.kind "linear" or "local" — not
+  // "…"` wording is accounted for.
+  const longKind = 'kubernetes-provider';
+  try {
+    provider.launchPadStatus({ ticketProvider: { kind: longKind } }, {});
+    assert.fail('expected a throw for kind ' + longKind);
+  } catch (e) {
+    assert.ok(e.message.length > GATE_MESSAGE_BUDGET,
+      'test kind must actually exceed the budget to prove anything: ' + e.message.length);
+    assert.notEqual(truncate(e.message, GATE_MESSAGE_BUDGET), e.message,
+      'a long kind IS truncated by the launch pad\'s single-line render — this is the regression a hardcoded, ' +
+      'never-exercised budget would miss');
   }
 });
 

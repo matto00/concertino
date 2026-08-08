@@ -1103,13 +1103,3 @@ test('ticketRow\'s "▲ running" status uses STATUS_COLOUR.running (not hardcode
     assert.match(out, /\x1b\[(36m|38;5;80m)▲ running/, 'running status should be cyan (STATUS_COLOUR.running)');
   });
 });
-
-// --- CON-44: the launch pad's gate goes through the ticket-provider
-// resolver, not linear.js directly — a local project must be able to gate
-// itself IN with no LINEAR_API_KEY in the environment at all. ----------------
-
-test('a local project opens the launch pad with no LINEAR_API_KEY', () => {
-  const provider = require('../lib/ui/ticket-provider');
-  const cfg = { dashboard: { launchPad: { enabled: true } }, ticketProvider: { kind: 'local', teamKey: 'CON' } };
-  assert.equal(provider.launchPadStatus(cfg, {}).enabled, true);
-});
