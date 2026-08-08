@@ -143,14 +143,19 @@ test('omitting --ticket is a complete no-op — no "ticket harness" line at all'
   assert.doesNotMatch(out, /ticket harness/i);
 });
 
-test('--ticket against a non-linear ticketProvider prints an informational note, never crashes', () => {
+// CON-93 item 4: `manual` now resolves to `local` (through
+// ticket-provider.js's alias table) and is live-checked exactly as `local`
+// is, rather than reporting unsupported-provider — see the CON-44 section
+// below for that coverage. Only a genuinely unsupported kind (no local
+// implementation at all) still hits this informational note.
+test('--ticket against a genuinely unsupported ticketProvider (github) prints an informational note, never crashes', () => {
   const { out, status } = runValidate(
-    baseConfig({ ticketProvider: { kind: 'manual', idExample: 'ABC-123' } }),
+    baseConfig({ ticketProvider: { kind: 'github', idExample: 'ABC-123' } }),
     ['--ticket=CON-1'],
   );
   assert.equal(status, 0, out);
-  assert.match(out, /--ticket live-checking is only implemented for ticketProvider\.kind "linear"/);
-  assert.match(out, /"manual"/);
+  assert.match(out, /--ticket live-checking is not supported for ticketProvider\.kind/);
+  assert.match(out, /"github"/);
 });
 
 // --- CON-88: agent-merge-permission-preflight -------------------------------
@@ -197,4 +202,71 @@ test('ticketProvider.kind manual is accepted but warns that it is deprecated', (
   const { out } = runValidate(baseConfig({ ticketProvider: { kind: 'manual', idExample: 'ABC-123' } }));
   assert.match(out, /deprecated/);
   assert.match(out, /local/);
+});
+
+// --- CON-93 item 4: `--ticket <ID>` against a local-provider project --------
+// Local labels are on disk, synchronously, at zero cost — no LINEAR_API_KEY
+// or network dependency, so these run the whole way through cmdValidate as a
+// real subprocess, unlike the linear no-key case above which has to stop
+// short of an actual fetch.
+
+function seedLocalTicket(dir, id, body) {
+  const ticketsDir = path.join(dir, 'tickets');
+  fs.mkdirSync(ticketsDir, { recursive: true });
+  fs.writeFileSync(path.join(ticketsDir, id + '.md'), body);
+}
+
+function runValidateLocal(config, extraArgs, seed) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-validate-local-'));
+  const cfgPath = path.join(dir, 'concertino.config.json');
+  fs.writeFileSync(cfgPath, JSON.stringify(config));
+  if (seed) seed(dir);
+  try {
+    const args = [BIN, 'validate', '--config=' + cfgPath, '--out=' + dir].concat(extraArgs || []);
+    const out = execFileSync('node', args, { encoding: 'utf8' });
+    return { out, status: 0 };
+  } catch (e) {
+    return { out: (e.stdout || '') + (e.stderr || ''), status: e.status };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('--ticket against a local provider with no harness override reports no-override', () => {
+  const { out, status } = runValidateLocal(
+    baseConfig({ ticketProvider: { kind: 'local', idExample: 'CON-1' } }),
+    ['--ticket=CON-12'],
+    (dir) => seedLocalTicket(dir, 'CON-12', '---\ntitle: T\nstate: backlog\n---\n\nb\n'),
+  );
+  assert.equal(status, 0, out);
+  assert.match(out, /has no harness override/);
+});
+
+test('--ticket against a local provider with a valid harness override reports it', () => {
+  const { out, status } = runValidateLocal(
+    baseConfig({ ticketProvider: { kind: 'local', idExample: 'CON-1' } }),
+    ['--ticket=CON-12'],
+    (dir) => seedLocalTicket(dir, 'CON-12', '---\ntitle: T\nstate: backlog\nlabels: [harness:codex]\n---\n\nb\n'),
+  );
+  assert.equal(status, 0, out);
+  assert.match(out, /declares harness:codex/);
+});
+
+test('--ticket against a local provider with a missing ticket file fails clearly', () => {
+  const { out, status } = runValidateLocal(
+    baseConfig({ ticketProvider: { kind: 'local', idExample: 'CON-1' } }),
+    ['--ticket=CON-99'],
+  );
+  assert.notEqual(status, 0, out);
+  assert.match(out, /local:.*CON-99/);
+});
+
+test('--ticket against the deprecated manual alias is live-checked exactly as local is', () => {
+  const { out, status } = runValidateLocal(
+    baseConfig({ ticketProvider: { kind: 'manual', idExample: 'CON-1' } }),
+    ['--ticket=CON-12'],
+    (dir) => seedLocalTicket(dir, 'CON-12', '---\ntitle: T\nstate: backlog\nlabels: [harness:codex]\n---\n\nb\n'),
+  );
+  assert.equal(status, 0, out);
+  assert.match(out, /declares harness:codex/);
 });

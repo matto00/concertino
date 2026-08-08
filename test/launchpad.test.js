@@ -70,6 +70,17 @@ test('no key bound while the gate is off, other than esc', () => {
   assert.deepEqual(handleKey('\x1b', state), { type: 'back' });
 });
 
+// --- refreshing (CON-93 item 1) ---------------------------------------------
+// The refreshing-in-progress line must be provider-neutral: renderLaunchPad
+// has no ticketProvider.kind in scope (design.md Decision 1), so this must
+// hold for every provider, not just local/manual.
+
+test('the refreshing line never names Linear, regardless of provider', () => {
+  const out = plain(renderLaunchPad(lp({ refreshing: true }), [], OPTS));
+  assert.doesNotMatch(out, /Linear/);
+  assert.match(out, /fetching tickets…/);
+});
+
 // --- cold cache --------------------------------------------------------------
 
 test('a cold cache renders "press r to fetch" rather than an empty list', () => {

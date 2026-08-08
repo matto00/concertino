@@ -3446,6 +3446,38 @@ test('CON-44: the local provider gets its own drafting message, pointing at the 
   }
 });
 
+// CON-93 item 3: draft.js's gate previously compared the RAW
+// ctx.config.ticketProvider.kind, so a still-`manual`-configured project got
+// the generic "this project uses \"manual\"" message instead of the
+// local-specific one. Fixed by resolving through ctx.deps.linear.kindFor
+// (ticket-provider.js's alias table), matching local.js's own
+// launchPadStatus gate.
+test('CON-93: a manual-configured project (the deprecated local alias) gets the same local-specific message as local', async () => {
+  const draftCalls = [];
+  const h = setupTicketDraftHarness({
+    draft: { draftTicket: (seed) => { draftCalls.push(seed); return { promise: new Promise(() => {}), cancel() {} }; } },
+  });
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: { ticketProvider: { kind: 'manual' } } });
+
+    h.fakeStdin.emit('data', 'n');
+    typeText(h.fakeStdin, 'add a share button');
+    h.fakeStdin.emit('data', '\r');
+
+    assert.deepEqual(draftCalls, [], 'a manual-configured project must never start the drafting invocation');
+    const frame = h.screen();
+    assert.match(frame, /ticket drafting from the dashboard is not available for local tickets/);
+    // Never the raw-kind message this bug produced.
+    assert.doesNotMatch(frame, /this project uses "manual"/);
+    assert.doesNotMatch(frame, /ticket drafting needs ticketProvider\.kind "linear" — this project uses/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
 test('CON-21: a creation failure keeps the draft screen open with the edited content and shows an inline error — no run is launched', async () => {
   const h = setupTicketDraftHarness({
     draft: {
