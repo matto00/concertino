@@ -123,8 +123,81 @@ leaves `concertino validate`'s output unchanged from today.
 
 | Field | Type | Purpose |
 | ----- | ---- | ------- |
-| `kind` | `"linear"` \| `"github"` \| `"manual"` | Selects how the orchestrator fetches the ticket and sets status, and which tools the agents are granted. `linear` → Linear MCP tools; `github` → `gh` CLI; `manual` → ticket text is inline / in `ticket.md`, no status updates. |
+| `kind` | `"linear"` \| `"github"` \| `"local"` | Selects how the orchestrator fetches the ticket and sets status, and which tools the agents are granted. `linear` → Linear MCP tools; `github` → `gh` CLI; `local` → tracked markdown files under `tickets/`, status set via `scripts/concertino/set-ticket-state.sh`. The former `"manual"` is deprecated and reads as `"local"`; a project with no `tickets/` directory behaves exactly as `manual` did. |
 | `idExample` | string | Sample id shown in rendered examples (e.g. `HEL-26`, `#123`). |
+
+### Local tickets
+
+With `ticketProvider.kind: "local"`, tickets are plain markdown files tracked
+in your repo — no Linear or GitHub account needed. Each ticket lives at
+`tickets/<ID>.md`, e.g. `tickets/CON-12.md`:
+
+```markdown
+---
+id: CON-12
+title: Launch pad refuses non-linear providers
+state: unstarted
+priority: 2
+epic: local-tickets
+labels: [harness:codex]
+---
+
+## Description
+
+...
+
+## Acceptance criteria
+
+- ...
+```
+
+**The filename is authoritative** — `tickets/CON-12.md` is ticket `CON-12`
+regardless of what (if anything) its frontmatter `id` says, and it's the id
+`/concertino-deliver` and `set-ticket-state.sh` both take. If a frontmatter
+`id` is present, it must match the filename stem exactly; a mismatch makes
+the whole file malformed (it's skipped, not silently resolved one way).
+
+**`tickets/` is tracked in git on purpose**, unlike `.concertino/cache/`
+(which is gitignored). For a local project there is no remote board to
+re-fetch from, so the markdown files under `tickets/` *are* the backlog —
+gitignoring them would mean the backlog disappears on a fresh clone and is
+invisible to PR review and CI. Don't add `tickets/` to `.gitignore`.
+
+Frontmatter fields:
+
+| Field | Purpose | Notes |
+| ----- | ------- | ----- |
+| `id` | Cross-check against the filename | Optional. If present, must equal the filename stem or the file is treated as malformed. |
+| `title` | Ticket title | Required; a missing or empty title makes the file malformed. |
+| `state` | Ticket state | Required — one of `backlog`, `unstarted`, `started`, `completed`, `canceled` (Linear's own vocabulary, shared so `launchPad.backlog: false` and the rest of the dashboard work identically for both providers). Any other value is malformed. |
+| `priority` | Ticket priority | Optional, `0`–`4`. `0` is a real "None", not the same as omitting the field — an omitted `priority` reports as `null`, not `0`. Anything outside `0`–`4` is malformed. |
+| `epic` | Groups tickets in the launch pad | Optional slug. Omit to leave the ticket in the unassigned bucket. |
+| `labels` | Per-ticket overrides (e.g. `harness:codex`) | Optional. See the exact grammar below. |
+| Everything after the closing `---` | Description | Copied verbatim into the ticket's description — write it as regular markdown, e.g. `## Description` / `## Acceptance criteria` sections. |
+
+There is no `url` or `comments` field — local tickets have neither; the
+dashboard shows `url: null` and an empty comment thread for every local
+ticket.
+
+**Frontmatter grammar.** This is deliberately not a YAML parser — Concertino
+ships zero runtime dependencies, so the accepted grammar is intentionally
+narrow: each frontmatter line is `key: value`, where `value` is either a bare
+scalar (`title: Fix the thing`, quotes optional) or the one inline-array form
+`labels: [a, b]` (square brackets, comma-separated, each item optionally
+quoted). This means:
+
+- `labels: [harness:codex]` → `["harness:codex"]`, a real one-element array.
+- `labels: [a, b]` → `["a", "b"]`.
+- **`labels: solo` (no brackets) silently parses as the *string* `"solo"`,
+  not a one-element array — and a local ticket's `labels` field only ever
+  keeps array values, so an unbracketed `labels:` line silently yields an
+  **empty list**, not an error. Always use the bracketed form for `labels`,
+  even for a single value.
+
+A file whose frontmatter can't be parsed at all (no closing `---`, or a line
+that isn't `key: value`), or one that fails any of the per-field checks
+above, is skipped rather than crashing the whole launch pad — the dashboard
+reports it as one of `N tickets unreadable` and keeps showing the rest.
 
 ## `specProvider`
 

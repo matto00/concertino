@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# CON-44: `ticketProvider.kind: "local"` renders orchestrator prose that points
+# at tickets/<ID>.md and set-ticket-state.sh, and grants no Linear MCP tools.
+# Run: bash test/scripts/local-provider-render.test.sh
+set -uo pipefail
+
+export NO_COLOR=1
+unset FORCE_COLOR
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PASS=0; FAIL=0
+ok()     { PASS=$((PASS+1)); echo "  ok   $1"; }
+bad()    { FAIL=$((FAIL+1)); echo "  FAIL $1"; echo "       $2"; }
+has()    { grep -qF "$2" "$3" 2>/dev/null && ok "$1" || bad "$1" "expected to find [$2] in $3"; }
+hasnt()  { grep -qF "$2" "$3" 2>/dev/null && bad "$1" "expected NOT to find [$2] in $3" || ok "$1"; }
+
+echo "local ticket provider rendering (CON-44)"
+
+OUT="$(mktemp -d)"
+CFG="$OUT/concertino.config.json"
+node -e '
+  const fs = require("fs");
+  fs.writeFileSync(process.argv[2], JSON.stringify({
+    harnesses: ["claude-code"],
+    project: { name: "fixture-project", baseBranch: "main" },
+    ticketProvider: { kind: "local", idExample: "CON-1", teamKey: "CON" },
+    specProvider: { kind: "none" },
+    worktree: { ports: { frontendBase: 5173, backendBase: 8080 } },
+    gates: [{ name: "test", when: "always", command: "true" }],
+  }, null, 2));
+' _ "$CFG"
+
+node "$ROOT/bin/concertino" sync --out="$OUT" --config="$CFG" > "$OUT/sync.txt" 2>&1
+RC=$?
+[ "$RC" -eq 0 ] && ok "sync exits zero" || bad "sync exits zero" "exit $RC:
+$(cat "$OUT/sync.txt")"
+
+ORCH="$OUT/.claude/agents/concertino-orchestrator.md"
+[ -f "$ORCH" ] && ok "renders the orchestrator agent" || bad "renders the orchestrator agent" "missing $ORCH"
+
+has   "names the ticket file"        'tickets/$TICKET_ID.md'   "$ORCH"
+has   "names the write-back script"  'set-ticket-state.sh'     "$ORCH"
+has   "keeps the no-store fallback"  'provided inline'         "$ORCH"
+
+# "Grants" means the frontmatter `tools:` list specifically — not a blanket
+# grep of the whole rendered file. core/roles/orchestrator.md has a couple of
+# spots (the CON-62 harness-override note, the escalation "standalone" triage
+# option) that name `mcp__linear__*` in illustrative prose unconditionally,
+# regardless of ticketProvider.kind — pre-existing under `github` too, and out
+# of this task's scope. Only the tool grant itself is provider-gated.
+FRONTMATTER="$OUT/frontmatter.txt"
+awk 'NR==1{next} /^---$/{exit} {print}' "$ORCH" > "$FRONTMATTER"
+hasnt "grants no Linear MCP tools"   'mcp__linear__'           "$FRONTMATTER"
+
+# The degenerate case must survive: a local project with no tickets/ directory
+# behaves exactly as the old `manual` kind did.
+has   "tells the agent to skip status updates when the file is absent" \
+      'skip status updates' "$ORCH"
+
+rm -rf "$OUT"
+
+echo "  ${PASS} passed, ${FAIL} failed"
+[ "$FAIL" -eq 0 ]
