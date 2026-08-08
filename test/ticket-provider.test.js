@@ -1,0 +1,152 @@
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert');
+
+const provider = require('../lib/ui/ticket-provider');
+const linear = require('../lib/ui/linear');
+const local = require('../lib/ui/tickets/local');
+
+const LINEAR_CFG = { dashboard: { launchPad: { enabled: true } }, ticketProvider: { kind: 'linear', teamKey: 'CON' } };
+const LOCAL_CFG = { dashboard: { launchPad: { enabled: true } }, ticketProvider: { kind: 'local', teamKey: 'CON' } };
+
+test('launchPadStatus dispatches to linear', () => {
+  assert.deepEqual(
+    provider.launchPadStatus(LINEAR_CFG, { LINEAR_API_KEY: 'k' }),
+    linear.launchPadStatus(LINEAR_CFG, { LINEAR_API_KEY: 'k' })
+  );
+});
+
+test('launchPadStatus dispatches to local, which needs no api key', () => {
+  assert.equal(provider.launchPadStatus(LOCAL_CFG, {}).enabled, true);
+});
+
+test('teamKeyFromConfig honours LINEAR_TEAM_KEY under linear but not under local', () => {
+  assert.equal(provider.teamKeyFromConfig(LINEAR_CFG, { LINEAR_TEAM_KEY: 'zzz' }).key, 'ZZZ');
+  assert.equal(provider.teamKeyFromConfig(LOCAL_CFG, { LINEAR_TEAM_KEY: 'zzz' }).key, 'CON');
+});
+
+test('teamNotFoundMessage dispatches on kind', () => {
+  assert.match(provider.teamNotFoundMessage(LINEAR_CFG, 'CON'), /teamKey/);
+  assert.match(provider.teamNotFoundMessage(LOCAL_CFG, 'CON'), /tickets\//);
+});
+
+test('stateTypesFromConfig is shared — the backlog dial means the same thing', () => {
+  const off = { ticketProvider: { kind: 'local' }, dashboard: { launchPad: { enabled: true, backlog: false } } };
+  assert.deepEqual(provider.stateTypesFromConfig(off), ['unstarted', 'started']);
+});
+
+test('resolveTeam takes an object arg and reaches local', () => {
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-tp-'));
+  assert.deepEqual(provider.resolveTeam(LOCAL_CFG, { root }), { found: false });
+  fs.mkdirSync(path.join(root, 'tickets'));
+  assert.deepEqual(provider.resolveTeam(LOCAL_CFG, { root }), { found: true });
+});
+
+test('createTicket under local rejects rather than throwing a TypeError', async () => {
+  await assert.rejects(() => provider.createTicket(LOCAL_CFG, { title: 'x' }), /not supported/);
+});
+
+test('an unknown kind fails loudly rather than silently behaving like linear', () => {
+  assert.throws(
+    () => provider.launchPadStatus({ ticketProvider: { kind: 'jira' } }, {}),
+    /launch pad needs ticketProvider\.kind "linear" or "local"/
+  );
+});
+
+// The throw is what watch.js's ensureLaunchPad renders verbatim as the launch
+// pad's gate text, and `github` is `concertino init`'s DEFAULT kind (shipped
+// in config/examples/generic.json and opencode-ollama.json) — so the commonest
+// way to reach it is a valid project with no dashboard provider. It must read
+// as a provider gate naming the offending kind, never as an internal error.
+test('the unresolvable-kind message reads as a provider gate and names the configured kind', () => {
+  assert.throws(
+    () => provider.launchPadStatus({ ticketProvider: { kind: 'github' } }, {}),
+    /^Error: launch pad needs ticketProvider\.kind "linear" or "local" — not "github"$/
+  );
+  assert.throws(() => provider.launchPadStatus({}, {}), /— none is set$/);
+});
+
+// launchpad.js truncates the gate message to one line, so a message longer
+// than an 80-column terminal hides the very kind it exists to name — which is
+// what a longer, chattier wording here would silently do.
+test('the gate message still fits an 80-column terminal, kind and all', () => {
+  for (const kind of ['github', 'jira', undefined]) {
+    try {
+      provider.launchPadStatus(kind ? { ticketProvider: { kind } } : {}, {});
+      assert.fail('expected a throw for kind ' + kind);
+    } catch (e) {
+      assert.ok(e.message.length <= 74, 'gate message too long to render: ' + e.message.length);
+    }
+  }
+});
+
+test('local.fetchTickets is what the resolver reaches for under local', () => {
+  assert.equal(provider.moduleFor({ ticketProvider: { kind: 'local' } }), local);
+  assert.equal(provider.moduleFor({ ticketProvider: { kind: 'linear' } }), linear);
+});
+
+// CON-44: `manual` is the pre-local name for the same provider, and
+// `concertino validate` tells the user it "reads as local". lib/config.js's
+// withDefaults rewrites it, but lib/cli/watch.js's cmdWatch never calls
+// withDefaults — it JSON.parses the file and passes it straight to watch() —
+// so the alias has to resolve HERE for that promise to be true of the
+// dashboard and not just the agent half.
+test('a raw, un-normalised "manual" config resolves to the local module', () => {
+  const raw = { ticketProvider: { kind: 'manual' } };
+  assert.equal(provider.moduleFor(raw), local);
+  assert.equal(provider.kindFor(raw), 'local');
+});
+
+test('a raw "manual" config passes local\'s own launch pad gate', () => {
+  const raw = { dashboard: { launchPad: { enabled: true } }, ticketProvider: { kind: 'manual' } };
+  assert.deepEqual(provider.launchPadStatus(raw, {}), { enabled: true, reason: null, message: null });
+  // …and the caller's own config object is never mutated on the way through.
+  assert.equal(raw.ticketProvider.kind, 'manual');
+});
+
+// teamKey is the Linear query itself; for local it is inert — fetchTickets
+// scans tickets/ and only echoes the key back — so the minimal schema-valid
+// local config must not be treated as misconfigured.
+test('teamKey is required only where it is load-bearing', () => {
+  assert.equal(provider.requiresTeamKey({ ticketProvider: { kind: 'linear' } }), true);
+  assert.equal(provider.requiresTeamKey({ ticketProvider: { kind: 'local' } }), false);
+  assert.equal(provider.requiresTeamKey({ ticketProvider: { kind: 'manual' } }), false);
+  assert.equal(provider.requiresTeamKey({}), false);
+});
+
+// M-2: every dispatching function's non-linear branch must call through the
+// module moduleFor() resolved, never a hardcoded `local.*`. A third entry in
+// MODULES would otherwise pass moduleFor() and then silently execute LOCAL's
+// implementations against a config that asked for something else — the same
+// silent-wrong-provider failure moduleFor()'s throw exists to prevent.
+//
+// Asserted against the source because `local` is currently the ONLY non-linear
+// module, so `local.X` and `mod.X` are behaviourally identical today: no
+// runtime test can tell them apart until the third provider exists, which is
+// exactly when the bug would ship. Same reasoning as
+// test/scripts/ticket-pattern.test.sh's literal-source drift check.
+test('the resolver dispatches through the resolved module, never a hardcoded local.*', () => {
+  const src = require('node:fs').readFileSync(require.resolve('../lib/ui/ticket-provider'), 'utf8');
+  const body = src.slice(src.indexOf('function launchPadStatus'), src.indexOf('module.exports'));
+  const hardcoded = body.split('\n').filter((l) => /(?:^|[^A-Za-z0-9_.])local\.[a-zA-Z]/.test(l) && !/^\s*\/\//.test(l));
+  assert.deepEqual(hardcoded, [], 'dispatch bodies must call mod.X, not local.X');
+  // The linear ADAPTATIONS are load-bearing and must survive: its positional
+  // resolveTeam signature, and the Promise.resolve that makes both
+  // fetchTickets branches awaitable for watch.js's unconditional await.
+  assert.match(body, /linear\.resolveTeam\(undefined, o\.apiKey, o\.teamKey\)/);
+  assert.match(body, /Promise\.resolve\(mod\.fetchTickets\(opts\)\)/);
+});
+
+test('both fetchTickets branches are awaitable, including the synchronous local one', async () => {
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-tp-fetch-'));
+  fs.mkdirSync(path.join(root, 'tickets'));
+  fs.writeFileSync(path.join(root, 'tickets', 'CON-1.md'), '---\ntitle: One\nstate: backlog\n---\n\nb\n');
+  const r = await provider.fetchTickets(LOCAL_CFG, { root, teamKey: 'CON' });
+  assert.deepEqual(r.tickets.map((t) => t.identifier), ['CON-1']);
+});

@@ -8,7 +8,7 @@ Planned improvements to Concertino. Not commitments — a living list.
   (create one or more well-scoped tickets from a free-form description) so it
   isn't left behind in adopting repos. Origin: Helio's `/linear-create-ticket`,
   which the Helio adoption keeps in-repo for now because Concertino doesn't render
-  an equivalent yet. Should support `ticketProvider.kind` = linear/github/manual.
+  an equivalent yet. Should support `ticketProvider.kind` = linear/github/local.
 
 - **Cursor adapter.** Render the orchestra into Cursor's native layout
   (`.cursor/rules/*.mdc`, `.cursor/skills/*`) the way the claude-code, codex,

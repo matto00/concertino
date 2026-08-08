@@ -123,8 +123,121 @@ leaves `concertino validate`'s output unchanged from today.
 
 | Field | Type | Purpose |
 | ----- | ---- | ------- |
-| `kind` | `"linear"` \| `"github"` \| `"manual"` | Selects how the orchestrator fetches the ticket and sets status, and which tools the agents are granted. `linear` → Linear MCP tools; `github` → `gh` CLI; `manual` → ticket text is inline / in `ticket.md`, no status updates. |
+| `kind` | `"linear"` \| `"github"` \| `"local"` | Selects how the orchestrator fetches the ticket and sets status, and which tools the agents are granted. `linear` → Linear MCP tools; `github` → `gh` CLI; `local` → tracked markdown files under `tickets/`, status set via `scripts/concertino/set-ticket-state.sh`. The former `"manual"` is deprecated and reads as `"local"`; a project with no `tickets/` directory behaves exactly as `manual` did. |
 | `idExample` | string | Sample id shown in rendered examples (e.g. `HEL-26`, `#123`). |
+
+### Local tickets
+
+With `ticketProvider.kind: "local"`, tickets are plain markdown files tracked
+in your repo — no Linear or GitHub account needed. Each ticket lives at
+`tickets/<ID>.md`, e.g. `tickets/CON-12.md`:
+
+```markdown
+---
+id: CON-12
+title: Launch pad refuses non-linear providers
+state: unstarted
+priority: 2
+epic: local-tickets
+labels: [harness:codex]
+---
+
+## Description
+
+...
+
+## Acceptance criteria
+
+- ...
+```
+
+**The filename is authoritative** — `tickets/CON-12.md` is ticket `CON-12`
+regardless of what (if anything) its frontmatter `id` says, and it's the id
+`/concertino-deliver` and `set-ticket-state.sh` both take. If a frontmatter
+`id` is present, it must match the filename stem exactly; a mismatch makes
+the whole file malformed (it's skipped, not silently resolved one way).
+
+**`tickets/` is tracked in git on purpose**, unlike `.concertino/cache/`
+(which is gitignored). For a local project there is no remote board to
+re-fetch from, so the markdown files under `tickets/` *are* the backlog —
+gitignoring them would mean the backlog disappears on a fresh clone and is
+invisible to PR review and CI. Don't add `tickets/` to `.gitignore`.
+
+Frontmatter fields:
+
+| Field | Purpose | Notes |
+| ----- | ------- | ----- |
+| `id` | Cross-check against the filename | Optional. If present, must equal the filename stem or the file is treated as malformed. |
+| `title` | Ticket title | Required; a missing or empty title makes the file malformed. |
+| `state` | Ticket state | Required — one of `backlog`, `unstarted`, `started`, `completed`, `canceled` (Linear's own vocabulary, shared so `launchPad.backlog: false` and the rest of the dashboard work identically for both providers). Any other value is malformed. |
+| `priority` | Ticket priority | Optional, `0`–`4`. `0` is a real "None", not the same as omitting the field — an omitted `priority` reports as `null`, not `0`. A `priority:` line with nothing after the colon counts as absent, exactly as omitting the line does. Any *other* value outside `0`–`4` (`5`, `high`, `2.0`) makes the file malformed. |
+| `epic` | Groups tickets in the launch pad | Optional slug. Omit to leave the ticket in the unassigned bucket. |
+| `labels` | Per-ticket overrides (e.g. `harness:codex`) | Optional. See the exact grammar below. |
+| Everything after the closing `---` | Description | Copied verbatim into the ticket's description — write it as regular markdown, e.g. `## Description` / `## Acceptance criteria` sections. |
+
+There is no `url` or `comments` field — local tickets have neither; the
+dashboard shows `url: null` and an empty comment thread for every local
+ticket.
+
+**Frontmatter grammar.** This is deliberately not a YAML parser — Concertino
+ships zero runtime dependencies, so the accepted grammar is intentionally
+narrow: each frontmatter line is `key: value`, where `value` is either a bare
+scalar (`title: Fix the thing`, quotes optional) or the one inline-array form
+`labels: [a, b]` (square brackets, comma-separated, each item optionally
+quoted). This means:
+
+- `labels: [harness:codex]` → `["harness:codex"]`, a real one-element array.
+- `labels: [a, b]` → `["a", "b"]`.
+- **`labels: solo` (no brackets) silently parses as the *string* `"solo"`, not
+  a one-element array** — and a local ticket's `labels` field only ever keeps
+  array values, so an unbracketed `labels:` line silently yields an empty
+  list, not an error. Always use the bracketed form for `labels`, even for a
+  single value.
+
+**The filename must be a valid ticket id.** `tickets/CON-12.md`,
+`tickets/#123.md` and `tickets/a_b_c-9.md` are all fine; `tickets/notes.md`
+and `tickets/fix-login.md` are not. The shape is the project-wide one — it
+starts with a letter or `#`, contains only letters, digits, `_` and `-`, and
+ends in a digit. No dots: a ticket id becomes a tmux window name, and tmux
+reads `.` as the window/pane separator. A file whose *name* doesn't conform is
+treated as malformed, the same as one with bad frontmatter, rather than
+listing a ticket the dashboard would refuse to launch.
+
+A file whose frontmatter can't be parsed at all (no closing `---`, or a line
+that isn't `key: value`), or one that fails any of the per-field or filename
+checks above, is skipped rather than crashing the whole launch pad. The
+dashboard reports the count above the list — `N ticket file(s) unreadable —
+check frontmatter (title, state, matching id)` — and keeps showing the rest.
+
+### Status write-back leaves the main checkout dirty
+
+Know this before your first local-provider run, because it looks like a
+failure and isn't.
+
+`tickets/` is tracked in git (above), and status write-back edits those files
+in place. At the start of a run, setup calls
+`set-ticket-state.sh tickets "$TICKET_ID" started` **against the main
+checkout**, not the worktree — so from that moment on, `git status` in your
+main checkout shows a modified `tickets/<ID>.md` for the rest of the run.
+
+Nothing commits that change — not the `started` write at setup, and not the
+`completed` write at cleanup. The rewrite happens, the dashboard and the
+orchestrator both read the new state, and the file stays modified in the
+working tree indefinitely. The tracked backlog therefore never records a
+status transition in history; if you want `started` / `completed` in the git
+log, you commit it yourself.
+
+The visible consequence lands at the end of the run. Phase 4 cleanup tries to
+fast-forward your local base branch, finds the main checkout's working tree
+dirty because of that same uncommitted ticket file, and raises a **blocking
+escalation** — `can't fast-forward local main (main is checked out at
+<path> with uncommitted changes)`, offering `retry` and `skip`. On a repo with
+a remote, every local-provider delivery run ends this way.
+
+It is not a real merge problem. Run `git status` in the main checkout: if the
+only modification is the `tickets/<ID>.md` this run just transitioned, either
+answer `skip` and deal with the base branch later, or commit/stash the file
+and answer `retry`.
 
 ## `specProvider`
 

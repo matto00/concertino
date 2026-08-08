@@ -85,7 +85,7 @@ preference order:
    ticket.md` in the main checkout — a snapshot of exactly what the run
    worked from, written during Planning and durable past `cleanup.sh
    --phase4` destroying the worktree.
-2. The **launch pad cache** (`.concertino/cache/linear.json`), matched by
+2. The **launch pad cache** (`.concertino/cache/tickets.json`), matched by
    ticket identifier, for a run whose `ticket.md` was never persisted (e.g. a
    run from before this feature shipped).
 
@@ -460,7 +460,7 @@ file is not a mystery if you find one on disk.
 
 ```
 .concertino/cache/
-  linear.json     { fetchedAt, tickets: [...], epics: [...] }
+  tickets.json    { fetchedAt, tickets: [...], epics: [...] }
 ```
 
 ### Why a cache at all
@@ -551,10 +551,13 @@ are all fetched, unchanged.
 
 ### Configuration
 
-The launch pad is gated on **all three** of `dashboard.launchPad.enabled`,
-`ticketProvider.kind === "linear"`, and a non-empty `LINEAR_API_KEY`. The gate
-reports *which* condition failed, so the UI can explain itself rather than
-silently hiding.
+The gate depends on the provider. Under `ticketProvider.kind: "linear"` it is
+**all three** of `dashboard.launchPad.enabled`, `kind === "linear"`, and a
+non-empty `LINEAR_API_KEY`. Under `kind: "local"` it is **two** —
+`dashboard.launchPad.enabled` and the kind itself; there is no API key to
+check, because there is no network call. Either way the gate reports *which*
+condition failed, so the UI can explain itself rather than silently hiding.
+Any other kind (`github`, or a typo) fails the gate by name.
 
 Which team to fetch comes from `ticketProvider.teamKey`:
 
@@ -578,6 +581,40 @@ cuts a fetch short.
 
 Read-only throughout. Concertino never writes ticket state from the dashboard;
 the orchestrator already owns that transition.
+
+### Local tickets on the launch pad
+
+`ticketProvider.kind: "local"` reads the launch pad from tracked markdown
+files under `tickets/` (see config-reference.md's "Local tickets" for the file
+format). Everything downstream — epics, the detail pane, `q` add-to-queue,
+the queue itself — behaves exactly as it does for Linear, because a local
+ticket is normalised into the same shape a Linear one is. Two things differ.
+
+**It refreshes when you open it.** A Linear launch pad opens cold and waits
+for `r`, so that opening the screen never spends a network request; the header
+says `never fetched` until you ask. A directory read costs nothing, so the
+local launch pad fetches for you the moment you press `N` — there is no cold
+state to explain and no reason to make you press a key to see your own files.
+`r` still works, and is how you pick up a ticket you just edited in another
+window.
+
+**Bad files are counted, not hidden.** A ticket file the store can't read —
+malformed frontmatter, a missing `title`, an unrecognised `state`, a
+frontmatter `id` disagreeing with the filename, or a filename that isn't a
+valid ticket id — is skipped individually rather than blanking the board. The
+launch pad then says so above the list, e.g. `2 ticket file(s) unreadable —
+check frontmatter (title, state, matching id)`, and shows every ticket that
+did parse. A board that silently drops two tickets reads as a complete board,
+which is the failure this exists to prevent; the count is your cue to look at
+`tickets/`.
+
+`ticketProvider.teamKey` is optional under `local` — the store scans the
+directory and never queries by key, so the smallest working config is just
+`{"ticketProvider": {"kind": "local"}, "dashboard": {"launchPad": {"enabled":
+true}}}`. Setting it (or `idExample`, which the key is guessed from) only
+changes two cosmetic strings: an empty board reads `no open tickets in CON`
+rather than a bare `0 open`, and the first-run hint names
+`tickets/CON-1.md` rather than `tickets/TICKET-1.md`.
 
 ## The settings screen
 

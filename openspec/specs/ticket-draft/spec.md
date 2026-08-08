@@ -35,11 +35,17 @@ The ticket-draft flow SHALL only be reachable when the configured
 `ticketProvider.kind` is `linear`.
 
 #### Scenario: Non-Linear provider
-- **WHEN** `ticketProvider.kind` is `github` or `manual` and the human
-  submits free text at the `n` prompt
+- **WHEN** `ticketProvider.kind` is `github` and the human submits free text
+  at the `n` prompt
 - **THEN** the prompt shows the same "not available for this provider"
   treatment the launch pad (`N` screen) already uses for a non-Linear
   provider, and no draft flow opens
+
+#### Scenario: Local provider
+- **WHEN** `ticketProvider.kind` is `local` and the human submits free text
+  at the `n` prompt
+- **THEN** the prompt explains that dashboard drafting is not available for
+  local tickets yet and points at `tickets/<ID>.md`, and no draft flow opens
 
 ### Requirement: Headless drafting produces a reviewable draft
 On opening the draft flow, the system SHALL invoke a headless, print-mode
