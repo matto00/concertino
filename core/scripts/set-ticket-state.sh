@@ -54,14 +54,25 @@ esac
 # nowhere near it. This is not a privilege boundary — the orchestrator
 # invoking this script already has Bash and could write anywhere directly —
 # but a typo'd or mis-derived id must fail loudly rather than silently
-# rewrite an unrelated file. Rule: starts with an alnum, then alnum/./_/-
-# only, and never contains "..". Accepts "CON-12" and kebab-case slugs;
-# rejects "/", "..", and a leading dot or dash.
+# rewrite an unrelated file.
+#
+# The pattern below is the project's CANONICAL ticket shape, byte-identical to
+# lib/ui/ticket.js's TICKET_RE and the copies in assert-phase.sh,
+# start-servers.sh, emit-event.sh and persist-evidence.sh — guarded against
+# drift by test/scripts/ticket-pattern.test.sh. This script originally shipped
+# its own looser variant that also accepted dots, which is exactly the shape
+# ticket.js documents as breaking tmux's `session:window.pane` addressing, and
+# which would have let this script write a state to a file the dashboard and
+# the delivery scripts both refuse to touch.
+#
+# The explicit ".." case stays as defence in depth: the pattern already
+# excludes dots, but this reports the traversal attempt by name rather than as
+# a generic shape mismatch.
 case "$ID" in
   *..*) die "invalid ticket id \"$ID\" — must not contain \"..\"" ;;
 esac
-[[ "$ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || \
-  die "invalid ticket id \"$ID\" — expected shape [A-Za-z0-9][A-Za-z0-9._-]*"
+[[ "$ID" =~ ^[A-Za-z#][A-Za-z0-9_-]*[0-9]$ ]] || \
+  die "invalid ticket id \"$ID\" — expected the canonical ticket shape (letters/digits/#/_/-, ending in a digit)"
 
 FILE="$DIR/$ID.md"
 [ -f "$FILE" ] || die "no ticket at $FILE"

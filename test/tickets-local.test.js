@@ -113,6 +113,47 @@ test('an omitted id is fine — the filename is authoritative', () => {
   assert.equal(t.identifier, 'CON-7');
 });
 
+// --- the canonical ticket-id shape (CON-44) --------------------------------
+// Under `linear` the id shape was structurally guaranteed — the provider
+// issued it. Here the id is a filename anyone can type, so ticket.js's
+// TICKET_RE is enforced at this seam. Without it, tickets/fix-login.md — which
+// matches the docs' own `tickets/<ID>.md` phrasing — lists on the launch pad,
+// is selectable and queueable, then dies at prompt.js's spawn with a bare "not
+// a ticket id" that names no file.
+const GOOD_BODY = '---\ntitle: T\nstate: backlog\n---\n\nb\n';
+
+test('a filename stem that is not a canonical ticket id is rejected, not listed', () => {
+  for (const stem of ['fix-login', 'notes', 'CON-1.2', 'a.b_c-9', '-CON-1', '1CON-1']) {
+    assert.equal(local.parseTicket(stem, GOOD_BODY, null), null, stem + ' must not parse as a ticket');
+  }
+});
+
+test('every shape ticket.js\'s TICKET_RE admits still parses', () => {
+  for (const stem of ['CON-12', 'HEL-334', '#123', 'TICKET-1', 'a_b_c-9']) {
+    const t = local.parseTicket(stem, GOOD_BODY, null);
+    assert.ok(t, stem + ' must parse as a ticket');
+    assert.equal(t.identifier, stem);
+  }
+});
+
+test('a non-conforming stem counts as unreadable, so the launch pad reports it', () => {
+  const root = seed(tmpRoot(), {
+    'CON-1.md': GOOD_BODY,
+    // Perfectly well-formed frontmatter — only the filename disqualifies it.
+    'fix-login.md': GOOD_BODY,
+  });
+  const r = local.readTickets(root);
+  assert.deepEqual(r.tickets.map((t) => t.identifier), ['CON-1']);
+  assert.equal(r.unreadable, 1, 'an unlaunchable row must surface in the unreadable count, not vanish silently');
+});
+
+test('a non-conforming stem never reaches fetchTickets\' results', () => {
+  const root = seed(tmpRoot(), { 'fix-login.md': GOOD_BODY });
+  const r = local.fetchTickets({ root, stateTypes: ['backlog', 'unstarted', 'started'] });
+  assert.deepEqual(r.tickets, []);
+  assert.equal(r.unreadable, 1);
+});
+
 // --- directory reads -------------------------------------------------------
 
 test('a missing tickets/ directory is not an error', () => {

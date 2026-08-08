@@ -2493,7 +2493,7 @@ test('opening the launch pad with no ticketProvider configured at all renders a 
     h.fakeStdin.emit('data', 'N'); // must not throw
     const frame = h.screen();
     assert.match(frame, /esc back/, 'the launch pad screen must still render its own gate message, not crash');
-    assert.match(frame, /unknown ticketProvider\.kind "none"/);
+    assert.match(frame, /launch pad needs ticketProvider\.kind "linear" or "local" — none is set/);
   } finally {
     await h.teardown(donePromise);
   }
@@ -2509,7 +2509,7 @@ test('a typo\'d ticketProvider.kind renders its own message instead of throwing'
     h.fakeStdin.emit('data', 'N');
     const frame = h.screen();
     assert.match(frame, /esc back/);
-    assert.match(frame, /unknown ticketProvider\.kind "lienar"/);
+    assert.match(frame, /launch pad needs ticketProvider\.kind "linear" or "local" — not "lienar"/);
   } finally {
     await h.teardown(donePromise);
   }
@@ -2525,7 +2525,7 @@ test('ticketProvider.kind "github" — accepted by concertino validate, but with
     h.fakeStdin.emit('data', 'N');
     const frame = h.screen();
     assert.match(frame, /esc back/);
-    assert.match(frame, /unknown ticketProvider\.kind "github"/);
+    assert.match(frame, /launch pad needs ticketProvider\.kind "linear" or "local" — not "github"/);
   } finally {
     await h.teardown(donePromise);
   }
@@ -2849,6 +2849,87 @@ test('an unreadable local ticket file is surfaced in lp.error, not silently drop
     const cacheModule = require('../lib/ui/cache');
     // The good ticket is still on the board — one bad file must not blank it.
     assert.deepEqual(cacheModule.read(h.root).tickets.map((t) => t.identifier), ['CON-1']);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+// CON-44: the SMALLEST schema-valid local config — `kind` and nothing else.
+// The schema requires only `kind`, and `teamKey` is functionally inert for
+// local (local.fetchTickets scans tickets/ and only echoes the key back), but
+// refreshLaunchPad used to demand one unconditionally — and because local
+// auto-refreshes on open, that hard-failed with "refresh failed: no
+// ticketProvider.teamKey configured" the instant the user pressed N. The key
+// is now required only where it is load-bearing (ticket-provider.js's
+// NEEDS_TEAM_KEY), and a null key has to DEGRADE, never render as "null".
+test('a minimal local config — kind only, no teamKey — lists its tickets with no error', async () => {
+  const h = setupLaunchPadHarness([], []);
+  const ticketsDir = path.join(h.root, 'tickets');
+  fs.mkdirSync(ticketsDir, { recursive: true });
+  fs.writeFileSync(path.join(ticketsDir, 'CON-1.md'), '---\ntitle: One\nstate: backlog\n---\n\nbody\n');
+  fs.writeFileSync(path.join(ticketsDir, 'CON-2.md'), '---\ntitle: Two\nstate: started\n---\n\nbody\n');
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({
+      root: h.root,
+      config: { ticketProvider: { kind: 'local' }, dashboard: { launchPad: { enabled: true } } },
+    });
+
+    h.fakeStdin.emit('data', 'N');
+    await flushRefresh();
+    h.fakeStdin.emit('data', '\t'); // force the redraw that would show a settled lp.error
+
+    const frame = h.screen();
+    assert.doesNotMatch(frame, /refresh failed/, 'a teamKey-less local project must not hard-fail on open');
+    assert.doesNotMatch(frame, /teamKey/);
+    // A null teamKey must never reach the screen as the literal string.
+    assert.doesNotMatch(frame, /null/);
+    assert.match(frame, /2 open/, 'the header falls back to a plain count when there is no team key');
+    assert.match(frame, /One/);
+
+    const onDisk = require('../lib/ui/cache').read(h.root);
+    assert.deepEqual(onDisk.tickets.map((t) => t.identifier), ['CON-1', 'CON-2']);
+    assert.equal(onDisk.teamKey, null);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+// CON-44: `concertino validate` tells a project still on `manual` that it
+// "reads as local", and config-reference.md says the same. lib/config.js's
+// withDefaults is the only normaliser, and lib/cli/watch.js's cmdWatch never
+// calls it — it JSON.parses the file and hands the raw object to watch(). So
+// the promise was true of the agent half and false of the dashboard: the gate
+// refused, and no local launch pad appeared even with a populated tickets/.
+// The alias now resolves inside the resolver, which every consumer goes
+// through regardless of how the config was loaded.
+test('a project still configured "manual" gets the local launch pad it was promised', async () => {
+  const h = setupLaunchPadHarness([], []);
+  const ticketsDir = path.join(h.root, 'tickets');
+  fs.mkdirSync(ticketsDir, { recursive: true });
+  fs.writeFileSync(path.join(ticketsDir, 'CON-9.md'), '---\ntitle: Legacy manual project\nstate: started\n---\n\nb\n');
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    // Raw, exactly as cmdWatch would hand it over — never through withDefaults.
+    donePromise = watchModule.watch({
+      root: h.root,
+      config: { ticketProvider: { kind: 'manual' }, dashboard: { launchPad: { enabled: true } } },
+    });
+
+    h.fakeStdin.emit('data', 'N');
+    await flushRefresh();
+    h.fakeStdin.emit('data', '\t');
+
+    const frame = h.screen();
+    assert.doesNotMatch(frame, /launch pad needs ticketProvider\.kind/, 'the gate must not refuse the deprecated alias');
+    assert.match(frame, /Legacy manual project/);
+    // Auto-refresh-on-open is a local-provider behaviour, so it has to fire
+    // for the alias too — nothing here ever pressed 'r'.
+    assert.deepEqual(require('../lib/ui/cache').read(h.root).tickets.map((t) => t.identifier), ['CON-9']);
   } finally {
     await h.teardown(donePromise);
   }
@@ -3322,6 +3403,38 @@ test('CON-21: a non-Linear provider shows the gated message inline and never sta
     assert.deepEqual(draftCalls, [], 'a non-Linear provider must never start the drafting invocation');
     assert.match(h.screen(), /ticket drafting needs ticketProvider\.kind "linear"/);
     assert.match(h.screen(), /"git…/); // narrow-terminal truncation of "github" — the provider name is still visible
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+// CON-44: the sibling branch of draft.js's same `if`. openspec/specs/
+// ticket-draft/spec.md's "Scenario: Local provider" describes this message
+// specifically — a local project has a real ticket store, so the generic
+// "needs kind linear" wording would be actively misleading: the fix is to
+// write the file, not to change the provider. Modelled on the github test
+// directly above.
+test('CON-44: the local provider gets its own drafting message, pointing at the markdown file', async () => {
+  const draftCalls = [];
+  const h = setupTicketDraftHarness({
+    draft: { draftTicket: (seed) => { draftCalls.push(seed); return { promise: new Promise(() => {}), cancel() {} }; } },
+  });
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: { ticketProvider: { kind: 'local' } } });
+
+    h.fakeStdin.emit('data', 'n');
+    typeText(h.fakeStdin, 'add a share button');
+    h.fakeStdin.emit('data', '\r');
+
+    assert.deepEqual(draftCalls, [], 'a local provider must never start the drafting invocation');
+    const frame = h.screen();
+    assert.match(frame, /ticket drafting from the dashboard is not available for local tickets/);
+    // Not the generic non-Linear wording — that would tell a local project to
+    // go change its provider, which is the wrong instruction entirely.
+    assert.doesNotMatch(frame, /ticket drafting needs ticketProvider\.kind/);
   } finally {
     await h.teardown(donePromise);
   }

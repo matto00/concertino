@@ -163,6 +163,42 @@ OUT="$("$SCRIPT" "$D" '..' started 2>&1)"; RC=$?
 check "bare .. id: exit 1" "$RC" "1"
 rm -rf "$D"
 
+# --- canonical ticket shape (CON-44) ----------------------------------------
+# This script used to carry its own looser id pattern that accepted dots — the
+# one shape lib/ui/ticket.js singles out as breaking tmux's session:window.pane
+# addressing. It now shares the canonical pattern with assert-phase.sh and
+# friends (test/scripts/ticket-pattern.test.sh guards the five copies against
+# drift); these cases prove the SCRIPT actually rejects/accepts accordingly,
+# not just that the literal text matches.
+seed
+printf '%s\n' '---' 'title: Dotted' 'state: unstarted' '---' '' 'b' > "$D/CON-1.2.md"
+OUT="$("$SCRIPT" "$D" 'CON-1.2' started 2>&1)"; RC=$?
+check "dotted id: exit 1" "$RC" "1"
+check "dotted id: the file is left untouched" \
+  "$(grep -c '^state: unstarted$' "$D/CON-1.2.md")" "1"
+case "$OUT" in *'CON-1.2'*) ok "dotted id: names the bad value";;
+  *) bad "dotted id: names the bad value" "got [$OUT]";; esac
+rm -rf "$D"
+
+# A kebab-case slug is NOT a ticket id — the canonical shape must end in a
+# digit. tickets/fix-login.md is the exact file the dashboard now refuses to
+# list, so the write-back seam must refuse it too rather than disagreeing.
+seed
+printf '%s\n' '---' 'title: Slug' 'state: unstarted' '---' '' 'b' > "$D/fix-login.md"
+OUT="$("$SCRIPT" "$D" 'fix-login' started 2>&1)"; RC=$?
+check "kebab slug id: exit 1" "$RC" "1"
+check "kebab slug id: the file is left untouched" \
+  "$(grep -c '^state: unstarted$' "$D/fix-login.md")" "1"
+rm -rf "$D"
+
+# Conforming shapes the canonical pattern admits beyond TEAM-123 still work.
+seed
+printf '%s\n' '---' 'title: Underscored' 'state: unstarted' '---' '' 'b' > "$D/a_b_c-9.md"
+OUT="$("$SCRIPT" "$D" 'a_b_c-9' completed 2>&1)"; RC=$?
+check "underscored id: exit 0" "$RC" "0"
+check "underscored id: rewritten" "$(grep -c '^state: completed$' "$D/a_b_c-9.md")" "1"
+rm -rf "$D"
+
 # --- no leftover temp files -------------------------------------------------
 seed
 "$SCRIPT" "$D" CON-12 started >/dev/null
