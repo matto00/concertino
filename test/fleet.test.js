@@ -1071,9 +1071,12 @@ test('the total-height cap holds with all five sections (including a populated Q
   const queueState = { pending: manyQueued(20), inFlight: new Set(), maxConcurrent: 1 };
 
   // Floor moved 22 -> 23 with the footer-wrap pass (f.hintLines: the queue-
-  // populated hint list wraps to a second row at 78 cols), verified
-  // empirically (rows:22 renders 23 lines; rows:23 renders exactly 23).
-  for (const rows of [23, 24, 28, 32]) {
+  // populated hint list wraps to a second row at 78 cols), then 23 -> 26
+  // with CON-98's `a address`/`d done` FAILED-section hint (this fixture
+  // includes 8 FAILED runs, so the hint is present and wraps the footer
+  // further) — verified empirically (rows:25 still renders 24 lines,
+  // rows:26 is where the budget genuinely starts to bind).
+  for (const rows of [26, 28, 32]) {
     const out = renderFleet(runs, { cols: 78, rows, selected: 0, queueState });
     const lines = out.split('\n');
     assert.ok(lines.length <= rows,
@@ -1832,6 +1835,83 @@ test("l on RUNNING/DONE is unaffected by t's addition", () => {
     { type: 'open-drilldown', ticket: 'HEL-2' });
 });
 
+// --- CON-98: `a`/`d` on a FAILED selected row (design.md Decision 1) -------
+// specs/fleet-failed-remediation/spec.md's "a"/"d" bind at the fleet
+// screen's top level" requirement, all four scenarios.
+
+test('a on a FAILED selected row (focus: runs) resolves to address-failure', () => {
+  const failed = run({ ticket: 'HEL-9', status: 'failed' });
+  assert.deepEqual(handleKey('a', state({ runs: [failed], focus: 'runs' })),
+    { type: 'address-failure', ticket: 'HEL-9' });
+});
+
+test('d on a FAILED selected row (focus: runs) opens the mark-done confirm', () => {
+  const failed = run({ ticket: 'HEL-9', status: 'failed' });
+  assert.deepEqual(handleKey('d', state({ runs: [failed], focus: 'runs' })),
+    { type: 'open-mark-done-confirm', ticket: 'HEL-9' });
+});
+
+test('a/d are no-ops on a non-FAILED selected row', () => {
+  const running = run({ ticket: 'HEL-9', status: 'running' });
+  assert.equal(handleKey('a', state({ runs: [running], focus: 'runs' })), null);
+  assert.equal(handleKey('d', state({ runs: [running], focus: 'runs' })), null);
+});
+
+test('a/d are no-ops while QUEUED is locally focused, even if the (off-screen) selected row is FAILED', () => {
+  const failed = run({ ticket: 'HEL-9', status: 'failed' });
+  const s = state({ runs: [failed], focus: 'queue', queueState: { pending: ['HEL-1'], maxConcurrent: 1 } });
+  assert.equal(handleKey('a', s), null);
+  assert.equal(handleKey('d', s), null);
+});
+
+test('a/d never resolve to address-failure/open-mark-done-confirm while QUICK START is locally focused, even if the (off-screen) selected row is FAILED', () => {
+  const failed = run({ ticket: 'HEL-9', status: 'failed' });
+  const s = state({ runs: [failed], focus: 'quickstart' });
+  // `a` under quickstart focus is already, separately, claimed by CON-40's
+  // own binding (quickstart-add) — that pre-existing claim is exactly WHY
+  // this off-screen FAILED row can never leak through for `a` specifically;
+  // the load-bearing assertion is that it is NOT address-failure.
+  const aResult = handleKey('a', s);
+  assert.notEqual(aResult && aResult.type, 'address-failure');
+  assert.deepEqual(aResult, { type: 'quickstart-add', index: s.quickStartFocus });
+  // `d` has no such pre-existing claim inside the quickstart block, so this
+  // one genuinely falls through to a bare null — the `focus === 'runs'`
+  // guard is the only thing stopping it.
+  assert.equal(handleKey('d', s), null);
+});
+
+test('a/d default to focus: runs when `focus` is entirely absent from state (matches existing default)', () => {
+  const failed = run({ ticket: 'HEL-9', status: 'failed' });
+  const s = { runs: [failed], selected: 0 }; // no `focus` key at all
+  assert.deepEqual(handleKey('a', s), { type: 'address-failure', ticket: 'HEL-9' });
+  assert.deepEqual(handleKey('d', s), { type: 'open-mark-done-confirm', ticket: 'HEL-9' });
+});
+
+test('a/d with no runs selected is a no-op', () => {
+  assert.equal(handleKey('a', state({ runs: [], focus: 'runs' })), null);
+  assert.equal(handleKey('d', state({ runs: [], focus: 'runs' })), null);
+});
+
+// --- CON-98: markDoneConfirm's own y/anything-else gate, mirroring
+// forceStartConfirm/clearQueueConfirm's precedence discipline exactly -------
+
+test('markDoneConfirm: y confirms', () => {
+  const s = state({ markDoneConfirm: { ticket: 'HEL-9' } });
+  assert.deepEqual(handleKey('y', s), { type: 'confirm-mark-done', ticket: 'HEL-9' });
+});
+
+test('markDoneConfirm: any other key cancels', () => {
+  const s = state({ markDoneConfirm: { ticket: 'HEL-9' } });
+  assert.deepEqual(handleKey('n', s), { type: 'cancel-mark-done' });
+  assert.deepEqual(handleKey('\x1b', s), { type: 'cancel-mark-done' });
+});
+
+test('markDoneConfirm intercepts every key, even ones ordinarily bound elsewhere (j/k/l)', () => {
+  const s = state({ markDoneConfirm: { ticket: 'HEL-9' } });
+  assert.deepEqual(handleKey('j', s), { type: 'cancel-mark-done' });
+  assert.deepEqual(handleKey('l', s), { type: 'cancel-mark-done' });
+});
+
 test('k still means move-up, not kill — the fleet footer must never claim otherwise', () => {
   assert.deepEqual(handleKey('k', state({})), { type: 'move', delta: -1 });
   const out = plain(renderFleet([run({})], OPTS));
@@ -2162,6 +2242,40 @@ test('the clear-queue confirmation names the exact pending count, and leaves inF
   assert.match(out, /y confirm clear/);
 });
 
+// --- CON-98: `d`'s own y/anything-else confirmation gate + on-screen banner
+// (design.md Decision 2 / skeptic gate round 1, finding 3) -----------------
+
+test('y confirms mark-done, naming the ticket the confirmation was opened for', () => {
+  const s = state({ markDoneConfirm: { ticket: 'CON-9' } });
+  assert.deepEqual(handleKey('y', s), { type: 'confirm-mark-done', ticket: 'CON-9' });
+});
+
+test('any other key cancels mark-done without writing anything', () => {
+  const s = state({ markDoneConfirm: { ticket: 'CON-9' } });
+  assert.deepEqual(handleKey('q', s), { type: 'cancel-mark-done' });
+  assert.deepEqual(handleKey('j', s), { type: 'cancel-mark-done' });
+  assert.deepEqual(handleKey('\x1b', s), { type: 'cancel-mark-done' });
+});
+
+test('markDoneConfirm is checked before quitConfirm — the two gates never both claim a keypress', () => {
+  const s = state({ markDoneConfirm: { ticket: 'CON-9' }, quitConfirm: true });
+  assert.deepEqual(handleKey('q', s), { type: 'cancel-mark-done' });
+});
+
+// The load-bearing render-level check (skeptic gate round 1, finding 3): the
+// banner must actually appear on screen, not just intercept keypresses —
+// mirrors forceStartConfirm's own render test just above.
+test('the mark-done confirmation banner is visible on screen while markDoneConfirm is set, naming the ticket', () => {
+  const out = plain(renderFleet([run({})], { ...OPTS, markDoneConfirm: { ticket: 'CON-9' } }));
+  assert.match(out, /mark CON-9 as done/);
+  assert.match(out, /y confirm mark done/);
+});
+
+test('no mark-done banner when markDoneConfirm is unset', () => {
+  const out = plain(renderFleet([run({})], OPTS));
+  assert.doesNotMatch(out, /mark .* as done/);
+});
+
 test('the footer advertises C clear queue only when a QUEUED section is actually present this frame', () => {
   const withoutQueue = plain(renderFleet([run({})], OPTS));
   assert.doesNotMatch(withoutQueue, /C clear queue/);
@@ -2173,6 +2287,33 @@ test('the footer advertises C clear queue only when a QUEUED section is actually
   const emptyQueue = plain(renderFleet([run({})],
     { ...OPTS, queueState: { pending: [], inFlight: new Set(['CON-1']), maxConcurrent: 1 } }));
   assert.doesNotMatch(emptyQueue, /C clear queue/);
+});
+
+// --- CON-98: the FAILED section's own footer hint (design.md's "only
+// advertise a key that currently does something" discipline) --------------
+
+test('the footer advertises a address / d done only when a FAILED section is actually rendered this frame', () => {
+  const withoutFailed = plain(renderFleet([run({ status: 'running' })], OPTS));
+  assert.doesNotMatch(withoutFailed, /a address/);
+  assert.doesNotMatch(withoutFailed, /d done/);
+
+  const withFailed = plain(renderFleet(
+    [run({ ticket: 'HEL-9', status: 'failed', endStatus: 'escalated' })], OPTS));
+  assert.match(withFailed, /a address/);
+  assert.match(withFailed, /d done/);
+});
+
+// --- CON-98: `a`'s inline notice (non-claude-code harness) -----------------
+
+test('addressFailureNotice renders inline on the fleet screen, following queueNotice\'s own precedent', () => {
+  const out = plain(renderFleet([run({})],
+    { ...OPTS, addressFailureNotice: "/concertino-address-failure isn't available for codex yet" }));
+  assert.match(out, /isn't available for codex yet/);
+});
+
+test('no addressFailureNotice line when unset', () => {
+  const out = plain(renderFleet([run({})], OPTS));
+  assert.doesNotMatch(out, /concertino-address-failure/);
 });
 
 // --- CON-39: QUEUED-local cursor's own marker, distinct from ▸ -------------

@@ -28,6 +28,12 @@ Planning → Execution → Evaluation in sequence, deliver, and clean up.
   the counters this workflow already tracks across resume (`CYCLE`,
   `SKEPTIC_CYCLE`) were already runtime state; the bounds they're compared
   against are runtime state too, for exactly the same resume-safety reason.
+- `ADDRESS_FAILURE` (optional, CON-98): `true`, or unset/`false` — forwarded
+  by `/concertino-address-failure <TICKET_ID>` (the dashboard's `a` key on a
+  FAILED fleet row). When `true`, run the **Address-Failure entry point**
+  below **instead of** the ordinary Setup section — everything after that
+  entry point (Phase 1 onward) is unchanged, reached only once the entry
+  point has resolved a phase to resume from.
 
 ## Harness resume model
 
@@ -184,6 +190,103 @@ Never let telemetry block delivery: if a call fails, continue.
    `core/workflow-state.template.md`). Every subsequent phase transition below
    that rewrites `workflow-state.md` carries these fields forward unchanged;
    they are resolved exactly once, here, for the whole run.
+
+---
+
+## Address-Failure entry point
+
+CON-98. Run this **instead of** the ordinary Setup section above whenever
+`ADDRESS_FAILURE=true` (the dashboard's `a` key on a FAILED fleet row, via
+`/concertino-address-failure <TICKET_ID>`). Its job is to figure out what
+actually happened to a run that already ended in `FAILED`, restore whatever
+is needed to keep going, and then hand off into the **same** Execution →
+Evaluation → final gate → Delivery → Cleanup loop every ordinary run already
+uses below — this is explicitly a re-entry point into the existing machinery,
+never a second, parallel implementation of it.
+
+1. **Audit.** Read `.concertino/runs/$TICKET_ID/events.jsonl` **in full,
+   before taking any write action** — no worktree, branch, or file is
+   created or modified until this read completes. Extract at minimum:
+   - the most recent `run.start` event — its `branch`/`worktree`/`speed`/
+     `harness` fields, needed for step 2 below;
+   - the full `phase.enter`/`gate.result`/`verdict`/`escalation.*` timeline —
+     the same data the dashboard's own drill-down TIMELINE/GATES panels
+     already render from this exact log, reused here rather than re-derived
+     a second way;
+   - the most recent evaluator/skeptic report path referenced by an
+     `evidence` event, if any.
+
+   Write a short audit summary (a few sentences: what phase the run reached,
+   what the last verdict/gate/escalation said, and your own read on why it
+   likely ended in FAILED) — this becomes step 4's persisted evidence and
+   step 5's input to the first resumed executor call.
+
+2. **Restore the worktree, idempotently.** Call the canonical script with
+   the branch name recorded in step 1's `run.start` event — **never
+   hand-rolled worktree/branch detection, and never a
+   `.concertino/worktrees/**` glob**, even though one might work; the event
+   log already records this authoritatively, and the script is already
+   idempotent by design ("re-running for an existing worktree reuses it"),
+   so this is safe whether the worktree is still on disk (the common case —
+   a FAILED run never reaches Phase 4, so `cleanup.sh` never removed it) or
+   was manually deleted (recreates it fresh, checked out at the same branch —
+   any committed executor work survives on the branch regardless of worktree
+   lifecycle):
+
+   ```bash
+   scripts/concertino/setup-worktree.sh "$TICKET_ID" "<branch from run.start>" "<speed from run.start>" "<harness from run.start>"
+   ```
+
+   Parse `WORKTREE_PATH`/`DEV_PORT`/`BACKEND_PORT` exactly as ordinary Setup
+   step 3 does. **If the script prints `FAIL`** — e.g. the branch itself was
+   also deleted (a stale branch-cleanup job, alongside a manually-removed
+   worktree) — treat it as a `BLOCKER`, surfaced to the human exactly like
+   any other environmental Setup failure. Never silently downgrade this to
+   "just start fresh" without saying so — that would discard whatever the
+   original attempt actually got right without ever telling anyone.
+3. **Reconstruct planning state if needed.**
+   - If `WORKTREE_PATH/<change-dir>/workflow-state.md` is present (the
+     common case), read it and resume from its recorded `PHASE` exactly as
+     an ordinary mid-session resume already does (see "Workflow State"
+     above) — Execution, Evaluation, Delivery or Cleanup, whichever it says.
+   - If it is **missing** (the worktree was recreated in step 2 AND the
+     change was never committed to the branch), reconstruct
+     `ticket.md`/`proposal.md`/`design.md`/`tasks.md` (and any spec deltas)
+     from `.concertino/runs/$TICKET_ID/evidence/` — Phase 1's own
+     `persist-evidence.sh` output, durable in the main checkout independent
+     of the worktree's own lifecycle — writing them back into
+     `WORKTREE_PATH/<change-dir>/` and resuming from **Planning** (Phase 1,
+     step 3 onward: the artifacts already exist, reconstructed, so proceed
+     to the design-soundness gate rather than re-drafting from scratch).
+   - If evidence is **also** missing (nothing ever got far enough to persist
+     anything), there is nothing to remediate: fall back to an ordinary
+     fresh delivery run for this ticket (equivalent to treating this exactly
+     like Setup step 1 with `ADDRESS_FAILURE` unset), and **state this
+     plainly** in the audit summary from step 1 — never silently proceed as
+     though a resume occurred when none did.
+4. **Persist the audit as evidence**, via the same script Phase 1 step 6
+   already uses, so the audit shows up in the drill-down's EVIDENCE panel
+   like any other artifact:
+
+   ```bash
+   scripts/concertino/persist-evidence.sh "$TICKET_ID" "<path to the audit summary>"
+   ```
+
+   On `READY ref=<path>`, emit an `evidence` event exactly as Phase 1 step 6
+   does (`label=address-failure-audit`). On `FAIL`, skip the event and
+   continue — never block the resume on a failed persist.
+5. **Resume the ordinary loop.** Continue from whichever phase step 3
+   resolved — Execution, Evaluation, Delivery, or Cleanup — using that
+   phase's own section below unchanged. The one addition: the **first**
+   executor call resumed this way (whether a cold spawn, if step 3 landed on
+   Execution with no warm agent to resume, or a warm resume) receives step
+   1's audit findings the same way an ordinary Evaluation-loop FAIL cycle
+   passes `EVALUATION_REPORT_PATH` — this is the literal "reuses the
+   existing executor/evaluator/skeptic loop" the design calls for, not a
+   parallel implementation of it. Every phase transition from here on
+   updates `workflow-state.md`/emits telemetry exactly as it always does;
+   nothing below this point needs to know the run entered through this
+   entry point rather than ordinary Setup.
 
 ---
 

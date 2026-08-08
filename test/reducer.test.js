@@ -379,3 +379,74 @@ test('runs sort attention-first', () => {
   // run" bug.
   assert.deepEqual(runs.map((r) => r.ticket), ['HEL-ESC', 'HEL-FAIL', 'HEL-RUN', 'HEL-DONE']);
 });
+
+// --- CON-98: run.override (design.md Decision 2) ----------------------------
+
+test('a run.override event sets status regardless of endStatus/window (highest precedence)', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'escalated' },
+    { t: 20, kind: 'run.override', ticket: 'HEL-1', role: 'dashboard', status: 'done' },
+  ]), [], NOW);
+  assert.equal(run.status, 'done');
+  assert.deepEqual(run.override, { status: 'done', t: 20 });
+});
+
+test('a run.override wins even over a live escalation (mutually exclusive in practice, but ordering is unconditional)', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator', question: 'q' },
+    { t: 2, kind: 'run.override', ticket: 'HEL-1', role: 'dashboard', status: 'done' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.equal(run.status, 'done');
+});
+
+test('a run with no run.override event is unaffected — status derives exactly as before', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'escalated' },
+  ]), [], NOW);
+  assert.equal(run.status, 'failed');
+  assert.equal(run.override, null);
+});
+
+// --- CON-98: retry-visibility (design.md Decision 3) -------------------------
+
+test('a respawned FAILED run (run.end then a later run.spawn, window alive) reports running', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'escalated' },
+    { t: 20, kind: 'run.spawn', ticket: 'HEL-1', role: 'dashboard' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.equal(run.status, 'running');
+});
+
+test('once the respawned window dies with no new run.end, the run reverts to failed', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'escalated' },
+    { t: 20, kind: 'run.spawn', ticket: 'HEL-1', role: 'dashboard' },
+  ]), [{ ticket: 'HEL-1', alive: false, idleMs: 0 }], NOW);
+  assert.equal(run.status, 'failed');
+});
+
+test('once the respawn concludes with a new run.end, the newest status wins', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'escalated' },
+    { t: 20, kind: 'run.spawn', ticket: 'HEL-1', role: 'dashboard' },
+    { t: 30, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'delivered' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.equal(run.status, 'done');
+});
+
+test('a run.spawn BEFORE the run.end it is respawning is not mistaken for a retry (window alive)', () => {
+  // spawnedAt (1) is earlier than endedAt (9) here — the ordinary/original
+  // spawn that led to this run.end, not a later retry — so the ordinary
+  // endStatus/window-liveness precedence must apply unchanged, not the
+  // retry-visibility refinement.
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.spawn', ticket: 'HEL-1', role: 'dashboard' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'escalated' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.equal(run.status, 'failed');
+});

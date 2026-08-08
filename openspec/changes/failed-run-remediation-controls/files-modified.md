@@ -1,0 +1,21 @@
+# Files modified — CON-98 failed-run remediation controls
+
+- `lib/ui/reducer.js` — `emptyRun.override`, `applyEvent`'s `case 'run.override':`, the new highest-precedence `deriveStatus` override branch, and the retry-visibility refinement to the `endStatus` branch (design.md Decisions 2/3).
+- `lib/ui/session.js` — new `writeOverrideEvent(root, ticket, status)`, mirroring `writeSpawnEvent`; exported alongside the existing session exports.
+- `lib/ui/screens/fleet/keys.js` — top-level `a`/`d` bindings on a FAILED selected row, guarded by the required `focus === 'runs'` condition (design.md Decision 1), plus the `markDoneConfirm` y/anything-else gate wired into `handleKey`'s precedence chain.
+- `lib/ui/controllers/fleet.js` — new `address-failure`, `open-mark-done-confirm`, `cancel-mark-done`, `confirm-mark-done` action handlers; `markDoneConfirm` added to `scrollToShow`'s height-estimate `winOpts`.
+- `lib/ui/harness.js` — `addressFailureCommand()`, the claude-code-only `/concertino-address-failure {{TICKET}}` template.
+- `lib/ui/app-state.js` — `markDoneConfirm`/`addressFailureNotice` state fields, threaded through `currentState()`.
+- `lib/ui/screens/fleet/sections.js` — the `markDoneConfirm` on-screen confirm banner in `buildHeadTail`, the `addressFailureNotice` inline notice line, and the FAILED section's `a address`/`d done` footer hint (advertised only when a FAILED section is actually rendered).
+- `lib/ui/screens/fleet/render.js` — threads `state.markDoneConfirm`/`state.addressFailureNotice` through `render()`'s opts, mirroring `forceStartConfirm`.
+- `lib/ui/watch.js` — `writeOverrideEvent` required from `./session` and routed through `ctx.deps` (not a direct controller-level require, per `controllers/index.js`'s module-loading discipline); `markDoneConfirm` added to `draw()`'s own height-estimate `heightOpts`.
+- `lib/cli/emit.js` — `emitClaude` now also writes `.claude/commands/concertino-address-failure.md` from the new adapter file; no equivalent write added to `emitCodex`/`emitOpencode`.
+- `adapters/claude-code/address-failure-command.md` — new command file (mirrors `command.md`'s shape), spawning `concertino-orchestrator` with `ADDRESS_FAILURE=true`.
+- `core/roles/orchestrator.md` — new `ADDRESS_FAILURE` input and the "Address-Failure entry point" procedure (audit → restore worktree via `setup-worktree.sh` → resume from `workflow-state.md` or reconstruct from persisted evidence or fall back to a fresh run → persist the audit → resume the ordinary loop).
+- `docs/dashboard.md` — new `a`/`d` key-table rows and a new "Addressing a FAILED run" subsection, including the per-pane audit note for NEEDS YOU/RUNNING/DONE.
+- `test/reducer.test.js` — `run.override` precedence tests and retry-visibility tests.
+- `test/session.test.js` — `writeOverrideEvent` unit tests.
+- `test/fleet.test.js` — `a`/`d` `handleKey` scenarios (the four spec scenarios), `markDoneConfirm` gate/banner tests, the FAILED footer-hint test, the `addressFailureNotice` render test, and a floor-adjustment fix to a pre-existing height-cap test whose fixture now also renders the new FAILED footer hint.
+- `test/harness.test.js` — `addressFailureCommand()` test.
+- `test/controllers-fleet.test.js` — new file: controller-level tests for `address-failure`/`open-mark-done-confirm`/`cancel-mark-done`/`confirm-mark-done`.
+- `test/emit.test.js` — new file: confirms `concertino-address-failure.md` is written for claude-code and not for codex/opencode.
