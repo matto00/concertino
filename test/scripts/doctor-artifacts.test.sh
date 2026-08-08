@@ -47,6 +47,21 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 OUT="$WORK/doctor.txt"
 
+# Stub the harness CLIs generic.json declares (currently just claude-code) so
+# doctor's `claude --version` checks pass regardless of what's installed on
+# the machine running this test. Those checks are about CLI availability, not
+# artifact drift — the "action required"/"concertino sync" assertions below
+# scan doctor's whole output and would otherwise false-fail on any machine
+# missing one of these CLIs (e.g. a CI runner, unlike a dev laptop that
+# normally has at least `claude`), for a reason unrelated to what's tested.
+STUBBIN="$WORK/stubbin"
+mkdir -p "$STUBBIN"
+for cli in claude codex opencode; do
+  printf '#!/bin/sh\necho "%s stub 0.0.0"\n' "$cli" > "$STUBBIN/$cli"
+  chmod +x "$STUBBIN/$cli"
+done
+PATH="$STUBBIN:$PATH"
+
 # A throwaway project, synced from the example config, then given a config of
 # its own so doctor reads it without --config.
 node "$ROOT/bin/concertino" sync --out="$WORK" --config="$ROOT/config/examples/generic.json" > "$WORK/sync.txt" 2>&1
