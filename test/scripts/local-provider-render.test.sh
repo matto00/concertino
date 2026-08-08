@@ -43,14 +43,27 @@ has   "names the write-back script"  'set-ticket-state.sh'     "$ORCH"
 has   "keeps the no-store fallback"  'provided inline'         "$ORCH"
 
 # "Grants" means the frontmatter `tools:` list specifically — not a blanket
-# grep of the whole rendered file. core/roles/orchestrator.md has a couple of
-# spots (the CON-62 harness-override note, the escalation "standalone" triage
-# option) that name `mcp__linear__*` in illustrative prose unconditionally,
-# regardless of ticketProvider.kind — pre-existing under `github` too, and out
-# of this task's scope. Only the tool grant itself is provider-gated.
+# grep of the whole rendered file. core/roles/orchestrator.md still has one
+# remaining spot (the CON-62 harness-override note) that names
+# `mcp__linear__*` in illustrative prose unconditionally, regardless of
+# ticketProvider.kind — pre-existing under `github` too, and judged cosmetic
+# and out of scope (CON-91). The escalation "standalone" triage option is no
+# longer one of these: CON-91 made it provider-conditional (see below), so
+# under `local` it no longer names any Linear MCP tool. Only the tool grant
+# itself is provider-gated.
 FRONTMATTER="$OUT/frontmatter.txt"
 awk 'NR==1{next} /^---$/{exit} {print}' "$ORCH" > "$FRONTMATTER"
 hasnt "grants no Linear MCP tools"   'mcp__linear__'           "$FRONTMATTER"
+
+# CON-91: under `local`, the `standalone` triage branch must name an action
+# the orchestrator can actually perform (write tickets/<ID>.md via the new
+# id-allocator script), not the unexecutable `mcp__linear__save_issue` call.
+has   "standalone: names the id-allocator script" \
+      'next-ticket-id.sh' "$ORCH"
+has   "standalone: names the tickets/ directory" \
+      'tickets' "$ORCH"
+hasnt "standalone: does not name the Linear MCP save tool" \
+      'mcp__linear__save_issue' "$ORCH"
 
 # The degenerate case must survive: a local project with no tickets/ directory
 # behaves exactly as the old `manual` kind did.
