@@ -43,7 +43,7 @@ test('a well-formed ticket normalises to linear.js\'s ticket shape', () => {
   assert.equal(t.number, 12);
   assert.equal(t.title, 'Launch pad refuses non-linear providers');
   assert.equal(t.state.type, 'unstarted');
-  assert.equal(t.state.name, 'unstarted');
+  assert.equal(t.state.name, 'Todo');
   assert.equal(t.priority, 2);
   assert.equal(t.epicId, 'local-tickets');
   assert.equal(t.epicName, 'local-tickets');
@@ -83,6 +83,26 @@ test('all five states parse', () => {
   for (const s of ['backlog', 'unstarted', 'started', 'completed', 'canceled']) {
     const t = local.parseTicket('CON-1', `---\ntitle: T\nstate: ${s}\n---\n\nb\n`, null);
     assert.equal(t.state.type, s, s);
+  }
+});
+
+// CON-93 item 2: state.name must read as the human label linear.js's own
+// contract (state.type = what code branches on, state.name = what a human
+// reads) promises, not the raw lowercase machine value — state.type stays
+// unchanged so every existing state.type consumer (stateTypesFromConfig,
+// inlineStatus's `started` override, deriveEpics) is unaffected.
+test('state.name is a human-readable label for all five states, while state.type stays raw', () => {
+  const expected = {
+    backlog: 'Backlog',
+    unstarted: 'Todo',
+    started: 'In Progress',
+    completed: 'Done',
+    canceled: 'Canceled',
+  };
+  for (const [s, name] of Object.entries(expected)) {
+    const t = local.parseTicket('CON-1', `---\ntitle: T\nstate: ${s}\n---\n\nb\n`, null);
+    assert.equal(t.state.type, s, s);
+    assert.equal(t.state.name, name, s);
   }
 });
 
@@ -246,4 +266,24 @@ test('the not-found message tells you to create a ticket, not to check a team ke
 
 test('createTicket rejects — TUI authoring is a later ticket', async () => {
   await assert.rejects(() => local.createTicket({ title: 'x' }), /not supported/);
+});
+
+// --- fetchOneTicket (CON-93 item 4) -----------------------------------------
+
+test('fetchOneTicket reads the one file directly and returns linear.js\'s fetchOneTicket shape', async () => {
+  const root = seed(tmpRoot(), { 'CON-12.md': GOOD });
+  const t = await local.fetchOneTicket({ id: 'CON-12', root });
+  assert.equal(t.id, 'CON-12');
+  assert.equal(t.identifier, 'CON-12');
+  assert.deepEqual(t.labels, ['harness:codex', 'ui']);
+});
+
+test('fetchOneTicket rejects with a named-file message when the ticket file is missing', async () => {
+  const root = tmpRoot();
+  await assert.rejects(() => local.fetchOneTicket({ id: 'CON-99', root }), /local:.*CON-99/);
+});
+
+test('fetchOneTicket rejects, not throws synchronously, on a malformed file', async () => {
+  const root = seed(tmpRoot(), { 'CON-1.md': 'no frontmatter here\n' });
+  await assert.rejects(() => local.fetchOneTicket({ id: 'CON-1', root }), /local:/);
 });
