@@ -2093,13 +2093,7 @@ test('t on the QUICK START-focused ticket opens the ticket detail view (view-tic
   let donePromise;
   try {
     const watchModule = require('../lib/ui/watch');
-    // CON-44: a real config always carries a resolved ticketProvider.kind
-    // (config.js's withDefaults guarantees it) — 't' opens the ticket detail
-    // view via ensureLaunchPad(), which now goes through the resolver, so an
-    // empty config here would throw on the resolver's own "unknown kind"
-    // check before ever reaching the QUICK START behaviour this test is
-    // actually about.
-    donePromise = watchModule.watch({ root: h.root, config: { ticketProvider: { kind: 'linear' } } });
+    donePromise = watchModule.watch({ root: h.root, config: {} });
 
     // CON-56: digit-jump into QUICK START (always on screen, digit 1 here —
     // no runs, no queue). quickStartFocus: 0 -> CON-100 (top priority).
@@ -2334,10 +2328,7 @@ test('t on a RUNNING row opens the ticket detail view (view-ticket), and esc ret
   let donePromise;
   try {
     const watchModule = require('../lib/ui/watch');
-    // CON-44: 't' opens the ticket detail view via ensureLaunchPad(), which
-    // now goes through the resolver — see the sibling QUICK START test above
-    // for why an empty config no longer works here.
-    donePromise = watchModule.watch({ root: h.root, config: { ticketProvider: { kind: 'linear' } } });
+    donePromise = watchModule.watch({ root: h.root, config: {} });
 
     // CON-500 is already `▲ running`, so RUNNING (not QUICK START) is the
     // first section — `selected: 0` (the default) already lands on it, no
@@ -2372,10 +2363,7 @@ test('t on a DONE row opens the ticket detail view (view-ticket), and esc return
   let donePromise;
   try {
     const watchModule = require('../lib/ui/watch');
-    // CON-44: 't' opens the ticket detail view via ensureLaunchPad(), which
-    // now goes through the resolver — see the QUICK START test above for why
-    // an empty config no longer works here.
-    donePromise = watchModule.watch({ root: h.root, config: { ticketProvider: { kind: 'linear' } } });
+    donePromise = watchModule.watch({ root: h.root, config: {} });
 
     // CON-501 has already ended (run.end, no live window) — it lands in
     // DONE, the only runs-backed section on screen, so `selected: 0` (the
@@ -2478,6 +2466,70 @@ function setupLaunchPadHarness(tickets, epics, over) {
 }
 
 const LAUNCHPAD_CONFIG = { dashboard: { launchPad: { enabled: true } }, ticketProvider: { kind: 'linear', idExample: 'CON-1' } };
+
+// --- CON-44: ensureLaunchPad must never let an unresolvable
+// ticketProvider.kind escape the stdin listener as an uncaught throw --------
+// lib/cli/watch.js's cmdWatch parses concertino.config.json straight off
+// disk and never runs it through lib/config.js's loadConfig/withDefaults
+// ("watch works without config" — cmdWatch's own comment) — so
+// ticketProvider.kind reaching here can be absent (no config file, or
+// malformed JSON), typo'd, or "github" (which `concertino validate` reports
+// OK, but MODULES in ticket-provider.js has no module for). moduleFor()'s
+// throw on an unresolvable kind is deliberate and correct (task-3's own
+// design); what is NOT correct is letting it escape uncaught: onKey/
+// applyAction have no try/catch of their own, so an uncaught throw here
+// would skip quit()'s terminal restore (setRawMode(false), the alt-screen
+// exit) entirely. ensureLaunchPad must catch it and degrade to the same
+// gate-failure message screens/launchpad.js already renders for
+// `enabled: false`.
+
+test('opening the launch pad with no ticketProvider configured at all renders a gate message, not a crash', async () => {
+  const h = setupLaunchPadHarness([], []);
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: {} });
+
+    h.fakeStdin.emit('data', 'N'); // must not throw
+    const frame = h.screen();
+    assert.match(frame, /esc back/, 'the launch pad screen must still render its own gate message, not crash');
+    assert.match(frame, /unknown ticketProvider\.kind "none"/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('a typo\'d ticketProvider.kind renders its own message instead of throwing', async () => {
+  const h = setupLaunchPadHarness([], []);
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: { ticketProvider: { kind: 'lienar' } } });
+
+    h.fakeStdin.emit('data', 'N');
+    const frame = h.screen();
+    assert.match(frame, /esc back/);
+    assert.match(frame, /unknown ticketProvider\.kind "lienar"/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+test('ticketProvider.kind "github" — accepted by concertino validate, but with no resolver module — renders a message instead of crashing the dashboard', async () => {
+  const h = setupLaunchPadHarness([], []);
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: { ticketProvider: { kind: 'github' } } });
+
+    h.fakeStdin.emit('data', 'N');
+    const frame = h.screen();
+    assert.match(frame, /esc back/);
+    assert.match(frame, /unknown ticketProvider\.kind "github"/);
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
 
 test('add-to-queue (q) with no active queue creates a single-ticket maxConcurrent:1 queue, keyed by the ticket\'s identifier string', async () => {
   const queueCache = require('../lib/ui/queue-cache');
@@ -2753,6 +2805,50 @@ test('a local project opens the launch pad already refreshed, with no r keypress
     assert.equal(typeof onDisk.fetchedAt, 'number', 'opening a local project\'s launch pad must refresh it on its own');
     assert.equal(onDisk.tickets.length, 1);
     assert.equal(onDisk.tickets[0].identifier, 'CON-1');
+  } finally {
+    await h.teardown(donePromise);
+  }
+});
+
+// unreadable is per-file (tickets/local.js's readTickets: a malformed file is
+// a skip, not a thrown error and not a silently-shrunk board) and, per
+// watch.js's own comment at the surfacing site, deliberately in-memory only
+// — it never reaches the on-disk cache, so the only way to observe it is the
+// rendered screen. `\t` (an ordinary pane-focus toggle, otherwise inert here)
+// is emitted after flushRefresh() purely to force the next redraw so the
+// settled `lp.error` is actually on screen — no macrotask boundary or resize
+// involved, unlike the corruption this file's own flushRefresh() comment
+// documents for a real wall-clock/resize wait.
+test('an unreadable local ticket file is surfaced in lp.error, not silently dropped from the board', async () => {
+  const h = setupLaunchPadHarness([], []);
+  const ticketsDir = path.join(h.root, 'tickets');
+  fs.mkdirSync(ticketsDir, { recursive: true });
+  fs.writeFileSync(path.join(ticketsDir, 'CON-1.md'), '---\ntitle: One\nstate: backlog\n---\n\nbody\n');
+  // Malformed: an unrecognised state — tickets/local.js's parseTicket
+  // returns null for it, so readTickets counts it as unreadable rather than
+  // including it or throwing.
+  fs.writeFileSync(path.join(ticketsDir, 'CON-2.md'), '---\ntitle: Bad\nstate: not-a-real-state\n---\n\nbody\n');
+
+  const LOCAL_LAUNCHPAD_CONFIG = {
+    dashboard: { launchPad: { enabled: true } },
+    ticketProvider: { kind: 'local', teamKey: 'CON' },
+  };
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root: h.root, config: LOCAL_LAUNCHPAD_CONFIG });
+
+    h.fakeStdin.emit('data', 'N'); // open — auto-refreshes for local
+    await flushRefresh();
+    h.fakeStdin.emit('data', '\t'); // force the redraw that shows the settled refresh's lp.error
+
+    const frame = h.screen();
+    assert.match(frame, /1 ticket file\(s\) unreadable — check frontmatter \(title, state, matching id\)/);
+
+    const cacheModule = require('../lib/ui/cache');
+    // The good ticket is still on the board — one bad file must not blank it.
+    assert.deepEqual(cacheModule.read(h.root).tickets.map((t) => t.identifier), ['CON-1']);
   } finally {
     await h.teardown(donePromise);
   }
