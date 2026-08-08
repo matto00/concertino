@@ -4,8 +4,13 @@ TICKET_ID: CON-96
 CHANGE_NAME: add-pr-ci-workflow
 WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/task/add-pr-ci-workflow/CON-96
 BRANCH: task/add-pr-ci-workflow/CON-96
-PHASE: Delivery
-CYCLE: 1
+PHASE: Execution
+CYCLE: 2
+# Auditor ESCALATEd on PR #85 (test (16) FAILURE / test (22) CANCELLED,
+# mergeStateStatus UNSTABLE) — root cause: test/scripts/assert-phase.test.sh's
+# CON-31 stale-base-warning suite fails in real GitHub Actions only (passes
+# locally). Human decision: fix as an amendment to this same PR, then
+# re-run gates and re-audit. See auditor-report.md in this archive dir.
 DEV_PORT: 5343
 BACKEND_PORT: 8250
 EXECUTOR_AGENT_ID: —

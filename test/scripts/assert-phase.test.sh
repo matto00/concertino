@@ -265,7 +265,19 @@ new_stale_base_pair() {
   rm -rf "$seed"
 
   git clone -q "$remote" "$wt" 2>/dev/null
-  git -C "$wt" -c user.email=t@t.com -c user.name=t checkout -q -b "$branch" main
+  # Start from origin/main explicitly, not the bare name "main" — unlike
+  # `git checkout main` (used elsewhere in this file), `git checkout -b
+  # <new> <start-point>` resolves <start-point> as a literal revision, not
+  # via remote-tracking DWIM. On a machine with init.defaultBranch=main
+  # configured globally (common on developer machines), the freshly
+  # cloned repo's own local HEAD already happens to be "main", masking
+  # this; on a vanilla install (e.g. GitHub Actions runners, which default
+  # to "master") there is no local "main" ref yet and this fails with
+  # "'main' is not a commit". Reproduced directly: HOME pointed at a fresh
+  # dir with no git config, `git checkout -q -b X main` against this same
+  # fixture shape fails with exactly that fatal error; explicit
+  # origin/main resolves regardless of ambient default-branch config.
+  git -C "$wt" -c user.email=t@t.com -c user.name=t checkout -q -b "$branch" origin/main
   git -C "$wt" -c user.email=t@t.com -c user.name=t commit -q --allow-empty -m "feature work"
   git -C "$wt" push -q origin "HEAD:refs/heads/${branch}"
   printf '%s' "$wt"
