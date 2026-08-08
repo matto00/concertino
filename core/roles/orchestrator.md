@@ -476,10 +476,7 @@ decision never led to the plan actually being revised.
 5. **Branch on the answer:**
    - **`discard`** — no further action beyond noting it in the run's
      summary. No ticket filed, no plan revision.
-   - **`standalone`** — file a new Linear ticket (`mcp__linear__save_issue`,
-     no `id`) summarizing `description` and linking back to the current
-     ticket (`$TICKET_ID`); note the new ticket's identifier in your summary
-     to the human. No re-planning, no scope change to the current run.
+   - **`standalone`** — {{block:standaloneTicket}}
    - **`fold-in`** — the CON-30 fix: a recorded `escalation.answered` of
      `fold-in` alone is **not** sufficient. Before proceeding past this point
      (into/back through Execution at the Phase 3 call site; before Phase 4
