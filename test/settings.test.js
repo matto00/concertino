@@ -197,6 +197,21 @@ test('the footer always shows both esc discard and S save', () => {
   assert.match(out, /S save/);
 });
 
+// CON-111: the footer also always hints `p presets` — the entry point into
+// the new PRESETS screen — same "always shown, no gate" discipline the
+// esc/S hints above already follow.
+test('the footer hints p presets', () => {
+  const out = plain(renderSettings(settingsState({}), { cols: 100 }));
+  assert.match(out, /p presets/);
+});
+
+// CON-111: `p` opens the PRESETS screen (mode = 'presets') — bound at the
+// top level (no prompt/chooser open), independent of which pane has focus.
+test('p (no prompt/chooser open) opens the PRESETS screen', () => {
+  const state = settingsState({});
+  assert.deepEqual(handleKey('p', { settings: state }), { type: 'open-presets' });
+});
+
 // --- handleKey ------------------------------------------------------------
 
 test('Enter on a boolean field toggles it (settings-toggle-field), not a text prompt', () => {
@@ -371,4 +386,17 @@ test('the chooser owns every keystroke while open, and advertises its own keys',
   assert.match(out, /\[x\] codex/);
   assert.match(out, /\[ \] claude-code/);
   assert.match(out, /space toggle/);
+});
+
+// --- CON-111: 'open-presets' delegates to controllers/presets.js -----------
+
+test('open-presets delegates to controllers/presets.js\'s openPresets and sets mode = presets', () => {
+  const presetsCache = require('../lib/ui/presets-cache');
+  const ctx = session({});
+  ctx.config = HELIO_CONFIG;
+  ctx.deps = { presetsCache };
+  apply(ctx, { type: 'open-presets' });
+  assert.equal(ctx.S.mode, 'presets');
+  assert.ok(ctx.S.presets);
+  assert.deepEqual(ctx.S.presets.presets, []); // no presets.json under /tmp in this test's root
 });

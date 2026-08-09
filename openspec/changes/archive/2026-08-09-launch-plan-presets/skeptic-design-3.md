@@ -1,0 +1,35 @@
+## Skeptic Report — design gate (round 3, skeptic-design-3.md)
+
+### What I verified (with evidence)
+
+1. **Read all four change-dir artifacts fresh in full**: `ticket.md`, `proposal.md`, `design.md`, `tasks.md`, and `specs/launch-presets/spec.md`.
+
+2. **The specific round-2 finding is resolved.** Round 2's CR (`skeptic-design-2.md`) required `specs/launch-presets/spec.md`'s "The launch plan applies a saved preset..." Requirement and its "An unreachable dimension is left unchanged, not errored" Scenario to state the full two-part provider-apply guard (`plan.perRowEditable && plan.providerConfigured`), matching `design.md` Decision 3 / `tasks.md` 6.3, rather than "a provider is configured for the project" alone.
+   - `spec.md:71` (Requirement text) now reads: "...`provider` (only when the batch's own per-row overrides are editable AND a provider is configured for the project — the identical two-part condition `plan.perRowEditable && plan.providerConfigured` the existing `p`/cycle-provider key already requires — and the preset's provider value is reachable from the resulting harness)..." — explicitly states both halves of the guard and names the exact expression.
+   - `spec.md:77-79` (Scenario) now reads: "an applied preset names a harness the current batch's `harnesses` list does not include, or a provider that is not configured for the project, or a provider while the batch is running under a `dashboard.launchCommand` override (`plan.perRowEditable` is false)" — the third clause explicitly adds the previously-missing `perRowEditable`/`launchCommand`-override case.
+   - Grepped the entire change directory (`grep -rn "provider is configured\|providerConfigured\|perRowEditable"`) — no remaining occurrence of the old, single-condition wording anywhere in `ticket.md`/`proposal.md`/`design.md`/`tasks.md`/`spec.md`. The only hits left are the (correct) three-way-consistent wording in `design.md:67`, `tasks.md:42`, `spec.md:71/78`, and the prior skeptic reports themselves (historical record, not live spec text).
+   - Cross-checked against ground truth: `lib/ui/controllers/launchpad.js:453` (`cycle-provider`) still reads `if (!plan || !plan.perRowEditable || !plan.providerConfigured) return true;` — the exact two-part guard design.md/tasks.md/spec.md now all describe consistently.
+
+3. **Overall design soundness re-check against codebase ground truth** (fresh reads, this round):
+   - `lib/ui/controllers/launchpad.js` (full file) — confirmed `open-launchplan`'s existing seeding pattern (`ctx.config.harnesses[0]`, `agentMerge` from `ctx.config.agentMerge.enabled`, `perRowEditable`/`providerConfigured` derivation) matches what design.md Decision 2/7 describes as the precedent for a fresh preset's defaults and `plan.presets`/`plan.presetIndex` seeding. Confirmed `cycle-harness`/`cycle-agent-merge`/`cycle-speed`/`cycle-provider`'s existing per-field mutation bodies are exactly the shapes Decision 3 proposes factoring into shared `apply<Dimension>` helpers — no invented behavior.
+   - `lib/ui/screens/launchplan.js` (full file) — confirmed the `cfgRow` pattern, footer-hint gating idiom (`harnesses.length > 1`, `providerConfigured`), and `handleKey`'s existing per-key gates that Decision 7 and tasks 6.4 describe extending with a `preset` row and `w` key follow the established idiom exactly (no new UI vocabulary invented).
+   - `lib/ui/harness.js` (full file) — confirmed `canonicalHarness`, `cliLabel`, `launchTemplate`, `providerChoices`, `providerCommandFlags`, `resolveTicketHarness`, `resolveTicketProvider`, `launchSpecForChoices` all exist with exactly the signatures/domains design.md's Decisions 1/3/4 rely on.
+   - `lib/ui/queue-cache.js` (full file) — confirmed the temp-file+rename write, per-field degrade-don't-fail read contract design.md Decision 1 cites as `presets-cache.js`'s precedent is real and matches (module header explicitly frames itself as the sibling-module precedent, same reasoning proposal.md gives for not folding into `cache.js`).
+   - `lib/ui/watch.js` — confirmed `applyAction` (line 1125-1128) intercepts a bare `{ type: 'back' }` unconditionally and routes it to `backToFleet()` before any controller sees it — the exact claim Decision 6 relies on to require `presets.js`'s `routeHandleKey` to translate its internal `back` into `back-to-settings-from-presets`.
+   - `lib/ui/screens/docview.js` — confirmed `routeHandleKey` (line 251) does exactly `if (action.type === 'back') return { type: 'back-to-drilldown-from-doc' };`, the precedent Decision 6 cites for the identical pattern in the new `presets.js`.
+   - `lib/ui/screens/settings.js` — confirmed no existing top-level (non-chooser/non-prompt) binding on `p` — the proposed `open-presets` key is genuinely free, and `S` is already reserved for `settings-save` (confirming Decision 4's stated need for a distinct interaction idiom on the new screen makes sense, since `S` on PRESETS means "save the presets list," a different action than settings' own `S`, but the same *key*, on a different screen — no collision).
+   - `lib/ui/controllers/index.js` — confirmed the `CONTROLLERS` array / disjoint-action-type-set contract tasks 3.8 relies on to register the new `presets` controller.
+   - `lib/ui/controllers/settings.js` — confirmed `openSettings()`'s "fresh session every visit, never reused" precedent (explicit in its own header comment) that Decision 6 cites for `open-presets` building `S.presets` fresh every time.
+   - `docs/dashboard.md` — confirmed both target sections tasks 7.1/7.2 point at exist (`## The launch pad — epic browser, ticket viewer, launch plan, queue` at line 501, `## The settings screen` at line 710).
+
+4. **Acceptance criteria traced against tasks.md**: all three of `ticket.md`'s ACs (save+reapply a preset in one keystroke; persistence across restarts; documentation) map to concrete tasks (6.3/6.4; 1.1-1.3; 7.1/7.2) with no AC left uncovered by any task, and no task introducing scope beyond the ticket + the three escalated/resolved design decisions.
+
+5. **No placeholders/TBDs/hand-waving found** in any of the five artifacts — `design.md`'s "Open Questions" section explicitly states none remain outstanding, and I found no contradicting evidence.
+
+### Verdict: CONFIRM
+
+The round-2 finding (spec.md's provider-apply Requirement/Scenario text lagging design.md/tasks.md's corrected two-part guard) has been fixed correctly and completely, in both places round 2 named. No new issues found on this full fresh re-read; design.md/tasks.md/spec.md are now mutually consistent with each other and with the actual codebase (`plan.perRowEditable && plan.providerConfigured` verified live in `controllers/launchpad.js:453`). This is sound enough to implement.
+
+### Non-blocking notes
+
+- None beyond what design.md's own "Risks / Trade-offs" section already candidly names (unbounded `presets.json` growth, the graceful-no-op degradation for stale-configuration presets). Both are explicitly acknowledged and accepted trade-offs, not omissions.
