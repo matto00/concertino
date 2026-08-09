@@ -169,6 +169,7 @@ check "local main is untouched (dirty tree)" "$AFTER_MAIN" "$BEFORE_MAIN"
 grep -q "uncommitted local edit" "$BASE/primary/file.txt" && ok "the uncommitted edit itself is untouched" || bad "the uncommitted edit itself is untouched" "edit vanished"
 has "prints READY despite a dirty-tree escalation" "READY cleaned worktree=" "$OUT"
 [ -f "$LOG" ] && grep -q escalation.answered "$LOG" && ok "the answered escalation is logged" || bad "the answered escalation is logged" "no escalation.answered"
+hasnt "no gate.warning on a skip (no retry attempted)" "gate.warning" "$LOG"
 rm -rf "$BASE"
 
 # --- diverged base: escalates, changes nothing -------------------------------
@@ -187,6 +188,7 @@ check "exits 0 after a diverged-base escalation is skipped" "$RC" "0"
 AFTER_MAIN="$(git -C "$BASE/primary" rev-parse main)"
 check "local main is untouched (diverged)" "$AFTER_MAIN" "$BEFORE_MAIN"
 has "prints READY despite a diverged-base escalation" "READY cleaned worktree=" "$OUT"
+hasnt "no gate.warning on a diverged-base skip (no retry attempted)" "gate.warning" "$LOG"
 rm -rf "$BASE"
 
 # --- retry: a second attempt that now resolves cleanly succeeds -------------
@@ -210,6 +212,7 @@ REMOTE_MAIN="$(git -C "$BASE/primary" rev-parse origin/main)"
 check "local main fast-forwarded on the retried attempt" "$AFTER_MAIN" "$REMOTE_MAIN"
 has "prints READY after a successful retry" "READY cleaned worktree=" "$OUT"
 hasnt "no 'remains behind' note after a successful retry" "remains behind" "$ERR"
+hasnt "no gate.warning after a successful retry" "gate.warning" "$LOG"
 rm -rf "$BASE"
 
 # --- retry exhaustion, confirmed still-dirty: keeps "remains behind" wording -
@@ -234,6 +237,21 @@ check "local main is untouched (still-dirty retry)" "$AFTER_MAIN" "$BEFORE_MAIN"
 has "prints READY despite a still-dirty retry exhaustion" "READY cleaned worktree=" "$OUT"
 has "'remains behind' note after a still-dirty retry" "remains behind" "$ERR"
 hasnt "no 'could not determine' note after a still-dirty retry" "could not determine" "$ERR"
+has "gate.warning event emitted after a still-dirty retry exhaustion" "gate.warning" "$LOG"
+check "gate.warning gate=phase:cleanup (still-dirty retry)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).find(e=>e.kind==="gate.warning");console.log(l.gate)' "$LOG")" \
+  "phase:cleanup"
+check "gate.warning resolved=false (still-dirty retry)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).find(e=>e.kind==="gate.warning");console.log(l.resolved)' "$LOG")" \
+  "false"
+check "gate.warning reason names main as still behind (still-dirty retry)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).find(e=>e.kind==="gate.warning");console.log(/remains behind/.test(l.reason))' "$LOG")" \
+  "true"
+check "gate.warning ticket tagged (still-dirty retry)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).find(e=>e.kind==="gate.warning");console.log(l.ticket)' "$LOG")" \
+  "TICK-7"
+check "run.end still status=delivered alongside the gate.warning (still-dirty retry)" \
+  "$(run_end_ticket "$LOG")" "TICK-7/delivered"
 rm -rf "$BASE"
 
 # --- retry exhaustion, retry's own fetch fails: reports unknown state -------
@@ -256,6 +274,21 @@ check "exits 0 after a fetch-failed retry exhaustion" "$RC" "0"
 has "prints READY despite a fetch-failed retry exhaustion" "READY cleaned worktree=" "$OUT"
 has "'could not determine' note after a fetch-failed retry" "could not determine" "$ERR"
 hasnt "no 'remains behind' note after a fetch-failed retry" "remains behind" "$ERR"
+has "gate.warning event emitted after a fetch-failed retry exhaustion" "gate.warning" "$LOG"
+check "gate.warning gate=phase:cleanup (fetch-failed retry)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).find(e=>e.kind==="gate.warning");console.log(l.gate)' "$LOG")" \
+  "phase:cleanup"
+check "gate.warning resolved=false (fetch-failed retry)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).find(e=>e.kind==="gate.warning");console.log(l.resolved)' "$LOG")" \
+  "false"
+check "gate.warning reason names the base state as unknown, not behind (fetch-failed retry)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).find(e=>e.kind==="gate.warning");console.log(/could not determine/.test(l.reason) && !/remains behind/.test(l.reason))' "$LOG")" \
+  "true"
+check "gate.warning ticket tagged (fetch-failed retry)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).find(e=>e.kind==="gate.warning");console.log(l.ticket)' "$LOG")" \
+  "TICK-8"
+check "run.end still status=delivered alongside the gate.warning (fetch-failed retry)" \
+  "$(run_end_ticket "$LOG")" "TICK-8/delivered"
 rm -rf "$BASE"
 
 # ===========================================================================
