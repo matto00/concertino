@@ -117,6 +117,37 @@ test('local.fetchTickets is what the resolver reaches for under local', () => {
   assert.equal(provider.moduleFor({ ticketProvider: { kind: 'linear' } }), linear);
 });
 
+// CON-95 switched MODULES/ALIASES from `{}` to `Object.create(null)` so a
+// hand-written `kind` of `constructor`/`toString`/`hasOwnProperty` misses the
+// table and falls through to moduleFor()'s loud throw instead of silently
+// resolving to an inherited Object.prototype member/function (e.g.
+// ALIASES.constructor would otherwise be the Object constructor itself, and
+// MODULES.toString would be Object.prototype.toString). Both the evaluator
+// and the final-gate skeptic live-probed this manually during CON-95's
+// review, but no automated test asserted it — this closes that gap. `{}` and
+// `Object.create(null)` behave identically for every OTHER kind, so this is
+// the only case that would catch a future "simplification" back to `{}`
+// reopening the hazard.
+test('kindFor and moduleFor treat prototype-chain kinds as unknown, never as inherited Object.prototype members', () => {
+  for (const kind of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+    const cfg = { ticketProvider: { kind } };
+
+    // kindFor: no alias applies, so the raw value comes back unresolved —
+    // never an inherited function/object from ALIASES' prototype chain.
+    assert.equal(provider.kindFor(cfg), kind,
+      'kindFor must return the raw kind "' + kind + '" unresolved, not an inherited ALIASES member');
+
+    // moduleFor: MODULES misses too, so this must hit the same loud gate
+    // every other unknown kind hits — never return an inherited
+    // Object.prototype member/function as though it were a provider module.
+    assert.throws(
+      () => provider.moduleFor(cfg),
+      new RegExp('launch pad needs ticketProvider\\.kind "linear" or "local" — not "' + kind + '"$'),
+      'moduleFor must throw the unknown-kind gate for "' + kind + '", not resolve an inherited member'
+    );
+  }
+});
+
 // CON-44: `manual` is the pre-local name for the same provider, and
 // `concertino validate` tells the user it "reads as local". lib/config.js's
 // withDefaults rewrites it, and lib/cli/watch.js's cmdWatch now calls
