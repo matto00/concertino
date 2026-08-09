@@ -1,0 +1,1 @@
+- `test/ticket-provider.test.js` — added a regression test asserting `kindFor`/`moduleFor` treat `constructor`/`toString`/`hasOwnProperty`/`__proto__` `kind` values as unknown (unresolved by `kindFor`, loud "unknown kind" throw from `moduleFor`), never resolving to an inherited `Object.prototype` member. Test-only; no production files changed.
