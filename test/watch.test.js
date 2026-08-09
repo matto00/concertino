@@ -1275,6 +1275,245 @@ test('a digit press jumps directly to a scrolled-past section and scrolls it bac
   }
 });
 
+// --- CON-110: `/` fleet-wide search, wired end to end -----------------------
+// Mirrors the digit-jump test just above: the same "scroll deep into DONE,
+// then jump straight back" scenario, but via `/` + typed text + `↵` instead
+// of a single digit — proving the search-driven jump reaches into a
+// section's full bucket (not just what is painted on screen at the moment
+// of the keypress) exactly like digit-jump already does.
+
+test("'/' + typing + enter jumps directly to a scrolled-past section's matching row, like a digit press does", async () => {
+  const { EventEmitter } = require('node:events');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-search-jump-'));
+
+  const needsYouDir = path.join(root, '.concertino', 'runs', 'HEL-1');
+  fs.mkdirSync(needsYouDir, { recursive: true });
+  fs.writeFileSync(path.join(needsYouDir, 'events.jsonl'),
+    JSON.stringify({ t: 500, kind: 'run.start' }) + '\n' +
+    JSON.stringify({ t: 600, kind: 'escalation.raised', question: 'q', options: '' }) + '\n');
+
+  const runningDir = path.join(root, '.concertino', 'runs', 'HEL-2');
+  fs.mkdirSync(runningDir, { recursive: true });
+  fs.writeFileSync(path.join(runningDir, 'events.jsonl'),
+    JSON.stringify({ t: 700, kind: 'run.start' }) + '\n');
+
+  for (let i = 0; i < 10; i++) {
+    const ticket = 'HEL-' + (300 + i);
+    const runDir = path.join(root, '.concertino', 'runs', ticket);
+    fs.mkdirSync(runDir, { recursive: true });
+    const startT = 1000 - i * 10;
+    const endT = 1005 - i * 10;
+    fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+      JSON.stringify({ t: startT, kind: 'run.start' }) + '\n' +
+      JSON.stringify({ t: endT, kind: 'run.end', status: 'delivered' }) + '\n');
+  }
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return [{ ticket: 'HEL-2', alive: true, activity: null }]; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  // isTTY true so the 'data' handler does NOT strip a trailing '\r' (the
+  // Enter keypress that submits the search query) — see withWatchHarness's
+  // own identical comment.
+  fakeStdin.isTTY = true;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root, config: {} });
+
+    // Scroll deep into DONE first — HEL-2 (RUNNING) scrolls entirely out of
+    // view, exactly as the sibling digit-jump test does.
+    for (let i = 0; i < 8; i++) fakeStdin.emit('data', 'j');
+    const scrolledFrame = screenOf(written);
+    assert.doesNotMatch(scrolledFrame, /HEL-2\b/, 'HEL-2 should have scrolled out of view by this point');
+
+    // '/' opens the search box.
+    fakeStdin.emit('data', '/');
+    assert.match(screenOf(written), /search/);
+
+    // Type "HEL-2" — a query that matches only HEL-2's own ticket id (not
+    // HEL-300..HEL-309, DONE's own delivered tickets).
+    for (const ch of 'HEL-2') fakeStdin.emit('data', ch);
+
+    // ↵ jumps to the first (only) match, scrolling it back into view.
+    fakeStdin.emit('data', '\r');
+
+    const jumpedFrame = screenOf(written);
+    assert.doesNotMatch(jumpedFrame, /search ›/, 'the search prompt must have closed on a successful jump');
+    const marked = jumpedFrame.split('\n').filter((l) => l.includes('▸'));
+    assert.equal(marked.length, 1, `expected exactly one marker after the search-jump, got ${marked.length}`);
+    assert.ok(marked[0].includes('HEL-2'),
+      `the marker should be on HEL-2 (RUNNING) after the search-jump; marked line was: ${marked[0] || '(none)'}`);
+  } finally {
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('esc cancels the search prompt with no state change — selected/scrollOffset/focus are exactly as before `/` was pressed', async () => {
+  const { EventEmitter } = require('node:events');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-search-cancel-'));
+  for (const ticket of ['HEL-1', 'HEL-2', 'HEL-3']) {
+    const runDir = path.join(root, '.concertino', 'runs', ticket);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'events.jsonl'), JSON.stringify({ t: 1000, kind: 'run.start' }) + '\n');
+  }
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const fakeSessionObj = {
+    name: 'fake', ensure() {}, listWindows() { return []; }, capture() { return ''; },
+    captureFull() { return ''; }, spawn() {}, kill() {}, attach() { return { status: 0 }; },
+  };
+  const fakeStdin = new EventEmitter();
+  // isTTY true so the 'data' handler does NOT strip a trailing '\r' (the
+  // Enter keypress that submits/cancels the search query) — see
+  // withWatchHarness's own identical comment.
+  fakeStdin.isTTY = true;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root, config: {} });
+
+    fakeStdin.emit('data', 'j'); // move selection to index 1 first
+    const beforeFrame = screenOf(written);
+    const beforeMarked = beforeFrame.split('\n').filter((l) => l.includes('▸'));
+
+    fakeStdin.emit('data', '/');
+    for (const ch of 'zzz-no-match') fakeStdin.emit('data', ch);
+    fakeStdin.emit('data', '\x1b'); // esc cancels
+
+    const afterFrame = screenOf(written);
+    assert.doesNotMatch(afterFrame, /search ›/, 'the search prompt must have closed');
+    const afterMarked = afterFrame.split('\n').filter((l) => l.includes('▸'));
+    assert.deepEqual(afterMarked, beforeMarked, 'selection must be exactly as it was before `/` was pressed');
+  } finally {
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('enter with no match leaves the search prompt open, value unchanged — a no-op, not a cancel', async () => {
+  const { EventEmitter } = require('node:events');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-search-nomatch-'));
+  const runDir = path.join(root, '.concertino', 'runs', 'HEL-1');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'), JSON.stringify({ t: 1000, kind: 'run.start' }) + '\n');
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const fakeSessionObj = {
+    name: 'fake', ensure() {}, listWindows() { return []; }, capture() { return ''; },
+    captureFull() { return ''; }, spawn() {}, kill() {}, attach() { return { status: 0 }; },
+  };
+  const fakeStdin = new EventEmitter();
+  // isTTY true so the 'data' handler does NOT strip a trailing '\r' (the
+  // Enter keypress that submits/cancels the search query) — see
+  // withWatchHarness's own identical comment.
+  fakeStdin.isTTY = true;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root, config: {} });
+
+    fakeStdin.emit('data', '/');
+    for (const ch of 'zzz') fakeStdin.emit('data', ch);
+    fakeStdin.emit('data', '\r'); // no match — a no-op
+
+    const frame = screenOf(written);
+    assert.match(frame, /search.*zzz/, 'the prompt must stay open, value unchanged');
+  } finally {
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // --- CON-39: QUEUED-local focus round trip, wired end to end ---------------
 
 test('jumping into QUEUED focus, moving the cursor, and exiting leaves the run selection completely unchanged', async () => {
