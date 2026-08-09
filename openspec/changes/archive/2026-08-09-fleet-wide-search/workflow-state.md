@@ -4,16 +4,16 @@ TICKET_ID: CON-110
 CHANGE_NAME: fleet-wide-search
 WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/feature/fleet-wide-search-jump/CON-110
 BRANCH: feature/fleet-wide-search-jump/CON-110
-PHASE: Execution
+PHASE: Delivery
 CYCLE: 1
 DEV_PORT: 5357
 BACKEND_PORT: 8264
-EXECUTOR_AGENT_ID: —
-EVALUATOR_AGENT_ID: —
-LAST_EVAL_VERDICT: —
-LAST_EVAL_REPORT: —
-SKEPTIC_CYCLE: 0
-LAST_SKEPTIC_VERDICT: CONFIRM (design gate)
+EXECUTOR_AGENT_ID: aec3084113231b551
+EVALUATOR_AGENT_ID: a31804c0d7d5158cd
+LAST_EVAL_VERDICT: PASS
+LAST_EVAL_REPORT: /home/matt/Development/concertino/.concertino/worktrees/feature/fleet-wide-search-jump/CON-110/openspec/changes/fleet-wide-search/evaluation-1.md
+SKEPTIC_CYCLE: 1
+LAST_SKEPTIC_VERDICT: CONFIRM (final gate)
 AGENT_MERGE: true
 SPEED: default
 EXECUTION_CYCLES: 3
