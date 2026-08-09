@@ -133,7 +133,8 @@ without acting.
 | `t` | Open the ticket detail view (title, description, comments) for the focused/selected row in QUICK START, QUEUED, RUNNING, or DONE. Additive to `l` on RUNNING/DONE — the two open different screens for the same row. A no-op if the row has no resolvable ticket at keypress time |
 | `j` / `k` | Move the selection — or, while QUICK START/QUEUED is locally focused, that section's own cursor instead |
 | `1`-`9` | Jump straight to the Nth section actually on screen this frame (NEEDS YOU, RUNNING, QUICK START, QUEUED, FAILED, DONE, METRICS — whichever are rendered), focusing QUICK START/QUEUED locally when the target is one of those two |
-| `a` | While QUICK START is locally focused: quick-start the highlighted eligible ticket |
+| `a` | While QUICK START is locally focused: quick-start the highlighted eligible ticket. **On a selected FAILED row** (no local focus at all — see "Addressing a FAILED run" below): launch `/concertino-address-failure` against it |
+| `d` | **On a selected FAILED row:** mark it DONE on the dashboard, past a `y` confirmation — see "Addressing a FAILED run" below. Unbound everywhere else |
 | `f` | While QUEUED is locally focused: force-start the highlighted pending ticket, past a confirmation |
 | `C` | Clear the queue — drops everything still pending, past a confirmation. Bound whenever QUEUED has anything pending, independent of focus |
 | `c` | Confirm a queue restored from a previous session (shown after a dashboard restart with tickets still pending/in flight) |
@@ -148,6 +149,43 @@ derived from each option's first letter), `t` to type a free-text reply, `↵` t
 attach instead, `esc` to go back to the fleet. A **stale** escalation — the run
 that raised it has already ended or its window died — shows no answer keys at
 all; nobody is waiting on it.
+
+### Addressing a FAILED run
+
+A FAILED row gets two extra keys beyond the generic set (`↵`/`l`/`t`/`j`/`k`)
+— bound directly on the ordinary run selection, not a new focus mode: they
+only apply while the fleet's plain run list has focus (not while QUEUED or
+QUICK START is locally focused) and the selected row is FAILED. The FAILED
+section's own footer hint (`a address`, `d done`) only appears while a
+FAILED section is actually on screen.
+
+- **`a` (address)** — opens a new tmux window in the run's existing worktree
+  (recreated first if it no longer exists) running `/concertino-address-failure
+  <TICKET>`, which audits the run's own event log (the same timeline the
+  drill-down's TIMELINE/GATES/EVIDENCE panels already render), restores
+  planning state, and resumes the ordinary Execution → Evaluation → final
+  gate → Delivery → Cleanup loop to correct and finish it — reusing the
+  existing executor/evaluator/skeptic machinery, not a separate, lighter
+  role. It updates the *existing* row (same ticket, same event log), rather
+  than creating a new one; while the redrive is in flight the row reads
+  RUNNING again rather than staying stuck on a stale FAILED. **claude-code
+  only** — on any other harness, `a` shows an inline notice instead of
+  spawning anything.
+- **`d` (done)** — a manual, dashboard-only override: "I looked into this
+  myself and it's fine." Behind a `y` confirmation (naming the ticket, on
+  screen, the same way force-start's own confirmation does), it moves the
+  run into the DONE section. This does **not** rewrite or reinterpret the
+  run's actual `run.end`/telemetry history, and does **not** write back to
+  the ticket provider — it is bookkeeping for this dashboard's own bucketing
+  only.
+
+Per-pane audit (design.md Decision 6, filed alongside this pair): NEEDS
+YOU's answer keys already are its section-specific action set; RUNNING's
+kill/restart already live one level down, in the drill-down; DONE has no
+reopen/requeue action today — considered and explicitly deferred, since
+"reopen" would mean materially different things for an ordinarily-delivered
+row versus a `d`-overridden one. None of the three needed a new top-level key
+in this change.
 
 ## Starting runs
 

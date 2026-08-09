@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { hasTmux, createSession, attachTarget, killTarget } = require('../lib/ui/session');
+const { hasTmux, createSession, attachTarget, killTarget, writeOverrideEvent } = require('../lib/ui/session');
 
 const SESSION = 'concertino-test-' + process.pid;
 const skip = !hasTmux() ? { skip: 'tmux not installed' } : {};
@@ -232,6 +232,53 @@ test('attachTarget spawns tmux attach against the given session:window_id', skip
   // interactive attach.
   const result = attachTarget(SESSION, '@999999');
   assert.notEqual(result.status, 0, 'a nonexistent window:id should fail to attach, not silently succeed');
+});
+
+// --- CON-98: writeOverrideEvent (design.md Decision 2) ----------------------
+
+test('writeOverrideEvent appends a run.override event to events.jsonl', () => {
+  const root = tmpRoot();
+  const before = Date.now();
+  writeOverrideEvent(root, 'HEL-OVERRIDE1', 'done');
+  const after = Date.now();
+
+  const eventsPath = path.join(root, '.concertino', 'runs', 'HEL-OVERRIDE1', 'events.jsonl');
+  assert.ok(fs.existsSync(eventsPath), 'events.jsonl should exist immediately after the write');
+  const lines = fs.readFileSync(eventsPath, 'utf8').trim().split('\n');
+  assert.equal(lines.length, 1);
+  const ev = JSON.parse(lines[0]);
+  assert.equal(ev.kind, 'run.override');
+  assert.equal(ev.ticket, 'HEL-OVERRIDE1');
+  assert.equal(ev.role, 'dashboard');
+  assert.equal(ev.status, 'done');
+  assert.equal(ev.project, path.basename(root));
+  assert.ok(typeof ev.t === 'number' && ev.t >= before && ev.t <= after,
+    `t should be a timestamp taken during the write: ${ev.t} vs [${before}, ${after}]`);
+});
+
+test('writeOverrideEvent appends to an existing log without touching prior lines', () => {
+  const root = tmpRoot();
+  const runDir = path.join(root, '.concertino', 'runs', 'HEL-OVERRIDE2');
+  fs.mkdirSync(runDir, { recursive: true });
+  const priorLine = JSON.stringify({ t: 1, kind: 'run.end', ticket: 'HEL-OVERRIDE2', role: 'orchestrator', status: 'escalated' });
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'), priorLine + '\n');
+
+  writeOverrideEvent(root, 'HEL-OVERRIDE2', 'done');
+
+  const lines = fs.readFileSync(path.join(runDir, 'events.jsonl'), 'utf8').trim().split('\n');
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0], priorLine, 'the prior event must be left untouched');
+  assert.equal(JSON.parse(lines[1]).kind, 'run.override');
+});
+
+test('writeOverrideEvent never throws — an unwritable root is swallowed', () => {
+  // Same "telemetry must never fail" contract writeSpawnEvent already
+  // upholds — a root that is itself a plain FILE (not a directory) is
+  // guaranteed to fail mkdirSync with ENOTDIR everywhere, and must not
+  // propagate.
+  const fileAsRoot = path.join(tmpRoot(), 'not-a-directory');
+  fs.writeFileSync(fileAsRoot, 'x');
+  assert.doesNotThrow(() => writeOverrideEvent(fileAsRoot, 'HEL-X', 'done'));
 });
 
 test('a session created without a root writes nothing on spawn', skip, () => {

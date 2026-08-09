@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   LAUNCH_TEMPLATES, canonicalHarness, cliLabel, launchTemplate,
-  defaultLaunchCommand, resolveTicketHarness, commandForTicket,
+  defaultLaunchCommand, addressFailureCommand, resolveTicketHarness, commandForTicket,
 } = require('../lib/ui/harness');
 
 const ALL = ['claude-code', 'codex', 'opencode'];
@@ -60,6 +60,15 @@ test('an opencode-only project defaults to the opencode CLI', () => {
 test('no/empty harnesses degrades to claude-code', () => {
   assert.equal(defaultLaunchCommand({}), LAUNCH_TEMPLATES['claude-code']);
   assert.equal(defaultLaunchCommand({ harnesses: [] }), LAUNCH_TEMPLATES['claude-code']);
+});
+
+// ---------------------------------------------------------------------------
+// CON-98: addressFailureCommand — the `a` (address-failure) command, always
+// the claude-code template (design.md Decision 3, Non-Goals) — no
+// codex/opencode equivalent, no config/harnesses parameter at all.
+
+test('addressFailureCommand is always the claude-code /concertino-address-failure template', () => {
+  assert.equal(addressFailureCommand(), 'claude "/concertino-address-failure {{TICKET}}"');
 });
 
 // ---------------------------------------------------------------------------
