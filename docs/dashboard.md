@@ -187,6 +187,59 @@ reopen/requeue action today — considered and explicitly deferred, since
 row versus a `d`-overridden one. None of the three needed a new top-level key
 in this change.
 
+## Mouse support (fleet run rows only)
+
+CON-112: the dashboard enables SGR mouse-reporting mode (`\x1b[?1000h` +
+`\x1b[?1006h`) whenever it enters raw-mode input, on a terminal that supports
+it, and cleanly disables it (`\x1b[?1000l` + `\x1b[?1006l`) on every exit
+path — quit (`q`/Ctrl-C), an uncaught crash, and both directions of
+suspending the terminal for a tmux attach — mirroring the same
+enable-once/matching-disable-on-every-exit discipline the alternate-screen
+buffer already follows. No terminal mouse-reporting state is left enabled
+after the dashboard has released the terminal, including after a crash: a
+top-level exception handler restores the full terminal (raw mode, alternate
+screen, mouse reporting, cursor) before the error is surfaced and the process
+exits.
+
+**Scope for this first pass, deliberately narrow:**
+
+- Only the **fleet view's own run-row list** (NEEDS YOU/FAILED/RUNNING/DONE)
+  supports clicking — no other screen (drill-down, launch pad, settings,
+  sessions, escalation, ticket views, ...), and, on the fleet screen itself,
+  not the QUEUED or QUICK START sections.
+- Grid mode (the wide-terminal two-column layout) is also out of scope this
+  pass — a click while grid mode is on screen is a no-op, same as a click
+  outside the row list in single-column mode.
+- A left-click on a rendered run row **selects that row only** — exactly the
+  same effect the digit-jump keys already have (`lib/ui/controllers/fleet.js`'s
+  `jump` action) — it never opens the drill-down or attaches. Selecting and
+  opening remain two separate steps, on the keyboard and the mouse alike.
+  A click that does not land on a rendered run row (the header, the banner,
+  a boxed section's own border/title, QUEUED/QUICK START, METRICS, or blank
+  space) is silently ignored — no error, no action dispatched.
+- No other mouse event is recognized this pass: right-click, scroll-wheel,
+  drag, and a button-release are all no-ops (a release falls through to the
+  ordinary keypress path, where it matches no binding and is itself a
+  no-op).
+- **Text-entry fields have no mouse support at all** — no click-to-focus and
+  no click-to-position-cursor, anywhere (the `n`/launch-pad prompts, the
+  escalation reply box, settings' own text fields, ...). If a later pass adds
+  this, the decision already made for that future work is that a click would
+  only focus the field, never reposition the text cursor mid-string.
+
+**Known limitations:**
+
+- A terminal or multiplexer that does not support SGR mouse mode (`?1006`)
+  sends legacy X10 coordinates instead, which this dashboard's click parser
+  does not match — clicks are silently ignored there; nothing crashes and no
+  garbled input reaches the keypress handler.
+- **tmux mouse-mode interaction is unverified.** This dashboard enables its
+  own SGR mouse reporting unconditionally, including while attached inside a
+  `tmux attach` pass-through session. Whether tmux's own mouse mode ever
+  swallows or double-delivers those sequences in that configuration has not
+  been verified across this project's target terminals — treat mouse support
+  as unverified under `tmux attach` until a follow-up ticket covers it.
+
 ## Starting runs
 
 A run only appears here if it lives in the dashboard's tmux session. Launching
