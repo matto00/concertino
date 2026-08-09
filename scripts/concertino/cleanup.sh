@@ -186,11 +186,23 @@ if [ "$FF_STATUS" = "dirty" ] || [ "$FF_STATUS" = "diverged" ] || [ "$FF_STATUS"
         fetch-failed) UNKNOWN_REASON="${FF_REASON:-fetch failed}" ;;
         no-local-base) UNKNOWN_REASON="${FF_REASON:-no local ${BASE_BRANCH} branch}" ;;
       esac
-      echo "note: could not determine whether local ${BASE_BRANCH} is behind ${BASE_REMOTE}/${BASE_BRANCH} after retry — ${UNKNOWN_REASON}" >&2
+      UNKNOWN_NOTE="could not determine whether local ${BASE_BRANCH} is behind ${BASE_REMOTE}/${BASE_BRANCH} after retry — ${UNKNOWN_REASON}"
+      echo "note: ${UNKNOWN_NOTE}" >&2
+      # CON-99: a retry that still can't even complete the comparison must
+      # not be silently indistinguishable from a clean run — emit the same
+      # gate.warning telemetry `assert-phase.sh delivery`'s stale-base
+      # warning already established (CON-80), so the dashboard's event
+      # log/timeline can surface it without a human watching a terminal.
+      CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.warning \
+        ticket="$T" gate=phase:cleanup resolved=false "reason=${UNKNOWN_NOTE}" || true
     elif [ "$FF_STATUS" != "updated" ] && [ "$FF_STATUS" != "current" ]; then
-      NOTE="note: local ${BASE_BRANCH} remains behind ${BASE_REMOTE}/${BASE_BRANCH} after retry"
+      NOTE="local ${BASE_BRANCH} remains behind ${BASE_REMOTE}/${BASE_BRANCH} after retry"
       [ -n "${FF_REASON:-}" ] && NOTE="${NOTE} (${FF_REASON})"
-      echo "${NOTE} — resolve manually" >&2
+      echo "note: ${NOTE} — resolve manually" >&2
+      # CON-99: same as above — a retry that completed its comparison and
+      # still didn't resolve must be dashboard-visible, not stderr-only.
+      CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.warning \
+        ticket="$T" gate=phase:cleanup resolved=false "reason=${NOTE}" || true
     fi
   fi
 fi
