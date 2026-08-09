@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const {
   renderFleet, renderFleetRowMap, handleKey, CONFIRM_RESTORED_QUEUE_KEY, visibleWindow, computeWindow,
   sectionJumpTargets, buildSections, QUICK_START_COUNT,
-  metricsFor, metricsColumnLines,
+  metricsFor, metricsColumnLines, searchKey,
 } = require('../lib/ui/screens/fleet');
 const { renderStackedSection } = require('../lib/ui/screens/fleet');
 const { reduce, PHASE_ORDER } = require('../lib/ui/reducer');
@@ -3405,4 +3405,98 @@ test('CON-112: grid mode (renderFleetGrid) contributes an empty row map — clic
   // scope decision — grid mode is out of scope for click support this pass).
   assert.match(renderFleet(runs, opts), /METRICS/);
   assert.deepEqual(renderFleetRowMap(runs, opts), {});
+});
+
+// --- CON-110: `/` fleet-wide search --------------------------------------
+// specs/fleet-search/spec.md's four requirements.
+
+test("'/' opens the search prompt, unconditionally, regardless of focus", () => {
+  assert.deepEqual(handleKey('/', state({})), { type: 'open-search' });
+  assert.deepEqual(handleKey('/', state({ focus: 'queue', queueState: { pending: ['HEL-1'], maxConcurrent: 1 } })),
+    { type: 'open-search' });
+  assert.deepEqual(handleKey('/', state({ focus: 'quickstart' })), { type: 'open-search' });
+});
+
+test("'/' does nothing while the n prompt is open — it types the character '/' into the prompt instead", () => {
+  assert.deepEqual(handleKey('/', promptState({ value: '', error: null })), { type: 'prompt-type', char: '/' });
+});
+
+test("'/' does not open search while a confirmation gate is already open — the gate's own key handling claims it first", () => {
+  assert.deepEqual(handleKey('/', state({ quitConfirm: true })), { type: 'cancel-quit' });
+  assert.deepEqual(handleKey('/', state({ markDoneConfirm: { ticket: 'HEL-9' } })), { type: 'cancel-mark-done' });
+});
+
+function searchState(search) {
+  return state({ search });
+}
+
+test('while search is open, an open search box intercepts every other key — a digit types, not section-jumps', () => {
+  assert.deepEqual(handleKey('4', searchState({ value: '' })), { type: 'search-type', char: '4' });
+  assert.deepEqual(handleKey('j', searchState({ value: '' })), { type: 'search-type', char: 'j' });
+  assert.deepEqual(handleKey('n', searchState({ value: '' })), { type: 'search-type', char: 'n' });
+  assert.deepEqual(handleKey('q', searchState({ value: '' })), { type: 'search-type', char: 'q' });
+});
+
+// --- searchKey: pure (key, search) -> action, mirroring promptKey's own
+// tests just above -----------------------------------------------------
+
+test('searchKey: typing appends via search-type', () => {
+  assert.deepEqual(searchKey('x', { value: 'foo' }), { type: 'search-type', char: 'x' });
+});
+
+test('searchKey: backspace trims via search-backspace', () => {
+  assert.deepEqual(searchKey('\x7f', { value: 'foo' }), { type: 'search-backspace' });
+});
+
+test('searchKey: bare escape / Ctrl-C cancels', () => {
+  assert.deepEqual(searchKey('\x1b', { value: 'foo' }), { type: 'cancel-search' });
+  assert.deepEqual(searchKey('', { value: 'foo' }), { type: 'cancel-search' });
+});
+
+test('searchKey: enter submits, even on an empty value (resolution happens in the controller)', () => {
+  assert.deepEqual(searchKey('\r', { value: '' }), { type: 'submit-search' });
+  assert.deepEqual(searchKey('\n', { value: 'CON-1' }), { type: 'submit-search' });
+});
+
+test('searchKey: a multi-byte escape sequence (arrow key) is ignored, not typed literally', () => {
+  assert.equal(searchKey('\x1b[A', { value: 'x' }), null);
+});
+
+// --- Rendering: the search input line and live match highlighting --------
+
+test('an open search prompt renders the input line and its own footer hint', () => {
+  const out = plain(renderFleet([run({})], { ...OPTS, search: { value: 'CON' } }));
+  assert.match(out, /search.*CON/);
+  assert.match(out, /↵ jump/);
+  assert.match(out, /esc cancel/);
+});
+
+test('while search is open, n/N/↵ attach are not advertised — same discipline as the n prompt', () => {
+  const out = plain(renderFleet([run({})], { ...OPTS, search: { value: '' } }));
+  assert.doesNotMatch(out, /n new run/);
+  assert.doesNotMatch(out, /N launch pad/);
+  assert.doesNotMatch(out, /↵ attach/);
+});
+
+// The ACTUAL colour a match produces (does row X really carry an f.yellow
+// escape, and does a non-matching row carry none?) can only be observed with
+// isTTY forced on — see format-colour.test.js's own header comment ("the
+// ONLY test in this repo that sees an escape sequence"). The highlighting
+// coverage itself lives there; these plain-text tests only pin the content
+// (which row/token the query resolves against), not the colour.
+test('typing against a matching RUNNING row leaves every row\'s plain text (colour stripped) unaffected', () => {
+  const runs = [run({ ticket: 'CON-42', status: 'running' }), run({ ticket: 'CON-99', status: 'running' })];
+  const withQuery = renderFleet(runs, { ...OPTS, search: { value: '42' } });
+  const withoutQuery = renderFleet(runs, OPTS);
+  // Plain text (colour stripped) of each RUN ROW is identical either way — a
+  // highlight adds colour only, never changes the text itself (design.md
+  // Decision 2). The search box's own tail lines are new (search is open in
+  // one and not the other), so this compares only the two run rows, not the
+  // whole frame.
+  const row42With = plain(withQuery.split('\n').find((l) => l.includes('CON-42')));
+  const row42Without = plain(withoutQuery.split('\n').find((l) => l.includes('CON-42')));
+  const row99With = plain(withQuery.split('\n').find((l) => l.includes('CON-99')));
+  const row99Without = plain(withoutQuery.split('\n').find((l) => l.includes('CON-99')));
+  assert.equal(row42With, row42Without);
+  assert.equal(row99With, row99Without);
 });

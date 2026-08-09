@@ -100,6 +100,63 @@ test('SUPPORTS_256 determines whether colours emit 256-colour codes or 3-bit cod
   assert.equal(f.cyan('x'), '\x1b[36mx\x1b[0m', 'cyan should emit 3-bit code in basic tier');
 });
 
+// --- CON-110: `/` search highlighting — the ONE place we can actually see
+// the yellow escape a match produces (see this file's own header comment).
+
+test('a matching RUNNING row\'s ticket id is wrapped in yellow; a non-matching row carries no yellow at all', () => {
+  const out = renderFleet([
+    run({ ticket: 'CON-42', status: 'running' }),
+    run({ ticket: 'CON-99', status: 'running' }),
+  ], { cols: 78, selected: 0, search: { value: '42' } });
+  const lines = out.split('\n');
+  const line42 = lines.find((l) => l.includes('CON-42'));
+  const line99 = lines.find((l) => l.includes('CON-99'));
+  assert.match(line42, /\x1b\[33m/, 'the matched ticket id must be yellow');
+  assert.doesNotMatch(line99, /\x1b\[33m/, 'a non-matching row must carry no yellow at all');
+});
+
+test('a query matching only a title (changeName), not the ticket id, still wraps that token in yellow', () => {
+  const out = renderFleet([
+    run({ ticket: 'CON-1', status: 'done', changeName: 'share-button-feature', endStatus: 'merged' }),
+  ], { cols: 78, selected: 0, search: { value: 'share-button' } });
+  const line = out.split('\n').find((l) => l.includes('share-button-feature'));
+  assert.match(line, /\x1b\[33m/);
+});
+
+test('an empty query highlights nothing at all — no yellow anywhere on screen', () => {
+  const out = renderFleet([run({ ticket: 'CON-42', status: 'running' })],
+    { cols: 78, selected: 0, search: { value: '' } });
+  assert.doesNotMatch(out, /\x1b\[33m/);
+});
+
+test('a matching QUEUED row is highlighted (ticket id or looked-up title)', () => {
+  const queueState = { pending: ['CON-77'], inFlight: new Set(), maxConcurrent: 1 };
+  const queuedTitles = new Map([['CON-77', 'a queued title']]);
+  const out = renderFleet([run({ ticket: 'CON-1', status: 'running' })], {
+    cols: 78, selected: 0, search: { value: '77' }, queueState, queuedTitles,
+  });
+  const line = out.split('\n').find((l) => l.includes('CON-77'));
+  assert.match(line, /\x1b\[33m/);
+});
+
+test('a matching QUICK START row is highlighted (ticket id or its own title)', () => {
+  const out = renderFleet([], {
+    cols: 78, selected: 0, search: { value: 'urgent' },
+    quickStartTickets: [{ identifier: 'CON-88', title: 'an urgent ticket', priority: 1 }],
+  });
+  const line = out.split('\n').find((l) => l.includes('CON-88'));
+  assert.match(line, /\x1b\[33m/);
+});
+
+test('grid mode highlights a match identically to single-column mode', () => {
+  const { GRID_MIN_COLS } = require('../lib/ui/screens/fleet');
+  const runs = [run({ ticket: 'CON-42', status: 'running' })];
+  const gridOut = renderFleet(runs, { cols: GRID_MIN_COLS, rows: 30, selected: 0, search: { value: '42' } });
+  const singleColOut = renderFleet(runs, { cols: GRID_MIN_COLS - 1, rows: 30, selected: 0, search: { value: '42' } });
+  assert.match(gridOut.split('\n').find((l) => l.includes('CON-42')), /\x1b\[33m/, 'grid mode must highlight the match');
+  assert.match(singleColOut.split('\n').find((l) => l.includes('CON-42')), /\x1b\[33m/, 'single-column mode must highlight the match');
+});
+
 test('STATUS_COLOUR.running is different from STATUS_COLOUR.done', () => {
   // This asserts the decision, not the emitted bytes (per the isTTY-blind-spot
   // convention). The two should be distinct functions mapping to different

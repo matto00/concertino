@@ -133,6 +133,7 @@ without acting.
 | `t` | Open the ticket detail view (title, description, comments) for the focused/selected row in QUICK START, QUEUED, RUNNING, or DONE. Additive to `l` on RUNNING/DONE — the two open different screens for the same row. A no-op if the row has no resolvable ticket at keypress time |
 | `j` / `k` | Move the selection — or, while QUICK START/QUEUED is locally focused, that section's own cursor instead |
 | `1`-`9` | Jump straight to the Nth section actually on screen this frame (NEEDS YOU, RUNNING, QUICK START, QUEUED, FAILED, DONE, METRICS — whichever are rendered), focusing QUICK START/QUEUED locally when the target is one of those two |
+| `/` | Open a search prompt — typing filters/highlights every row (any section) whose ticket id or title contains the typed text, live; `↵` jumps the selection to the first match, in on-screen render order; `esc` cancels with no state change |
 | `a` | While QUICK START is locally focused: quick-start the highlighted eligible ticket. **On a selected FAILED row** (no local focus at all — see "Addressing a FAILED run" below): launch `/concertino-address-failure` against it |
 | `d` | **On a selected FAILED row:** mark it DONE on the dashboard, past a `y` confirmation — see "Addressing a FAILED run" below. Unbound everywhere else |
 | `f` | While QUEUED is locally focused: force-start the highlighted pending ticket, past a confirmation |
