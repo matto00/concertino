@@ -2,6 +2,17 @@
 # Smoke test for `concertino watch`: renders a live tmux window and exits on q.
 # Guards the piped-stdin hang where `echo q` sent "q\n", never matched the quit
 # key, and left the loop polling forever.
+#
+# CON-112: this file's own `esc_count` checks never assert on
+# MOUSE_REPORT_ENTER/EXIT (`\x1b[?1000h`/`l`) even though every scenario below
+# quits or crashes — deliberately, not an oversight: every invocation here
+# pipes or redirects stdin (`printf ... |`, `echo ... |`, `< /dev/null`), so
+# `stdin.isTTY` is always false and watch.js never writes mouse-reporting
+# sequences at all (gated on the exact same `stdin.isTTY` check raw mode
+# itself already is — see watch.js's own comment at its `setRawMode(true)`
+# call site). The enable/disable pairing (startup, quit, crash, and around
+# attach) is instead verified precisely, with a real (faked) TTY stdin, by
+# test/watch.test.js's own CON-112 tests.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

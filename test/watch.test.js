@@ -7,8 +7,11 @@ const path = require('node:path');
 const {
   buildFrame, attachAndRestore, computeLiveEscalations, idleMsFromActivity,
   canonicalHarness, resolveModelsForPlan, openInBrowser, sessionsAutoRefreshDue,
-  CURSOR_HOME, ALT_SCREEN_ENTER, ALT_SCREEN_EXIT,
+  parseMouseClick,
+  CURSOR_HOME, ALT_SCREEN_ENTER, ALT_SCREEN_EXIT, CURSOR_SHOW,
+  MOUSE_REPORT_ENTER, MOUSE_REPORT_EXIT,
 } = require('../lib/ui/watch');
+const { splitKeys } = require('../lib/ui/frame');
 const { padTo, visibleLength } = require('../lib/ui/format');
 
 // CON-17: the flicker was a blank frame between an \x1b[2J full clear and the
@@ -378,6 +381,44 @@ test('the lines cached for the next tick carry no phantom trailing row', () => {
 test('the alternate-screen constants are the standard enter/exit pair', () => {
   assert.equal(ALT_SCREEN_ENTER, '\x1b[?1049h');
   assert.equal(ALT_SCREEN_EXIT, '\x1b[?1049l');
+});
+
+// --- CON-112: SGR mouse-reporting constants and click parsing --------------
+
+test('the mouse-reporting constants are the standard SGR enable/disable pair', () => {
+  assert.equal(MOUSE_REPORT_ENTER, '\x1b[?1000h\x1b[?1006h');
+  assert.equal(MOUSE_REPORT_EXIT, '\x1b[?1000l\x1b[?1006l');
+});
+
+test('CON-112 task 2.2: splitKeys already yields a full SGR mouse sequence as a single token', () => {
+  // A left-click at column 12, row 5 — the exact shape a real terminal with
+  // SGR mouse mode enabled sends on stdin. `splitKeys` already special-cases
+  // any CSI run ending in a byte in the `@`-`~` range as one token (the same
+  // path arrow keys already take) — `<`, digits, and `;` are all below `@`
+  // (0x40), so the scan does not stop early, and the sequence's own final
+  // byte (`M`) is what ends it.
+  assert.deepEqual(splitKeys('\x1b[<0;12;5M'), ['\x1b[<0;12;5M']);
+  // A paste/piped chunk carrying a click immediately followed by an ordinary
+  // key must still split into exactly two tokens, not run the click's scan
+  // into the following key.
+  assert.deepEqual(splitKeys('\x1b[<0;12;5Mj'), ['\x1b[<0;12;5M', 'j']);
+});
+
+test('CON-112 task 2.3: parseMouseClick recognizes a left-button press and returns its 1-based {row, col}', () => {
+  assert.deepEqual(parseMouseClick('\x1b[<0;12;5M'), { col: 12, row: 5 });
+});
+
+test('CON-112 task 2.3: parseMouseClick returns null for a release event (only press is handled this pass)', () => {
+  assert.equal(parseMouseClick('\x1b[<0;12;5m'), null);
+});
+
+test('CON-112 task 2.3: parseMouseClick returns null for a non-mouse CSI sequence (falls through to keypress handling)', () => {
+  assert.equal(parseMouseClick('\x1b[A'), null); // up arrow
+  assert.equal(parseMouseClick('j'), null); // an ordinary key
+  // A right-button or motion event — this pass only recognizes button code
+  // 0 (left, press).
+  assert.equal(parseMouseClick('\x1b[<2;12;5M'), null);
+  assert.equal(parseMouseClick('\x1b[<32;12;5M'), null);
 });
 
 // --- 3.2 / design.md Decision 4: attach must restore even if it throws -----
@@ -1781,6 +1822,243 @@ test('the first redraw after returning from attach repaints every row', async ()
       assert.ok(touched.has(row), `row ${row} was not repainted after the attach round-trip`);
     }
   });
+});
+
+test('CON-112: mouse reporting is entered once at startup and exited once at quit', async () => {
+  await withWatchHarness({ tickets: 1, rows: 30, cols: 100 }, async ({ written, fakeStdin }) => {
+    const all = written.join('');
+    assert.equal(all.split(MOUSE_REPORT_ENTER).length - 1, 1,
+      'MOUSE_REPORT_ENTER must be written exactly once at startup');
+    assert.doesNotMatch(all, /\x1b\[\?1000l/, 'mouse reporting must not already be disabled before quit');
+
+    written.length = 0;
+    fakeStdin.emit('data', 'q');
+    const afterQuit = written.join('');
+    assert.equal(afterQuit.split(MOUSE_REPORT_EXIT).length - 1, 1,
+      'MOUSE_REPORT_EXIT must be written exactly once on quit');
+    assert.ok(afterQuit.includes(CURSOR_SHOW), 'the cursor must be shown again on quit');
+  });
+});
+
+test('CON-112: mouse reporting is suspended before an attach and restored after, paired with the alt-screen', async () => {
+  await withWatchHarness({ tickets: 4, rows: 30, cols: 100 }, async ({ written, fakeStdin }) => {
+    written.length = 0;
+    fakeStdin.emit('data', '\r');
+    const all = written.join('');
+    assert.equal(all.split(MOUSE_REPORT_EXIT).length - 1, 1,
+      'mouse reporting must be disabled exactly once before handing the terminal to tmux');
+    assert.equal(all.split(MOUSE_REPORT_ENTER).length - 1, 1,
+      'mouse reporting must be re-enabled exactly once after regaining control');
+    // Ordering: exit must precede the alt-screen exit's own restore re-entry
+    // — i.e. exit comes before enter in the byte stream, mirroring the
+    // alt-screen pair's own suspend-then-restore order.
+    assert.ok(all.indexOf(MOUSE_REPORT_EXIT) < all.indexOf(MOUSE_REPORT_ENTER),
+      'mouse reporting must be disabled before it is re-enabled');
+  });
+});
+
+test('CON-112: mouse reporting is restored even when the attach itself THROWS', async () => {
+  const boom = () => { throw new Error('tmux exploded'); };
+  await withWatchHarness({ tickets: 4, rows: 30, cols: 100, attach: boom }, async ({ written, fakeStdin }) => {
+    written.length = 0;
+    assert.throws(() => fakeStdin.emit('data', '\r'), /tmux exploded/);
+    const all = written.join('');
+    assert.ok(all.includes(MOUSE_REPORT_EXIT), 'mouse reporting must still be disabled before the throwing attach');
+    assert.ok(all.includes(MOUSE_REPORT_ENTER),
+      'the restore callback must still re-enable mouse reporting even when attach() throws (frame.attachAndRestore\'s try/finally)');
+  });
+});
+
+// --- CON-112: click-to-select on the fleet run-row list ---------------------
+
+test('CON-112: a left-click on a rendered run row selects that run, via the same jump action digit-jump uses', async () => {
+  await withWatchHarness({ tickets: 4, rows: 30, cols: 100 }, async ({ written, fakeStdin }) => {
+    // withWatchHarness names its fixture runs HEL-200.. (200 + i) — target
+    // the second one (HEL-201), exactly the way the digit-jump test above
+    // locates its own target row. screenOf replays the differential writes
+    // into a plain per-row screen so this does not depend on which rows the
+    // diff writer happened to touch on the startup frame.
+    const frame = screenOf(written);
+    const lines = frame.split('\n');
+    const targetLine = lines.findIndex((l) => l.includes('HEL-201'));
+    assert.ok(targetLine >= 0, 'fixture sanity: HEL-201 must be on the startup frame');
+    const terminalRow = targetLine + 1; // screenOf is 0-based; terminal rows are 1-based
+
+    written.length = 0;
+    fakeStdin.emit('data', '\x1b[<0;5;' + terminalRow + 'M');
+
+    const after = screenOf(written.length ? written : [frame]);
+    const marked = after.split('\n').filter((l) => l.includes('▸'));
+    assert.equal(marked.length, 1, `expected exactly one marker after the click, got ${marked.length}`);
+    assert.ok(marked[0].includes('HEL-201'),
+      `the marker should be on HEL-201 after clicking its row; marked line was: ${marked[0] || '(none)'}`);
+  });
+});
+
+test('CON-112: a click outside any rendered run row is a no-op — selection and rendering are unchanged', async () => {
+  await withWatchHarness({ tickets: 4, rows: 30, cols: 100 }, async ({ written, fakeStdin }) => {
+    const before = screenOf(written);
+    const beforeMarked = before.split('\n').filter((l) => l.includes('▸'));
+
+    written.length = 0;
+    // Row 1 is the top bar — never part of the fleet row-index map.
+    fakeStdin.emit('data', '\x1b[<0;5;1M');
+
+    assert.equal(written.length, 0,
+      'a click outside any rendered row must dispatch no action at all — draw() must not even be called');
+    const after = screenOf(written.length ? written : [before]);
+    const afterMarked = after.split('\n').filter((l) => l.includes('▸'));
+    assert.deepEqual(afterMarked, beforeMarked, 'selection must be unchanged by a click outside the row list');
+  });
+});
+
+test('CON-112: an unrecognized mouse sequence (a release event) falls through as a harmless no-op keypress', async () => {
+  await withWatchHarness({ tickets: 4, rows: 30, cols: 100 }, async ({ written, fakeStdin }) => {
+    const before = screenOf(written);
+    const beforeMarked = before.split('\n').filter((l) => l.includes('▸'));
+
+    written.length = 0;
+    // A release event (final byte 'm') — parseMouseClick returns null for
+    // this, so it falls through to router.handleKey, which has no binding
+    // for this raw byte sequence and returns null (no-op), exactly like the
+    // spec's own "unrecognized mouse sequence" scenario.
+    fakeStdin.emit('data', '\x1b[<0;5;3m');
+
+    assert.equal(written.length, 0, 'an unrecognized sequence must not trigger any redraw');
+    const after = screenOf(written.length ? written : [before]);
+    assert.deepEqual(after.split('\n').filter((l) => l.includes('▸')), beforeMarked);
+  });
+});
+
+test('CON-112: a click is a no-op outside fleet mode (S.fleetRowMap is null)', async () => {
+  await withWatchHarness({ tickets: 4, rows: 30, cols: 100 }, async ({ written, fakeStdin }) => {
+    // Open the drill-down (Enter with no live escalation attaches, not
+    // drills — use 'l' instead, fleet.js's own "view details" binding).
+    fakeStdin.emit('data', 'l');
+    assert.match(screenOf(written), /DRILL-DOWN|GATES|EVIDENCE/i, 'fixture sanity: drill-down must be open');
+
+    written.length = 0;
+    fakeStdin.emit('data', '\x1b[<0;5;3M');
+    assert.equal(written.length, 0, 'a click while any non-fleet screen is on top must be a silent no-op');
+  });
+});
+
+// --- CON-112, design.md Decision 5: the new top-level uncaughtException
+// handler --------------------------------------------------------------
+
+test('CON-112 task 1.7: quit() removes the uncaughtException handler — no leaked listener across watch() calls', async () => {
+  const baseline = process.listenerCount('uncaughtException');
+  await withWatchHarness({ tickets: 1, rows: 30, cols: 100 }, async ({ fakeStdin }) => {
+    assert.equal(process.listenerCount('uncaughtException'), baseline + 1,
+      'watch() must register exactly one new uncaughtException listener');
+    fakeStdin.emit('data', 'q');
+    assert.equal(process.listenerCount('uncaughtException'), baseline,
+      'quit() must remove the listener it registered, restoring the pre-watch() count — this is what keeps ' +
+      'test/watch.test.js\'s own ~62 sequential watch() calls from accumulating stale handlers');
+  });
+});
+
+test('CON-112 task 1.5/1.7: an uncaught exception restores the FULL terminal state (raw mode, alt-screen, ' +
+  'mouse mode, cursor) exactly once, surfaces the error, and exits — a second exception cannot double-write', async () => {
+  const { EventEmitter } = require('node:events');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-crash-'));
+  const runDir = path.join(root, '.concertino', 'runs', 'HEL-1');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'), JSON.stringify({ t: 1000, kind: 'run.start' }) + '\n');
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const fakeSessionObj = {
+    name: 'fake', ensure() {}, listWindows() { return [{ ticket: 'HEL-1', alive: true, activity: null }]; },
+    capture() { return ''; }, captureFull() { return ''; }, spawn() {}, kill() {}, attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = true;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const realError = console.error;
+  const realExit = process.exit;
+  const written = [];
+  let errOut = '';
+  let exitCode = null;
+
+  process.stdout.write = (chunk) => { written.push(String(chunk)); return true; };
+  console.error = (s) => { errOut += String(s) + '\n'; };
+  // process.exit() never returns in production — a bare stub that just
+  // records the call and returns would let this test's OWN code after the
+  // call keep running, unlike reality (and unlike what the handler itself
+  // assumes: nothing follows its own process.exit() call). A sentinel throw
+  // reproduces "never returns" without actually killing the test process.
+  class ExitSentinel extends Error {}
+  process.exit = (code) => { exitCode = code; throw new ExitSentinel(); };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  try {
+    // The baseline BEFORE watch() registers its own listener — node:test
+    // itself keeps a global 'uncaughtException' listener of its own (to
+    // catch genuine test-breaking errors), so this must never be assumed to
+    // be 0. Calling the CAPTURED handler function directly below (rather
+    // than `process.emit('uncaughtException', ...)`, which would also
+    // invoke node:test's own listener and misreport this deliberate,
+    // handled simulation as a real test failure) is what keeps this test
+    // isolated to exactly the one handler watch() itself installed.
+    const baseline = process.listenerCount('uncaughtException');
+
+    const watchModule = require('../lib/ui/watch');
+    // Deliberately not awaited: the crash path never resolves watch()'s own
+    // promise (matching production, where process.exit() really does
+    // terminate the process before anything else runs — including the
+    // resolve() only a graceful quit() reaches). Nothing here ever settles
+    // this promise, but nothing awaits it either, so it is simply dropped.
+    watchModule.watch({ root, config: {} }).catch(() => {});
+
+    assert.equal(process.listenerCount('uncaughtException'), baseline + 1,
+      'watch() must register exactly one new uncaughtException handler');
+    const handler = process.listeners('uncaughtException').slice(-1)[0];
+
+    written.length = 0;
+    assert.throws(() => handler(new Error('CON-112 test boom')), ExitSentinel);
+
+    assert.equal(exitCode, 1, 'the process must exit non-zero after a crash');
+    assert.match(errOut, /CON-112 test boom/, 'the underlying error must be surfaced, not silently swallowed');
+
+    const restored = written.join('');
+    assert.equal(restored.split(ALT_SCREEN_EXIT).length - 1, 1, 'the alt-screen exit must be written exactly once');
+    assert.equal(restored.split(MOUSE_REPORT_EXIT).length - 1, 1, 'mouse reporting must be disabled exactly once');
+    assert.ok(restored.includes(CURSOR_SHOW), 'the cursor must be shown again');
+
+    // The handler removes itself before calling process.exit() (see its own
+    // comment) — the listener count must be back to baseline, and a second,
+    // racing exception (the same `quitting` re-entrancy guard `quit()`
+    // shares) must not double-write the restore sequence.
+    assert.equal(process.listenerCount('uncaughtException'), baseline,
+      'the handler must have removed itself before calling process.exit()');
+    written.length = 0;
+    handler(new Error('second, must be a no-op'));
+    assert.equal(written.length, 0, 'a second uncaughtException must not double-write the restore sequence');
+  } finally {
+    process.stdout.write = realWrite;
+    console.error = realError;
+    process.exit = realExit;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('the first redraw after an attach that THREW also repaints every row', async () => {
