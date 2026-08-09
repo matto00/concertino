@@ -54,15 +54,39 @@ untouched, exactly as it was before you ran.
 scripts/concertino/check-merge-readiness.sh "$WORKTREE_PATH" "$BRANCH" "$TICKET_ID"
 ```
 
-This checks, deterministically: **CI is green** (every reported check
-`SUCCESS` — a pending check is not a pass), **the PR is mergeable** against
-its current base (fails closed on anything but a clean `mergeStateStatus`,
-including the branch-protection-requires-review case and GitHub's transient
-"still computing" state), and **this run's own gates passed** (latest
-`role=evaluator` verdict `PASS`, latest `role=skeptic` verdict `CONFIRM`, read
-from the event log). It prints `PASS` and exits 0 only when all three hold;
-otherwise it prints one `FAIL <reason>` line per failed check to stderr.
+**Invoke this with an extended timeout (10 minutes) on whatever tool you use
+to run it.** The script can now block for a while on its own (see below) —
+your tool's own default timeout (often ~2 minutes) firing first would read as
+a tool failure instead of the script's own, more informative, `FAIL`.
 
+This checks, deterministically: **CI is green** (every reported check
+`SUCCESS` — a pending check is not a pass, but it is not an instant fail
+either: the script polls, bounded, before giving up — see below),
+**the PR is mergeable** against its current base (fails closed on anything
+but a clean `mergeStateStatus`, including the branch-protection-requires-
+review case; a `BEHIND` branch is auto-reconciled once — see below;
+GitHub's transient "still computing" state is polled, bounded, the same way
+CI pending is), and **this run's own gates passed** (latest `role=evaluator`
+verdict `PASS`, latest `role=skeptic` verdict `CONFIRM`, read from the event
+log). It prints `PASS` and exits 0 only when all three hold; otherwise it
+prints one `FAIL <reason>` line per failed check to stderr.
+
+- **CI still running is not itself an escalation.** The script polls a
+  pending/in-progress check for up to `CONCERTINO_CI_WAIT_TIMEOUT_SEC`
+  (default 7 minutes) before giving up — the common case ("just check again
+  in a bit") is now handled without your involvement. Only a check that is
+  still pending after that window, or one that actually failed, produces a
+  `FAIL`.
+- **A `BEHIND` branch is not itself an escalation either.** Before checking
+  CI/mergeability at all, the script merges the PR's base into `BRANCH` once
+  (fetch + `git merge` + push — never a rebase or force-push, so your
+  existing commits are never rewritten, only built on top of), then lets CI
+  and mergeability re-derive fresh state on the new HEAD. A real content
+  conflict aborts that merge cleanly (nothing pushed, nothing rewritten) and
+  falls through to an ordinary `not mergeable: BEHIND (auto-reconcile ...
+  hit conflicts — needs human resolution)` `FAIL` — that one **is** a genuine
+  escalation, since a merge conflict is a judgment call only a human should
+  make.
 - If it prints `PASS`, proceed to condition 4.
 - If it `FAIL`s with a reason beginning `could not query ... via gh`, that is
   an **environmental** failure (unauthenticated, unreachable) — verdict
@@ -181,13 +205,24 @@ Do not reproduce the report — the orchestrator reads it from file.
 
 ## Guardrails
 
-- **Never modify code** — read only. The one write you make is the report;
-  the one command with a side effect is `gh pr merge`, and only after all
-  four conditions are independently confirmed.
+- **Never modify code** — read only, yourself. The one write you make
+  directly is the report; the one command you run directly with a side
+  effect is `gh pr merge`, and only after all four conditions are
+  independently confirmed. `check-merge-readiness.sh` itself may also push a
+  merge commit that reconciles `BRANCH` with its base when the PR is
+  `BEHIND` — that is the script's own deterministic, bounded reconciliation
+  step (see above), not code review or judgment, and it never touches
+  anything but bringing the base's existing, already-approved commits onto
+  `BRANCH`.
 - **Cold every time** — derive from ground truth (the script's output, the
   diff, the event log), never from the orchestrator's narrative.
-- **One pass, no retry loop.** A failing condition is a fact for a human to
-  act on, not a reason to re-spawn yourself in a tight poll loop.
+- **One pass, no retry loop** *of yourself*. You still run the script exactly
+  once and commit to a single verdict from its result — you do not re-spawn
+  yourself to "check again in a bit." (The script's own bounded polling for
+  CI/mergeability, and its one-shot `BEHIND` reconciliation, happen inside
+  that single invocation and are not an exception to this.) A condition that
+  still fails after the script's own waiting/reconciling is a fact for a
+  human to act on.
 - **`ESCALATE` must name the specific failed condition(s)** — never a bare
   "not ready".
 - **`BLOCKER` is for environmental failures only** — a real merge condition

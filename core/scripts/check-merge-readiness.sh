@@ -13,20 +13,31 @@ set -uo pipefail
 # satisfies the ticket's acceptance criteria — is cold subjective judgment
 # and stays entirely with the auditor; this script never attempts it.
 #
+#   0. Reconcile BEHIND  — if the PR is behind its base when this script
+#      starts, merge the base into BRANCH once, push, and let conditions 1-2
+#      re-derive fresh state on the new HEAD, instead of failing outright.
+#      Current work is never discarded: a merge (not a rebase/force-push)
+#      is used, and a real conflict aborts the merge and falls through to
+#      the ordinary BEHIND failure below for a human to resolve. See
+#      "Reconciliation (condition 0)" below.
 #   1. CI green      — every check reported on BRANCH's PR is SUCCESS. A
 #      PENDING/QUEUED/IN_PROGRESS/missing conclusion is a DISTINCT failure
 #      from an actual failed check ("a pending check is not a pass" — the
-#      ticket is explicit these are never collapsed into one message). An
-#      empty rollup (no checks configured) passes.
+#      ticket is explicit these are never collapsed into one message), but
+#      it is not an immediate fail either: this script polls, bounded by
+#      CONCERTINO_CI_WAIT_TIMEOUT_SEC, before giving up. An empty rollup (no
+#      checks configured) passes immediately.
 #   2. Mergeable     — mergeStateStatus == CLEAN passes. BEHIND/DIRTY/
 #      UNSTABLE/BLOCKED fail naming the status, except BLOCKED with
 #      reviewDecision == REVIEW_REQUIRED, which fails with the specific
 #      "branch protection requires human review" reason instead of a
-#      generic one. Every OTHER value — UNKNOWN (GitHub's transient
-#      still-computing state, most likely right after this same Phase 3's
-#      own `git push` + `gh pr create`), DRAFT, or anything not enumerated
-#      here — fails CLOSED as "mergeability not yet determined: <status>",
-#      never falling through to a silent pass.
+#      generic one. UNKNOWN — GitHub's transient still-computing state,
+#      expected right after this script's own reconciliation push, or after
+#      Phase 3's `git push` + `gh pr create` — is polled, bounded by
+#      CONCERTINO_MERGE_RECHECK_TIMEOUT_SEC, before giving up. DRAFT or
+#      anything else not enumerated here fails CLOSED immediately as
+#      "mergeability not yet determined: <status>", never falling through to
+#      a silent pass.
 #   3. This run's own gates passed — the latest role=evaluator `verdict`
 #      event in this ticket's event log (read from the MAIN checkout, the
 #      same resolution emit-event.sh uses) is PASS, and the latest
@@ -36,18 +47,37 @@ set -uo pipefail
 #      final-gate CONFIRM is always the most recent by the time the auditor
 #      runs.)
 #
-# Prints "PASS" and exits 0 only when all three hold. Otherwise prints one
-# "FAIL <reason>" line per failed condition to stderr and exits non-zero —
-# the same stdout/stderr contract assert-phase.sh already uses. A failure
-# whose reason begins "could not query ... via gh" is an environmental
-# failure (gh unauthenticated, GitHub unreachable) — the auditor treats
-# that shape of failure as BLOCKER, and every other failure as a named
-# ESCALATE reason.
+# Prints "PASS" and exits 0 only when conditions 1-3 hold. Otherwise prints
+# one "FAIL <reason>" line per failed condition to stderr and exits
+# non-zero — the same stdout/stderr contract assert-phase.sh already uses. A
+# failure whose reason begins "could not query ... via gh" is an
+# environmental failure (gh unauthenticated, GitHub unreachable) — the
+# auditor treats that shape of failure as BLOCKER, and every other failure
+# as a named ESCALATE reason.
+#
+# This invocation can block for a while (bounded by the two timeouts below,
+# worst case a few minutes) — a caller invoking this via a tool with its own
+# default timeout (e.g. a 2-minute default Bash-tool timeout) must raise it
+# explicitly, or a still-genuinely-pending CI run reads as a tool timeout
+# instead of the "CI pending after Ns" FAIL this script would otherwise
+# produce on its own.
+#
+# Tunables (env, not sourced from .concertino.env — override directly when
+# needed, e.g. in tests):
+#   CONCERTINO_CI_WAIT_TIMEOUT_SEC        (default 420 = 7m)
+#   CONCERTINO_CI_POLL_INTERVAL_SEC       (default 20)
+#   CONCERTINO_MERGE_RECHECK_TIMEOUT_SEC  (default 90 = 1.5m)
+#   CONCERTINO_MERGE_RECHECK_INTERVAL_SEC (default 10)
 # ===========================================================================
 
 WORKTREE_PATH="${1:?usage: check-merge-readiness.sh <WORKTREE_PATH> <BRANCH> <TICKET_ID>}"
 BRANCH="${2:?usage: check-merge-readiness.sh <WORKTREE_PATH> <BRANCH> <TICKET_ID>}"
 TICKET_ID="${3:?usage: check-merge-readiness.sh <WORKTREE_PATH> <BRANCH> <TICKET_ID>}"
+
+CI_WAIT_TIMEOUT="${CONCERTINO_CI_WAIT_TIMEOUT_SEC:-420}"
+CI_POLL_INTERVAL="${CONCERTINO_CI_POLL_INTERVAL_SEC:-20}"
+MERGE_RECHECK_TIMEOUT="${CONCERTINO_MERGE_RECHECK_TIMEOUT_SEC:-90}"
+MERGE_RECHECK_INTERVAL="${CONCERTINO_MERGE_RECHECK_INTERVAL_SEC:-10}"
 
 FAILED=0
 fail() {
@@ -86,59 +116,125 @@ main_checkout() {
   ( cd "$(dirname "$common")" 2>/dev/null && pwd ) || return 1
 }
 
-# --- 1 & 2: query the PR once per field-set needed via `gh` -----------------
+# --- 0: reconcile a BEHIND branch once, before anything else ---------------
+# A merge (never a rebase/force-push) so current work is never rewritten or
+# lost — it only ever gains the base's new commits on top. Run before
+# conditions 1-2 so that, on success, both re-derive fresh state against the
+# new HEAD (CI restarts on a new commit; mergeability recomputes) rather
+# than judging a HEAD this script just moved past.
+PRE_RAW="$(cd "$WORKTREE_PATH" && gh pr view "$BRANCH" --json mergeStateStatus,baseRefName 2>&1)"
+if [ $? -eq 0 ]; then
+  PRE_STATUS="$(printf '%s' "$PRE_RAW" | jq -r '.mergeStateStatus // ""' 2>/dev/null)"
+  BASE_REF="$(printf '%s' "$PRE_RAW" | jq -r '.baseRefName // ""' 2>/dev/null)"
+  [ -z "$BASE_REF" ] && BASE_REF="${CONCERTINO_BASE_BRANCH:-main}"
+  if [ "$PRE_STATUS" = "BEHIND" ]; then
+    FETCH_OUT="$(cd "$WORKTREE_PATH" && git fetch origin "$BASE_REF" 2>&1)"
+    if [ $? -ne 0 ]; then
+      fail "not mergeable: BEHIND (auto-reconcile: could not fetch origin/${BASE_REF}: $(printf '%s' "$FETCH_OUT" | tr '\n' ' ' | cut -c1-200))"
+    else
+      MERGE_OUT="$(cd "$WORKTREE_PATH" && git merge --no-edit "origin/${BASE_REF}" 2>&1)"
+      if [ $? -ne 0 ]; then
+        (cd "$WORKTREE_PATH" && git merge --abort) >/dev/null 2>&1 || true
+        fail "not mergeable: BEHIND (auto-reconcile with origin/${BASE_REF} hit conflicts — needs human resolution; current work left untouched)"
+      else
+        PUSH_OUT="$(cd "$WORKTREE_PATH" && git push origin "HEAD:${BRANCH}" 2>&1)"
+        if [ $? -ne 0 ]; then
+          fail "not mergeable: BEHIND (auto-reconcile merged origin/${BASE_REF} locally but push to origin/${BRANCH} failed: $(printf '%s' "$PUSH_OUT" | tr '\n' ' ' | cut -c1-200))"
+        fi
+        # else: reconciled and pushed cleanly — fall through to 1/2 below,
+        # which re-query on the new HEAD.
+      fi
+    fi
+  fi
+fi
+
+# --- 1: CI green, polled ----------------------------------------------------
 # A `gh` call failing outright (not authenticated, GitHub unreachable, `gh`
 # missing) is worded distinctly ("could not query ... via gh") so the
 # auditor can tell an environmental BLOCKER apart from a real ESCALATE
 # reason without re-deriving it from prose.
-ROLLUP_RAW="$(cd "$WORKTREE_PATH" && gh pr view "$BRANCH" --json statusCheckRollup 2>&1)"
-ROLLUP_RC=$?
-if [ $ROLLUP_RC -ne 0 ]; then
-  fail "could not query PR status via gh: $(printf '%s' "$ROLLUP_RAW" | tr '\n' ' ' | cut -c1-200)"
-else
-  PENDING_NAMES="$(printf '%s' "$ROLLUP_RAW" | jq -r '
-    [.statusCheckRollup[]? |
-      ((.conclusion // .state // "") | ascii_upcase) as $c |
-      select($c == "" or $c == "PENDING" or $c == "QUEUED" or $c == "IN_PROGRESS" or $c == "WAITING" or $c == "EXPECTED") |
-      (.name // .context // "unnamed check")
-    ] | join(", ")' 2>/dev/null)"
-  FAILED_NAMES="$(printf '%s' "$ROLLUP_RAW" | jq -r '
-    [.statusCheckRollup[]? |
-      ((.conclusion // .state // "") | ascii_upcase) as $c |
-      select($c != "" and $c != "SUCCESS" and $c != "PENDING" and $c != "QUEUED" and $c != "IN_PROGRESS" and $c != "WAITING" and $c != "EXPECTED") |
-      (.name // .context // "unnamed check")
-    ] | join(", ")' 2>/dev/null)"
-  [ -n "$FAILED_NAMES" ] && fail "CI failed: ${FAILED_NAMES}"
-  [ -n "$PENDING_NAMES" ] && fail "CI pending: ${PENDING_NAMES}"
+if [ "$FAILED" -eq 0 ]; then
+  ci_elapsed=0
+  while :; do
+    ROLLUP_RAW="$(cd "$WORKTREE_PATH" && gh pr view "$BRANCH" --json statusCheckRollup 2>&1)"
+    ROLLUP_RC=$?
+    if [ $ROLLUP_RC -ne 0 ]; then
+      fail "could not query PR status via gh: $(printf '%s' "$ROLLUP_RAW" | tr '\n' ' ' | cut -c1-200)"
+      break
+    fi
+    PENDING_NAMES="$(printf '%s' "$ROLLUP_RAW" | jq -r '
+      [.statusCheckRollup[]? |
+        ((.conclusion // .state // "") | ascii_upcase) as $c |
+        select($c == "" or $c == "PENDING" or $c == "QUEUED" or $c == "IN_PROGRESS" or $c == "WAITING" or $c == "EXPECTED") |
+        (.name // .context // "unnamed check")
+      ] | join(", ")' 2>/dev/null)"
+    FAILED_NAMES="$(printf '%s' "$ROLLUP_RAW" | jq -r '
+      [.statusCheckRollup[]? |
+        ((.conclusion // .state // "") | ascii_upcase) as $c |
+        select($c != "" and $c != "SUCCESS" and $c != "PENDING" and $c != "QUEUED" and $c != "IN_PROGRESS" and $c != "WAITING" and $c != "EXPECTED") |
+        (.name // .context // "unnamed check")
+      ] | join(", ")' 2>/dev/null)"
+    if [ -n "$FAILED_NAMES" ]; then
+      fail "CI failed: ${FAILED_NAMES}"
+      break
+    fi
+    if [ -z "$PENDING_NAMES" ]; then
+      break # every check SUCCESS, or an empty rollup — condition 1 passes
+    fi
+    if [ "$ci_elapsed" -ge "$CI_WAIT_TIMEOUT" ]; then
+      fail "CI pending after ${CI_WAIT_TIMEOUT}s: ${PENDING_NAMES}"
+      break
+    fi
+    sleep "$CI_POLL_INTERVAL"
+    ci_elapsed=$((ci_elapsed + CI_POLL_INTERVAL))
+  done
 fi
 
-MERGE_RAW="$(cd "$WORKTREE_PATH" && gh pr view "$BRANCH" --json mergeable,mergeStateStatus,reviewDecision 2>&1)"
-MERGE_RC=$?
-if [ $MERGE_RC -ne 0 ]; then
-  fail "could not query PR mergeability via gh: $(printf '%s' "$MERGE_RAW" | tr '\n' ' ' | cut -c1-200)"
-else
-  MERGE_STATUS="$(printf '%s' "$MERGE_RAW" | jq -r '.mergeStateStatus // "UNKNOWN"' 2>/dev/null)"
-  REVIEW_DECISION="$(printf '%s' "$MERGE_RAW" | jq -r '.reviewDecision // ""' 2>/dev/null)"
-  [ -z "$MERGE_STATUS" ] && MERGE_STATUS="UNKNOWN"
-  case "$MERGE_STATUS" in
-    CLEAN) ;; # passes
-    BEHIND|DIRTY|UNSTABLE)
-      fail "not mergeable: ${MERGE_STATUS}"
-      ;;
-    BLOCKED)
-      if [ "$REVIEW_DECISION" = "REVIEW_REQUIRED" ]; then
-        fail "branch protection requires human review"
-      else
-        fail "not mergeable: BLOCKED"
-      fi
-      ;;
-    *)
-      # UNKNOWN, DRAFT, or anything not enumerated above — fail CLOSED
-      # rather than fall through to a pass (same philosophy as the CI
-      # check: an undetermined mergeability is not a pass either).
-      fail "mergeability not yet determined: ${MERGE_STATUS}"
-      ;;
-  esac
+# --- 2: mergeable, polled only on the transient UNKNOWN state --------------
+if [ "$FAILED" -eq 0 ]; then
+  merge_elapsed=0
+  while :; do
+    MERGE_RAW="$(cd "$WORKTREE_PATH" && gh pr view "$BRANCH" --json mergeable,mergeStateStatus,reviewDecision 2>&1)"
+    MERGE_RC=$?
+    if [ $MERGE_RC -ne 0 ]; then
+      fail "could not query PR mergeability via gh: $(printf '%s' "$MERGE_RAW" | tr '\n' ' ' | cut -c1-200)"
+      break
+    fi
+    MERGE_STATUS="$(printf '%s' "$MERGE_RAW" | jq -r '.mergeStateStatus // "UNKNOWN"' 2>/dev/null)"
+    REVIEW_DECISION="$(printf '%s' "$MERGE_RAW" | jq -r '.reviewDecision // ""' 2>/dev/null)"
+    [ -z "$MERGE_STATUS" ] && MERGE_STATUS="UNKNOWN"
+    case "$MERGE_STATUS" in
+      CLEAN)
+        break # passes
+        ;;
+      BEHIND|DIRTY|UNSTABLE)
+        fail "not mergeable: ${MERGE_STATUS}"
+        break
+        ;;
+      BLOCKED)
+        if [ "$REVIEW_DECISION" = "REVIEW_REQUIRED" ]; then
+          fail "branch protection requires human review"
+        else
+          fail "not mergeable: BLOCKED"
+        fi
+        break
+        ;;
+      UNKNOWN)
+        if [ "$merge_elapsed" -ge "$MERGE_RECHECK_TIMEOUT" ]; then
+          fail "mergeability not yet determined: UNKNOWN (timed out after ${MERGE_RECHECK_TIMEOUT}s)"
+          break
+        fi
+        sleep "$MERGE_RECHECK_INTERVAL"
+        merge_elapsed=$((merge_elapsed + MERGE_RECHECK_INTERVAL))
+        ;;
+      *)
+        # DRAFT, or anything not enumerated above — fail CLOSED immediately
+        # rather than fall through to a pass or retry a non-transient state.
+        fail "mergeability not yet determined: ${MERGE_STATUS}"
+        break
+        ;;
+    esac
+  done
 fi
 
 # --- 3: this run's own gates passed -----------------------------------------

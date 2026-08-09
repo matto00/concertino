@@ -41,6 +41,16 @@ file — so they stay generic and the config is the single source of truth.
   `emit-event.sh`'s byte cap and does not persist anything itself — pass its
   output as `context=` on the `emit-event.sh escalation --await` call, which
   owns truncation/persistence for an oversized value.
+- `check-merge-readiness.sh` can block for a while (bounded, a few minutes
+  worst case) rather than failing on the first look: a pending/in-progress CI
+  check and GitHub's transient post-push "still computing" mergeability state
+  are both polled up to their own timeout before producing a `FAIL`, and a
+  `BEHIND` branch is reconciled once — fetch, `git merge` (never rebase or
+  force-push, so existing commits are never rewritten), push — before
+  conditions are (re-)checked on the new HEAD. A caller invoking it through a
+  tool with its own shorter default timeout must raise that timeout
+  explicitly, or a still-genuinely-pending CI run reads as a tool timeout
+  instead of this script's own, more informative, `FAIL`.
 
 ## Scripts
 
@@ -50,7 +60,7 @@ file — so they stay generic and the config is the single source of truth.
 | `resolve-speed.sh`  | (speed, harness) -> resolved budgets + per-role models + slow-only flags | `[SPEED] [HARNESS]`                          |
 | `start-servers.sh`  | Start backend/frontend dev servers, health-wait            | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]`     |
 | `assert-phase.sh`   | Postcondition gate per phase                               | `<setup\|servers\|delivery\|cleanup> <WORKTREE_PATH> [...] [TICKET_ID]` |
-| `check-merge-readiness.sh` | Deterministic pre-merge gate for the auditor (agent-merge): CI green, PR mergeable, this run's gates passed | `<WORKTREE_PATH> <BRANCH> <TICKET_ID>` |
+| `check-merge-readiness.sh` | Deterministic pre-merge gate for the auditor (agent-merge): CI green (polling through pending), PR mergeable (auto-reconciling a BEHIND branch once), this run's gates passed | `<WORKTREE_PATH> <BRANCH> <TICKET_ID>` |
 | `cleanup.sh`        | Stop servers, remove worktree                              | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>`                 |
 | `emit-event.sh`     | Append a dashboard event; `--await` blocks for an answer   | `<kind> [--await] k=v ...`                                  |
 | `persist-evidence.sh` | Copy an artifact into the main checkout, print a durable ref | `<TICKET_ID> <SOURCE_PATH>`                               |
