@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const {
-  renderFleet, handleKey, CONFIRM_RESTORED_QUEUE_KEY, visibleWindow, computeWindow,
+  renderFleet, renderFleetRowMap, handleKey, CONFIRM_RESTORED_QUEUE_KEY, visibleWindow, computeWindow,
   sectionJumpTargets, buildSections, QUICK_START_COUNT,
   metricsFor, metricsColumnLines,
 } = require('../lib/ui/screens/fleet');
@@ -3305,4 +3305,104 @@ test('with a populated queue the full hint set (f force-start, x clear queue) st
   for (const h of ['↵ attach', 'l details', 't ticket', 'f force-start', 'n new run', 'N launch pad', 's settings', 'q quit']) {
     assert.ok(out.includes(h), `lost hint at 80 cols: ${h}`);
   }
+});
+
+// --- CON-112: the fleet row-index map (mouse click hit-testing) ------------
+// `renderFleetRowMap(runs, opts)` shares its layout computation with
+// `renderFleet` itself (design.md Decision 3) — these tests assert the
+// resulting `{ [terminalRow]: runsIndex }` map against the SAME rendered
+// text `renderFleet` produces for the identical `runs`/`opts`, so a drift
+// between the two would show up here as a map entry pointing at a terminal
+// row that does not actually say what the assertion expects.
+
+test('CON-112: the row-index map points a run\'s own rendered rows (both lines of its 2-line block) at its runs[] index', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' }), run({ ticket: 'HEL-2', status: 'done' })];
+  const opts = { cols: 78, selected: 0 };
+  const text = renderFleet(runs, opts);
+  const lines = text.split('\n');
+  const map = renderFleetRowMap(runs, opts);
+
+  const mappedRows = Object.keys(map).map(Number);
+  assert.ok(mappedRows.length >= 3, `expected at least 3 mapped rows (2 for HEL-1, 1 for HEL-2), got ${mappedRows.length}`);
+
+  for (const row of mappedRows) {
+    const runIndex = map[row];
+    const ticket = runs[runIndex].ticket;
+    // Every mapped row either names its own run's ticket directly (the
+    // first line of a 2-line RUNNING row, or a 1-line DONE row) or is the
+    // second, ticket-less status/bar line of a RUNNING row immediately
+    // following a line that does — either way it must land somewhere
+    // inside that run's own rendered block, never someone else's.
+    const line = lines[row];
+    const ownLine = line.includes(ticket);
+    const isRunningStatusLine = !ownLine && lines[row - 1] && lines[row - 1].includes(ticket);
+    assert.ok(ownLine || isRunningStatusLine,
+      `row ${row} (mapped to runs[${runIndex}] = ${ticket}) does not belong to that run's own block: "${line}"`);
+  }
+});
+
+test('CON-112: the row-index map only covers rendered content rows, never a section\'s title/border/blank lines', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' })];
+  const opts = { cols: 78, selected: 0 };
+  const text = renderFleet(runs, opts);
+  const lines = text.split('\n');
+  const map = renderFleetRowMap(runs, opts);
+
+  for (const row of Object.keys(map).map(Number)) {
+    assert.ok(lines[row].includes('│'), `mapped row ${row} is not a boxed content row: "${lines[row]}"`);
+  }
+  // The RUNNING box's own top border, title, and bottom border must never
+  // appear as map keys.
+  const borderRows = lines.map((l, i) => ({ l, i })).filter(({ l }) => l.startsWith('┌') || l.startsWith('└')).map(({ i }) => i);
+  for (const row of borderRows) assert.ok(!(row in map), `border row ${row} must not be a click target`);
+});
+
+test('CON-112: a scrolled window maps terminal rows to the correct (scrolled-into-view) runs[] indices', () => {
+  // 12 running rows at a small row budget forces a scroll — selecting the
+  // 9th (index 8) run pushes the window down, exactly the scenario
+  // design.md's implementation note calls out ("not just raw
+  // visibleWindow/scrollOffset math").
+  const runs = Array.from({ length: 12 }, (_, i) => run({ ticket: 'HEL-' + i, status: 'running' }));
+  const opts = { cols: 100, rows: 20, selected: 8, scrollOffset: 0 };
+  const text = renderFleet(runs, opts);
+  const lines = text.split('\n');
+  const map = renderFleetRowMap(runs, opts);
+
+  const mappedRows = Object.keys(map).map(Number);
+  assert.ok(mappedRows.length > 0, 'a scrolled frame must still map at least one visible row');
+  for (const row of mappedRows) {
+    const runIndex = map[row];
+    const ticket = runs[runIndex].ticket;
+    const ownLine = lines[row].includes(ticket);
+    const isStatusLine = !ownLine && lines[row - 1] && lines[row - 1].includes(ticket);
+    assert.ok(ownLine || isStatusLine,
+      `scrolled row ${row} maps to runs[${runIndex}] (${ticket}) but that ticket is not on that line: "${lines[row]}"`);
+  }
+  // HEL-8 (the selected/scrolled-to run) must actually be on screen and
+  // mapped — otherwise this test is not exercising the scrolled case at all.
+  assert.ok(text.includes('HEL-8'), 'fixture sanity: the selected run must have scrolled into view');
+  assert.ok(Object.values(map).includes(8), 'HEL-8 (runs[8]) must be a mapped row once scrolled into view');
+});
+
+test('CON-112: QUEUED/QUICK START rows and a collapsed "…and N more" summary line contribute no map entries', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' })];
+  const queueState = { pending: ['HEL-9', 'HEL-10'], inFlight: new Set(), maxConcurrent: 1 };
+  const opts = { cols: 100, selected: 0, queueState, queuedTitles: new Map() };
+  const text = renderFleet(runs, opts);
+  const lines = text.split('\n');
+  const map = renderFleetRowMap(runs, opts);
+
+  for (const row of Object.keys(map).map(Number)) {
+    assert.doesNotMatch(lines[row], /HEL-9|HEL-10/,
+      `a QUEUED row must never be a mapped click target: "${lines[row]}"`);
+  }
+});
+
+test('CON-112: grid mode (renderFleetGrid) contributes an empty row map — clicking there is a no-op this pass', () => {
+  const runs = Array.from({ length: 3 }, (_, i) => run({ ticket: 'HEL-' + i, status: 'running' }));
+  const opts = { cols: 130, rows: 30, selected: 0 };
+  // Fixture sanity: this really is the grid-mode path (design.md's explicit
+  // scope decision — grid mode is out of scope for click support this pass).
+  assert.match(renderFleet(runs, opts), /METRICS/);
+  assert.deepEqual(renderFleetRowMap(runs, opts), {});
 });

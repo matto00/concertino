@@ -152,6 +152,18 @@ Never let telemetry block delivery: if a call fails, continue.
      worktree is created. Surface the ticket id and the unsupported/ambiguous
      value(s) to the human exactly like the `FAIL` → `BLOCKER` treatment in
      step 3 below.
+
+   **Check for a design-ticket type (CON-100).** Also immediately after the
+   fetch, alongside the check above: a label matching exactly `type:design`
+   marks the ticket as one. Absent that label, a title starting with the
+   literal prefix `[DESIGN] ` also marks it as one. Absent both, the ticket
+   is an ordinary (`feature`/`task`/`bug`) ticket. The label wins when both
+   are present. Unlike the harness-label check above, there is no
+   "unsupported value"/ambiguity case to hard-stop on — "design" is a single
+   boolean-ish signal (a ticket either is or isn't one), two agreeing signals
+   is not a conflict, and there is no open value set to validate against.
+   Record the resolved value as `TICKET_TYPE` (`design` or `feature`) for
+   step 6 below.
 2. **Derive a branch name:** `[feature|task|bug]/[3-5-word-description]/[ticket-id]`
    (`feature/` net-new behavior; `task/` tests/tooling/infra; `bug/` regressions).
 3. **Create the worktree** by calling the canonical script (do not hand-roll
@@ -184,12 +196,16 @@ Never let telemetry block delivery: if a call fails, continue.
    config default `{{var:agentMerge.enabled}}`. This resolution happens
    exactly once, here — never recomputed later in the run.
 6. Write initial `workflow-state.md` (PHASE: Planning, AGENT_MERGE: `<resolved
-   value>`, plus every field parsed in step 3: `SPEED`, `EXECUTION_CYCLES`,
-   `SKEPTIC_DESIGN_ROUNDS`, `SKEPTIC_FINAL_ROUNDS`, `DEBUG_ATTEMPTS`, `MODELS`,
-   `SECOND_FINAL_GATE_SKEPTIC`, `EVALUATOR_CLEAN_WORKTREE` — see
-   `core/workflow-state.template.md`). Every subsequent phase transition below
-   that rewrites `workflow-state.md` carries these fields forward unchanged;
-   they are resolved exactly once, here, for the whole run.
+   value>`, `TICKET_TYPE: <resolved value>` (from the design-ticket-type
+   check above), `DESIGN_QUESTIONS: null`, plus every field parsed in step 3:
+   `SPEED`, `EXECUTION_CYCLES`, `SKEPTIC_DESIGN_ROUNDS`, `SKEPTIC_FINAL_ROUNDS`,
+   `DEBUG_ATTEMPTS`, `MODELS`, `SECOND_FINAL_GATE_SKEPTIC`,
+   `EVALUATOR_CLEAN_WORKTREE` — see `core/workflow-state.template.md`). Every
+   subsequent phase transition below that rewrites `workflow-state.md` carries
+   these fields forward unchanged; they are resolved exactly once, here, for
+   the whole run — `DESIGN_QUESTIONS` itself is the one exception, updated as
+   Phase 1 Planning's design-ticket branch raises/answers/triages each
+   question (see below).
 
 ---
 
@@ -304,8 +320,14 @@ Execute directly (no subagent).
    description — this is what the dashboard's drill-down TICKET panel parses out of
    the persisted file. Acceptance criteria and any other content go in their own
    subsequent `##` sections, after the description.
+
+   **`TICKET_TYPE == design` (CON-100):** stop here — do not continue with
+   step 3 below. Instead jump to "Design-ticket Planning," immediately after
+   step 6 below, which replaces steps 3–6 for a design ticket (except where
+   its own step 4 says otherwise).
 3. **Create the planning artifacts** (proposal/design/tasks, plus spec deltas if
-   the change affects a contract), in dependency order:
+   the change affects a contract), in dependency order — **`TICKET_TYPE ==
+   feature` only**, per the branch in step 2 above:
 {{block:specArtifacts}}
 4. **Escalate if needed:** stop and present an `ESCALATION` block for new external
    dependencies, major architectural changes, breaking API changes, or scope
@@ -355,7 +377,78 @@ Execute directly (no subagent).
    not here — see the "durable `verdict.ref`, no redundant `evidence` event"
    note in `evaluator.md`/`skeptic.md`.)
 
-Update `workflow-state.md` (PHASE: Execution, CYCLE: 1).
+Update `workflow-state.md` (PHASE: Execution, CYCLE: 1) — **`TICKET_TYPE ==
+feature` only.** A `design` ticket instead follows "Design-ticket Planning"
+immediately below, which reaches this same transition itself (step 4) when a
+`fold-in` scope applies, or proceeds straight to Phase 4 instead (step 6)
+when none does.
+
+---
+
+### Design-ticket Planning (`TICKET_TYPE == design`; CON-100)
+
+Run this instead of steps 3–6 above, immediately after step 2 (`ticket.md`
+written). A design ticket's own acceptance criteria are "the right
+escalations got raised and answered," not "the described behavior got
+implemented" — so do not draft `proposal.md`/`design.md`/`tasks.md` from
+guessed answers the way step 3 would.
+
+1. **Extract the open questions.** Scan `ticket.md` line by line (heading or
+   plain paragraph, any nesting level — match on the line's text, not on
+   structure) for the first line whose text matches the regex
+   `/open questions?/i`. When found, take the markdown bullet list
+   immediately following it (skipping only blank lines; stop at the first
+   non-bullet, non-blank line) as the question set, one `sub_questions[]`
+   entry per bullet. When no line matches at all, or a match exists but no
+   bullet list immediately follows it, raise a single-question Planning
+   `ESCALATION` instead ("What should this design ticket resolve?") — a
+   design ticket with nothing extractable is mis-typed or under-specified,
+   never a silent no-op.
+2. **Raise the extracted questions as one multi-part escalation**, using the
+   `sub_questions=` form from "How to raise one" below — one `{question,
+   options}` entry per extracted bullet. State the best bounded `options` you
+   can; a genuinely open-ended question may omit a clean enum and take a
+   free-form answer instead. Persist each question and its recorded answer
+   into `DESIGN_QUESTIONS` in `workflow-state.md`.
+3. **Triage each answered question** that plausibly implies future work, via
+   the **"Triaging a suggested follow-up"** sub-procedure below — this is its
+   third invocation site, alongside Phase 3 Delivery and Phase 4 step 4:
+   `description` = the question plus its answer, `files=unknown` (no code
+   diff exists yet at Planning time — an already-supported input), and your
+   own `ac_relevant`/`effort` judgment. Record the resulting
+   `fold-in`/`standalone`/`discard` verdict back into `DESIGN_QUESTIONS`.
+   When an answer plainly implies no action (a pure definitional/policy
+   statement with no implied build work), you may record an implicit
+   `discard` directly, stating why, without a wasted triage round-trip.
+4. **`fold-in` verdicts.** If one or more questions triaged `fold-in`, apply
+   the sub-procedure's existing plan-revision requirement **once**, across
+   the union of every `fold-in` question's combined scope (not once per
+   question): extend `ticket.md`'s acceptance criteria to state that combined
+   scope explicitly, then write `proposal.md`/`design.md`/`tasks.md` (and any
+   spec deltas) for it via {{block:specArtifacts}} — this design ticket never
+   ran step 3 above — re-run `openspec validate --change <CHANGE_NAME>`
+   clean, then a fresh design-gate skeptic spawn to `CONFIRM` (same procedure
+   and `SKEPTIC_DESIGN_ROUNDS` budget as step 5 above; `REFUTE` handled
+   identically). The sub-procedure's own step 1 ("make the change directory
+   editable again," undoing an `openspec archive`) does not apply at this
+   call site — Planning runs before Phase 3 ever archives anything for this
+   change, so there is nothing to restore. Once `CONFIRM`ed, persist evidence
+   for the (now-written) planning artifacts exactly as step 6 above, then
+   proceed into Phase 2 Execution for that combined scope, unmodified —
+   update `workflow-state.md` (PHASE: Execution, CYCLE: 1) and continue
+   exactly as an ordinary ticket would from here.
+5. **`standalone` verdicts.** File a follow-up ticket per the sub-procedure's
+   existing standalone behavior; record its identifier into
+   `DESIGN_QUESTIONS`.
+6. **No question triaged `fold-in`.** Once every question in
+   `DESIGN_QUESTIONS` has a recorded, actioned verdict (every `standalone`
+   verdict has a filed ticket id), this design ticket's Planning is complete
+   with no code to execute — do not consider it done on a recorded-but-
+   unactioned verdict. Skip Phase 2 and Phase 3 entirely and proceed straight
+   to **Phase 4**'s alternate no-code entry condition (see Phase 4 below)
+   instead of the `Update workflow-state.md (PHASE: Execution, CYCLE: 1)`
+   transition step 4 above uses (update `workflow-state.md` PHASE: Cleanup
+   instead).
 
 ---
 
@@ -521,22 +614,26 @@ stated, documented limit of this feature on Codex, not a silent gap — see
 ## Triaging a suggested follow-up
 
 A single named sub-procedure (the `followup-triage` capability), invoked by
-name from both of the workflow's existing follow-up-surfacing points — Phase
-3 Delivery's non-blocking evaluator/skeptic suggestions (below) and Phase 4
-step 4's post-cleanup observation (below) — rather than reimplemented at
-either call site. Its job is to turn a bare suggestion into a stated
-recommendation ("high file overlap + small effort → recommend fold-in") the
-human approves against, and to make sure a `fold-in` answer is actually acted
-on, not just recorded — the direct fix for CON-30, where a recorded fold-in
-decision never led to the plan actually being revised.
+name from all three of the workflow's follow-up-surfacing points — Phase 3
+Delivery's non-blocking evaluator/skeptic suggestions (below), Phase 4 step
+4's post-cleanup observation (below), and Phase 1 Planning's per-question
+triage for a `design` ticket (see "Design-ticket Planning" above and the
+`design-ticket-type` capability) — rather than reimplemented at any call
+site. Its job is to turn a bare suggestion into a stated recommendation
+("high file overlap + small effort → recommend fold-in") the human approves
+against, and to make sure a `fold-in` answer is actually acted on, not just
+recorded — the direct fix for CON-30, where a recorded fold-in decision never
+led to the plan actually being revised.
 
 1. **Identify `description`/`files`.** At the Phase 3 call site: from the
    evaluator/skeptic report's non-blocking suggestion text, for any
    suggestion that names discrete additional work (skip a one-line style nit
    — present that as-is, no triage needed). At the Phase 4 call site: from
-   your own observation. `files=` is a comma-separated list of paths the
-   suggested work would touch, or the literal `unknown` when none can be
-   named yet.
+   your own observation. At the design-ticket Planning call site: from an
+   answered open question, `description` = the question plus its answer.
+   `files=` is a comma-separated list of paths the suggested work would touch,
+   or the literal `unknown` when none can be named yet — always `unknown` at
+   the design-ticket Planning call site, since no code diff exists yet.
 2. **State your own `ac_relevant`/`effort` judgment.** `ac_relevant=yes`
    means the suggestion is actually required to satisfy the current ticket's
    acceptance criteria (it was never really "follow-up" at all);
@@ -584,15 +681,18 @@ decision never led to the plan actually being revised.
      `fold-in` alone is **not** sufficient. Before proceeding past this point
      (into/back through Execution at the Phase 3 call site; before Phase 4
      cleanup at the Phase 4 call site), all of the following must hold:
-     1. **Make the change directory editable again.** Both call sites reach
-        this step *after* Phase 3 step 2 has already archived the change
-        (`openspec archive <CHANGE_NAME> --yes` has already moved
-        `ticket.md`/`proposal.md`/`design.md`/`tasks.md` out of
+     1. **Make the change directory editable again.** The Phase 3 and Phase 4
+        call sites both reach this step *after* Phase 3 step 2 has already
+        archived the change (`openspec archive <CHANGE_NAME> --yes` has
+        already moved `ticket.md`/`proposal.md`/`design.md`/`tasks.md` out of
         `openspec/changes/<CHANGE_NAME>/` into its archive location, and
         merged its `specs/` delta files into the canonical
         `openspec/specs/`). `openspec validate` cannot operate on an
         archived change directory, so move the directory back to
         `openspec/changes/<CHANGE_NAME>/` first — required, not optional.
+        **This step does not apply at the design-ticket Planning call
+        site** — Planning runs before Phase 3 has ever archived this change,
+        so there is nothing to restore; proceed directly to step 2 below.
      2. **Revise the plan for real.** At that now-restored path, extend
         `ticket.md`'s acceptance criteria to state the added scope
         explicitly (this is what the evaluator and the final-gate skeptic
@@ -621,7 +721,14 @@ decision never led to the plan actually being revised.
         → Delivery, ending with that new worktree's own
         `cleanup.sh --phase4`. Either way, **do not end your turn** (Phase 4
         step 5) until this step has completed — a `fold-in` answer reopens
-        Execution, it does not end the run.
+        Execution, it does not end the run. **At the design-ticket Planning
+        call site**, this step and step 6 below are not invoked directly —
+        see "Design-ticket Planning" above step 4: once this step 4's
+        `CONFIRM` is reached, the ticket instead proceeds into the ordinary
+        Phase 2 Execution → Evaluation → final gate → Delivery pipeline
+        unmodified, which executes the added scope and performs its own
+        (first, only) archive itself, naturally, with no collision to
+        resolve.
      6. **Re-archive — but resolve the `specs/` delta collision first.**
         Re-archiving is part of this same `fold-in` obligation, not a
         separate step to skip once the added scope has shipped — but a naive
@@ -632,7 +739,9 @@ decision never led to the plan actually being revised.
         archive pass (Phase 3 step 2, before this fold-in was even
         triaged) already merged into the canonical `openspec/specs/` — this
         is reproducible on essentially every real fold-in that reaches this
-        point, not an edge case. Before calling `openspec archive` again,
+        point, not an edge case (Phase 3/Phase 4 call sites only — see step 5
+        immediately above for why the design-ticket Planning call site never
+        reaches this step). Before calling `openspec archive` again,
         state explicitly which of the following two applies, tied to
         whether step 2's `design.md` revision introduced any new/modified
         spec requirement for the added scope:
@@ -653,8 +762,9 @@ decision never led to the plan actually being revised.
           spec change" gap CON-30 was about, just relocated to the spec
           layer instead of the plan layer.
 
-Both existing follow-up-surfacing points below invoke this procedure by name
-rather than repeating its steps.
+All three follow-up-surfacing points — Phase 3 Delivery, Phase 4 step 4, and
+design-ticket Planning above — invoke this procedure by name rather than
+repeating its steps.
 
 ---
 
@@ -727,7 +837,17 @@ Update `workflow-state.md` (PHASE: Cleanup).
 
 ## Phase 4: Post-merge cleanup
 
-After either a human "merged" confirmation or an auditor `MERGE` verdict:
+After either a human "merged" confirmation or an auditor `MERGE` verdict —
+**or, alternate no-code entry condition (CON-100):** for a `TICKET_TYPE:
+design` ticket where no question in `DESIGN_QUESTIONS` triaged `fold-in`,
+once every `standalone`/`discard` verdict has resolved (every `standalone`
+verdict has a filed follow-up ticket id — see "Design-ticket Planning"
+above and "Definition of done for a design ticket" below), in place of the
+ordinary merged-PR confirmation, since no code was ever executed or pushed
+for this ticket. A `design` ticket with at least one `fold-in` scope instead
+requires the ordinary merged-PR confirmation, unchanged, since real code
+exists for that scope. **This substitutes only the entry condition above —
+Phase 4's own internal step order below is unchanged either way:**
 
 1. Stop servers and remove the worktree via the canonical script (reads
    ports/path from `workflow-state.md` if not in memory). `cleanup.sh` is a
@@ -749,11 +869,32 @@ After either a human "merged" confirmation or an auditor `MERGE` verdict:
    now block for as long as a human takes to answer. It always still exits 0
    and prints its normal `READY cleaned worktree=...` line once that
    escalation resolves (answered, skipped, or timed out), so this step
-   completes either way; there is nothing else to handle here.
+   completes either way; there is nothing else to handle here. **For a design
+   ticket reached via the no-code entry condition above, this fast-forward
+   step is a safe, unmodified no-op**: it compares local `<base>`'s tip
+   against the fetched remote tip and returns immediately when they already
+   match, which is the expected state here since this ticket's branch never
+   pushed anything new to `<base>` — no script change is needed for this
+   branch.
 
-2. Set the ticket to **Done** and post a closing comment (what shipped + merged PR link).
+2. Set the ticket to **Done** and post a closing comment (what shipped +
+   merged PR link). **For a `TICKET_TYPE: design` ticket**, the closing
+   comment instead (or, when a `fold-in` scope also executed, in addition to
+   "what shipped + merged PR link") lists every question in
+   `DESIGN_QUESTIONS`, its answer, and the resulting action: `fold-in` → the
+   merged PR link, `standalone` → the new ticket's id, `discard` → no action.
 3. **Hygiene check** (report only — do not auto-fix):
 {{block:hygiene}}
+
+**Definition of done for a design ticket (CON-100).** Do not treat a
+`TICKET_TYPE: design` ticket as complete until: every question in
+`DESIGN_QUESTIONS` has a recorded triage verdict; every `standalone` verdict
+has an actually-filed follow-up ticket (its identifier recorded), not merely
+a recorded verdict; and every `fold-in` verdict's combined scope has
+completed ordinary delivery (merged, per this run's `AGENT_MERGE`
+resolution). A recorded verdict with no corresponding filed ticket or
+completed delivery does not satisfy this — the same principle CON-30 already
+established for `followup-triage`, extended here to the design-ticket level.
 
 **"Genuinely complete" — the precise boundary (CON-48).** Your own Phase 4
 work is genuinely complete only once **all three** of the steps above have
@@ -1107,7 +1248,10 @@ Every bound named below is `workflow-state.md`'s resolved value for this run
 ### Always reaches the human
 
 - **Planning ESCALATION:** new external dependency, major architectural change,
-  breaking API change, or scope significantly beyond the ticket.
+  breaking API change, or scope significantly beyond the ticket. **A `design`
+  ticket's own extracted open questions (CON-100)** are also raised as a
+  Planning ESCALATION — a single multi-part one — per "Design-ticket Planning"
+  above; so is the single-question fallback when nothing was extractable.
 - **Budget exhausted:** any counter below at its bound — surface the report + ask
   how to proceed.
 - **BLOCKER (environmental):** dev server won't start, creds missing, infra/tooling
@@ -1161,6 +1305,10 @@ model a role runs on move.
 - Do not read PASS evaluation reports — only FAIL/BLOCKER/final-presentation.
 - Post-merge cleanup requires either a human "merged" confirmation or an
   auditor `MERGE` verdict — do not clean up speculatively on anything less.
+  **Exception (CON-100):** a `TICKET_TYPE: design` ticket with no `fold-in`
+  scope instead requires every `standalone`/`discard` verdict to have
+  resolved — see Phase 4's alternate no-code entry condition above; a design
+  ticket with a `fold-in` scope still requires the ordinary confirmation.
 - **The final skeptic gate is unconditional at every speed** — no `SPEED`
   value or `speeds` config field skips, weakens, or replaces it with a
   non-cold spawn. `slow`'s `secondFinalGateSkeptic` may only *add* a second

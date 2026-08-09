@@ -671,3 +671,29 @@ test('the footer advertises p only alongside the per-row keys it belongs with', 
   assert.match(out, /p provider/);
   assert.match(out, /P row-provider/);
 });
+
+// --- CON-111: the launch plan's preset row + w key --------------------------
+
+test('with no presets saved, the preset row explains why and w is neither bound nor hinted', () => {
+  const out = plain(renderLaunchPlan(plan({ presets: [] }), 0, { cols: 110 }));
+  assert.match(out, /preset\s+no presets saved/);
+  assert.doesNotMatch(out, /w preset/);
+  assert.equal(handleKey('w', { plan: plan({ presets: [] }) }), null);
+});
+
+test('with presets saved but none applied yet, the preset row says so and w is bound/hinted', () => {
+  const presets = [{ id: 'p1', name: 'fast local', harness: null, speed: 'fast', provider: null, agentMerge: false }];
+  const out = plain(renderLaunchPlan(plan({ presets, presetIndex: null }), 0, { cols: 110 }));
+  assert.match(out, /preset\s+none applied/);
+  assert.match(out, /w preset/);
+  assert.deepEqual(handleKey('w', { plan: plan({ presets, presetIndex: null }) }), { type: 'apply-preset' });
+});
+
+test('once applied, the preset row names the applied preset', () => {
+  const presets = [
+    { id: 'p1', name: 'fast local', harness: null, speed: 'fast', provider: null, agentMerge: false },
+    { id: 'p2', name: 'slow sub', harness: null, speed: 'slow', provider: null, agentMerge: false },
+  ];
+  const out = plain(renderLaunchPlan(plan({ presets, presetIndex: 1 }), 0, { cols: 110 }));
+  assert.match(out, /preset\s+slow sub/);
+});
