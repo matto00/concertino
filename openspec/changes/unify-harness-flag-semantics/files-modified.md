@@ -1,0 +1,9 @@
+- `lib/cli/shared.js` — adds the shared `parseHarnessList(raw, fallback)` helper (splits on commas, trims/drops empty entries, validates against `claude-code`/`codex`/`opencode`, returns `{ harnesses, error }`) used by `sync`, `diff`, and `eject` alike.
+- `lib/cli/sync.js` — replaces its inline `args.harness.split(',')` with `parseHarnessList`, gaining validation of unrecognized harness names (new hard error, was silent no-op).
+- `lib/cli/diff.js` — same replacement/behavior change as `sync.js`.
+- `lib/cli/eject.js` — replaces the single-value `harness === 'claude-code'` equality chain with `parseHarnessList`; refactors the per-harness render logic into a `renderForHarness()` function; validates `--role` once globally before iterating the harness list (Decision 5a); loops the parsed harness list, printing raw single-harness output unchanged, or headered (`# ---- harness: <name> ----`) multi-harness sections; skips (not fatal) a harness that doesn't support the role unless every harness in the list is skipped/invalid.
+- `lib/cli/help.js` — updates `eject`'s usage line to `--harness=claude-code[,codex,opencode]` and describes the multi-harness header output.
+- `README.md` — same usage-line and behavior update for `concertino eject`.
+- `test/cli-shared.test.js` — new unit tests for `parseHarnessList` (single value, comma list, whitespace, trailing/repeated commas, single/multiple invalid entries, empty-raw fallback).
+- `test/eject.test.js` — new subprocess tests: default/single-harness byte-for-byte parity, multi-harness headered sections, codex-skip-but-overall-success, globally-invalid-role (single error, not per-harness), codex-only-unsupported-role (fatal), and `bogus`-harness rejection across `eject`/`sync`/`diff`.
+- `openspec/changes/unify-harness-flag-semantics/tasks.md` — all 23 tasks marked complete.

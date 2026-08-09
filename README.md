@@ -128,9 +128,13 @@ concertino upgrade    [--out=DIR]
 concertino gates      [--run=NAME] [--config=PATH] [--out=DIR]
                       List all configured gates, or run one by name.
 
-concertino eject      --role=<role> [--harness=claude-code|codex|opencode] [--config=PATH] [--out=DIR] [--core=PATH]
+concertino eject      --role=<role> [--harness=claude-code,codex,opencode] [--config=PATH] [--out=DIR] [--core=PATH]
                       Print the fully-rendered agent file for a role to stdout.
                       Respects local overrides in .concertino/roles/. Good for debugging.
+                      --harness accepts a comma-separated list, same as sync/diff; naming
+                      more than one prints each harness's section in turn, preceded by a
+                      "# ---- harness: <name> ----" header. The default single-harness
+                      case (claude-code) is unchanged: raw rendered file, no header.
 
 concertino migrate    [--config=PATH] [--out=DIR] [--dry-run]
                       Back-fill any config fields added in a newer version of concertino.
