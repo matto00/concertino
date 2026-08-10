@@ -327,3 +327,38 @@ test('render/routeHandleKey are the uniform (state, opts) / (key, state) seam', 
   assert.equal(render(state, { cols: 100 }), renderArchive(state, { cols: 100 }));
   assert.deepEqual(routeHandleKey('\x1b', state), { type: 'back' });
 });
+
+// --- CON-114: run-comparison marking + trigger ------------------------------
+
+test('render shows the marked-for-comparison indicator on a run in compareSelection', () => {
+  const runs = [run({ ticket: 'CON-1' }), run({ ticket: 'CON-2' })];
+  const marked = plain(renderArchive(baseState({ runs, compareSelection: ['CON-1'] }), { cols: 100 }));
+  const unmarked = plain(renderArchive(baseState({ runs, compareSelection: [] }), { cols: 100 }));
+  assert.notEqual(marked, unmarked, 'a marked run must render differently than an unmarked one');
+});
+
+test('list focus: space dispatches toggle-compare-select for the run under the cursor', () => {
+  const runs = [run({ ticket: 'CON-1' }), run({ ticket: 'CON-2' })];
+  const state = baseState({ runs, archiveFocus: 'list', archiveSelected: 1 });
+  assert.deepEqual(handleKey(' ', state), { type: 'toggle-compare-select', ticket: 'CON-2' });
+});
+
+test('list focus: space with no matching runs is a no-op', () => {
+  const state = baseState({ runs: [], archiveFocus: 'list' });
+  assert.equal(handleKey(' ', state), null);
+});
+
+test('list focus: c dispatches open-compare once exactly two runs are marked', () => {
+  const state = baseState({ archiveFocus: 'list', compareSelection: ['CON-1', 'CON-2'] });
+  assert.deepEqual(handleKey('c', state), { type: 'open-compare' });
+});
+
+test('list focus: c is a no-op with fewer than two runs marked', () => {
+  assert.equal(handleKey('c', baseState({ archiveFocus: 'list', compareSelection: [] })), null);
+  assert.equal(handleKey('c', baseState({ archiveFocus: 'list', compareSelection: ['CON-1'] })), null);
+});
+
+test('space/c outside list focus do not fire archive\'s own list-zone handling', () => {
+  // query focus: space is an ordinary typed character, not a compare toggle.
+  assert.deepEqual(handleKey(' ', baseState({ archiveFocus: 'query' })), { type: 'archive-query-type', char: ' ' });
+});

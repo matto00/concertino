@@ -14,6 +14,11 @@ function ctx(over) {
     archiveSelected: 0,
     archiveFocus: 'query',
     archiveDatePrompt: null,
+    compareSelection: [],
+    compareReturnMode: null,
+    compareLeftScroll: 0,
+    compareRightScroll: 0,
+    compareFocus: 'left',
   };
   return Object.assign({ S }, over);
 }
@@ -247,4 +252,66 @@ test('move-archive-selection on an empty filtered list is a no-op', () => {
 test('an action this controller does not own returns false', () => {
   const c = ctx();
   assert.equal(apply(c, { type: 'not-a-real-action' }), false);
+});
+
+// --- CON-114: run-comparison marking + opening the compare screen ----------
+
+test('toggle-compare-select marks a DONE run', () => {
+  const c = ctx();
+  c.S.runs = [run({ ticket: 'CON-1', status: 'done' })];
+  apply(c, { type: 'toggle-compare-select', ticket: 'CON-1' });
+  assert.deepEqual(c.S.compareSelection, ['CON-1']);
+});
+
+test('toggle-compare-select is a no-op on a non-DONE run', () => {
+  const c = ctx();
+  c.S.runs = [run({ ticket: 'CON-1', status: 'running' })];
+  apply(c, { type: 'toggle-compare-select', ticket: 'CON-1' });
+  assert.deepEqual(c.S.compareSelection, []);
+});
+
+test('toggle-compare-select unmarks an already-marked run', () => {
+  const c = ctx();
+  c.S.runs = [run({ ticket: 'CON-1', status: 'done' })];
+  c.S.compareSelection = ['CON-1'];
+  apply(c, { type: 'toggle-compare-select', ticket: 'CON-1' });
+  assert.deepEqual(c.S.compareSelection, []);
+});
+
+test('toggle-compare-select marking a third run while two are already marked is a no-op', () => {
+  const c = ctx();
+  c.S.runs = [run({ ticket: 'CON-3', status: 'done' })];
+  c.S.compareSelection = ['CON-1', 'CON-2'];
+  apply(c, { type: 'toggle-compare-select', ticket: 'CON-3' });
+  assert.deepEqual(c.S.compareSelection, ['CON-1', 'CON-2']);
+});
+
+test('open-compare sets mode to compare and records the origin as archive', () => {
+  const c = ctx();
+  c.S.mode = 'archive';
+  c.S.compareSelection = ['CON-1', 'CON-2'];
+  assert.equal(apply(c, { type: 'open-compare' }), true);
+  assert.equal(c.S.mode, 'compare');
+  assert.equal(c.S.compareReturnMode, 'archive');
+});
+
+test('open-compare resets each column\'s scroll offset and focus on entry', () => {
+  const c = ctx();
+  c.S.mode = 'archive';
+  c.S.compareSelection = ['CON-1', 'CON-2'];
+  c.S.compareLeftScroll = 9;
+  c.S.compareRightScroll = 9;
+  c.S.compareFocus = 'right';
+  apply(c, { type: 'open-compare' });
+  assert.equal(c.S.compareLeftScroll, 0);
+  assert.equal(c.S.compareRightScroll, 0);
+  assert.equal(c.S.compareFocus, 'left');
+});
+
+test('open-compare with fewer than two marked is a no-op (defensive re-check)', () => {
+  const c = ctx();
+  c.S.mode = 'archive';
+  c.S.compareSelection = ['CON-1'];
+  apply(c, { type: 'open-compare' });
+  assert.equal(c.S.mode, 'archive');
 });

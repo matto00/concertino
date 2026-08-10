@@ -1923,6 +1923,49 @@ test('space is a no-op while QUICK START is locally focused, even if the (off-sc
   assert.equal(handleKey(' ', s), null);
 });
 
+// --- CON-114, design.md Decision 1: `space` also marks a DONE row for
+// side-by-side comparison — same binding site/guard, dispatching a
+// different action than the FAILED case above ------------------------------
+
+test('space on a DONE selected row toggles it into the run-comparison selection', () => {
+  const done = run({ ticket: 'HEL-9', status: 'done' });
+  assert.deepEqual(handleKey(' ', state({ runs: [done], focus: 'runs' })),
+    { type: 'toggle-compare-select', ticket: 'HEL-9' });
+});
+
+test('space is a no-op while QUICK START is locally focused, even if the (off-screen) selected row is DONE', () => {
+  const done = run({ ticket: 'HEL-9', status: 'done' });
+  const s = state({ runs: [done], focus: 'quickstart' });
+  assert.equal(handleKey(' ', s), null);
+});
+
+test('space is still a no-op on a QUEUED/RUNNING/NEEDS-YOU row — only FAILED and DONE bind it', () => {
+  for (const status of ['running', 'needs-you', 'unknown']) {
+    const r = run({ ticket: 'HEL-9', status });
+    assert.equal(handleKey(' ', state({ runs: [r], focus: 'runs' })), null, `status=${status}`);
+  }
+});
+
+// --- CON-114, design.md Decision 4: `c` opens the compare screen once
+// exactly two are marked, positioned after CONFIRM_RESTORED_QUEUE_KEY's own
+// existing precedence -------------------------------------------------------
+
+test('c opens the compare screen once exactly two DONE runs are marked', () => {
+  const s = state({ compareSelection: ['HEL-1', 'HEL-2'] });
+  assert.deepEqual(handleKey(CONFIRM_RESTORED_QUEUE_KEY, s), { type: 'open-compare' });
+});
+
+test('c is a no-op with fewer than two marked, and falls through to the pre-existing no-op behavior', () => {
+  assert.equal(handleKey(CONFIRM_RESTORED_QUEUE_KEY, state({ compareSelection: [] })), null);
+  assert.equal(handleKey(CONFIRM_RESTORED_QUEUE_KEY, state({ compareSelection: ['HEL-1'] })), null);
+});
+
+test('c defers to a pending restored-queue confirmation, even with exactly two marked', () => {
+  const queueState = { pending: ['CON-1'], inFlight: new Set(), maxConcurrent: 1, confirmed: false };
+  const s = state({ compareSelection: ['HEL-1', 'HEL-2'], queueState });
+  assert.deepEqual(handleKey(CONFIRM_RESTORED_QUEUE_KEY, s), { type: 'confirm-restored-queue' });
+});
+
 // --- CON-109, fleet-failed-remediation spec: a non-empty FAILED
 // multi-select set makes a/d bulk regardless of the cursor's own row -------
 
@@ -2490,6 +2533,39 @@ test('no multi-select marker on any row when multiSelect is entirely absent from
   assert.doesNotMatch(line, /✓/);
 });
 
+// --- CON-114: the run-comparison marked-for-compare marker, on DONE rows ---
+
+test('a DONE run marked for comparison shows the dedicated ✓ marker', () => {
+  const out = plain(renderFleet(
+    [run({ ticket: 'HEL-9', status: 'done', endStatus: 'delivered' })],
+    { ...OPTS, compareSelection: ['HEL-9'] }));
+  const line = out.split('\n').find((l) => l.includes('HEL-9'));
+  assert.match(line, /✓/);
+});
+
+test('a DONE run not in compareSelection shows no ✓ marker', () => {
+  const out = plain(renderFleet(
+    [run({ ticket: 'HEL-9', status: 'done', endStatus: 'delivered' })],
+    { ...OPTS, compareSelection: [] }));
+  const line = out.split('\n').find((l) => l.includes('HEL-9'));
+  assert.doesNotMatch(line, /✓/);
+});
+
+test('no compare marker on any row when compareSelection is entirely absent from opts', () => {
+  const out = plain(renderFleet(
+    [run({ ticket: 'HEL-9', status: 'done', endStatus: 'delivered' })], OPTS));
+  const line = out.split('\n').find((l) => l.includes('HEL-9'));
+  assert.doesNotMatch(line, /✓/);
+});
+
+test('a FAILED run\'s ticket appearing (coincidentally) in compareSelection is never marked — only a DONE row consults compareSelection', () => {
+  const out = plain(renderFleet(
+    [run({ ticket: 'HEL-9', status: 'failed', endStatus: 'escalated' })],
+    { ...OPTS, compareSelection: ['HEL-9'] }));
+  const line = out.split('\n').find((l) => l.includes('HEL-9'));
+  assert.doesNotMatch(line, /✓/);
+});
+
 // --- CON-109, design.md Decision 4: the bulk confirmation banner ----------
 
 test('the bulk address confirmation banner names the row count', () => {
@@ -2570,8 +2646,10 @@ test('no bulkResult lines when bulkResult is unset', () => {
 });
 
 // --- CON-109, fleet-bulk-select spec: the `space select` footer hint -------
+// CON-114, skeptic gate (final, round 1): extended to also cover the DONE
+// section (run-comparison marking) — same discipline, one more OR'd gate.
 
-test('the footer advertises space select when a FAILED or QUEUED section is on screen, never when neither is', () => {
+test('the footer advertises space select when a FAILED, QUEUED, or DONE section is on screen, never when none is', () => {
   const neither = plain(renderFleet([run({ status: 'running' })], OPTS));
   assert.doesNotMatch(neither, /space select/);
 
@@ -2582,6 +2660,31 @@ test('the footer advertises space select when a FAILED or QUEUED section is on s
   const queueState = { pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1 };
   const withQueued = plain(renderFleet([run({ status: 'running' })], { ...OPTS, queueState }));
   assert.match(withQueued, /space select/);
+
+  const withDone = plain(renderFleet(
+    [run({ ticket: 'HEL-9', status: 'done', endStatus: 'delivered' })], OPTS));
+  assert.match(withDone, /space select/);
+});
+
+// --- CON-114, skeptic gate (final, round 1): the `c compare` footer hint ---
+
+test('the footer advertises c compare once exactly two runs are marked, never with fewer', () => {
+  const done = run({ ticket: 'HEL-9', status: 'done', endStatus: 'delivered' });
+
+  const zeroMarked = plain(renderFleet([done], { ...OPTS, compareSelection: [] }));
+  assert.doesNotMatch(zeroMarked, /c compare/);
+
+  const oneMarked = plain(renderFleet([done], { ...OPTS, compareSelection: ['HEL-9'] }));
+  assert.doesNotMatch(oneMarked, /c compare/);
+
+  const twoMarked = plain(renderFleet([done], { ...OPTS, compareSelection: ['HEL-9', 'HEL-8'] }));
+  assert.match(twoMarked, /c compare/);
+});
+
+test('c compare is never advertised when compareSelection is entirely absent from opts', () => {
+  const done = run({ ticket: 'HEL-9', status: 'done', endStatus: 'delivered' });
+  const out = plain(renderFleet([done], OPTS));
+  assert.doesNotMatch(out, /c compare/);
 });
 
 // --- CON-109, design.md Decision 4 (skeptic gate round 1, finding 2):
