@@ -688,12 +688,88 @@ test('metricsFor.recentEscalations collects every escalation.raised event across
   ], 1000000);
   assert.equal(m.recentEscalations.length, 3);
   assert.deepEqual(m.recentEscalations.map((e) => e.raisedAt), [300, 200, 100], 'newest first');
-  assert.deepEqual(m.recentEscalations[0], { ticket: 'HEL-2', role: 'evaluator', question: 'drop the column?', raisedAt: 300 });
+  assert.deepEqual(m.recentEscalations[0], {
+    ticket: 'HEL-2', role: 'evaluator', question: 'drop the column?', options: [], subQuestions: undefined,
+    raisedAt: 300, resolved: false, decision: null, resolvedAt: null, timedOut: false,
+  });
   assert.equal(m.recentEscalations[1].role, null, 'a missing role stays null, not a made-up default');
 });
 
 test('metricsFor.recentEscalations is empty with no escalation history', () => {
   const m = metricsFor([run({ ticket: 'HEL-1', status: 'done' })], 1000000);
+  assert.deepEqual(m.recentEscalations, []);
+});
+
+// --- selectable-escalations-list design.md Decision 1: raised/resolved pairing ---
+
+test('metricsFor.recentEscalations pairs a resolved single-question escalation with its decision', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', events: [
+      { kind: 'escalation.raised', t: 100, ticket: 'HEL-1', role: 'orchestrator', question: 'add zod?', options: 'approve,deny' },
+      { kind: 'escalation.answered', t: 200, ticket: 'HEL-1', role: 'human', answer: 'approve' },
+    ] }),
+  ], 1000000);
+  assert.equal(m.recentEscalations.length, 1);
+  const [entry] = m.recentEscalations;
+  assert.equal(entry.resolved, true);
+  assert.equal(entry.decision, 'approve');
+  assert.equal(entry.resolvedAt, 200);
+  assert.equal(entry.timedOut, false);
+  assert.deepEqual(entry.options, ['approve', 'deny']);
+});
+
+test('metricsFor.recentEscalations records a timed-out escalation with no decision', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', events: [
+      { kind: 'escalation.raised', t: 100, ticket: 'HEL-1', role: 'orchestrator', question: 'add zod?' },
+      { kind: 'escalation.timeout', t: 200, ticket: 'HEL-1', role: 'orchestrator' },
+    ] }),
+  ], 1000000);
+  const [entry] = m.recentEscalations;
+  assert.equal(entry.resolved, true);
+  assert.equal(entry.decision, null);
+  assert.equal(entry.timedOut, true);
+  assert.equal(entry.resolvedAt, 200);
+});
+
+test('metricsFor.recentEscalations leaves a still-live escalation unresolved', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', events: [
+      { kind: 'escalation.raised', t: 100, ticket: 'HEL-1', role: 'orchestrator', question: 'add zod?' },
+    ] }),
+  ], 1000000);
+  const [entry] = m.recentEscalations;
+  assert.equal(entry.resolved, false);
+  assert.equal(entry.decision, null);
+  assert.equal(entry.resolvedAt, null);
+  assert.equal(entry.timedOut, false);
+});
+
+test('metricsFor.recentEscalations joins a multi-part escalation\'s sub_answers into one decision string', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', events: [
+      {
+        kind: 'escalation.raised', t: 100, ticket: 'HEL-1', role: 'orchestrator',
+        sub_questions: JSON.stringify([
+          { question: 'Keep foo?', options: ['yes', 'no'] },
+          { question: 'Rename bar?', options: ['rename', 'keep'] },
+        ]),
+      },
+      { kind: 'escalation.answered', t: 200, ticket: 'HEL-1', role: 'human', sub_answers: JSON.stringify(['yes', 'rename']) },
+    ] }),
+  ], 1000000);
+  const [entry] = m.recentEscalations;
+  assert.equal(entry.resolved, true);
+  assert.equal(entry.decision, 'Keep foo?: yes; Rename bar?: rename');
+  assert.equal(entry.subQuestions.length, 2);
+});
+
+test('metricsFor.recentEscalations ignores an orphaned resolution with no currently-open raise to close', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', events: [
+      { kind: 'escalation.answered', t: 200, ticket: 'HEL-1', role: 'human', answer: 'approve' },
+    ] }),
+  ], 1000000);
   assert.deepEqual(m.recentEscalations, []);
 });
 
@@ -1020,6 +1096,53 @@ test('metricsColumnLines\' compact tier never renders a breakdown line, regardle
   assert.ok(!lines.some((l) => l.startsWith('by harness') || l.startsWith('by model')));
 });
 
+// --- selectable-escalations-list design.md Decisions 2-3: focused/windowed rendering ---
+
+function metricsFixtureWithManyEscalations(n) {
+  const m = metricsFixtureExpanded();
+  m.recentEscalations = Array.from({ length: n }, (_, i) => ({
+    ticket: `CON-${i}`, role: 'orchestrator', question: `q${i}`, raisedAt: n - i,
+    options: [], subQuestions: undefined, resolved: false, decision: null, resolvedAt: null, timedOut: false,
+  }));
+  return m;
+}
+
+test('metricsColumnLines unfocused rendering is unaffected by focused/selectedIndex opts', () => {
+  const m = metricsFixtureWithManyEscalations(20);
+  const withoutOpts = metricsColumnLines(m, { cols: 90, contentRows: 20 });
+  const withIgnoredFocusOpts = metricsColumnLines(m, { cols: 90, contentRows: 20, focused: false, selectedIndex: 5 });
+  assert.deepEqual(withoutOpts, withIgnoredFocusOpts);
+});
+
+test('metricsColumnLines, focused, marks the selected row with a bold ▸ marker', () => {
+  const m = metricsFixtureWithManyEscalations(20);
+  const lines = metricsColumnLines(m, { cols: 90, contentRows: 20, focused: true, selectedIndex: 0 });
+  const selectedLine = lines.find((l) => l.includes('CON-0'));
+  assert.ok(selectedLine);
+  assert.match(plain(selectedLine), /▸ /);
+});
+
+test('metricsColumnLines, focused, scrolls the window to keep a selection past the initially visible rows in view', () => {
+  const m = metricsFixtureWithManyEscalations(20);
+  const unfocusedLines = metricsColumnLines(m, { cols: 90, contentRows: 20 });
+  // Whatever the unfocused view can show, force the selection well past it.
+  const farIndex = 15;
+  assert.ok(!unfocusedLines.some((l) => l.includes(`CON-${farIndex}`)),
+    'test setup: CON-15 must not already be visible in the unfocused view');
+  const focusedLines = metricsColumnLines(m, {
+    cols: 90, contentRows: 20, focused: true, selectedIndex: farIndex,
+  });
+  assert.ok(focusedLines.some((l) => l.includes(`CON-${farIndex}`)),
+    'scrolling the window into view must reveal the selected, previously-hidden entry');
+});
+
+test('metricsColumnLines, focused, with an empty history, still renders "no escalations yet"', () => {
+  const m = metricsFixtureExpanded();
+  m.recentEscalations = [];
+  const lines = metricsColumnLines(m, { cols: 90, contentRows: 20, focused: true, selectedIndex: 0 });
+  assert.ok(lines.includes('  no escalations yet'));
+});
+
 test('the fleet view shows a METRICS section after DONE with real numbers', () => {
   const out = plain(renderFleet([
     run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 }),
@@ -1111,12 +1234,16 @@ test('the METRICS gates line uses the real gate-name vocabulary (phase:setup/ser
   assert.match(gatesLine, /frontend 100%/);
 });
 
-test('pressing the METRICS section\'s own digit is a no-op, not a broken jump', () => {
+// CON-107: METRICS is now a genuine digit-jump target — it focuses METRICS'
+// own escalation-history cursor rather than no-op'ing (superseded by
+// 'digit-jump resolves to focus-metrics when the target section is METRICS',
+// above).
+test('pressing the METRICS section\'s own digit focuses it', () => {
   const runs = [run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 100, elapsedMs: 60000 })];
-  // CON-56: QUICK START is[1] (always renders), DONE is [2], METRICS is [3]
-  // (all three always render — QUICK START/METRICS are forceRender: true,
-  // DONE has one entry).
-  assert.equal(handleKey('3', state({ runs })), null);
+  // CON-56/CON-107: QUICK START is [1] (always renders), DONE is [2],
+  // METRICS is [3] (all three always render — QUICK START/METRICS are
+  // forceRender: true, DONE has one entry).
+  assert.deepEqual(handleKey('3', state({ runs })), { type: 'focus-metrics', index: 0 });
 });
 
 test('an escalated run says so — the circuit breaker giving up is not a crash', () => {
@@ -3280,6 +3407,18 @@ test('digit-jump resolves to focus-queue (not focus-quickstart) when both QUICK 
   );
 });
 
+// CON-107: METRICS is now a genuine digit-jump target (previously
+// `case 'metrics': return null;` — "nothing to focus, a plain summary row").
+test('digit-jump resolves to focus-metrics when the target section is METRICS', () => {
+  const runs = [run({ ticket: 'HEL-1', status: 'running' })];
+  // Sections: RUNNING (1), QUICK START (2), METRICS (3) — both QUICK START
+  // and METRICS are always on screen (CON-56/CON-107).
+  assert.deepEqual(
+    handleKey('3', state({ runs })),
+    { type: 'focus-metrics', index: 0 },
+  );
+});
+
 // --- CON-40: the QUICK START-local focus cursor -------------------------------
 
 function quickStartFocusState(over) {
@@ -3329,6 +3468,48 @@ test('forceStartConfirm/quitConfirm still short-circuit before quickstart-focus 
   assert.deepEqual(handleKey('a', withForceStart), { type: 'cancel-force-start' });
 
   const withQuitConfirm = state({ quitConfirm: true, focus: 'quickstart' });
+  assert.deepEqual(handleKey('a', withQuitConfirm), { type: 'cancel-quit' });
+});
+
+// --- CON-107, design.md Decision 2: the METRICS-local escalation-history cursor --
+
+function metricsFocusState(over) {
+  return state(Object.assign({ focus: 'metrics', metricsEscalationFocus: 0 }, over));
+}
+
+test('j/k (and arrow aliases) move the METRICS-local cursor while focused, never the ordinary move action', () => {
+  assert.deepEqual(handleKey('j', metricsFocusState({})), { type: 'move-metrics-focus', delta: 1 });
+  assert.deepEqual(handleKey('k', metricsFocusState({})), { type: 'move-metrics-focus', delta: -1 });
+  assert.deepEqual(handleKey('\x1b[B', metricsFocusState({})), { type: 'move-metrics-focus', delta: 1 });
+  assert.deepEqual(handleKey('\x1b[A', metricsFocusState({})), { type: 'move-metrics-focus', delta: -1 });
+});
+
+test('↵ emits open-historical-escalation with the unresolved local cursor index', () => {
+  assert.deepEqual(handleKey('\r', metricsFocusState({ metricsEscalationFocus: 3 })),
+    { type: 'open-historical-escalation', index: 3 });
+  // Still emitted even for an index that could not possibly resolve —
+  // handleKey has no history array to check against (mirrors
+  // quickstart-add's own "handleKey has no ticket data" discipline).
+  assert.deepEqual(handleKey('\r', metricsFocusState({ metricsEscalationFocus: 99 })),
+    { type: 'open-historical-escalation', index: 99 });
+});
+
+test('bare Escape exits METRICS focus', () => {
+  assert.deepEqual(handleKey('\x1b', metricsFocusState({})), { type: 'exit-metrics-focus' });
+});
+
+test('l/n/N are suppressed (no-ops) while focus is metrics', () => {
+  assert.equal(handleKey('l', metricsFocusState({})), null);
+  assert.equal(handleKey('\x1b[C', metricsFocusState({})), null);
+  assert.equal(handleKey('n', metricsFocusState({})), null);
+  assert.equal(handleKey('N', metricsFocusState({})), null);
+});
+
+test('forceStartConfirm/quitConfirm still short-circuit before metrics-focus handling', () => {
+  const withForceStart = state({ forceStartConfirm: { ticket: 'CON-1' }, focus: 'metrics' });
+  assert.deepEqual(handleKey('a', withForceStart), { type: 'cancel-force-start' });
+
+  const withQuitConfirm = state({ quitConfirm: true, focus: 'metrics' });
   assert.deepEqual(handleKey('a', withQuitConfirm), { type: 'cancel-quit' });
 });
 

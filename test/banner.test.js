@@ -105,6 +105,31 @@ test('never suppressed when nothing is live (moot, but must not throw)', () => {
   assert.equal(suppressedOnOwnScreen('escalation', 'HEL-338', []), false);
 });
 
+// --- CON-107, design.md Decision 4: suppression on a HISTORICAL detail view --
+
+test('suppressed on a historical detail view, even with a DIFFERENT run\'s live escalation', () => {
+  // escalationTicket is null for a historical view (Decision 5 never sets
+  // it) — without the historicalItem branch, this would incorrectly render
+  // some OTHER run's live-escalation banner on top of the historical view.
+  assert.equal(
+    suppressedOnOwnScreen('escalation', null, [liveRun({ ticket: 'HEL-999' })], { ticket: 'HEL-338', resolved: true }),
+    true,
+  );
+});
+
+test('suppressed on a historical detail view even with no live escalations at all', () => {
+  assert.equal(suppressedOnOwnScreen('escalation', null, [], { ticket: 'HEL-338', resolved: true }), true);
+});
+
+test('not suppressed on a historical detail view outside escalation mode', () => {
+  assert.equal(suppressedOnOwnScreen('fleet', null, [liveRun({})], { ticket: 'HEL-338', resolved: true }), false);
+});
+
+test('a live escalation screen (historicalItem null/absent) is unaffected by the new 4th argument', () => {
+  assert.equal(suppressedOnOwnScreen('escalation', 'HEL-338', [liveRun({})], null), true);
+  assert.equal(suppressedOnOwnScreen('escalation', 'HEL-999', [liveRun({})], null), false);
+});
+
 // --- keys return actions, never mutate ------------------------------------
 
 test('no reply box open: every key is a no-op (routing "g" happens in watch.js)', () => {

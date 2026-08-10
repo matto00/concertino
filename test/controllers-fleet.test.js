@@ -31,6 +31,10 @@ function ctx(over) {
     // multiSelect's own comment just above.
     compareSelection: [], compareReturnMode: null,
     compareLeftScroll: 0, compareRightScroll: 0, compareFocus: 'left',
+    // CON-107: every fleet controller test constructs S through this one
+    // helper, so the METRICS escalation-history focus fields are always
+    // present — mirrors multiSelect's/compareSelection's own comments above.
+    metricsEscalationFocus: 0, escalationHistoryItem: null, escalationTicket: null,
   };
   return Object.assign({
     S,
@@ -50,6 +54,12 @@ function ctx(over) {
       queue,
       queueCache: { write: () => {} },
     },
+    // CON-107: the fresh-every-call escalation history 'move-metrics-focus'/
+    // 'open-historical-escalation' both re-derive. Defaults to empty —
+    // overridden per-test (via `over`) with a fixture list; tests that need
+    // the real pairing walk exercise metricsFor directly instead, in
+    // test/fleet.test.js.
+    metricsEscalationHistory: () => [],
   }, over);
 }
 
@@ -657,6 +667,81 @@ test('focus-quickstart from \'queue\' focus clears BOTH sets: multiSelect.failed
   apply(c, { type: 'focus-quickstart', index: 0 });
   assert.deepEqual([...c.S.multiSelect.failed], []);
   assert.deepEqual([...c.S.multiSelect.queued], []);
+});
+
+// --- CON-107: METRICS' recent-escalations history focus/detail view --------
+
+function historyEntry(over) {
+  return Object.assign({
+    ticket: 'HEL-9', role: 'evaluator', question: 'drop the column?',
+    options: ['approve', 'deny'], subQuestions: undefined,
+    raisedAt: 1000, resolved: false, decision: null, resolvedAt: null, timedOut: false,
+  }, over);
+}
+
+test('focus-metrics sets S.focus/S.metricsEscalationFocus and clears S.multiSelect.failed', () => {
+  const c = ctx({});
+  c.S.multiSelect.failed = new Set(['HEL-1']);
+  c.S.runs = [];
+  assert.equal(apply(c, { type: 'focus-metrics', index: 0 }), true);
+  assert.equal(c.S.focus, 'metrics');
+  assert.equal(c.S.metricsEscalationFocus, 0);
+  assert.deepEqual([...c.S.multiSelect.failed], []);
+});
+
+test('move-metrics-focus moves the cursor, clamped to the freshly re-derived history length', () => {
+  const c = ctx({ metricsEscalationHistory: () => [historyEntry({}), historyEntry({ ticket: 'HEL-10' })] });
+  c.S.focus = 'metrics';
+  c.S.metricsEscalationFocus = 0;
+  assert.equal(apply(c, { type: 'move-metrics-focus', delta: 1 }), true);
+  assert.equal(c.S.metricsEscalationFocus, 1);
+  // Clamped at the top of a 2-entry list — delta past the end stays put.
+  assert.equal(apply(c, { type: 'move-metrics-focus', delta: 1 }), true);
+  assert.equal(c.S.metricsEscalationFocus, 1);
+  assert.equal(apply(c, { type: 'move-metrics-focus', delta: -1 }), true);
+  assert.equal(c.S.metricsEscalationFocus, 0);
+});
+
+test('move-metrics-focus with an empty history is a no-op (draw()\'s own re-clamp keeps the cursor at 0)', () => {
+  const c = ctx({ metricsEscalationHistory: () => [] });
+  c.S.focus = 'metrics';
+  c.S.metricsEscalationFocus = 0;
+  assert.equal(apply(c, { type: 'move-metrics-focus', delta: 1 }), true);
+  assert.equal(c.S.metricsEscalationFocus, 0);
+});
+
+test('exit-metrics-focus returns focus to \'runs\' without hiding the panel', () => {
+  const c = ctx({});
+  c.S.focus = 'metrics';
+  assert.equal(apply(c, { type: 'exit-metrics-focus' }), true);
+  assert.equal(c.S.focus, 'runs');
+});
+
+test('open-historical-escalation on a still-live entry dispatches through the exact same open-escalation handling', () => {
+  const c = ctx({ metricsEscalationHistory: () => [historyEntry({ resolved: false })] });
+  c.S.runs = [run({ ticket: 'HEL-9', status: 'needs-you', escalation: { question: 'q', options: [] } })];
+  assert.equal(apply(c, { type: 'open-historical-escalation', index: 0 }), true);
+  assert.equal(c.S.mode, 'escalation');
+  assert.equal(c.S.escalationTicket, 'HEL-9');
+  // Never the historical branch for a still-live entry.
+  assert.equal(c.S.escalationHistoryItem, null);
+});
+
+test('open-historical-escalation on a resolved entry opens the read-only historical view, never reusing escalationTicket', () => {
+  const entry = historyEntry({ resolved: true, decision: 'approve', resolvedAt: 2000 });
+  const c = ctx({ metricsEscalationHistory: () => [entry] });
+  assert.equal(apply(c, { type: 'open-historical-escalation', index: 0 }), true);
+  assert.equal(c.S.mode, 'escalation');
+  assert.equal(c.S.escalationHistoryItem, entry);
+  assert.equal(c.S.escalationTicket, null, 'a historical view must never reuse escalationTicket');
+});
+
+test('open-historical-escalation with a stale/out-of-range index is a no-op', () => {
+  const c = ctx({ metricsEscalationHistory: () => [historyEntry({})] });
+  const before = Object.assign({}, c.S);
+  assert.equal(apply(c, { type: 'open-historical-escalation', index: 99 }), true);
+  assert.equal(c.S.mode, before.mode);
+  assert.equal(c.S.escalationHistoryItem, null);
 });
 
 // --- CON-114: run-comparison marking + opening the compare screen ----------
