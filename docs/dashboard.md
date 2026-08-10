@@ -103,33 +103,60 @@ TIMELINE already uses for events beyond its own cap (`… N earlier events`).
 
 ### The run drill-down's other keys
 
-Beyond the TICKET panel above, the drill-down has four panels — TICKET,
-TIMELINE, GATES, EVIDENCE — and its own key set, distinct from the fleet
-view's:
+Beyond the TICKET panel above, the drill-down has five panels — TICKET,
+TIMELINE, GATES, EVIDENCE, CHANGES — and its own key set, distinct from the
+fleet view's:
 
 | Key | Action |
 | --- | --- |
-| `1`-`4` | Jump directly to a panel (TICKET / TIMELINE / GATES / EVIDENCE) |
-| `Tab` | Cycle through the four panels in order |
+| `1`-`5` | Jump directly to a panel (TICKET / TIMELINE / GATES / EVIDENCE / CHANGES) |
+| `Tab` | Cycle through the five panels in order |
 | `↑`/`↓` | Scroll the focused panel's content (TICKET/TIMELINE/GATES); `Page Up`/`Page Down` scroll by 5 lines |
-| `j`/`k` | While EVIDENCE holds focus: move the EVIDENCE selection (not scroll — the one panel where j/k mean select, not scroll) |
-| `↵` | Attach to the run — or, while EVIDENCE holds focus, open the selected evidence entry: a plain evidence doc opens in the in-TUI reader, a `pr`-kind entry (CON-55) opens externally in the OS browser instead |
+| `j`/`k` | While EVIDENCE or CHANGES holds focus: move that panel's own selection (not scroll — the two panels where j/k mean select, not scroll) |
+| `↵` | Attach to the run — or, while EVIDENCE holds focus, open the selected evidence entry (a plain evidence doc opens in the in-TUI reader, a `pr`-kind entry (CON-55) opens externally in the OS browser instead) — or, while CHANGES holds focus, open the selected file's full unified diff in the same in-TUI reader |
 | `k` | Kill the run, behind a `y` confirmation — only bound while the run is live; inert (and unadvertised) once it has finished |
 | `r` | Restart the run, behind a `y` confirmation — same liveness gating as `k` |
 | `esc` | Back to the fleet |
 
-`k` kill / `r` restart are deliberately unreachable while EVIDENCE holds
-focus (`j`/`k` mean something else there); they return once focus moves to
-TICKET, TIMELINE, or GATES. A destructive action (`k`/`r`) always needs a
+`k` kill / `r` restart are deliberately unreachable while EVIDENCE or CHANGES
+holds focus (`j`/`k` mean something else there); they return once focus moves
+to TICKET, TIMELINE, or GATES. A destructive action (`k`/`r`) always needs a
 deliberate `y` — any other key, including `esc`, cancels the confirmation
 without acting.
+
+### The CHANGES panel
+
+CHANGES (`5`, or reached via `Tab`) shows `git diff --stat` against the run's
+worktree — what the agent has actually changed, without needing `tmux attach`
+or waiting for the eventual PR. Unlike EVIDENCE's persisted-artifact
+convention, CHANGES is a **live-only** view: it is recomputed fresh on every
+poll tick (the dashboard's usual ~1s cadence) while the drill-down is open on
+that ticket — never for the whole fleet, and never for a run not currently
+being viewed — so it reflects the worktree's current state without requiring
+CHANGES itself to hold focus or any key to be pressed.
+
+Selecting a file (`j`/`k`, while CHANGES holds focus) and pressing `↵` opens
+that file's full unified diff (`git diff -- <file>`) in the same doc reader
+EVIDENCE's own file-open flow uses; `esc` returns to the drill-down with
+CHANGES still focused and the same file still selected. A diff that exceeds a
+fixed line cap is truncated, with an explicit trailing marker line, rather
+than silently cut off or refused outright; a binary file's diff is git's own
+short `Binary files ... differ` summary line, shown as-is.
+
+Once the run's worktree is gone — `cleanup.sh --phase4` already removed it,
+or a fresh dashboard start observes a run whose worktree path no longer
+resolves — CHANGES shows an explicit `worktree removed` message rather than a
+stale diff or a silently empty panel, and no `git` call is attempted at all.
+No diff snapshot is ever persisted: a finished run's diff is not recoverable
+through this panel (the PR, once opened, is EVIDENCE's own durable artifact
+for a finished run — see above).
 
 ## Keys
 
 | Key | Action |
 | --- | --- |
 | `↵` | Attach to the selected run — or, on a row with a live escalation, open the escalation screen. `Ctrl-b d` detaches back to the dashboard |
-| `l` / `→` | Open the run drill-down (timeline, gates, evidence) for the selected RUNNING/FAILED/DONE/NEEDS YOU row |
+| `l` / `→` | Open the run drill-down (timeline, gates, evidence, changes) for the selected RUNNING/FAILED/DONE/NEEDS YOU row |
 | `t` | Open the ticket detail view (title, description, comments) for the focused/selected row in QUICK START, QUEUED, RUNNING, or DONE. Additive to `l` on RUNNING/DONE — the two open different screens for the same row. A no-op if the row has no resolvable ticket at keypress time |
 | `j` / `k` | Move the selection — or, while QUICK START/QUEUED is locally focused, that section's own cursor instead |
 | `1`-`9` | Jump straight to the Nth section actually on screen this frame (NEEDS YOU, RUNNING, QUICK START, QUEUED, FAILED, DONE, METRICS — whichever are rendered), focusing QUICK START/QUEUED locally when the target is one of those two |
