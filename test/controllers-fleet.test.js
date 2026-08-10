@@ -17,6 +17,7 @@ const queue = require('../lib/ui/queue');
 
 function ctx(over) {
   const S = {
+    mode: 'fleet',
     runs: [], markDoneConfirm: null, addressFailureNotice: null,
     // CON-109: every fleet controller test constructs S through this one
     // helper, so the multi-select fields are always present — mirrors
@@ -25,6 +26,11 @@ function ctx(over) {
     multiSelect: { failed: new Set(), queued: new Set() },
     bulkConfirm: null, bulkResult: null,
     queueState: null, queueSessionId: null, focus: 'runs', queueFocus: null,
+    // CON-114: every fleet controller test constructs S through this one
+    // helper, so the run-comparison fields are always present — mirrors
+    // multiSelect's own comment just above.
+    compareSelection: [], compareReturnMode: null,
+    compareLeftScroll: 0, compareRightScroll: 0, compareFocus: 'left',
   };
   return Object.assign({
     S,
@@ -651,4 +657,58 @@ test('focus-quickstart from \'queue\' focus clears BOTH sets: multiSelect.failed
   apply(c, { type: 'focus-quickstart', index: 0 });
   assert.deepEqual([...c.S.multiSelect.failed], []);
   assert.deepEqual([...c.S.multiSelect.queued], []);
+});
+
+// --- CON-114: run-comparison marking + opening the compare screen ----------
+
+test('toggle-compare-select marks a DONE run', () => {
+  const c = ctx({});
+  c.S.runs = [run({ ticket: 'HEL-9', status: 'done' })];
+  apply(c, { type: 'toggle-compare-select', ticket: 'HEL-9' });
+  assert.deepEqual(c.S.compareSelection, ['HEL-9']);
+});
+
+test('toggle-compare-select is a no-op on a non-DONE run', () => {
+  const c = ctx({});
+  c.S.runs = [run({ ticket: 'HEL-9', status: 'running' })];
+  apply(c, { type: 'toggle-compare-select', ticket: 'HEL-9' });
+  assert.deepEqual(c.S.compareSelection, []);
+});
+
+test('toggle-compare-select unmarks an already-marked run', () => {
+  const c = ctx({});
+  c.S.runs = [run({ ticket: 'HEL-9', status: 'done' })];
+  c.S.compareSelection = ['HEL-9'];
+  apply(c, { type: 'toggle-compare-select', ticket: 'HEL-9' });
+  assert.deepEqual(c.S.compareSelection, []);
+});
+
+test('open-compare sets mode to compare and records the origin as fleet', () => {
+  const c = ctx({});
+  c.S.mode = 'fleet';
+  c.S.compareSelection = ['HEL-1', 'HEL-2'];
+  assert.equal(apply(c, { type: 'open-compare' }), true);
+  assert.equal(c.S.mode, 'compare');
+  assert.equal(c.S.compareReturnMode, 'fleet');
+});
+
+test('open-compare resets each column\'s scroll offset and focus on entry', () => {
+  const c = ctx({});
+  c.S.mode = 'fleet';
+  c.S.compareSelection = ['HEL-1', 'HEL-2'];
+  c.S.compareLeftScroll = 4;
+  c.S.compareRightScroll = 4;
+  c.S.compareFocus = 'right';
+  apply(c, { type: 'open-compare' });
+  assert.equal(c.S.compareLeftScroll, 0);
+  assert.equal(c.S.compareRightScroll, 0);
+  assert.equal(c.S.compareFocus, 'left');
+});
+
+test('open-compare with fewer than two marked is a no-op (defensive re-check)', () => {
+  const c = ctx({});
+  c.S.mode = 'fleet';
+  c.S.compareSelection = ['HEL-1'];
+  apply(c, { type: 'open-compare' });
+  assert.equal(c.S.mode, 'fleet');
 });

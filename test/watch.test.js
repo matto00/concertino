@@ -4487,7 +4487,7 @@ test('the scrollOffset re-clamp forwards every tail-lengthening opt to gridModeE
 // header comment above recommends when a more direct check is available:
 // the winOpts object scrollToShow builds must carry all six fields as OWN
 // properties (present, whatever their value) — exactly what the fix added.
-test('scrollToShow forwards every tail-lengthening opt (including forceStartConfirm/clearQueueConfirm) to gridModeEligible (final-fix 2 regression)', async () => {
+test('scrollToShow forwards every tail-lengthening opt (including forceStartConfirm/clearQueueConfirm/compareSelection) to gridModeEligible (final-fix 2 regression)', async () => {
   const { EventEmitter } = require('node:events');
   const fleetScreen = require('../lib/ui/screens/fleet');
 
@@ -4559,7 +4559,11 @@ test('scrollToShow forwards every tail-lengthening opt (including forceStartConf
     // bulkConfirm/bulkResult joined this same list — both lengthen
     // buildHeadTail()'s tail exactly like markDoneConfirm already does, and
     // bulkResult in particular can render several lines (one per ticket).
-    for (const field of ['prompt', 'queueNotice', 'restoreNotice', 'quitConfirm', 'forceStartConfirm', 'clearQueueConfirm', 'markDoneConfirm', 'bulkConfirm', 'bulkResult']) {
+    // CON-114, skeptic gate (final, round 1): compareSelection joined too —
+    // it now feeds a conditional `c compare` hint (and can turn on
+    // `space select` with no FAILED/QUEUED section present), same
+    // reasoning, same fix shape.
+    for (const field of ['prompt', 'queueNotice', 'restoreNotice', 'quitConfirm', 'forceStartConfirm', 'clearQueueConfirm', 'markDoneConfirm', 'bulkConfirm', 'bulkResult', 'compareSelection']) {
       assert.ok(Object.prototype.hasOwnProperty.call(winOpts, field),
         `scrollToShow's winOpts is missing "${field}" — a tail-lengthening opt buildHeadTail() reads, ` +
         'omitting it lets columnAreaHeight (and so the grid-mode decision) drift from what renderFleet computes');
@@ -4635,7 +4639,7 @@ test('the scrollOffset re-clamp\'s heightOpts carries bulkConfirm/bulkResult (mi
     assert.ok(calls.length > 0, 'sanity: the startup draw() must have called gridModeEligible via the scrollOffset re-clamp');
     const heightOpts = calls[calls.length - 1];
 
-    for (const field of ['prompt', 'queueNotice', 'restoreNotice', 'quitConfirm', 'forceStartConfirm', 'clearQueueConfirm', 'markDoneConfirm', 'bulkConfirm', 'bulkResult']) {
+    for (const field of ['prompt', 'queueNotice', 'restoreNotice', 'quitConfirm', 'forceStartConfirm', 'clearQueueConfirm', 'markDoneConfirm', 'bulkConfirm', 'bulkResult', 'compareSelection']) {
       assert.ok(Object.prototype.hasOwnProperty.call(heightOpts, field),
         `the scrollOffset re-clamp's heightOpts is missing "${field}" — omitting it lets columnAreaHeight ` +
         'drift from what renderFleet actually computes (fleet-metrics-grid final-fix 2\'s own regression, ' +

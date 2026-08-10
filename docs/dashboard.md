@@ -134,12 +134,12 @@ without acting.
 | `j` / `k` | Move the selection — or, while QUICK START/QUEUED is locally focused, that section's own cursor instead |
 | `1`-`9` | Jump straight to the Nth section actually on screen this frame (NEEDS YOU, RUNNING, QUICK START, QUEUED, FAILED, DONE, METRICS — whichever are rendered), focusing QUICK START/QUEUED locally when the target is one of those two |
 | `/` | Open a search prompt — typing filters/highlights every row (any section) whose ticket id or title contains the typed text, live; `↵` jumps the selection to the first match, in on-screen render order; `esc` cancels with no state change |
-| `space` | On a FAILED row, or the QUEUED-locally-focused row: toggle that row into/out of its section's multi-select set (marked with a dedicated `✓`, distinct from the `▸`/`»` cursor markers) — see "Bulk actions on multiple rows" below. Unbound everywhere else |
+| `space` | On a FAILED row, or the QUEUED-locally-focused row: toggle that row into/out of its section's multi-select set (marked with a dedicated `✓`, distinct from the `▸`/`»` cursor markers) — see "Bulk actions on multiple rows" below. **On a DONE row:** toggle it into/out of the run-comparison selection instead (same `✓` marker; the two selections never overlap, since they key off different statuses) — see "Side-by-side run comparison" below. Unbound everywhere else |
 | `a` | While QUICK START is locally focused: quick-start the highlighted eligible ticket. **On a selected FAILED row** (no local focus at all — see "Addressing a FAILED run" below): launch `/concertino-address-failure` against it — or, with one or more FAILED rows multi-selected, against the whole selection at once, past a `y` confirmation naming the count |
 | `d` | **On a selected FAILED row:** mark it DONE on the dashboard, past a `y` confirmation — see "Addressing a FAILED run" below — or, with one or more FAILED rows multi-selected, mark the whole selection DONE at once, past a `y` confirmation naming the count. Unbound everywhere else |
 | `f` | While QUEUED is locally focused: force-start the highlighted pending ticket, past a confirmation — or, with one or more QUEUED rows multi-selected, force-start the whole selection at once, past a confirmation naming the count and the resulting concurrency overage |
 | `C` | Clear the queue — drops everything still pending, past a confirmation. Bound whenever QUEUED has anything pending, independent of focus |
-| `c` | Confirm a queue restored from a previous session (shown after a dashboard restart with tickets still pending/in flight) |
+| `c` | Confirm a queue restored from a previous session (shown after a dashboard restart with tickets still pending/in flight) — or, once exactly two DONE runs are marked for comparison (see `space` above), open the side-by-side comparison screen instead. A pending restored-queue confirmation always takes precedence over the compare trigger for this same key |
 | `n` | Start a new run — type a ticket id and `↵` to launch, or type free text and `↵` to draft a new ticket first (Linear only — see "Starting a run from an intention" below); `esc` to cancel |
 | `N` | Open the launch pad — browse epics/tickets, pick a batch, launch it. Always bound; if the feature gate is off it explains why rather than doing nothing (see below) |
 | `s` | Open the settings screen (view/edit `concertino.config.json`) |
@@ -848,9 +848,48 @@ both ends; `Shift-Tab` moves backward.
 | *(FROM/TO focused)* `↵` | Open a one-line `YYYY-MM-DD` prompt seeded with that field's current value — `↵` commits it (an empty submission clears the bound), `esc` cancels the prompt only (not the whole screen), an invalid date shows a one-line error and leaves the prompt open |
 | *(list focused)* `j`/`k` | Move the selection |
 | *(list focused)* `↵` | Open the selected run's drill-down — the same TICKET/TIMELINE/GATES/EVIDENCE panels a live/recent run's own `l` key opens, via the identical action and run lookup |
+| *(list focused)* `space` | Mark/unmark the run under the cursor for side-by-side comparison (any status is toggled, but only a DONE run actually marks — see "Side-by-side run comparison" below) |
+| *(list focused)* `c` | Once exactly two runs are marked, open the side-by-side comparison screen. A no-op with fewer than two marked |
 | `esc` | Return to the fleet — no navigation stack; `esc` from a drill-down opened via the archive screen also returns straight to the fleet, not back to the archive |
 
 All three filters (substring, harness, date range) apply simultaneously and
 update the list on every change, with no separate "apply" step. A run with
 no recorded start time is excluded whenever either date bound is set, and
 included when neither is.
+
+## Side-by-side run comparison
+
+Once two DONE runs are marked for comparison — `space` on a DONE row in the
+run-archive screen's list, or on a DONE row in the fleet view's own DONE
+section — pressing `c` (from either screen) opens a side-by-side comparison
+screen showing both runs' TIMELINE and GATES at once, plus each run's total
+duration and the difference between them.
+
+The marked-for-comparison selection is a single, shared set (not two
+independent ones): a run marked from fleet's DONE section shows as marked in
+the archive screen too, and vice versa. It is capped at two — marking a
+third run while two are already marked is a no-op, and does not evict either
+existing selection; unmark one first (`space` again) to free a slot. Only
+DONE runs are markable; `space` has no effect on a row of any other status.
+The selection is **not** cleared by opening or leaving the compare screen —
+only by explicitly toggling a run again — so flipping back to the fleet or
+archive screen to check on something else and then reopening the same
+comparison does not force re-marking.
+
+The compare screen uses its own narrower TIMELINE/GATES rendering, not the
+single-run drill-down's panels reused at a smaller width — a compact 3-letter
+role abbreviation (instead of the drill-down's full role column) and the
+same icon/name/duration gate line the drill-down uses, so two columns fit
+side by side on a normal-width terminal without truncating content
+mid-word. A gate's first recorded error renders beneath its gate line, the
+same indented convention the drill-down uses.
+
+| Key | Action |
+| --- | --- |
+| `Tab` / `←` / `→` | Switch which column (left/right) `j`/`k`/arrow keys scroll |
+| `j`/`k` / `↑`/`↓` | Scroll the focused column (TIMELINE and GATES scroll together, as one region, per column) |
+| `esc` | Return to wherever the compare screen was opened from — the archive screen (filters unchanged) or the fleet view — never unconditionally to one or the other |
+
+If one or both marked runs are no longer available (retention pruned them
+between marking and opening compare) the screen says so instead of showing
+stale or partial data.
