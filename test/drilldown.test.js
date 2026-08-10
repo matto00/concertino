@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const {
   renderDrillDown, handleKey, render, isLive, fmtGateDuration, phasePipeline,
   ticketPanelLines, evidenceItems, evidenceLines, EVIDENCE_MAX_VISIBLE, describeEvent,
+  changesItems, changesLines, CHANGES_MAX_VISIBLE, WORKTREE_REMOVED_MSG,
 } = require('../lib/ui/screens/drilldown');
 const icons = require('../lib/ui/icons');
 
@@ -758,20 +759,22 @@ test('drillFocus defaults to ticket, the first panel, not evidence', () => {
   assert.match(out, /\[1\] TICKET/);
 });
 
-test('digit 1-4 jump directly to each panel', () => {
+test('digit 1-5 jump directly to each panel', () => {
   const r = run({ status: 'running' });
   assert.deepEqual(handleKey('1', { run: r, drillFocus: 'evidence' }), { type: 'switch-drill-focus', focus: 'ticket' });
   assert.deepEqual(handleKey('2', { run: r, drillFocus: 'ticket' }), { type: 'switch-drill-focus', focus: 'timeline' });
   assert.deepEqual(handleKey('3', { run: r, drillFocus: 'ticket' }), { type: 'switch-drill-focus', focus: 'gates' });
   assert.deepEqual(handleKey('4', { run: r, drillFocus: 'ticket' }), { type: 'switch-drill-focus', focus: 'evidence' });
+  assert.deepEqual(handleKey('5', { run: r, drillFocus: 'ticket' }), { type: 'switch-drill-focus', focus: 'changes' });
 });
 
-test('tab cycles ticket -> timeline -> gates -> evidence -> ticket', () => {
+test('tab cycles ticket -> timeline -> gates -> evidence -> changes -> ticket', () => {
   const r = run({ status: 'running' });
   assert.deepEqual(handleKey('\t', { run: r, drillFocus: 'ticket' }), { type: 'switch-drill-focus', focus: 'timeline' });
   assert.deepEqual(handleKey('\t', { run: r, drillFocus: 'timeline' }), { type: 'switch-drill-focus', focus: 'gates' });
   assert.deepEqual(handleKey('\t', { run: r, drillFocus: 'gates' }), { type: 'switch-drill-focus', focus: 'evidence' });
-  assert.deepEqual(handleKey('\t', { run: r, drillFocus: 'evidence' }), { type: 'switch-drill-focus', focus: 'ticket' });
+  assert.deepEqual(handleKey('\t', { run: r, drillFocus: 'evidence' }), { type: 'switch-drill-focus', focus: 'changes' });
+  assert.deepEqual(handleKey('\t', { run: r, drillFocus: 'changes' }), { type: 'switch-drill-focus', focus: 'ticket' });
 });
 
 test('tab cycles through an empty EVIDENCE panel too — every panel is a legitimate focus target now', () => {
@@ -985,4 +988,220 @@ test('render(state, opts) threads drillFocus/drillEvidenceIndex through to rende
   };
   const out = plain(render(state, OPTS));
   assert.match(out, /↵ open/);
+});
+
+// =============================================================================
+// CON-104: CHANGES panel — git diff --stat, selection, full-diff expansion,
+// and honest degradation once the worktree is gone.
+// =============================================================================
+
+function statFile(path, over) {
+  return Object.assign({ path, line: path + ' | 3 +++--' }, over);
+}
+
+function diffStat(files) {
+  return { stat: files, error: null };
+}
+
+// --- the panel title/icon and its box in renderDrillDown -------------------
+
+test('the CHANGES panel title is prefixed with its own icon, alongside the other four', () => {
+  const out = plain(renderDrillDown(run({}), OPTS));
+  assert.match(out, new RegExp(icons.changes + ' \\[5\\] CHANGES'));
+});
+
+test('CHANGES renders with the focused border style when drillFocus is changes, and only CHANGES', () => {
+  const out = renderDrillDown(run({}), Object.assign({}, OPTS, { drillFocus: 'changes' }));
+  const lines = out.split('\n');
+  const changesTitleLine = lines.find((l) => l.includes('CHANGES'));
+  assert.match(changesTitleLine, /[┏┓┃]/);
+  const gatesTitleLine = lines.find((l) => l.includes('GATES'));
+  const evidenceTitleLine = lines.find((l) => l.includes('EVIDENCE'));
+  assert.doesNotMatch(gatesTitleLine, /[┏┓┃]/);
+  assert.doesNotMatch(evidenceTitleLine, /[┏┓┃]/);
+});
+
+// --- changesItems/changesLines: pure, degradation strings -------------------
+
+test('changesItems returns [] for a null diffStat (no worktree) and for a missing stat array', () => {
+  assert.deepEqual(changesItems(null), []);
+  assert.deepEqual(changesItems({ stat: null, error: 'boom' }), []);
+});
+
+test('changesItems returns the diffStat\'s own file list when present', () => {
+  const files = [statFile('a.js'), statFile('b.md')];
+  assert.deepEqual(changesItems(diffStat(files)), files);
+});
+
+test('changesLines: a null diffStat (no worktree, or worktree removed) shows the exact worktree-removed message', () => {
+  const lines = changesLines(null, 60, {});
+  assert.equal(lines.length, 1);
+  assert.match(plain(lines[0]), /worktree removed/);
+  assert.match(plain(lines[0]), new RegExp(WORKTREE_REMOVED_MSG.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+});
+
+test('changesLines: a diffStat with a git error shows "diff unavailable"', () => {
+  const lines = changesLines({ stat: null, error: 'git diff failed' }, 60, {});
+  assert.equal(lines.length, 1);
+  assert.match(plain(lines[0]), /diff unavailable/);
+});
+
+test('changesLines: a successful diff with no changed files shows "no changes"', () => {
+  const lines = changesLines(diffStat([]), 60, {});
+  assert.equal(lines.length, 1);
+  assert.match(plain(lines[0]), /no changes/);
+});
+
+test('changesLines: a non-empty stat list renders one line per file', () => {
+  const files = [statFile('src/a.js'), statFile('src/b.md')];
+  const lines = changesLines(diffStat(files), 60, { focused: false });
+  assert.equal(lines.length, 2);
+  assert.match(plain(lines[0]), /src\/a\.js/);
+  assert.match(plain(lines[1]), /src\/b\.md/);
+});
+
+test('changesLines: the selected entry is visually marked while focused', () => {
+  const files = [statFile('a.js'), statFile('b.js')];
+  const lines = changesLines(diffStat(files), 60, { focused: true, selectedIndex: 1 });
+  assert.match(lines[1], /▸/);
+  assert.doesNotMatch(lines[0], /▸/);
+});
+
+test('changesLines: unfocused, an over-cap list shows only the leading entries plus a truncation count', () => {
+  const total = CHANGES_MAX_VISIBLE + 4;
+  const files = Array.from({ length: total }, (_, i) => statFile('file-' + i + '.js'));
+  const lines = changesLines(diffStat(files), 60, { focused: false });
+  assert.equal(lines.length, CHANGES_MAX_VISIBLE + 1);
+  assert.match(plain(lines.join('\n')), /… 4 more/);
+});
+
+test('changesLines: moving the selection past the visible window scrolls it into view while focused', () => {
+  const total = CHANGES_MAX_VISIBLE + 4;
+  const files = Array.from({ length: total }, (_, i) => statFile('file-' + i + '.js'));
+  const farIndex = total - 1;
+  const lines = changesLines(diffStat(files), 60, { focused: true, selectedIndex: farIndex });
+  assert.match(plain(lines.join('\n')), new RegExp('file-' + farIndex + '\\.js'));
+});
+
+// --- rendered panel content, end to end through renderDrillDown ------------
+
+test('renderDrillDown shows the worktree-removed message in CHANGES when opts.diffStat is absent', () => {
+  const out = plain(renderDrillDown(run({}), OPTS));
+  assert.match(out, /worktree removed/);
+});
+
+test('renderDrillDown shows the diff-stat file list in CHANGES when opts.diffStat is present', () => {
+  const out = plain(renderDrillDown(run({}), Object.assign({}, OPTS, {
+    diffStat: diffStat([statFile('lib/ui/watch.js')]),
+  })));
+  assert.match(out, /lib\/ui\/watch\.js/);
+  assert.doesNotMatch(out, /worktree removed/);
+});
+
+test('no rendered line exceeds cols with a long diff-stat path in CHANGES', () => {
+  const files = [statFile('a/very/deeply/nested/path/that/is/quite/long/indeed/change.tsx')];
+  for (const cols of [50, 60, 78, 100, 120]) {
+    const out = plain(renderDrillDown(run({}), { cols, now: 5000, diffStat: diffStat(files) }));
+    for (const line of out.split('\n')) {
+      assert.ok(require('../lib/ui/format').visibleLength(line) <= cols, `line exceeds cols: ${JSON.stringify(line)}`);
+    }
+  }
+});
+
+// --- footer hints: content-gated, unlike EVIDENCE's own unconditional set --
+
+test('CHANGES focused with files present: selection/open keys are advertised', () => {
+  const out = plain(renderDrillDown(run({ status: 'running' }), Object.assign({}, OPTS, {
+    drillFocus: 'changes', diffStat: diffStat([statFile('a.js')]),
+  })));
+  assert.match(out, /j\/k select/);
+  assert.match(out, /↵ open/);
+  assert.doesNotMatch(out, /↵ attach/);
+  assert.doesNotMatch(out, /k kill/);
+  assert.doesNotMatch(out, /r restart/);
+});
+
+test('CHANGES focused with an empty stat list: no selection/open hints, but the focus switch and esc still work', () => {
+  const out = plain(renderDrillDown(run({ status: 'running' }), Object.assign({}, OPTS, {
+    drillFocus: 'changes', diffStat: diffStat([]),
+  })));
+  assert.doesNotMatch(out, /j\/k select/);
+  assert.doesNotMatch(out, /↵ open/);
+  assert.match(out, /esc back/);
+  assert.match(out, /1-5 jump/);
+});
+
+test('default (non-CHANGES) focus advertises no CHANGES-specific hint, and 1-5 jump replaces the old 1-4', () => {
+  const out = plain(renderDrillDown(run({ status: 'running' }), OPTS));
+  assert.match(out, /1-5 jump/);
+  assert.doesNotMatch(out, /j\/k select/);
+  assert.doesNotMatch(out, /↵ open/);
+});
+
+test('EVIDENCE focused footer also now reads "1-5 jump", not the stale "1-4 jump"', () => {
+  const out = plain(renderDrillDown(run({ status: 'running', events: evidenceEvents(1) }),
+    Object.assign({}, OPTS, { drillFocus: 'evidence' })));
+  assert.match(out, /1-5 jump/);
+});
+
+// --- handleKey: focus switch reaches an empty CHANGES panel unconditionally
+
+test('digit 5 / tab still moves focus to CHANGES even with an empty diff-stat list (defensive; focus switch is never content-gated)', () => {
+  const r = run({ status: 'running' });
+  assert.deepEqual(handleKey('5', { run: r, drillFocus: 'ticket', diffStat: diffStat([]) }),
+    { type: 'switch-drill-focus', focus: 'changes' });
+  assert.deepEqual(handleKey('\t', { run: r, drillFocus: 'evidence', diffStat: null }),
+    { type: 'switch-drill-focus', focus: 'changes' });
+});
+
+// --- handleKey: selection and open, while CHANGES is focused ----------------
+
+test('j/k move the CHANGES selection while focused', () => {
+  const state = { run: run({}), drillFocus: 'changes', drillChangesIndex: 0, diffStat: diffStat([statFile('a.js'), statFile('b.js')]) };
+  assert.deepEqual(handleKey('j', state), { type: 'move-drill-changes', delta: 1 });
+  assert.deepEqual(handleKey('k', state), { type: 'move-drill-changes', delta: -1 });
+});
+
+test('r/k are inert (not restart/kill) while CHANGES is focused — only j/k(-select)/↵ are bound there', () => {
+  const state = { run: run({ status: 'running' }), drillFocus: 'changes', drillChangesIndex: 0, diffStat: diffStat([statFile('a.js')]) };
+  assert.equal(handleKey('r', state), null);
+  assert.equal(handleKey('k', state).type, 'move-drill-changes');
+});
+
+test('↵ while CHANGES is focused with a selected file dispatches open-diff-doc, carrying the file path and the run\'s worktree', () => {
+  const r = run({ ticket: 'HEL-334', worktree: '.concertino/worktrees/HEL-334', events: [] });
+  const files = [statFile('a.js'), statFile('src/b.md')];
+  const action = handleKey('\r', { run: r, drillFocus: 'changes', drillChangesIndex: 1, diffStat: diffStat(files) });
+  assert.deepEqual(action, {
+    type: 'open-diff-doc', ticket: 'HEL-334', worktree: '.concertino/worktrees/HEL-334',
+    file: 'src/b.md', label: 'src/b.md',
+  });
+});
+
+test('↵ while CHANGES is focused with no files (defensive) is a no-op', () => {
+  const r = run({});
+  const action = handleKey('\r', { run: r, drillFocus: 'changes', drillChangesIndex: 0, diffStat: diffStat([]) });
+  assert.equal(action, null);
+});
+
+test('the diff-stat list is unaffected by an EVIDENCE selection existing at the same time — the two panels\' indices are independent', () => {
+  const r = run({ events: evidenceEvents(3) });
+  const action = handleKey('\r', {
+    run: r, drillFocus: 'changes', drillChangesIndex: 0, drillEvidenceIndex: 2,
+    diffStat: diffStat([statFile('only-file.js')]),
+  });
+  assert.equal(action.type, 'open-diff-doc');
+  assert.equal(action.file, 'only-file.js');
+});
+
+// --- router seam: render()/routeHandleKey() thread diffStat/drillChangesIndex
+
+test('render(state, opts) threads state.drillDiffStat/drillChangesIndex through to renderDrillDown as opts.diffStat/drillChangesIndex', () => {
+  const state = {
+    runs: [run({ ticket: 'HEL-1' })], drillTicket: 'HEL-1',
+    drillFocus: 'changes', drillChangesIndex: 0,
+    drillDiffStat: diffStat([statFile('threaded-file.js')]),
+  };
+  const out = plain(render(state, OPTS));
+  assert.match(out, /threaded-file\.js/);
 });

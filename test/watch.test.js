@@ -947,6 +947,110 @@ test('ticket-text.resolve runs once per draw() while mode is drilldown, and not 
   }
 });
 
+// --- CON-104: the CHANGES panel's diff-stat gating, wired into draw() ------
+// Same technique as the ticket-text.resolve test just above (fake session
+// module, a fake EventEmitter stdin, no real tmux) — but exercising the real
+// `git-diff.js` module (unfaked) against an actual temporary git repo, since
+// this gate's whole job is "shell out to git, gated to this one ticket while
+// the drill-down is open on it" — a fake would only prove the gate exists,
+// not that the shelled-out data actually reaches the screen.
+
+test('CHANGES: a worktree with real changes shows the diff-stat on screen; a removed worktree degrades honestly on the very next poll', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { execFileSync } = require('node:child_process');
+  const { EventEmitter } = require('node:events');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-changes-'));
+  const worktree = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-changes-wt-'));
+  execFileSync('git', ['init', '-q'], { cwd: worktree });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: worktree });
+  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: worktree });
+  fs.writeFileSync(path.join(worktree, 'changed-file.txt'), 'line one\n');
+  execFileSync('git', ['add', '.'], { cwd: worktree });
+  execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: worktree });
+  fs.writeFileSync(path.join(worktree, 'changed-file.txt'), 'line one\nline two\n');
+
+  const runDir = path.join(root, '.concertino', 'runs', 'HEL-99');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+    JSON.stringify({ t: 1, kind: 'run.start', harness: 'claude', model: 'opus-5', worktree }) + '\n');
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return [{ ticket: 'HEL-99', alive: true, activity: null }]; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(chunk); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  try {
+    const watchModule = require('../lib/ui/watch');
+    const donePromise = watchModule.watch({ root, config: {} });
+
+    // 'l' opens the drill-down; '5' jumps straight to CHANGES so its panel
+    // content (not just its title) is guaranteed to be on screen regardless
+    // of terminal width/column sizing.
+    written.length = 0;
+    fakeStdin.emit('data', 'l');
+    fakeStdin.emit('data', '5');
+    const afterOpen = written.join('');
+    assert.match(afterOpen, /changed-file\.txt/,
+      'the real git diff --stat output should reach the screen while CHANGES is open on a run with a real worktree');
+
+    // The worktree is removed between polls (cleanup.sh --phase4's own
+    // effect) — the next poll must degrade to the honest message, not a
+    // stale diff and not a thrown error.
+    fs.rmSync(worktree, { recursive: true, force: true });
+    written.length = 0;
+    process.stdout.emit('resize');
+    const afterRemoved = written.join('');
+    assert.match(afterRemoved, /worktree removed/,
+      'CHANGES should degrade honestly once the worktree no longer resolves');
+    assert.doesNotMatch(afterRemoved, /changed-file\.txt/,
+      'the stale diff-stat entry must not still be on screen');
+
+    fakeStdin.emit('end');
+    await donePromise;
+  } finally {
+    process.stdout.write = realWrite;
+    process.stdout.removeAllListeners('resize');
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
 // ===========================================================================
 // CON-6 (tasks.md 3.6): repeated 'j' past the visible window must actually
 // move watch.js's own scrollOffset and keep the marker aligned — exercised
