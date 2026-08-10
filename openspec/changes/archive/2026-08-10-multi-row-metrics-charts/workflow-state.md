@@ -4,16 +4,16 @@ TICKET_ID: CON-106
 CHANGE_NAME: multi-row-metrics-charts
 WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/feature/multi-row-metrics-charts/CON-106
 BRANCH: feature/multi-row-metrics-charts/CON-106
-PHASE: Execution
+PHASE: Delivery
 CYCLE: 1
 DEV_PORT: 5353
 BACKEND_PORT: 8260
-EXECUTOR_AGENT_ID: —
-EVALUATOR_AGENT_ID: —
-LAST_EVAL_VERDICT: —
-LAST_EVAL_REPORT: —
-SKEPTIC_CYCLE: 0
-LAST_SKEPTIC_VERDICT: CONFIRM
+EXECUTOR_AGENT_ID: a8a85d7491abc045b
+EVALUATOR_AGENT_ID: a19f91740af568bbc
+LAST_EVAL_VERDICT: PASS
+LAST_EVAL_REPORT: openspec/changes/multi-row-metrics-charts/evaluation-1.md
+SKEPTIC_CYCLE: 1
+LAST_SKEPTIC_VERDICT: CONFIRM (final gate)
 AGENT_MERGE: true
 TICKET_TYPE: feature
 DESIGN_QUESTIONS: null
