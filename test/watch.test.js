@@ -2566,6 +2566,163 @@ test('the first redraw after an attach that THREW also repaints every row', asyn
   });
 });
 
+// --- CON-107: METRICS' historical escalation detail view, wired end to end -
+// Mirrors withWatchHarness's own structure (a real watch() against a FAKE
+// session/stdin, no real tmux, no real POLL_MS wait — `process.stdout.emit
+// ('resize')` drives an extra synchronous draw() the same way the resize
+// regression tests above already do), extended to seed each run's own
+// events.jsonl with escalation.raised/answered events (withWatchHarness
+// itself only ever writes a bare run.start).
+function withEscalationHistoryHarness({ rows, cols, runs }, body) {
+  const { EventEmitter } = require('node:events');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-escalation-history-'));
+  for (const r of runs) {
+    const runDir = path.join(root, '.concertino', 'runs', r.ticket);
+    fs.mkdirSync(runDir, { recursive: true });
+    const lines = r.events.map((ev) => JSON.stringify(Object.assign({ ticket: r.ticket }, ev)));
+    fs.writeFileSync(path.join(runDir, 'events.jsonl'), lines.join('\n') + '\n');
+  }
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() {
+      return runs.filter((r) => r.alive).map((r) => ({ ticket: r.ticket, alive: true, activity: null }));
+    },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach: () => ({ status: 0 }),
+  };
+
+  const fakeStdin = new EventEmitter();
+  // isTTY true so the 'data' handler does NOT strip a trailing '\r' — see
+  // withWatchHarness's own identical comment, above.
+  fakeStdin.isTTY = true;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realRowsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'rows');
+  const realColsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'columns');
+  const realWrite = process.stdout.write;
+  const parkedResizeListeners = process.stdout.listeners('resize').slice();
+  process.stdout.removeAllListeners('resize');
+
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(String(chunk)); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+  Object.defineProperty(process.stdout, 'rows', { value: rows, configurable: true });
+  Object.defineProperty(process.stdout, 'columns', { value: cols, configurable: true });
+
+  delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  let donePromise;
+  const cleanup = async () => {
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    if (realRowsDescriptor) Object.defineProperty(process.stdout, 'rows', realRowsDescriptor);
+    else delete process.stdout.rows;
+    if (realColsDescriptor) Object.defineProperty(process.stdout, 'columns', realColsDescriptor);
+    else delete process.stdout.columns;
+    process.stdout.removeAllListeners('resize');
+    for (const l of parkedResizeListeners) process.stdout.on('resize', l);
+    delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  };
+
+  const watchModule = require('../lib/ui/watch');
+  donePromise = watchModule.watch({ root, config: {} });
+  return body({ fakeStdin, screen: () => screenOf(written) }).finally(cleanup);
+}
+
+// tasks.md 3.7's regression tests: the full "open resolved, back out, open
+// live" sequence, plus a historical view surviving several polls without the
+// poll-loop check (task 3.5) bouncing it back to the fleet.
+test('CON-107: open a resolved historical entry, Escape, then open a still-live one — the live screen shows the live question, never the stale historical one; the historical view itself survives several polls', async () => {
+  await withEscalationHistoryHarness({
+    rows: 30, cols: 100,
+    runs: [
+      {
+        ticket: 'HEL-500', alive: false,
+        events: [
+          { t: 1000, kind: 'run.start' },
+          { t: 2000, kind: 'escalation.raised', role: 'evaluator', question: 'drop the legacy column?', options: 'approve,deny' },
+          { t: 3000, kind: 'escalation.answered', role: 'human', answer: 'approve' },
+          { t: 4000, kind: 'run.end', status: 'delivered' },
+        ],
+      },
+      {
+        ticket: 'HEL-501', alive: true,
+        events: [
+          { t: 500, kind: 'run.start' },
+          { t: 1500, kind: 'escalation.raised', role: 'orchestrator', question: 'still-live add zod?', options: 'approve,deny' },
+        ],
+      },
+    ],
+  }, async ({ fakeStdin, screen }) => {
+    // Sections on screen: NEEDS YOU (1, HEL-501, live), QUICK START (2,
+    // always), DONE (3, HEL-500 — resolved since escalation.answered), and
+    // METRICS (4, always) — the canonical NEEDS YOU/FAILED/RUNNING/QUICK
+    // START/QUEUED/DONE/METRICS order, sections.js's own buildSections().
+    fakeStdin.emit('data', '4'); // digit-jump: focus METRICS
+    assert.match(screen(), /METRICS/);
+
+    // '\r' resolves against the freshly re-derived FULL history (newest
+    // first) — HEL-500's escalation was raised at t:2000, later than
+    // HEL-501's t:1500, so it is index 0 without needing to scroll.
+    fakeStdin.emit('data', '\r');
+    let frame = screen();
+    assert.match(frame, /drop the legacy column\?/);
+    assert.match(frame, /decision: approve/);
+    assert.doesNotMatch(frame, /still-live add zod\?/);
+
+    // Survives several polls without bouncing back to the fleet (task 3.5) —
+    // a historical view carries nothing that can change out from under it.
+    process.stdout.emit('resize');
+    process.stdout.emit('resize');
+    frame = screen();
+    assert.match(frame, /drop the legacy column\?/,
+      'a historical view must survive several polls, not bounce back to the fleet');
+    assert.match(frame, /decision: approve/);
+
+    fakeStdin.emit('data', '\x1b'); // Escape — back to the fleet
+    assert.match(screen(), /NEEDS YOU/);
+
+    // Escaping the escalation screen returns to the fleet with METRICS
+    // STILL locally focused (mirrors QUICK START's own identical "focus
+    // persists across a trip to another screen and back" behavior — neither
+    // is reset by the generic 'back'/backToFleet()) — a second Escape exits
+    // METRICS focus back to the ordinary run selection, the same real
+    // keypress sequence an operator would use.
+    fakeStdin.emit('data', '\x1b');
+
+    // Opens the still-live entry via the ordinary NEEDS YOU row (g/↵'s own
+    // existing, unmodified path — ticket AC 2) — the live screen must show
+    // the LIVE question, not the stale historical one left over from the
+    // resolved view just closed (design.md Decision 4's round-2 correction).
+    fakeStdin.emit('data', '\r');
+    frame = screen();
+    assert.match(frame, /still-live add zod\?/);
+    assert.doesNotMatch(frame, /drop the legacy column\?/);
+    assert.doesNotMatch(frame, /decision: approve/);
+  });
+});
+
 // --- CON-40: QUICK START widget, wired end to end ---------------------------
 // Mirrors the QUEUED-focus and force-start harnesses above: a real watch()
 // against a FAKE session/stdin, no real tmux. `setupQuickStartHarness()`

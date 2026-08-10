@@ -118,6 +118,40 @@ that predates this feature. A run with no `run.harness`/`run.model` recorded
 (e.g. a run that predates that field) is excluded from both breakdowns
 entirely, rather than counted under an "unknown" bucket.
 
+### METRICS' recent-escalations list
+
+The expanded tier's `recent escalations` block (above) is a navigable,
+scrollable list, not just glanceable text. Pressing the digit that jumps to
+METRICS (`1`-`9` — see the keys table above) focuses it, the same way a
+digit-jump focuses QUICK START or QUEUED:
+
+- **`j`/`k`** move a selection cursor over the **full** escalation history —
+  every `escalation.raised` event across every run, newest first, not just
+  the rows the compact METRICS box currently has room to show. The visible
+  window scrolls to keep the selection in view (the same windowing the
+  drill-down's EVIDENCE panel already uses), so `j`/`k` reach arbitrarily far
+  back into history even on a short terminal.
+- **`↵`** opens the selected entry's detail view. A **still-live** escalation
+  (nobody has answered or timed it out yet) opens the exact same answerable
+  escalation screen `g`/`↵` already open elsewhere — the same option keys,
+  the same `t` reply binding, never a second rendering of a live question. A
+  **resolved** escalation opens a **read-only historical view**: the same
+  screen module, showing the full question and full option list, but no
+  answer-key bindings — instead, the recorded decision (`decision: <answer>`)
+  or, for a timed-out escalation, an explicit `no answer recorded (timed
+  out)` line. A multi-part (wizard) escalation's historical view shows only
+  its LAST sub-question (the one it was actually resolved on), alongside a
+  note that more steps exist — every step's answer is already folded into
+  the one `decision` line below, not replayed as a second wizard. The
+  historical view's footer is `esc back` only.
+- **`esc`** exits METRICS focus back to the ordinary run selection, without
+  hiding the panel — METRICS, like QUICK START, is always visible; there is
+  no toggle to hide it.
+
+Unfocused (the default), the panel renders exactly as it always has: the
+leading entries that fit under the box's own height budget, or `no
+escalations yet`.
+
 ### The drill-down's TICKET panel
 
 Drilling into a run (`l` from the fleet view) shows the ticket's title in the
@@ -206,8 +240,8 @@ for a finished run — see above).
 | `↵` | Attach to the selected run — or, on a row with a live escalation, open the escalation screen. `Ctrl-b d` detaches back to the dashboard |
 | `l` / `→` | Open the run drill-down (timeline, gates, evidence, changes) for the selected RUNNING/FAILED/DONE/NEEDS YOU row |
 | `t` | Open the ticket detail view (title, description, comments) for the focused/selected row in QUICK START, QUEUED, RUNNING, or DONE. Additive to `l` on RUNNING/DONE — the two open different screens for the same row. A no-op if the row has no resolvable ticket at keypress time |
-| `j` / `k` | Move the selection — or, while QUICK START/QUEUED is locally focused, that section's own cursor instead |
-| `1`-`9` | Jump straight to the Nth section actually on screen this frame (NEEDS YOU, RUNNING, QUICK START, QUEUED, FAILED, DONE, METRICS — whichever are rendered), focusing QUICK START/QUEUED locally when the target is one of those two |
+| `j` / `k` | Move the selection — or, while QUICK START/QUEUED/METRICS is locally focused, that section's own cursor instead |
+| `1`-`9` | Jump straight to the Nth section actually on screen this frame (NEEDS YOU, RUNNING, QUICK START, QUEUED, FAILED, DONE, METRICS — whichever are rendered), focusing QUICK START/QUEUED/METRICS locally when the target is one of those three (see "METRICS' recent-escalations list" below for METRICS' own local cursor) |
 | `/` | Open a search prompt — typing filters/highlights every row (any section) whose ticket id or title contains the typed text, live; `↵` jumps the selection to the first match, in on-screen render order; `esc` cancels with no state change |
 | `space` | On a FAILED row, or the QUEUED-locally-focused row: toggle that row into/out of its section's multi-select set (marked with a dedicated `✓`, distinct from the `▸`/`»` cursor markers) — see "Bulk actions on multiple rows" below. **On a DONE row:** toggle it into/out of the run-comparison selection instead (same `✓` marker; the two selections never overlap, since they key off different statuses) — see "Side-by-side run comparison" below. Unbound everywhere else |
 | `a` | While QUICK START is locally focused: quick-start the highlighted eligible ticket. **On a selected FAILED row** (no local focus at all — see "Addressing a FAILED run" below): launch `/concertino-address-failure` against it — or, with one or more FAILED rows multi-selected, against the whole selection at once, past a `y` confirmation naming the count |

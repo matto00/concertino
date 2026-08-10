@@ -565,3 +565,102 @@ test('reopening after backing out resumes at the correct step, read back from di
   const recorded = store.readSubAnswers(root, 'HEL-407');
   assert.equal(resumeSubIndex(recorded, 3), 1);
 });
+
+// =====================================================================
+// CON-107: the read-only historical (resolved/timed-out) detail view
+// =====================================================================
+
+function historyEntry(over) {
+  return Object.assign({
+    ticket: 'HEL-500', role: 'evaluator', question: 'drop the legacy column?',
+    options: ['approve', 'deny'], subQuestions: undefined,
+    raisedAt: 1000, resolved: true, decision: 'approve', resolvedAt: 5000, timedOut: false,
+  }, over);
+}
+
+test('a resolved historical entry renders the full question, options, and decision', () => {
+  const out = plain(renderEscalation(null, { cols: 78, now: 5000 + 4 * 60000, historical: historyEntry({}) }));
+  assert.match(out, /drop the legacy column\?/);
+  assert.match(out, /approve/);
+  assert.match(out, /deny/);
+  assert.match(out, /decision: approve/);
+});
+
+test('a resolved historical entry offers no option-key bindings', () => {
+  const out = plain(renderEscalation(null, { cols: 78, now: 5000, historical: historyEntry({}) }));
+  assert.doesNotMatch(out, /\[a\]pprove/);
+  assert.doesNotMatch(out, /\[d\]eny/);
+  assert.doesNotMatch(out, /\[t\]ype a reply/);
+});
+
+test('a resolved historical entry\'s footer is "esc back" only', () => {
+  const out = plain(renderEscalation(null, { cols: 78, now: 5000, historical: historyEntry({}) }));
+  const lines = out.trim().split('\n');
+  assert.equal(lines[lines.length - 1].trim(), 'esc back');
+});
+
+test('a timed-out historical entry shows "no answer recorded" in place of a decision', () => {
+  const out = plain(renderEscalation(null, {
+    cols: 78, now: 5000, historical: historyEntry({ decision: null, timedOut: true }),
+  }));
+  assert.match(out, /no answer recorded/);
+  assert.doesNotMatch(out, /decision:/);
+});
+
+test('a historical entry\'s meta shows who raised it and a resolvedAt-relative time', () => {
+  const out = plain(renderEscalation(null, { cols: 78, now: 5000 + 4 * 60000, historical: historyEntry({}) }));
+  assert.match(out, /raised by evaluator/);
+  assert.match(out, /answered 4m ago/);
+});
+
+test('a timed-out historical entry\'s meta says "timed out", not "answered"', () => {
+  const out = plain(renderEscalation(null, {
+    cols: 78, now: 5000 + 4 * 60000, historical: historyEntry({ decision: null, timedOut: true }),
+  }));
+  assert.match(out, /timed out 4m ago/);
+});
+
+test('a multi-part historical entry shows the LAST sub-question, never the first', () => {
+  const entry = historyEntry({
+    subQuestions: [
+      { question: 'Keep foo?', options: ['yes', 'no'] },
+      { question: 'Rename bar?', options: ['rename', 'keep'] },
+    ],
+    decision: 'Keep foo?: yes; Rename bar?: rename',
+  });
+  const out = plain(renderEscalation(null, { cols: 78, now: 5000, historical: entry }));
+  assert.match(out, /Rename bar\?/);
+  // "Keep foo?" (subQuestions[0]) must never render as the QUESTION shown —
+  // scoped to the lines above the decision line, which legitimately repeats
+  // every sub-question's text as part of the flattened decision string
+  // (Decision 1) — the requirement is "never re-entered step by step", not
+  // "never mentioned anywhere on screen".
+  const questionBlock = out.split('\n').slice(0, out.split('\n').findIndex((l) => l.includes('decision:')));
+  assert.ok(!questionBlock.some((l) => l.includes('Keep foo?')), 'subQuestions[0] must never render as the shown question');
+  assert.match(out, /2 sub-questions, see decision below/);
+  assert.match(out, /decision: Keep foo\?: yes; Rename bar\?: rename/);
+});
+
+test('a single-question historical entry (or a 1-step multi-part) shows no sub-question count note', () => {
+  const out = plain(renderEscalation(null, { cols: 78, now: 5000, historical: historyEntry({}) }));
+  assert.doesNotMatch(out, /sub-questions/i);
+});
+
+test('opts.historical takes precedence over a live run, even when one is passed', () => {
+  const out = plain(renderEscalation(run({}), { cols: 78, now: 5000, historical: historyEntry({}) }));
+  assert.match(out, /drop the legacy column\?/);
+  assert.doesNotMatch(out, /add zod@3\.23 as a runtime dependency\?/);
+});
+
+test('render(state, opts) threads escalationHistoryItem through as opts.historical', () => {
+  const state = { runs: [], escalationTicket: null, escalationHistoryItem: historyEntry({}) };
+  const out = plain(render(state, { cols: 78, now: 5000 }));
+  assert.match(out, /drop the legacy column\?/);
+  assert.match(out, /decision: approve/);
+});
+
+test('routeHandleKey on a historical view: only Escape is handled, mirroring a null run', () => {
+  const state = { runs: [], escalationTicket: null, escalationHistoryItem: historyEntry({}) };
+  assert.deepEqual(require('../lib/ui/screens/escalation').routeHandleKey('\x1b', state), { type: 'back' });
+  assert.equal(require('../lib/ui/screens/escalation').routeHandleKey('a', state), null);
+});
