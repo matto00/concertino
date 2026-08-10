@@ -1616,6 +1616,131 @@ test('jumping into QUEUED focus, moving the cursor, and exiting leaves the run s
   }
 });
 
+// --- CON-109, evaluator cycle-1 change request 1: a mouse click on a run row
+// while QUEUED focus is active reaches the same under-guarded 'jump' case
+// the keyboard digit-jump path does — must clear S.multiSelect.queued too,
+// not just S.focus. ---------------------------------------------------------
+
+test('a mouse click on a run row while QUEUED-focused clears S.multiSelect.queued, not just S.focus', async () => {
+  const { EventEmitter } = require('node:events');
+  const queueCache = require('../lib/ui/queue-cache');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-queueclick-'));
+
+  for (const ticket of ['HEL-1', 'HEL-2']) {
+    const runDir = path.join(root, '.concertino', 'runs', ticket);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+      JSON.stringify({ t: ticket === 'HEL-1' ? 1000 : 900, kind: 'run.start' }) + '\n');
+  }
+
+  // Same seeded-queue technique as the QUEUED-focus round-trip test above —
+  // sufficient to put a QUEUED section on screen with two pending tickets.
+  queueCache.write(root, {
+    pending: ['CON-50', 'CON-51'], inFlight: new Set(), maxConcurrent: 1, launchCommand: null,
+  }, 'sess-1', Date.now());
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+
+  const fakeSessionObj = {
+    name: 'fake',
+    ensure() {},
+    listWindows() { return [{ ticket: 'HEL-1', alive: true, activity: null }, { ticket: 'HEL-2', alive: true, activity: null }]; },
+    capture() { return ''; },
+    captureFull() { return ''; },
+    spawn() {},
+    kill() {},
+    attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = true; // mouse sequences need the same isTTY treatment CON-112's own click tests use
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(String(chunk)); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root, config: {} });
+
+    // Sections on screen: RUNNING (1), QUICK START (2, always on screen —
+    // CON-56), QUEUED (3) — same numbering the round-trip test above relies
+    // on. Digit 3 jumps INTO QUEUED focus.
+    fakeStdin.emit('data', '3');
+    // space toggles the QUEUED-local cursor's ticket (CON-50, queueFocus 0)
+    // into S.multiSelect.queued.
+    fakeStdin.emit('data', ' ');
+    const selectedFrame = screenOf(written);
+    assert.match(selectedFrame, /✓/, 'sanity: the multi-select marker is on screen after space');
+
+    // Locate HEL-2's rendered row and click it — deliberately the run row
+    // NOT already selected (jumping into QUEUED focus never moves `selected`
+    // off its pre-existing HEL-1/index-0 position), so the click actually
+    // changes what's on screen (the ▸ marker moves from HEL-1 to HEL-2) and
+    // the differential writer (CON-27) emits a real diff to replay — clicking
+    // an ALREADY-selected row would be a false-negative-prone no-diff case
+    // for this specific assertion. Dispatches the same { type: 'jump', ... }
+    // action a digit-jump to a different section would, via watch.js's own
+    // SGR mouse-click intercept in onKey (independent of fleet/keys.js's
+    // handleKey entirely).
+    const lines = selectedFrame.split('\n');
+    const targetLine = lines.findIndex((l) => l.includes('HEL-2'));
+    assert.ok(targetLine >= 0, 'fixture sanity: HEL-2 must be on screen');
+    const terminalRow = targetLine + 1;
+
+    fakeStdin.emit('data', '\x1b[<0;5;' + terminalRow + 'M');
+
+    // screenOf replays the FULL accumulated write history, never just the
+    // latest diff chunk (this file's own header comment on screenOf, and
+    // CON-27's differential-writer precedent) — required here since this
+    // click's own diff may not touch every row screenOf needs to reconstruct
+    // the true current screen.
+    const afterClickFrame = screenOf(written);
+    assert.doesNotMatch(afterClickFrame, /»/, 'the click must have exited QUEUED focus (mirrors CON-112\'s own jump-action behavior)');
+    const marked = afterClickFrame.split('\n').filter((l) => l.includes('▸'));
+    assert.equal(marked.length, 1);
+    assert.ok(marked[0].includes('HEL-2'), 'the click must have selected HEL-2, via the ordinary jump action');
+
+    // The regression itself: re-enter QUEUED focus and press f. If
+    // S.multiSelect.queued had survived the click (the bug this test
+    // guards), this would silently resolve to a BULK force-start confirm
+    // (naming a count) instead of the single-ticket one (naming CON-50, the
+    // ticket still under queueFocus 0 — nothing was force-started here).
+    fakeStdin.emit('data', '3'); // back into QUEUED focus
+    fakeStdin.emit('data', 'f');
+    const confirmFrame = screenOf(written);
+    assert.match(confirmFrame, /y confirm force-start/, 'sanity: a force-start confirmation opened');
+    assert.doesNotMatch(confirmFrame, /force-start \d+ queued tickets/,
+      'S.multiSelect.queued must have been cleared by the earlier click — f must resolve to the single-row ' +
+      'confirm (naming one ticket), never the bulk one (naming a count), or the click-path clearing fix has regressed');
+  } finally {
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // --- CON-39: force-start confirm/cancel/confirm cycle, wired end to end ----
 
 test('force-start: f opens a confirmation, any key cancels, y actually starts the ticket and persists the queue', async () => {
@@ -4430,7 +4555,11 @@ test('scrollToShow forwards every tail-lengthening opt (including forceStartConf
     assert.ok(calls.length > 0, 'sanity: j must have triggered scrollToShow');
     const winOpts = calls[0];
 
-    for (const field of ['prompt', 'queueNotice', 'restoreNotice', 'quitConfirm', 'forceStartConfirm', 'clearQueueConfirm']) {
+    // CON-109, design.md Decision 4 (skeptic gate round 1, finding 2):
+    // bulkConfirm/bulkResult joined this same list — both lengthen
+    // buildHeadTail()'s tail exactly like markDoneConfirm already does, and
+    // bulkResult in particular can render several lines (one per ticket).
+    for (const field of ['prompt', 'queueNotice', 'restoreNotice', 'quitConfirm', 'forceStartConfirm', 'clearQueueConfirm', 'markDoneConfirm', 'bulkConfirm', 'bulkResult']) {
       assert.ok(Object.prototype.hasOwnProperty.call(winOpts, field),
         `scrollToShow's winOpts is missing "${field}" — a tail-lengthening opt buildHeadTail() reads, ` +
         'omitting it lets columnAreaHeight (and so the grid-mode decision) drift from what renderFleet computes');
@@ -4448,6 +4577,197 @@ test('scrollToShow forwards every tail-lengthening opt (including forceStartConf
   }
 });
 
+// CON-109, design.md Decision 4 (skeptic gate round 1, finding 2): the
+// scrollOffset re-clamp's own `heightOpts` object (draw()'s "site 1",
+// distinct from scrollToShow's own winOpts "site 2" just above) is the
+// THIRD independent "every tail-lengthening field" list this codebase
+// duplicates — same field-presence check, against the object draw() itself
+// hands to gridModeEligible on every ordinary poll (no keypress needed to
+// reach it, unlike scrollToShow).
+test('the scrollOffset re-clamp\'s heightOpts carries bulkConfirm/bulkResult (mirrors the markDoneConfirm/forceStartConfirm fields already there)', async () => {
+  const { EventEmitter } = require('node:events');
+  const fleetScreen = require('../lib/ui/screens/fleet');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-heightopts-'));
+  const runDir = path.join(root, '.concertino', 'runs', 'HEL-500');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'), JSON.stringify({ t: 1000, kind: 'run.start' }) + '\n');
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const fakeSessionObj = {
+    name: 'fake', ensure() {}, listWindows() { return [{ ticket: 'HEL-500', alive: true, activity: null }]; },
+    capture() { return ''; }, captureFull() { return ''; }, spawn() {}, kill() {}, attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(String(chunk)); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: { hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__' },
+  };
+
+  const originalGridModeEligible = fleetScreen.gridModeEligible;
+  const calls = [];
+  fleetScreen.gridModeEligible = function (runs, opts) {
+    calls.push(opts);
+    return originalGridModeEligible(runs, opts);
+  };
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root, config: {} });
+
+    assert.ok(calls.length > 0, 'sanity: the startup draw() must have called gridModeEligible via the scrollOffset re-clamp');
+    const heightOpts = calls[calls.length - 1];
+
+    for (const field of ['prompt', 'queueNotice', 'restoreNotice', 'quitConfirm', 'forceStartConfirm', 'clearQueueConfirm', 'markDoneConfirm', 'bulkConfirm', 'bulkResult']) {
+      assert.ok(Object.prototype.hasOwnProperty.call(heightOpts, field),
+        `the scrollOffset re-clamp's heightOpts is missing "${field}" — omitting it lets columnAreaHeight ` +
+        'drift from what renderFleet actually computes (fleet-metrics-grid final-fix 2\'s own regression, ' +
+        're-introduced per-field for every new tail-lengthening state)');
+    }
+  } finally {
+    fleetScreen.gridModeEligible = originalGridModeEligible;
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ===========================================================================
+// CON-109, design.md Decision 4 (skeptic gate round 1, finding 3): a bulk
+// action's post-`y` per-row result list (`S.bulkResult`) is a one-shot
+// notice, cleared in watch.js's onKey immediately before router.handleKey is
+// called — NOT as a fourth confirm-style intercept branch inside
+// fleet/keys.js's handleKey. The load-bearing property this test pins: the
+// key that dismisses a visible bulkResult (here, `j`) must ALSO still
+// perform its own ordinary action (moving the cursor) on that SAME
+// keypress, not just clear the notice and swallow the rest.
+// ===========================================================================
+
+test('pressing j while S.bulkResult is set both clears the result list AND moves the cursor, in the same keypress (tasks.md 9.5)', async () => {
+  const { EventEmitter } = require('node:events');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-bulkresult-'));
+  // Two FAILED runs, HEL-100 (t:1000, more recent -> index 0) and HEL-101
+  // (t:990 -> index 1) — verified against the real store/reduce pipeline:
+  // marking HEL-100 done re-sorts the flat `runs` array to
+  // [HEL-101 (failed), HEL-100 (done)], so `selected` (unchanged at 0 by the
+  // mark-done handler itself) lands on a DIFFERENT ticket (HEL-101) right
+  // after 'y' — exactly the "cursor didn't move on its own" baseline this
+  // test needs before asserting that `j` moves it again.
+  for (const [ticket, t] of [['HEL-100', 1000], ['HEL-101', 990]]) {
+    const runDir = path.join(root, '.concertino', 'runs', ticket);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'events.jsonl'),
+      JSON.stringify({ t, kind: 'run.start' }) + '\n' + JSON.stringify({ t: t + 1, kind: 'run.end' }) + '\n');
+  }
+
+  const watchPath = require.resolve('../lib/ui/watch');
+  const sessionPath = require.resolve('../lib/ui/session');
+  const fakeSessionObj = {
+    name: 'fake', ensure() {}, listWindows() { return []; },
+    capture() { return ''; }, captureFull() { return ''; }, spawn() {}, kill() {}, attach() { return { status: 0 }; },
+  };
+
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  fakeStdin.setEncoding = () => {};
+
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+  const realWrite = process.stdout.write;
+  const written = [];
+  process.stdout.write = (chunk) => { written.push(String(chunk)); return true; };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+
+  delete require.cache[watchPath];
+  delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+  // Faking the whole `./session` module (below, for hasTmux/createSession)
+  // replaces its ENTIRE exports object — watch.js destructures
+  // `writeOverrideEvent` from that same require at load time (CON-98's
+  // 'confirm-mark-done'/'confirm-bulk-mark-done' both route through it), so
+  // the fake must re-export the real implementation too, or the mark-done
+  // path this test exercises throws "writeOverrideEvent is not a function".
+  const realSessionExports = require('../lib/ui/session');
+  delete require.cache[sessionPath];
+  require.cache[sessionPath] = {
+    id: sessionPath, filename: sessionPath, loaded: true,
+    exports: {
+      hasTmux: () => true, createSession: () => fakeSessionObj, PLACEHOLDER: '__concertino__',
+      writeOverrideEvent: realSessionExports.writeOverrideEvent,
+    },
+  };
+
+  let donePromise;
+  try {
+    const watchModule = require('../lib/ui/watch');
+    donePromise = watchModule.watch({ root, config: {} });
+
+    const firstFrame = screenOf(written);
+    const firstMarked = firstFrame.split('\n').filter((l) => l.includes('▸'));
+    assert.equal(firstMarked.length, 1);
+    assert.ok(firstMarked[0].includes('HEL-100'), 'sanity: the cursor starts on HEL-100 (index 0)');
+
+    // space -> toggle-multi-select (FAILED, HEL-100) -> d -> bulk mark-done
+    // confirm (multiSelect.failed is non-empty) -> y -> confirm-bulk-mark-done.
+    fakeStdin.emit('data', ' ');
+    fakeStdin.emit('data', 'd');
+    const confirmFrame = screenOf(written);
+    assert.match(confirmFrame, /mark 1 run as done\?/, 'sanity: the bulk (not single-row) confirm opened');
+    fakeStdin.emit('data', 'y');
+
+    const afterConfirmFrame = screenOf(written);
+    assert.match(afterConfirmFrame, /✓ HEL-100/, 'the bulk result list is on screen right after y');
+    const afterConfirmMarked = afterConfirmFrame.split('\n').filter((l) => l.includes('▸'));
+    assert.equal(afterConfirmMarked.length, 1);
+    assert.ok(afterConfirmMarked[0].includes('HEL-101'),
+      'sanity: selected (still 0) now points at HEL-101 after the reorder — the cursor itself did not move yet');
+
+    // The load-bearing keypress: j must BOTH clear the visible bulkResult
+    // AND move the cursor, in this one keypress.
+    fakeStdin.emit('data', 'j');
+    const afterJFrame = screenOf(written);
+    assert.doesNotMatch(afterJFrame, /✓ HEL-100/,
+      'bulkResult must be cleared by the very next keypress, even though that keypress is `j`, not `y`/cancel');
+    const afterJMarked = afterJFrame.split('\n').filter((l) => l.includes('▸'));
+    assert.equal(afterJMarked.length, 1);
+    assert.ok(afterJMarked[0].includes('HEL-100'),
+      'the SAME j keypress that dismissed bulkResult must also have moved the cursor onto HEL-100 (index 1) — ' +
+      'j must never be silently swallowed just because it also happened to dismiss a visible bulkResult');
+  } finally {
+    fakeStdin.emit('end');
+    if (donePromise) await donePromise;
+    process.stdout.write = realWrite;
+    Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    delete require.cache[watchPath];
+    delete require.cache[require.resolve('../lib/ui/ticket-provider')];
+    delete require.cache[sessionPath];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 // ===========================================================================
 // CON-57: the settings screen, driven end to end through the real onKey/
