@@ -858,8 +858,13 @@ test('metricsColumnLines stays compact when contentRows is too small, even with 
 });
 
 test('metricsColumnLines expands when both cols>=80 and contentRows>=11: 30-day throughput, duration line, escalations', () => {
+  // contentRows: 20 is also >= MULTI_ROW_THROUGHPUT_MIN_CONTENT_ROWS (14),
+  // so the throughput label/stats no longer sit at a fixed index — they're
+  // inlined on the multi-row chart's bottom row (see the dedicated
+  // multi-row throughput tests below for that exact construction). Find by
+  // content instead of index here.
   const lines = metricsColumnLines(metricsFixtureExpanded(), { cols: 90, contentRows: 20 });
-  assert.match(lines[2], /throughput \(30d\)/);
+  assert.ok(lines.some((l) => /throughput \(30d\)/.test(l)), 'a 30-day throughput label must render somewhere');
   const durationLine = lines.find((l) => l.startsWith('duration'));
   assert.ok(durationLine, 'a duration line must render');
   assert.match(durationLine, /<10m 75%/);
@@ -869,6 +874,69 @@ test('metricsColumnLines expands when both cols>=80 and contentRows>=11: 30-day 
   const escLine = lines.find((l) => l.includes('CON-9'));
   assert.ok(escLine, 'the newest escalation must render');
   assert.match(escLine, /retry\?/);
+});
+
+// --- Multi-row throughput chart (contentRows >= MULTI_ROW_THROUGHPUT_MIN_CONTENT_ROWS) ---
+
+test('metricsColumnLines renders the throughput chart across 3 stacked rows at contentRows >= 14, with the label/stats on the bottom row only', () => {
+  const { multiRowSparkline, visibleLength } = require('../lib/ui/format');
+  const m = metricsFixtureExpanded();
+  const lines = metricsColumnLines(m, { cols: 90, contentRows: 14 });
+
+  // Block layout: line1, line2, then 3 throughput rows, then line4 (verdicts).
+  const throughputRows = lines.slice(2, 5);
+  assert.equal(throughputRows.length, 3);
+
+  const prefix = 'throughput (30d)  ';
+  const throughputAvg = (m.throughput30d.reduce((a, b) => a + b, 0) / m.throughput30d.length).toFixed(1);
+  const throughputPeak = Math.max(...m.throughput30d);
+  const suffix = `  avg ${throughputAvg}/day · peak ${throughputPeak}`;
+
+  const chartRows = multiRowSparkline(m.throughput30d, 3);
+  assert.equal(throughputRows[2], prefix + chartRows[2] + suffix, 'the bottom row carries the label and stats');
+  assert.equal(throughputRows[0], ' '.repeat(visibleLength(prefix)) + chartRows[0], 'the top row is left-padded, no suffix');
+  assert.equal(throughputRows[1], ' '.repeat(visibleLength(prefix)) + chartRows[1], 'the middle row is left-padded, no suffix');
+
+  assert.match(lines[5], /^verdicts\s/, 'line4 (verdicts) follows immediately after the 3 throughput rows (index 2 + 3 rows)');
+});
+
+test('metricsColumnLines\' multi-row throughput columns stay aligned across all 3 rows', () => {
+  const { visibleLength } = require('../lib/ui/format');
+  const lines = metricsColumnLines(metricsFixtureExpanded(), { cols: 90, contentRows: 14 });
+  const throughputRows = lines.slice(2, 5);
+  const widths = throughputRows.map((l) => visibleLength(l.split('  avg')[0]));
+  // Every row's chart-glyph region must start at the same column: each row,
+  // minus its own trailing stats (only present on the bottom row), has the
+  // same visible width up through the chart glyphs.
+  assert.equal(widths[0], widths[1], 'top and middle rows have identical width (padding + chart glyphs, no stats)');
+});
+
+test('metricsColumnLines stays single-row for the throughput chart at contentRows just below the multi-row threshold (13)', () => {
+  const lines = metricsColumnLines(metricsFixtureExpanded(), { cols: 90, contentRows: 13 });
+  assert.match(lines[2], /throughput \(30d\)/, 'the label/stats are on line3 itself, single-row as before');
+  assert.match(lines[3], /^verdicts\s/, 'line4 (verdicts) follows immediately — no extra throughput rows inserted');
+});
+
+test('metricsColumnLines\' compact tier never renders the multi-row throughput chart, regardless of contentRows', () => {
+  const lines = metricsColumnLines(metricsFixtureExpanded(), { cols: 60, contentRows: 100 });
+  assert.equal(lines.length, 5, 'compact tier stays at 5 lines even with an enormous contentRows');
+  assert.match(lines[2], /throughput \(7d\)/);
+});
+
+test('metricsColumnLines\' multi-row throughput block still leaves "recent escalations" at least 1 row at the documented worst case (contentRows: 14, both breakdown lines present)', () => {
+  const m = metricsFixtureExpanded();
+  m.harnessBreakdown = [
+    { harness: 'claude-code', rate: { rate: 1, done: 2, total: 2 }, avgMs: 60000 },
+    { harness: 'codex', rate: { rate: 0.5, done: 1, total: 2 }, avgMs: 300000 },
+  ];
+  m.modelBreakdown = [
+    { model: 'sonnet-5', rate: { rate: 1, done: 2, total: 2 }, avgMs: 60000 },
+    { model: 'gpt-5', rate: { rate: 0.5, done: 1, total: 2 }, avgMs: 300000 },
+  ];
+  const lines = metricsColumnLines(m, { cols: 120, contentRows: 14 });
+  assert.ok(lines.includes('recent escalations'), 'the header must still render at this worst-case contentRows');
+  const headerIdx = lines.indexOf('recent escalations');
+  assert.ok(headerIdx >= 0 && headerIdx < lines.length - 1, 'at least 1 escalation row must follow the header');
 });
 
 test('metricsColumnLines\' expanded tier shows only as many escalation rows as contentRows allows', () => {

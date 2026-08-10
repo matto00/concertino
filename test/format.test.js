@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { dur, truncate, padTo, bar, sparkline, visibleLength, stripUnsafeControls } = require('../lib/ui/format');
+const { dur, truncate, padTo, bar, sparkline, multiRowSparkline, visibleLength, stripUnsafeControls } = require('../lib/ui/format');
 
 test('dur renders seconds, minutes, and hours', () => {
   assert.equal(dur(0), '0s');
@@ -136,6 +136,52 @@ test('sparkline\'s output length always equals the input length', () => {
   assert.equal(sparkline([]).length, 0);
   assert.equal(sparkline([3]).length, 1);
   assert.equal(sparkline([3, 1, 4, 1, 5, 9, 2, 6]).length, 8);
+});
+
+// --- multiRowSparkline — multi-row sibling of sparkline() -------------------
+
+test('multiRowSparkline(values, 1) is equivalent to sparkline(values)', () => {
+  const samples = [[], [3], [0, 7], [1, 2, 3, 4, 5, 6, 7], [0, 0, 0, 0, 0, 0, 0]];
+  for (const values of samples) {
+    assert.deepEqual(multiRowSparkline(values, 1), [sparkline(values)]);
+  }
+});
+
+test('multiRowSparkline distinguishes values sparkline collapses to the same glyph', () => {
+  const values = [12, 13, 23];
+  assert.equal(sparkline(values), '▅▅█', 'sparkline collapses 12 and 13 to the same 8-level glyph');
+  const rows = multiRowSparkline(values, 3);
+  assert.deepEqual(rows, ['  █', '▅▆█', '███']);
+  assert.notEqual(rows[1][0], rows[1][1], 'the middle row distinguishes 12 from 13, unlike sparkline');
+});
+
+test('multiRowSparkline renders a zero value as SPARK_LEVELS[0] at the bottom row only, blank above', () => {
+  const rows = multiRowSparkline([0, 23], 3);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[2][0], '▁', 'bottom row renders SPARK_LEVELS[0] for the zero value');
+  assert.equal(rows[1][0], ' ', 'middle row is blank above the zero value');
+  assert.equal(rows[0][0], ' ', 'top row is blank above the zero value');
+});
+
+test('multiRowSparkline renders an all-zero series as SPARK_LEVELS[0] at the bottom row and blanks above, for any row count', () => {
+  for (const rows of [1, 2, 3, 5]) {
+    const result = multiRowSparkline([0, 0, 0], rows);
+    assert.equal(result.length, rows);
+    assert.equal(result[rows - 1], '▁▁▁', 'bottom row is all SPARK_LEVELS[0]');
+    for (let i = 0; i < rows - 1; i++) {
+      assert.equal(result[i], '   ', `row ${i} above the bottom must be blank`);
+    }
+  }
+});
+
+test('multiRowSparkline returns exactly `rows` strings, each `values.length` long', () => {
+  const rows = multiRowSparkline([3, 1, 4, 1, 5, 9, 2, 6], 3);
+  assert.equal(rows.length, 3);
+  for (const row of rows) assert.equal(row.length, 8);
+});
+
+test('multiRowSparkline handles an empty values array', () => {
+  assert.deepEqual(multiRowSparkline([], 3), ['', '', '']);
 });
 
 // --- hintLines — the footer key-hint wrapper --------------------------------
