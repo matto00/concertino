@@ -1,0 +1,13 @@
+- `lib/ui/screens/archive.js` — new: the run-archive screen (pure render + handleKey), filtering (`filterArchiveRuns`, substring/harness/date-range), harness cycling helpers, date-prompt format/parse helpers.
+- `lib/ui/controllers/archive.js` — new: the archive screen's action handling (`open-archive`, focus cycling, query typing, harness cycling, the date-prompt open/type/backspace/submit/cancel cycle, list-cursor movement).
+- `lib/ui/app-state.js` — adds `archive*` fields to the initial state shape, `currentState()`'s snapshot, and `backToFleet()`'s reset path (tasks 2.1-2.3).
+- `lib/ui/router.js` — registers `'archive'` in the `SCREENS` map.
+- `lib/ui/controllers/index.js` — registers the new archive controller in the `CONTROLLERS` array.
+- `lib/ui/screens/fleet/keys.js` — binds `A` to `{ type: 'open-archive' }` at the same unconditional top-level site as `s`/`v`/`N`.
+- `docs/dashboard.md` — documents the `A` key in the fleet-view keys table and a new "The run-archive screen" subsection.
+- `test/archive.test.js` — new: pure render/handleKey tests for the archive screen (filtering, focus cycling, per-focus key dispatch, the date-prompt's own key interception, the MAX_FINISHED regression, router seam).
+- `test/controllers-archive.test.js` — new: controller tests (`open-archive` reset, focus cycling, query/harness/date-prompt actions, list-cursor clamping, unrecognised actions).
+- `test/router.test.js` — adds router-registration tests for the `'archive'` mode.
+- `test/fleet.test.js` — adds tests for the new `A` binding (and its suppression while the `n` prompt is open).
+- `test/fleet-search.test.js` — adds a targeted assertion (task 6.3) that loading the archive screen never modifies `fleet/search.js`'s own `matchesQuery`/`rowMatches` exports or their empty-query semantics.
+- `openspec/changes/searchable-filterable-run-archive/tasks.md` — all 25 tasks marked complete.

@@ -1769,6 +1769,17 @@ test('while prompting, N types an "N" rather than opening the launch pad', () =>
   assert.deepEqual(handleKey('N', promptState({ value: '', error: null })), { type: 'prompt-type', char: 'N' });
 });
 
+// CON-113, spec.md "A opens the run-archive screen listing every retained
+// run": capital A is a genuinely free slot at this same unconditional
+// top-level site as n/N/s/v.
+test('A opens the run-archive screen', () => {
+  assert.deepEqual(handleKey('A', state({})), { type: 'open-archive' });
+});
+
+test('while prompting, A types an "A" into the prompt rather than opening the archive screen', () => {
+  assert.deepEqual(handleKey('A', promptState({ value: '', error: null })), { type: 'prompt-type', char: 'A' });
+});
+
 test('enter on a plain run attaches', () => {
   assert.deepEqual(handleKey('\r', state({})), { type: 'attach', ticket: 'HEL-1' });
 });

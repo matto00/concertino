@@ -138,3 +138,24 @@ test('firstMatch: an empty query matches nothing, even with targets present', ()
   const targets = searchTargets(runs, null, [], null);
   assert.equal(firstMatch(targets, ''), undefined);
 });
+
+// --- CON-113, design.md Decision 2: the run-archive screen reuses this
+// module's matchesQuery/rowMatches UNMODIFIED (import-only) — it never
+// widens this module's own "empty query matches nothing" scope to get its
+// own "empty filter shows everything" behaviour (that bypass lives entirely
+// in screens/archive.js). Guards against a future accidental widening of
+// fleet-search's own scope from either module drifting.
+test('CON-113: loading the archive screen does not modify this module\'s own matchesQuery/rowMatches exports', () => {
+  const before = require('../lib/ui/screens/fleet/search');
+  require('../lib/ui/screens/archive');
+  const after = require('../lib/ui/screens/fleet/search');
+  assert.equal(before, after, 'require cache identity: archive.js must not replace this module');
+  assert.equal(typeof after.matchesQuery, 'function');
+  assert.equal(typeof after.rowMatches, 'function');
+  // The exact, unwidened semantics this module has always had — an empty
+  // query still matches nothing here, even though the archive screen's OWN
+  // filter shows everything for an empty query (screens/archive.js's own
+  // bypass, never this function's concern).
+  assert.equal(after.matchesQuery('CON-42', ''), false);
+  assert.equal(after.rowMatches('CON-42', 'some title', ''), false);
+});

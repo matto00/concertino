@@ -143,6 +143,7 @@ without acting.
 | `n` | Start a new run — type a ticket id and `↵` to launch, or type free text and `↵` to draft a new ticket first (Linear only — see "Starting a run from an intention" below); `esc` to cancel |
 | `N` | Open the launch pad — browse epics/tickets, pick a batch, launch it. Always bound; if the feature gate is off it explains why rather than doing nothing (see below) |
 | `s` | Open the settings screen (view/edit `concertino.config.json`) |
+| `A` | Open the run-archive screen — every retained run under `.concertino/runs/`, filterable by ticket id/title, harness, and date range (see "The run-archive screen" below) |
 | `g` | Reply to the oldest live escalation across the whole fleet, from **whatever screen you're on** — see "The cross-screen escalation banner" below |
 | `q` | Quit the dashboard (runs keep going) |
 
@@ -821,3 +822,35 @@ in this screen; everything else (`ticketProvider`, `specProvider`,
 pane says so and points at `concertino update` or hand-editing the config
 file directly for those. While a free-text edit prompt is open, `esc`
 cancels just that prompt (not the whole screen) and `↵` commits it.
+
+## The run-archive screen
+
+`A` from the fleet view opens the run-archive screen — every run currently
+retained under `.concertino/runs/` (bounded only by `dashboard.retentionDays`,
+the same retention window the fleet view's own DONE/FAILED sections already
+observe), independent of live status, not just the handful of most-recent
+DONE/FAILED rows the fleet view itself shows on screen. There is no separate
+read path: this is the same run set (`S.runs`) the fleet view already holds
+every poll, listed and filtered a different way.
+
+Four filter controls sit above the results list — a ticket id/title
+substring, a harness selector, and a date-from/date-to pair against each
+run's start time — plus the list itself: five zones in total, one of which
+holds keyboard focus at a time (shown with a bold border). `Tab` moves focus
+forward through QUERY → HARNESS → FROM → TO → (results list), wrapping at
+both ends; `Shift-Tab` moves backward.
+
+| Key | Action |
+| --- | --- |
+| `Tab` / `Shift-Tab` | Move focus forward/backward through the five zones, wrapping at both ends |
+| *(QUERY focused)* type / backspace | Filter live by ticket id/title substring (case-insensitive) — empty shows every run |
+| *(HARNESS focused)* `↵` / `space` | Cycle to the next harness value observed among the currently-listed runs, wrapping back to "any" (no harness filter) after the last one |
+| *(FROM/TO focused)* `↵` | Open a one-line `YYYY-MM-DD` prompt seeded with that field's current value — `↵` commits it (an empty submission clears the bound), `esc` cancels the prompt only (not the whole screen), an invalid date shows a one-line error and leaves the prompt open |
+| *(list focused)* `j`/`k` | Move the selection |
+| *(list focused)* `↵` | Open the selected run's drill-down — the same TICKET/TIMELINE/GATES/EVIDENCE panels a live/recent run's own `l` key opens, via the identical action and run lookup |
+| `esc` | Return to the fleet — no navigation stack; `esc` from a drill-down opened via the archive screen also returns straight to the fleet, not back to the archive |
+
+All three filters (substring, harness, date range) apply simultaneously and
+update the list on every change, with no separate "apply" step. A run with
+no recorded start time is excluded whenever either date bound is set, and
+included when neither is.

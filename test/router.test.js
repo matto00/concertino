@@ -130,6 +130,25 @@ test('handleKey dispatches to the sessions screen', () => {
   assert.deepEqual(router.handleKey('\x1b', state), { type: 'back' });
 });
 
+// --- CON-113: the run-archive screen ------------------------------------
+
+test('the archive screen renders through the router', () => {
+  const state = {
+    mode: 'archive',
+    runs: [fleetRun({ ticket: 'HEL-9', status: 'done' })],
+    archiveFocus: 'query', archiveQuery: null, archiveHarnessFilter: null,
+    archiveDateFrom: null, archiveDateTo: null, archiveSelected: 0, archiveDatePrompt: null,
+  };
+  const out = plain(router.render(state, { cols: 100 }));
+  assert.match(out, /HEL-9/);
+  assert.match(out, /archive/i);
+});
+
+test('handleKey dispatches to the archive screen', () => {
+  const state = { mode: 'archive', runs: [], archiveFocus: 'query', archiveDatePrompt: null };
+  assert.deepEqual(router.handleKey('\x1b', state), { type: 'back' });
+});
+
 test('a run whose escalation cleared still renders through the escalation screen honestly', () => {
   // The router does not know the escalation cleared — that transition is
   // watch.js's job (see draw() falling back to 'fleet'). Rendering the
