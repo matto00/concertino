@@ -89,6 +89,22 @@ left with the newest `escalation.raised` events fleet-wide (or `no
 escalations yet` when there are none) — the more room the terminal gives
 METRICS, the more escalation rows it shows.
 
+On a taller terminal still — `contentRows >= 14`, a stricter threshold than
+plain expanded-tier entry — the throughput chart itself gains vertical
+resolution: instead of a single sparkline row capped at 8 block-character
+levels, it renders across a **fixed 3 stacked rows** (24 combined levels), via
+`multiRowSparkline()` in `lib/ui/format.js`. The `throughput (30d)  ` label
+and `avg X/day · peak Y` stats stay inlined on the chart's bottom row exactly
+as they are in the single-row rendering; the two rows above it are left-
+padded to the same width so the chart's data columns stay aligned across all
+3 rows. This is a net +2 lines for the throughput block (1 → 3), which is why
+the threshold is 14 rather than the base expanded-tier gate of 11 — applying
+it right at 11 would eat directly into "recent escalations" room on the
+terminals already tightest on expanded-tier space. Terminals in the expanded
+tier but below this second threshold (`11 <= contentRows < 14`), and the
+entire compact tier regardless of height, are unaffected — both continue to
+render the throughput chart as a single `sparkline()` row exactly as before.
+
 The expanded tier also breaks success rate and avg duration out **by
 harness** and **by model** — the same bar/percentage/`done/total` and avg-
 duration formatting the compact tier's success line and the `duration` line
