@@ -70,6 +70,38 @@ pane (e.g. `Pipeline v2` above) stays visible but recedes — dimmed, never
 bold — so the two panes' selections read as clearly different states, not as
 "both panes are somehow active."
 
+### The METRICS panel
+
+METRICS is a fleet-wide roll-up, always rendered after the DONE section (as a
+single box in a narrow terminal, or as its own column in grid mode). Its
+compact tier — 5 lines, shown whenever the box is narrower than 80 columns or
+shorter than 11 content rows — is: avg delivery time / delivered-today /
+delivered-this-week / escalations-today; success rate (today and this week,
+as a bar + percentage + `done/total`); a 7-day throughput sparkline; each
+role's verdict pass-rate (evaluator/skeptic/auditor); and each gate's
+pass-rate, both over all history.
+
+At `cols >= 80 && contentRows >= 11`, METRICS switches to an **expanded**
+tier: the throughput sparkline widens to a 30-day window, a `duration` line
+buckets every done run's elapsed time into `<10m` / `10-30m` / `30m+`
+percentages, and a `recent escalations` list fills whatever vertical room is
+left with the newest `escalation.raised` events fleet-wide (or `no
+escalations yet` when there are none) — the more room the terminal gives
+METRICS, the more escalation rows it shows.
+
+The expanded tier also breaks success rate and avg duration out **by
+harness** and **by model** — the same bar/percentage/`done/total` and avg-
+duration formatting the compact tier's success line and the `duration` line
+already use, one segment per distinct `run.harness` (respectively
+`run.model`) value seen across the fleet's runs, computed over all history.
+Each breakdown line renders only when there is **more than one** distinct
+value to break out — a fleet that has only ever used one harness (or has
+recorded zero or one distinct models) shows neither line, so a single-
+harness/single-model fleet's expanded tier renders identically to a fleet
+that predates this feature. A run with no `run.harness`/`run.model` recorded
+(e.g. a run that predates that field) is excluded from both breakdowns
+entirely, rather than counted under an "unknown" bucket.
+
 ### The drill-down's TICKET panel
 
 Drilling into a run (`l` from the fleet view) shows the ticket's title in the
