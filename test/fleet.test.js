@@ -734,6 +734,87 @@ test('metricsFor.gateRates computes each gate\'s pass-rate from the latest per-r
   assert.ok(!('phase:servers' in m.gateRates), 'a gate no run ever reported must be omitted, not 0%');
 });
 
+test('metricsFor.harnessBreakdown has one entry for a single-harness fleet', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', harness: 'claude-code', status: 'done', endedAt: 1000, elapsedMs: 60000 }),
+    run({ ticket: 'HEL-2', harness: 'claude-code', status: 'done', endedAt: 2000, elapsedMs: 120000 }),
+  ], 1000000);
+  assert.equal(m.harnessBreakdown.length, 1);
+  assert.equal(m.harnessBreakdown[0].harness, 'claude-code');
+  assert.deepEqual(m.harnessBreakdown[0].rate, { rate: 1, done: 2, total: 2 });
+  assert.equal(m.harnessBreakdown[0].avgMs, 90000);
+});
+
+test('metricsFor.harnessBreakdown has one entry per distinct harness, each scoped to its own runs', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', harness: 'claude-code', status: 'done', endedAt: 1000, elapsedMs: 60000 }),
+    run({ ticket: 'HEL-2', harness: 'claude-code', status: 'failed', endedAt: 2000 }),
+    run({ ticket: 'HEL-3', harness: 'codex', status: 'done', endedAt: 3000, elapsedMs: 300000 }),
+  ], 1000000);
+  assert.equal(m.harnessBreakdown.length, 2);
+  const cc = m.harnessBreakdown.find((e) => e.harness === 'claude-code');
+  const codex = m.harnessBreakdown.find((e) => e.harness === 'codex');
+  assert.deepEqual(cc.rate, { rate: 0.5, done: 1, total: 2 });
+  assert.equal(cc.avgMs, 60000);
+  assert.deepEqual(codex.rate, { rate: 1, done: 1, total: 1 });
+  assert.equal(codex.avgMs, 300000);
+});
+
+test('metricsFor.harnessBreakdown excludes runs with no recorded harness', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', harness: 'claude-code', status: 'done', endedAt: 1000, elapsedMs: 60000 }),
+    run({ ticket: 'HEL-2', harness: null, status: 'done', endedAt: 2000, elapsedMs: 60000 }),
+  ], 1000000);
+  assert.equal(m.harnessBreakdown.length, 1);
+  assert.equal(m.harnessBreakdown[0].harness, 'claude-code');
+  assert.equal(m.harnessBreakdown[0].rate.total, 1, 'the harness-less run must not be counted');
+});
+
+test('metricsFor.harnessBreakdown gives a harness with only in-flight runs an n/a-shaped entry, not a missing one', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', harness: 'claude-code', status: 'running' }),
+  ], 1000000);
+  assert.equal(m.harnessBreakdown.length, 1);
+  assert.deepEqual(m.harnessBreakdown[0].rate, { rate: null, done: 0, total: 0 });
+  assert.equal(m.harnessBreakdown[0].avgMs, null);
+});
+
+test('metricsFor.modelBreakdown has one entry for a single-model fleet', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', model: 'sonnet-5', status: 'done', endedAt: 1000, elapsedMs: 60000 }),
+    run({ ticket: 'HEL-2', model: 'sonnet-5', status: 'done', endedAt: 2000, elapsedMs: 120000 }),
+  ], 1000000);
+  assert.equal(m.modelBreakdown.length, 1);
+  assert.equal(m.modelBreakdown[0].model, 'sonnet-5');
+  assert.deepEqual(m.modelBreakdown[0].rate, { rate: 1, done: 2, total: 2 });
+  assert.equal(m.modelBreakdown[0].avgMs, 90000);
+});
+
+test('metricsFor.modelBreakdown has one entry per distinct model, each scoped to its own runs', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', model: 'sonnet-5', status: 'done', endedAt: 1000, elapsedMs: 60000 }),
+    run({ ticket: 'HEL-2', model: 'sonnet-5', status: 'failed', endedAt: 2000 }),
+    run({ ticket: 'HEL-3', model: 'gpt-5', status: 'done', endedAt: 3000, elapsedMs: 300000 }),
+  ], 1000000);
+  assert.equal(m.modelBreakdown.length, 2);
+  const sonnet = m.modelBreakdown.find((e) => e.model === 'sonnet-5');
+  const gpt = m.modelBreakdown.find((e) => e.model === 'gpt-5');
+  assert.deepEqual(sonnet.rate, { rate: 0.5, done: 1, total: 2 });
+  assert.equal(sonnet.avgMs, 60000);
+  assert.deepEqual(gpt.rate, { rate: 1, done: 1, total: 1 });
+  assert.equal(gpt.avgMs, 300000);
+});
+
+test('metricsFor.modelBreakdown excludes runs with no recorded model', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', model: 'sonnet-5', status: 'done', endedAt: 1000, elapsedMs: 60000 }),
+    run({ ticket: 'HEL-2', model: null, status: 'done', endedAt: 2000, elapsedMs: 60000 }),
+  ], 1000000);
+  assert.equal(m.modelBreakdown.length, 1);
+  assert.equal(m.modelBreakdown[0].model, 'sonnet-5');
+  assert.equal(m.modelBreakdown[0].rate.total, 1, 'the model-less run must not be counted');
+});
+
 test('metricsColumnLines returns the same 5 compact lines buildSections used to build inline', () => {
   const { metricsColumnLines } = require('../lib/ui/screens/fleet');
   const m = metricsFor([
@@ -816,6 +897,59 @@ test('metricsColumnLines\' expanded-tier duration line says "no data yet" with n
   const lines = metricsColumnLines(m, { cols: 90, contentRows: 20 });
   const durationLine = lines.find((l) => l.startsWith('duration'));
   assert.match(durationLine, /no data yet/);
+});
+
+test('metricsColumnLines\' expanded tier renders a "by harness" line when more than one harness is present', () => {
+  const m = metricsFixtureExpanded();
+  m.harnessBreakdown = [
+    { harness: 'claude-code', rate: { rate: 1, done: 2, total: 2 }, avgMs: 60000 },
+    { harness: 'codex', rate: { rate: 0.5, done: 1, total: 2 }, avgMs: 300000 },
+  ];
+  const lines = metricsColumnLines(m, { cols: 120, contentRows: 20 });
+  const harnessLine = lines.find((l) => l.startsWith('by harness'));
+  assert.ok(harnessLine, 'a "by harness" line must render');
+  assert.match(harnessLine, /claude-code/);
+  assert.match(harnessLine, /codex/);
+});
+
+test('metricsColumnLines\' expanded tier renders identically to today for a single harness and no more than one model', () => {
+  const m = metricsFixtureExpanded();
+  m.harnessBreakdown = [{ harness: 'claude-code', rate: { rate: 1, done: 2, total: 2 }, avgMs: 60000 }];
+  m.modelBreakdown = [];
+  const withBreakdown = metricsColumnLines(m, { cols: 90, contentRows: 20 });
+  const without = metricsFixtureExpanded();
+  const baseline = metricsColumnLines(without, { cols: 90, contentRows: 20 });
+  assert.deepEqual(withBreakdown, baseline, 'a single-harness/no-model fleet must render exactly like today');
+  assert.ok(!withBreakdown.some((l) => l.startsWith('by harness')), 'no "by harness" line for a single harness');
+  assert.ok(!withBreakdown.some((l) => l.startsWith('by model')), 'no "by model" line with fewer than two models');
+});
+
+test('metricsColumnLines\' expanded tier renders a "by model" line when more than one model is present', () => {
+  const m = metricsFixtureExpanded();
+  m.modelBreakdown = [
+    { model: 'sonnet-5', rate: { rate: 1, done: 2, total: 2 }, avgMs: 60000 },
+    { model: 'gpt-5', rate: { rate: 0.5, done: 1, total: 2 }, avgMs: 300000 },
+  ];
+  const lines = metricsColumnLines(m, { cols: 120, contentRows: 20 });
+  const modelLine = lines.find((l) => l.startsWith('by model'));
+  assert.ok(modelLine, 'a "by model" line must render');
+  assert.match(modelLine, /sonnet-5/);
+  assert.match(modelLine, /gpt-5/);
+});
+
+test('metricsColumnLines\' compact tier never renders a breakdown line, regardless of breakdown contents', () => {
+  const m = metricsFixtureExpanded();
+  m.harnessBreakdown = [
+    { harness: 'claude-code', rate: { rate: 1, done: 2, total: 2 }, avgMs: 60000 },
+    { harness: 'codex', rate: { rate: 0.5, done: 1, total: 2 }, avgMs: 300000 },
+  ];
+  m.modelBreakdown = [
+    { model: 'sonnet-5', rate: { rate: 1, done: 2, total: 2 }, avgMs: 60000 },
+    { model: 'gpt-5', rate: { rate: 0.5, done: 1, total: 2 }, avgMs: 300000 },
+  ];
+  const lines = metricsColumnLines(m, { cols: 60, contentRows: 40 }); // narrower than 80 -> compact
+  assert.equal(lines.length, 5);
+  assert.ok(!lines.some((l) => l.startsWith('by harness') || l.startsWith('by model')));
 });
 
 test('the fleet view shows a METRICS section after DONE with real numbers', () => {
