@@ -134,9 +134,10 @@ without acting.
 | `j` / `k` | Move the selection — or, while QUICK START/QUEUED is locally focused, that section's own cursor instead |
 | `1`-`9` | Jump straight to the Nth section actually on screen this frame (NEEDS YOU, RUNNING, QUICK START, QUEUED, FAILED, DONE, METRICS — whichever are rendered), focusing QUICK START/QUEUED locally when the target is one of those two |
 | `/` | Open a search prompt — typing filters/highlights every row (any section) whose ticket id or title contains the typed text, live; `↵` jumps the selection to the first match, in on-screen render order; `esc` cancels with no state change |
-| `a` | While QUICK START is locally focused: quick-start the highlighted eligible ticket. **On a selected FAILED row** (no local focus at all — see "Addressing a FAILED run" below): launch `/concertino-address-failure` against it |
-| `d` | **On a selected FAILED row:** mark it DONE on the dashboard, past a `y` confirmation — see "Addressing a FAILED run" below. Unbound everywhere else |
-| `f` | While QUEUED is locally focused: force-start the highlighted pending ticket, past a confirmation |
+| `space` | On a FAILED row, or the QUEUED-locally-focused row: toggle that row into/out of its section's multi-select set (marked with a dedicated `✓`, distinct from the `▸`/`»` cursor markers) — see "Bulk actions on multiple rows" below. Unbound everywhere else |
+| `a` | While QUICK START is locally focused: quick-start the highlighted eligible ticket. **On a selected FAILED row** (no local focus at all — see "Addressing a FAILED run" below): launch `/concertino-address-failure` against it — or, with one or more FAILED rows multi-selected, against the whole selection at once, past a `y` confirmation naming the count |
+| `d` | **On a selected FAILED row:** mark it DONE on the dashboard, past a `y` confirmation — see "Addressing a FAILED run" below — or, with one or more FAILED rows multi-selected, mark the whole selection DONE at once, past a `y` confirmation naming the count. Unbound everywhere else |
+| `f` | While QUEUED is locally focused: force-start the highlighted pending ticket, past a confirmation — or, with one or more QUEUED rows multi-selected, force-start the whole selection at once, past a confirmation naming the count and the resulting concurrency overage |
 | `C` | Clear the queue — drops everything still pending, past a confirmation. Bound whenever QUEUED has anything pending, independent of focus |
 | `c` | Confirm a queue restored from a previous session (shown after a dashboard restart with tickets still pending/in flight) |
 | `n` | Start a new run — type a ticket id and `↵` to launch, or type free text and `↵` to draft a new ticket first (Linear only — see "Starting a run from an intention" below); `esc` to cancel |
@@ -187,6 +188,38 @@ reopen/requeue action today — considered and explicitly deferred, since
 "reopen" would mean materially different things for an ordinarily-delivered
 row versus a `d`-overridden one. None of the three needed a new top-level key
 in this change.
+
+### Bulk actions on multiple rows
+
+FAILED and QUEUED — the two sections with their own row-level action key —
+also support multi-select: `space` toggles the cursor row (FAILED) or the
+QUEUED-locally-focused row into/out of that section's own multi-select set,
+marked on screen with a dedicated `✓`, independent of (and shown alongside)
+the ordinary `▸`/`»` cursor marker. Selection persists across `j`/`k`
+movement — a row stays marked as the cursor moves away from and back to it —
+until explicitly toggled again, until the section's bulk action resolves
+(confirmed or cancelled), or until focus leaves that section.
+
+With one or more rows multi-selected, that section's existing action key
+(`a`/`d` for FAILED, `f` for QUEUED) applies to the **whole selection**
+instead of just the cursor row, behind the same `y`/anything-else
+confirmation pattern the single-row action already uses — naming the row
+count (e.g. "mark 4 runs as done?"), and, for a bulk `f`, the resulting
+concurrent-run count against `maxConcurrent` too. With nothing
+multi-selected, `a`/`d`/`f` behave exactly as documented above — multi-select
+is additive, never a replacement of the single-row path.
+
+On `y`, each ticket is re-resolved fresh (never a value cached from before
+the confirmation opened) and processed independently — one ticket's failure
+(a spawn error, a ticket that already left the section between marking and
+confirming) never blocks or rolls back any other ticket in the batch. The
+outcome of every ticket in the batch — success or failure, with its error
+text — is then shown as a per-row result list (ticket id + `✓`/`✗`), never
+folded into a single rolled-up pass/fail summary, so a partial failure is
+always visible per ticket. The result list stays on screen until the very
+next keypress, which both dismisses it and still performs its own ordinary
+action (e.g. `j` both clears the result list and moves the cursor, in the
+same keypress).
 
 ## Mouse support (fleet run rows only)
 

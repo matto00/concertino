@@ -1892,6 +1892,90 @@ test('a/d with no runs selected is a no-op', () => {
   assert.equal(handleKey('d', state({ runs: [], focus: 'runs' })), null);
 });
 
+// --- CON-109, fleet-bulk-select spec: `space` toggles a FAILED row into the
+// multi-select set (mirroring a/d's own binding site/guard) -----------------
+
+test('space on a FAILED selected row toggles it into the FAILED multi-select set', () => {
+  const failed = run({ ticket: 'HEL-9', status: 'failed' });
+  assert.deepEqual(handleKey(' ', state({ runs: [failed], focus: 'runs' })),
+    { type: 'toggle-multi-select', section: 'failed', ticket: 'HEL-9' });
+});
+
+test('space is a no-op on a non-FAILED selected row', () => {
+  const running = run({ ticket: 'HEL-9', status: 'running' });
+  assert.equal(handleKey(' ', state({ runs: [running], focus: 'runs' })), null);
+});
+
+test('space is a no-op while QUICK START is locally focused, even if the (off-screen) selected row is FAILED', () => {
+  const failed = run({ ticket: 'HEL-9', status: 'failed' });
+  const s = state({ runs: [failed], focus: 'quickstart' });
+  assert.equal(handleKey(' ', s), null);
+});
+
+// --- CON-109, fleet-failed-remediation spec: a non-empty FAILED
+// multi-select set makes a/d bulk regardless of the cursor's own row -------
+
+test('a with a non-empty FAILED multi-select set opens the bulk address confirm, not single-row address-failure', () => {
+  const failed = run({ ticket: 'HEL-9', status: 'failed' });
+  const s = state({
+    runs: [failed], focus: 'runs',
+    multiSelect: { failed: new Set(['HEL-1', 'HEL-2', 'HEL-3']), queued: new Set() },
+  });
+  assert.deepEqual(handleKey('a', s),
+    { type: 'open-bulk-address-confirm', tickets: ['HEL-1', 'HEL-2', 'HEL-3'] });
+});
+
+test('d with a non-empty FAILED multi-select set opens the bulk mark-done confirm', () => {
+  const failed = run({ ticket: 'HEL-9', status: 'failed' });
+  const s = state({
+    runs: [failed], focus: 'runs',
+    multiSelect: { failed: new Set(['HEL-1', 'HEL-2']), queued: new Set() },
+  });
+  assert.deepEqual(handleKey('d', s),
+    { type: 'open-bulk-mark-done-confirm', tickets: ['HEL-1', 'HEL-2'] });
+});
+
+test('a/d bulk dispatch fires even while the cursor sits on a non-FAILED row, as long as the FAILED multi-select set is non-empty', () => {
+  const running = run({ ticket: 'HEL-9', status: 'running' });
+  const s = state({
+    runs: [running], focus: 'runs',
+    multiSelect: { failed: new Set(['HEL-1']), queued: new Set() },
+  });
+  assert.deepEqual(handleKey('a', s), { type: 'open-bulk-address-confirm', tickets: ['HEL-1'] });
+  assert.deepEqual(handleKey('d', s), { type: 'open-bulk-mark-done-confirm', tickets: ['HEL-1'] });
+});
+
+test('a/d with an EMPTY FAILED multi-select set behave byte-for-byte exactly as before this change (tasks.md 3.3)', () => {
+  const failed = run({ ticket: 'HEL-9', status: 'failed' });
+  const withEmptySet = state({
+    runs: [failed], focus: 'runs',
+    multiSelect: { failed: new Set(), queued: new Set() },
+  });
+  const withNoField = state({ runs: [failed], focus: 'runs' }); // multiSelect absent entirely
+  assert.deepEqual(handleKey('a', withEmptySet), { type: 'address-failure', ticket: 'HEL-9' });
+  assert.deepEqual(handleKey('d', withEmptySet), { type: 'open-mark-done-confirm', ticket: 'HEL-9' });
+  assert.deepEqual(handleKey('a', withNoField), { type: 'address-failure', ticket: 'HEL-9' });
+  assert.deepEqual(handleKey('d', withNoField), { type: 'open-mark-done-confirm', ticket: 'HEL-9' });
+});
+
+// --- CON-109: the bulk action's own y/anything-else confirmation gate ------
+
+test('bulkConfirm: y resolves to the confirm action matching bulkConfirm.kind', () => {
+  assert.deepEqual(handleKey('y', state({ bulkConfirm: { section: 'failed', kind: 'address', tickets: ['HEL-1'] } })),
+    { type: 'confirm-bulk-address' });
+  assert.deepEqual(handleKey('y', state({ bulkConfirm: { section: 'failed', kind: 'mark-done', tickets: ['HEL-1'] } })),
+    { type: 'confirm-bulk-mark-done' });
+  assert.deepEqual(handleKey('y', state({ bulkConfirm: { section: 'queued', kind: 'force-start', tickets: ['HEL-1'] } })),
+    { type: 'confirm-bulk-force-start' });
+});
+
+test('bulkConfirm: any other key cancels via the one shared cancel-bulk-confirm type', () => {
+  const s = state({ bulkConfirm: { section: 'failed', kind: 'mark-done', tickets: ['HEL-1'] } });
+  assert.deepEqual(handleKey('n', s), { type: 'cancel-bulk-confirm' });
+  assert.deepEqual(handleKey('\x1b', s), { type: 'cancel-bulk-confirm' });
+  assert.deepEqual(handleKey('j', s), { type: 'cancel-bulk-confirm' });
+});
+
 // --- CON-98: markDoneConfirm's own y/anything-else gate, mirroring
 // forceStartConfirm/clearQueueConfirm's precedence discipline exactly -------
 
@@ -2161,6 +2245,40 @@ test('f outside queue focus is unbound, same as any other unclaimed key', () => 
   assert.equal(handleKey('f', state({})), null);
 });
 
+// --- CON-109, fleet-bulk-select spec: `space` toggles the QUEUED-local
+// cursor's ticket into the QUEUED multi-select set --------------------------
+
+test('space on a focused QUEUED row toggles it into the QUEUED multi-select set', () => {
+  assert.deepEqual(handleKey(' ', queueFocusState({ queueFocus: 1 })),
+    { type: 'toggle-multi-select', section: 'queued', ticket: 'CON-2' });
+});
+
+test('space is a no-op in QUEUED focus when nothing is validly focused (queueFocus null or out of range)', () => {
+  assert.equal(handleKey(' ', queueFocusState({ queueFocus: null })), null);
+  assert.equal(handleKey(' ', queueFocusState({ queueFocus: 99 })), null);
+});
+
+// --- CON-109, fleet-queue-force-start spec: a non-empty QUEUED
+// multi-select set makes `f` bulk instead of single-row ---------------------
+
+test('f with a non-empty QUEUED multi-select set opens the bulk force-start confirm, not the single-ticket one', () => {
+  const s = queueFocusState({
+    queueFocus: 1,
+    multiSelect: { failed: new Set(), queued: new Set(['CON-1', 'CON-3']) },
+  });
+  assert.deepEqual(handleKey('f', s),
+    { type: 'open-bulk-force-start-confirm', tickets: ['CON-1', 'CON-3'] });
+});
+
+test('f with an EMPTY QUEUED multi-select set behaves byte-for-byte exactly as before this change (tasks.md 3.3)', () => {
+  const withEmptySet = queueFocusState({
+    queueFocus: 1, multiSelect: { failed: new Set(), queued: new Set() },
+  });
+  const withNoField = queueFocusState({ queueFocus: 1 }); // multiSelect absent entirely
+  assert.deepEqual(handleKey('f', withEmptySet), { type: 'open-force-start-confirm', ticket: 'CON-2' });
+  assert.deepEqual(handleKey('f', withNoField), { type: 'open-force-start-confirm', ticket: 'CON-2' });
+});
+
 // CON-54: t on a focused QUEUED row opens the ticket detail view — resolved
 // the same way f's own open-force-start-confirm resolves its ticket, above.
 test('t on a focused pending ticket opens the ticket detail view, naming that exact ticket', () => {
@@ -2314,6 +2432,160 @@ test('addressFailureNotice renders inline on the fleet screen, following queueNo
 test('no addressFailureNotice line when unset', () => {
   const out = plain(renderFleet([run({})], OPTS));
   assert.doesNotMatch(out, /concertino-address-failure/);
+});
+
+// --- CON-109, fleet-bulk-select spec: the dedicated multi-select marker ---
+
+test('a multi-selected FAILED row shows the dedicated ✓ marker, whether or not it is the cursor row', () => {
+  const multiSelect = { failed: new Set(['HEL-9']), queued: new Set() };
+  const out = plain(renderFleet(
+    [run({ ticket: 'HEL-9', status: 'failed', endStatus: 'escalated' })],
+    { ...OPTS, selected: 0, multiSelect }));
+  const line = out.split('\n').find((l) => l.includes('HEL-9'));
+  assert.match(line, /✓/);
+});
+
+test('a non-multi-selected FAILED row shows no ✓ marker', () => {
+  const out = plain(renderFleet(
+    [run({ ticket: 'HEL-9', status: 'failed', endStatus: 'escalated' })],
+    { ...OPTS, multiSelect: { failed: new Set(), queued: new Set() } }));
+  const line = out.split('\n').find((l) => l.includes('HEL-9'));
+  assert.doesNotMatch(line, /✓/);
+});
+
+test('a FAILED row can show both the multi-select ✓ marker AND the ordinary ▸ cursor marker at once', () => {
+  const multiSelect = { failed: new Set(['HEL-9']), queued: new Set() };
+  const out = plain(renderFleet(
+    [run({ ticket: 'HEL-9', status: 'failed', endStatus: 'escalated' })],
+    { ...OPTS, selected: 0, multiSelect }));
+  const line = out.split('\n').find((l) => l.includes('HEL-9'));
+  assert.match(line, /✓/);
+  assert.match(line, /▸/);
+});
+
+test('a multi-selected QUEUED row shows the dedicated ✓ marker, independent of the » focus marker', () => {
+  const queueState = { pending: ['CON-9'], inFlight: new Set(), maxConcurrent: 1 };
+  const multiSelect = { failed: new Set(), queued: new Set(['CON-9']) };
+  const out = plain(renderFleet([run({})], { ...OPTS, queueState, multiSelect }));
+  const line = out.split('\n').find((l) => l.includes('CON-9'));
+  assert.match(line, /✓/);
+  assert.doesNotMatch(line, /»/, 'no QUEUED focus in this fixture — only the multi-select marker should show');
+});
+
+test('no multi-select marker on any row when multiSelect is entirely absent from opts', () => {
+  const out = plain(renderFleet(
+    [run({ ticket: 'HEL-9', status: 'failed', endStatus: 'escalated' })], OPTS));
+  const line = out.split('\n').find((l) => l.includes('HEL-9'));
+  assert.doesNotMatch(line, /✓/);
+});
+
+// --- CON-109, design.md Decision 4: the bulk confirmation banner ----------
+
+test('the bulk address confirmation banner names the row count', () => {
+  const out = plain(renderFleet([run({ ticket: 'HEL-9', status: 'failed' })],
+    { ...OPTS, bulkConfirm: { section: 'failed', kind: 'address', tickets: ['HEL-1', 'HEL-2', 'HEL-3'] } }));
+  assert.match(out, /address 3 FAILED runs\?/);
+  assert.match(out, /y confirm/);
+});
+
+test('the bulk mark-done confirmation banner names the row count, not any single ticket', () => {
+  const out = plain(renderFleet([run({ ticket: 'HEL-9', status: 'failed' })],
+    { ...OPTS, bulkConfirm: { section: 'failed', kind: 'mark-done', tickets: ['HEL-1', 'HEL-2', 'HEL-3', 'HEL-4'] } }));
+  assert.match(out, /mark 4 runs as done\?/);
+  assert.doesNotMatch(out, /HEL-1|HEL-2|HEL-3|HEL-4/, 'no single ticket id should be named in a bulk banner');
+});
+
+test('the bulk force-start confirmation banner names both the count and the resulting concurrency overage', () => {
+  const queueState = { pending: ['CON-2', 'CON-3'], inFlight: new Set(['CON-1']), maxConcurrent: 2 };
+  // Wider than OPTS' default 78 cols — the full warning line is long enough
+  // to truncate (with a trailing "…") at a narrower width, which would hide
+  // the very "maxConcurrent:2" suffix this assertion checks for. `rows` is
+  // deliberately left unset (as OPTS itself leaves it) so grid mode's own
+  // height gate (columnAreaHeight >= 7) never engages even though cols alone
+  // clears GRID_MIN_COLS — this stays on the ordinary single-column path.
+  const out = plain(renderFleet([run({ ticket: 'CON-1', status: 'running' })], {
+    ...OPTS, cols: 130, queueState,
+    bulkConfirm: { section: 'queued', kind: 'force-start', tickets: ['CON-2', 'CON-3'] },
+  }));
+  assert.match(out, /force-start 2 queued tickets/);
+  assert.match(out, /run 3 concurrently, exceeding your maxConcurrent:2 setting/);
+});
+
+test('bulkConfirm is checked in the same gate-precedence chain as markDoneConfirm — never rendered alongside quitConfirm\'s own banner', () => {
+  const out = plain(renderFleet([run({})],
+    { ...OPTS, bulkConfirm: { section: 'failed', kind: 'mark-done', tickets: ['HEL-1'] }, quitConfirm: true }));
+  assert.match(out, /mark 1 run as done\?/);
+  assert.doesNotMatch(out, /quit with/);
+});
+
+test('no bulk confirmation banner when bulkConfirm is unset', () => {
+  const out = plain(renderFleet([run({})], OPTS));
+  assert.doesNotMatch(out, /address \d+ FAILED runs\?|mark \d+ runs? as done\?|force-start \d+ queued tickets/);
+});
+
+// --- CON-109, design.md Decision 4: the post-confirm per-row result list ---
+
+test('bulkResult renders one line per ticket with a ✓/✗ marker, error text on failure', () => {
+  // Distinct ticket ids from fleet.test.js's own run() default ('HEL-1') —
+  // otherwise `.find(l => l.includes('HEL-1'))` below would match the
+  // ordinary run row itself, not the bulkResult tail line.
+  const bulkResult = {
+    kind: 'mark-done',
+    results: [
+      { ticket: 'ZZZ-1', ok: true, error: null },
+      { ticket: 'ZZZ-2', ok: false, error: 'stale — run no longer present' },
+    ],
+  };
+  const out = plain(renderFleet([run({})], { ...OPTS, bulkResult }));
+  const lines = out.split('\n');
+  const okLine = lines.find((l) => l.includes('ZZZ-1'));
+  const failLine = lines.find((l) => l.includes('ZZZ-2'));
+  assert.match(okLine, /✓/);
+  assert.doesNotMatch(okLine, /✗/);
+  assert.match(failLine, /✗/);
+  assert.match(failLine, /stale — run no longer present/);
+});
+
+test('a fully-successful bulkResult still renders — every row explicitly ✓, not silently hidden', () => {
+  const bulkResult = { kind: 'mark-done', results: [{ ticket: 'HEL-1', ok: true, error: null }, { ticket: 'HEL-2', ok: true, error: null }] };
+  const out = plain(renderFleet([run({})], { ...OPTS, bulkResult }));
+  assert.match(out, /✓ HEL-1/);
+  assert.match(out, /✓ HEL-2/);
+});
+
+test('no bulkResult lines when bulkResult is unset', () => {
+  const out = plain(renderFleet([run({})], OPTS));
+  assert.doesNotMatch(out, /✓ HEL|✗ HEL/);
+});
+
+// --- CON-109, fleet-bulk-select spec: the `space select` footer hint -------
+
+test('the footer advertises space select when a FAILED or QUEUED section is on screen, never when neither is', () => {
+  const neither = plain(renderFleet([run({ status: 'running' })], OPTS));
+  assert.doesNotMatch(neither, /space select/);
+
+  const withFailed = plain(renderFleet(
+    [run({ ticket: 'HEL-9', status: 'failed', endStatus: 'escalated' })], OPTS));
+  assert.match(withFailed, /space select/);
+
+  const queueState = { pending: ['CON-2'], inFlight: new Set(), maxConcurrent: 1 };
+  const withQueued = plain(renderFleet([run({ status: 'running' })], { ...OPTS, queueState }));
+  assert.match(withQueued, /space select/);
+});
+
+// --- CON-109, design.md Decision 4 (skeptic gate round 1, finding 2):
+// bulkConfirm/bulkResult must be accounted for wherever the render-opts
+// "every tail-lengthening field" list is duplicated (tasks.md 9.4) ---------
+
+test('mergeRenderOpts threads bulkConfirm/bulkResult through to renderFleet — the banner/result list actually reach the screen', () => {
+  const { render } = require('../lib/ui/screens/fleet/render');
+  const bulkConfirmState = { runs: [run({})], bulkConfirm: { section: 'failed', kind: 'mark-done', tickets: ['HEL-1'] } };
+  const outConfirm = plain(render(bulkConfirmState, { cols: 78 }));
+  assert.match(outConfirm, /mark 1 run as done\?/);
+
+  const bulkResultState = { runs: [run({})], bulkResult: { kind: 'mark-done', results: [{ ticket: 'HEL-1', ok: true, error: null }] } };
+  const outResult = plain(render(bulkResultState, { cols: 78 }));
+  assert.match(outResult, /✓ HEL-1/);
 });
 
 // --- CON-39: QUEUED-local cursor's own marker, distinct from ▸ -------------
