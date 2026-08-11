@@ -423,6 +423,56 @@ so part 2 is a no-op on those harnesses — part 1 alone is sufficient there.
 | `enabled` | boolean | `false` | Project-level default. `false` preserves today's human-confirms-merge flow for every run that doesn't explicitly override it. |
 | `mergeMethod` | `squash` \| `merge` \| `rebase` | `squash` | Passed to `gh pr merge --<mergeMethod>` when the auditor merges. |
 
+## `costTracking`
+
+```json
+"costTracking": { "enabled": true }
+```
+
+Whether `concertino sync` additively wires a `report-cost.sh` hook into
+`.claude/settings.json`'s `hooks.SessionEnd` **and** `hooks.SubagentStop`
+(both are required — `SessionEnd` alone only ever fires for the
+orchestrator/root session; every other role's cost is only observable via
+`SubagentStop`, which fires per Task-tool subagent). The hook sums each
+firing's own increment of that session's transcript token usage and converts
+it to a `$` figure via a checked-in pricing table, emitting a `run.cost`
+event the dashboard rolls up into METRICS' `spend today/week` line and the
+drill-down's per-run cost line.
+
+**Claude Code only, in v1.** Codex exposes token usage but no pricing;
+OpenCode has its own native `$` cost accounting but wiring it up is deferred.
+A run on either of those harnesses simply never has cost data — the
+dashboard says so explicitly (`cost not reported for codex`, etc.), never a
+fabricated `$0.00`.
+
+**Off by default**, and this is a real opt-in, not a formality:
+
+1. **A `SessionEnd`/`SubagentStop` hook is new, project-wide Claude Code
+   runtime surface** — it fires for every Claude Code session in the
+   project, not scoped to concertino-launched sessions only (Claude Code has
+   no concept of that scoping). The hook itself is inert for an unrelated
+   session (it exits immediately, no event, when `CONCERTINO_TICKET` is unset
+   in its environment — which it never is for an ordinary, non-concertino
+   Claude Code session), but the hook entry itself is real surface added to
+   every session regardless.
+2. **The pricing table (`scripts/concertino/pricing-table.json`, synced from
+   `core/scripts/pricing-table.json`) is self-maintained, not fetched live.**
+   It is seeded with the Sonnet/Opus/Haiku model ids this project's own
+   config resolves to at the time this feature was authored — a new model
+   release, or a published price change to an existing one, will **not**
+   self-update. A stale/missing entry degrades honestly (tokens known, `$`
+   unknown — never a guessed price), but the dollar figures you see are only
+   as accurate as this file is kept. Enabling `costTracking.enabled` is
+   accepting that ongoing upkeep obligation.
+
+`concertino doctor`/`concertino validate` warn, in a dedicated "Cost
+tracking" section, if this config key is `true` but either hook entry is
+missing from `.claude/settings.json` — run `concertino sync` to add it.
+
+| Field | Type | Default | Purpose |
+| ----- | ---- | ------- | ------- |
+| `enabled` | boolean | `false` | Wires the `report-cost.sh` hook into `.claude/settings.json` when `true`. `false` (the default) leaves `hooks` completely untouched — not even created if absent. |
+
 ## `providers`
 
 ```json

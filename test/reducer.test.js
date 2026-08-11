@@ -81,6 +81,83 @@ test('keeps only the latest result per gate name', () => {
   assert.equal(run.gates.find((g) => g.name === 'test').durationMs, 800);
 });
 
+// --- track-per-run-cost-spend: run.cost accumulation (design.md Decision 1/6,
+// specs/run-cost-telemetry's accumulation + string-cost_usd requirements) ---
+
+test('run.cost: a single event sets run.costUsd/run.tokens from null', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.cost', ticket: 'HEL-1', role: 'executor', cost_usd: '0.0234',
+      input_tokens: 1000, output_tokens: 200, cache_read_tokens: 50, cache_creation_tokens: 10,
+      model: 'claude-sonnet-4-5-20250929' },
+  ]), [], NOW);
+  assert.equal(run.costUsd, 0.0234);
+  assert.deepEqual(run.tokens, { inputTokens: 1000, outputTokens: 200, cacheReadTokens: 50, cacheCreationTokens: 10 });
+});
+
+test('run.cost: multiple events from distinct sessions SUM, never overwrite', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.cost', ticket: 'HEL-1', role: 'orchestrator', cost_usd: '0.0234',
+      input_tokens: 1000, output_tokens: 200, cache_read_tokens: 50, cache_creation_tokens: 10 },
+    { t: 2, kind: 'run.cost', ticket: 'HEL-1', role: 'executor', cost_usd: '0.0100',
+      input_tokens: 500, output_tokens: 100, cache_read_tokens: 0, cache_creation_tokens: 0 },
+  ]), [], NOW);
+  assert.ok(Math.abs(run.costUsd - 0.0334) < 1e-9);
+  assert.deepEqual(run.tokens, { inputTokens: 1500, outputTokens: 300, cacheReadTokens: 50, cacheCreationTokens: 10 });
+});
+
+// emit-event.sh's json_value() only auto-unquotes bare JSON integers/
+// true/false — a fractional cost_usd like 0.0234 is written as the JSON
+// STRING "0.0234", never the JSON number. This is the exact real shape
+// (confirmed against a real emitted event during this change's tasks.md 7.2
+// verification, not just this hand-constructed fixture).
+test('run.cost: a string-encoded fractional cost_usd sums as a NUMBER, not string concatenation or NaN', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.cost', ticket: 'HEL-1', role: 'executor', cost_usd: '0.0234', input_tokens: 10, output_tokens: 5 },
+    { t: 2, kind: 'run.cost', ticket: 'HEL-1', role: 'evaluator', cost_usd: '0.0100', input_tokens: 5, output_tokens: 2 },
+  ]), [], NOW);
+  assert.equal(typeof run.costUsd, 'number');
+  assert.ok(!Number.isNaN(run.costUsd));
+  assert.ok(Math.abs(run.costUsd - 0.0334) < 1e-9, `expected ~0.0334, got ${run.costUsd}`);
+});
+
+test('run.cost: a run with one event carrying cost_usd and one without sums only the carried one, tokens still summed for both', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.cost', ticket: 'HEL-1', role: 'executor', cost_usd: '0.05', input_tokens: 10, output_tokens: 5 },
+    // Unrecognized model — report-cost.sh omits cost_usd entirely (design.md
+    // Decision 4), never emits "0".
+    { t: 2, kind: 'run.cost', ticket: 'HEL-1', role: 'evaluator', input_tokens: 20, output_tokens: 8 },
+  ]), [], NOW);
+  assert.equal(run.costUsd, 0.05);
+  assert.deepEqual(run.tokens, { inputTokens: 30, outputTokens: 13, cacheReadTokens: 0, cacheCreationTokens: 0 });
+});
+
+test('run.cost: a malformed (non-numeric) cost_usd degrades to contributing 0, never throws or produces NaN', () => {
+  assert.doesNotThrow(() => reduce(log('HEL-1', [
+    { t: 1, kind: 'run.cost', ticket: 'HEL-1', role: 'executor', cost_usd: 'not-a-number', input_tokens: 10, output_tokens: 5 },
+  ]), [], NOW));
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.cost', ticket: 'HEL-1', role: 'executor', cost_usd: 'not-a-number', input_tokens: 10, output_tokens: 5 },
+  ]), [], NOW);
+  assert.equal(run.costUsd, 0);
+  assert.equal(run.tokens.inputTokens, 10);
+});
+
+test('run.cost: a run with no run.cost events at all keeps costUsd/tokens null', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script', branch: 'feature/x/HEL-1' },
+  ]), [], NOW);
+  assert.equal(run.costUsd, null);
+  assert.equal(run.tokens, null);
+});
+
+test('run.cost is classified TIER2_KINDS: a run with only run.start + run.cost is telemetry "partial"', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script', branch: 'feature/x/HEL-1' },
+    { t: 2, kind: 'run.cost', ticket: 'HEL-1', role: 'orchestrator', cost_usd: '0.01', input_tokens: 1, output_tokens: 1 },
+  ]), [], NOW);
+  assert.equal(run.telemetry, 'partial');
+});
+
 test('events are folded in timestamp order even when the file is not', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 30, kind: 'phase.enter', ticket: 'HEL-1', role: 'orchestrator', phase: 'Delivery' },

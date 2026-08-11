@@ -76,6 +76,37 @@ test('accepts a ticket-shaped value and spawns exactly once with the substituted
   assert.deepEqual(seen, { ticket: 'CON-777', cmd: 'claude "/concertino-deliver CON-777"' });
 });
 
+// track-per-run-cost-spend, tasks.md 2.4/2.5, design.md Decision 5: every
+// spawn gets CONCERTINO_TICKET set unconditionally — the seam report-cost.sh
+// relies on to identify which ticket a Claude Code session/subagent belongs
+// to, with no dependency on `cwd`.
+test('CONCERTINO_TICKET is injected when no prior env is supplied at all', () => {
+  let seenEnv = null;
+  const session = { spawn(_ticket, _cmd, env) { seenEnv = env; } };
+  const result = submitTicket('CON-777', TEMPLATE, session);
+  assert.equal(result.spawned, true);
+  assert.deepEqual(seenEnv, { CONCERTINO_TICKET: 'CON-777' });
+});
+
+test('CONCERTINO_TICKET is injected alongside a provider-routing env, with neither overwriting the other', () => {
+  let seenEnv = null;
+  const session = { spawn(_ticket, _cmd, env) { seenEnv = env; } };
+  const result = submitTicket('CON-777', TEMPLATE, session, { CONCERTINO_PROVIDER: 'ollama' });
+  assert.equal(result.spawned, true);
+  assert.deepEqual(seenEnv, { CONCERTINO_TICKET: 'CON-777', CONCERTINO_PROVIDER: 'ollama' });
+});
+
+test('a caller-supplied env value wins over CONCERTINO_TICKET on a key collision', () => {
+  // No real collision exists today (CON-65's provider routing never sets
+  // CONCERTINO_TICKET itself) — this proves the merge ORDER is deliberate
+  // (caller-supplied env spread in second, per Object.assign's last-wins
+  // semantics), not merely coincidentally non-colliding.
+  let seenEnv = null;
+  const session = { spawn(_ticket, _cmd, env) { seenEnv = env; } };
+  submitTicket('CON-777', TEMPLATE, session, { CONCERTINO_TICKET: 'CALLER-OVERRIDE' });
+  assert.equal(seenEnv.CONCERTINO_TICKET, 'CALLER-OVERRIDE');
+});
+
 test('a failed spawn on a valid ticket is reported as an error, not thrown', () => {
   const session = { spawn() { throw new Error('tmux exited 1'); } };
   const result = submitTicket('CON-9', TEMPLATE, session);
