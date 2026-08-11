@@ -76,10 +76,30 @@ METRICS is a fleet-wide roll-up, always rendered after the DONE section (as a
 single box in a narrow terminal, or as its own column in grid mode). Its
 compact tier — 5 lines, shown whenever the box is narrower than 80 columns or
 shorter than 11 content rows — is: avg delivery time / delivered-today /
-delivered-this-week / escalations-today; success rate (today and this week,
-as a bar + percentage + `done/total`); a 7-day throughput sparkline; each
-role's verdict pass-rate (evaluator/skeptic/auditor); and each gate's
-pass-rate, both over all history.
+delivered-this-week / escalations-today / spend-today / spend-this-week;
+success rate (today and this week, as a bar + percentage + `done/total`); a
+7-day throughput sparkline; each role's verdict pass-rate
+(evaluator/skeptic/auditor); and each gate's pass-rate, both over all
+history.
+
+**Spend** (`spend today $X · week $Y`) requires `costTracking.enabled: true`
+(see [Configuration](#configuration) and `docs/config-reference.md`) — a
+Claude-Code-only feature in v1 (see `docs/config-reference.md`'s own note on
+scope). It sums every `run.cost` event whose own timestamp falls in the
+today/this-week window, and degrades honestly rather than silently whenever
+at least one terminal run in that window never reported cost data (a
+non-Claude-Code harness run, `costTracking.enabled` was off, or the run
+predates this feature): the line then reads `spend today $X (N/M runs
+reporting) · week $Y (N/M)`, where `M` is the count of runs that reached a
+terminal state (done/failed) in that window and `N` is how many of those
+actually reported at least one `run.cost` event. The parenthetical is omitted
+entirely when coverage is complete (`N === M`), matching every other METRICS
+line's convention of showing nothing extra when there's nothing missing. With
+no terminal runs at all in a window, the figure reads `n/a` — the same
+convention `avg delivery`/`success` already use for an empty window. A
+narrow terminal drops trailing segments of this line (including spend)
+before losing anything earlier in it, the same graceful degrade the rest of
+line 1 already gets.
 
 At `cols >= 80 && contentRows >= 11`, METRICS switches to an **expanded**
 tier: the throughput sparkline widens to a 30-day window, a `duration` line
@@ -151,6 +171,23 @@ digit-jump focuses QUICK START or QUEUED:
 Unfocused (the default), the panel renders exactly as it always has: the
 leading entries that fit under the box's own height budget, or `no
 escalations yet`.
+
+### The drill-down header's cost line
+
+The header block (drilling into a run with `l`) carries a fifth row, below
+the resolved speed/per-role models row, showing that run's own accumulated
+cost — the sum of every `run.cost` event the run has emitted across all its
+role sessions, e.g. `$1.23  12,600 tok`. This requires
+`costTracking.enabled: true` (see `docs/config-reference.md`) and, in v1,
+only ever reports for a Claude Code run.
+
+Two distinct "not reported" states, worded differently so they're never
+confused for the same reason: a run whose `harness` isn't `claude-code`
+shows `cost not reported for <harness>` (the same claude-code-only inline-
+notice style the fleet view's `a` address-failure action already uses); a
+Claude Code run with no cost data yet (the feature was off at sync time, or
+the run predates it) shows the generic `cost not reported`, with no harness
+named. Neither state is ever a blank field or a fabricated `$0.00`.
 
 ### The drill-down's TICKET panel
 

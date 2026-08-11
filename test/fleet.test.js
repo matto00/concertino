@@ -620,6 +620,71 @@ test('metricsFor.successRate.week uses the same rolling 7-day window as delivere
   assert.deepEqual(m.successRate.week, { rate: 1, done: 1, total: 1 });
 });
 
+// --- track-per-run-cost-spend: metricsFor.spend (specs/fleet-metrics-spend) -
+
+test('metricsFor.spend.today: full coverage sums run.cost events with t inside today, no coverage caveat', () => {
+  const now = 10 * DAY_MS + 3600000;
+  const todayStart = 10 * DAY_MS;
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endedAt: todayStart + 1000, elapsedMs: 1000,
+      events: [{ kind: 'run.cost', t: todayStart + 500, cost_usd: '1.50' }] }),
+  ], now);
+  assert.deepEqual(m.spend.today, { usd: 1.5, reporting: 1, total: 1 });
+});
+
+test('metricsFor.spend.today: partial coverage — one terminal run today never reported', () => {
+  const now = 10 * DAY_MS + 3600000;
+  const todayStart = 10 * DAY_MS;
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endedAt: todayStart + 1000, elapsedMs: 1000,
+      events: [{ kind: 'run.cost', t: todayStart + 500, cost_usd: '1.50' }] }),
+    run({ ticket: 'HEL-2', status: 'done', endedAt: todayStart + 2000, elapsedMs: 1000, events: [] }), // e.g. OpenCode — no run.cost
+  ], now);
+  assert.deepEqual(m.spend.today, { usd: 1.5, reporting: 1, total: 2 });
+});
+
+test('metricsFor.spend.today: no terminal runs today -> usd null, total 0 (n/a convention)', () => {
+  const m = metricsFor([run({ ticket: 'HEL-1', status: 'running' })], 1000000);
+  assert.deepEqual(m.spend.today, { usd: null, reporting: 0, total: 0 });
+});
+
+test('metricsFor.spend never fabricates a value: a non-reporting run contributes 0, never averaged/diluted', () => {
+  const now = 10 * DAY_MS + 3600000;
+  const todayStart = 10 * DAY_MS;
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endedAt: todayStart + 1000, elapsedMs: 1000,
+      events: [{ kind: 'run.cost', t: todayStart + 500, cost_usd: '1.50' }] }),
+    run({ ticket: 'HEL-2', status: 'done', endedAt: todayStart + 2000, elapsedMs: 1000, events: [] }),
+  ], now);
+  assert.equal(m.spend.today.usd, 1.5, 'not 0.75 (averaged) and not fabricated for the non-reporting run');
+});
+
+test('metricsFor.spend.week uses the same rolling 7-day window as deliveredWeek', () => {
+  const now = 20 * DAY_MS;
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endedAt: now - 3 * DAY_MS, elapsedMs: 1000,
+      events: [{ kind: 'run.cost', t: now - 3 * DAY_MS, cost_usd: '2.00' }] }),
+    run({ ticket: 'HEL-2', status: 'failed', endedAt: now - 8 * DAY_MS,
+      events: [{ kind: 'run.cost', t: now - 8 * DAY_MS, cost_usd: '99.00' }] }), // outside window entirely
+  ], now);
+  assert.deepEqual(m.spend.week, { usd: 2, reporting: 1, total: 1 });
+});
+
+test('metricsFor.spend: a malformed/string-typed cost_usd on the raw event degrades to contributing 0, never NaN', () => {
+  const now = 10 * DAY_MS + 3600000;
+  const todayStart = 10 * DAY_MS;
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endedAt: todayStart + 1000, elapsedMs: 1000,
+      events: [{ kind: 'run.cost', t: todayStart + 500, cost_usd: 'not-a-number' }] }),
+  ], now);
+  assert.equal(m.spend.today.usd, 0);
+  assert.equal(Number.isNaN(m.spend.today.usd), false);
+  // Still counted as reporting — it emitted a run.cost event, just with an
+  // unparseable dollar figure (the same "malformed degrades to absent, never
+  // dropped" fold discipline the reducer's own run.cost fold follows).
+  assert.equal(m.spend.today.reporting, 1);
+});
+
 test('metricsFor.throughput buckets done runs into the last 7 UTC days, oldest first', () => {
   const now = 20 * DAY_MS;
   const todayStart = 20 * DAY_MS;
@@ -905,6 +970,37 @@ test('metricsColumnLines returns the same 5 compact lines buildSections used to 
   assert.match(lines[2], /throughput \(7d\)/);
   assert.match(lines[3], /verdicts\s+evaluator/);
   assert.match(lines[4], /gates\s+setup/);
+});
+
+// track-per-run-cost-spend, specs/fleet-metrics-spend/spec.md: line 1
+// renders the spend segments, wide enough terminal permitting.
+test('metricsColumnLines line 1 shows full-coverage spend with no coverage caveat', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endStatus: 'delivered', endedAt: 500, elapsedMs: 60000,
+      events: [{ kind: 'run.cost', t: 500, cost_usd: '1.50' }] }),
+  ], 100000);
+  const lines = metricsColumnLines(m, { cols: 200 });
+  assert.match(lines[0], /spend today \$1\.50\b/);
+  assert.doesNotMatch(lines[0], /reporting/);
+});
+
+test('metricsColumnLines line 1 shows the coverage fraction when spend is partial', () => {
+  const now = 10 * DAY_MS + 3600000;
+  const todayStart = 10 * DAY_MS;
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', status: 'done', endedAt: todayStart + 1000, elapsedMs: 1000,
+      events: [{ kind: 'run.cost', t: todayStart + 500, cost_usd: '1.50' }] }),
+    run({ ticket: 'HEL-2', status: 'done', endedAt: todayStart + 2000, elapsedMs: 1000, events: [] }),
+  ], now);
+  const lines = metricsColumnLines(m, { cols: 200 });
+  assert.match(lines[0], /spend today \$1\.50 \(1\/2 runs reporting\)/);
+});
+
+test('metricsColumnLines line 1 shows n/a for spend with no terminal runs in the window', () => {
+  const m = metricsFor([run({ ticket: 'HEL-1', status: 'running' })], 1000000);
+  const lines = metricsColumnLines(m, { cols: 200 });
+  assert.match(lines[0], /spend today n\/a/);
+  assert.match(lines[0], /week n\/a/);
 });
 
 function metricsFixtureExpanded() {

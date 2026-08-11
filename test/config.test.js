@@ -134,7 +134,7 @@ test('schemaSectionOrder matches config/concertino.schema.json\'s own top-level 
   assert.deepEqual(order, [
     'harnesses', 'project', 'ticketProvider', 'specProvider', 'worktree', 'devServers',
     'gates', 'canonicalDocs', 'ui', 'dashboard', 'budgets', 'models', 'modelTiers',
-    'providers', 'speeds', 'agentMerge', 'commitTrailer',
+    'providers', 'speeds', 'agentMerge', 'costTracking', 'commitTrailer',
   ]);
 });
 
@@ -704,4 +704,131 @@ test('withDefaults normalises the deprecated manual kind to local', () => {
 test('withDefaults leaves linear and github alone', () => {
   assert.equal(withDefaults(baseConfig({ ticketProvider: { kind: 'linear' } })).ticketProvider.kind, 'linear');
   assert.equal(withDefaults(baseConfig({ ticketProvider: { kind: 'github' } })).ticketProvider.kind, 'github');
+});
+
+// --- track-per-run-cost-spend: costTracking config + checkCostTrackingHook -
+// Unlike Agent-merge's checkAgentMergePermission, this check is pure JS (no
+// orchestrator.md consumer needs it outside Node — see checkCostTrackingHook's
+// own header comment) — no shell-script fixture, just a throwaway dir with an
+// optional .claude/settings.json.
+
+function costTrackingProject({ settings } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-costtracking-'));
+  if (settings !== undefined) {
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify(settings));
+  }
+  return dir;
+}
+
+const REPORT_COST_HOOK_ENTRY = { matcher: '', hooks: [{ type: 'command', command: 'scripts/concertino/report-cost.sh' }] };
+const BOTH_COST_HOOKS_SETTINGS = { hooks: { SessionEnd: [REPORT_COST_HOOK_ENTRY], SubagentStop: [REPORT_COST_HOOK_ENTRY] } };
+const ONE_COST_HOOK_SETTINGS = { hooks: { SessionEnd: [REPORT_COST_HOOK_ENTRY] } };
+
+test('withDefaults gives costTracking.enabled=false by default', () => {
+  const c = withDefaults(baseConfig({}));
+  assert.deepEqual(c.costTracking, { enabled: false });
+});
+
+test('checkCostTrackingHook returns null (not applicable) when costTracking is disabled', () => {
+  assert.equal(configLib.checkCostTrackingHook(baseConfig({ costTracking: { enabled: false } }), __dirname), null);
+});
+
+test('checkCostTrackingHook returns null (not applicable) when claude-code is not configured', () => {
+  assert.equal(
+    configLib.checkCostTrackingHook(baseConfig({ harnesses: ['codex'], costTracking: { enabled: true } }), __dirname),
+    null,
+  );
+});
+
+test('checkCostTrackingHook returns { ok: true } when both hook entries are present', () => {
+  const dir = costTrackingProject({ settings: BOTH_COST_HOOKS_SETTINGS });
+  try {
+    const result = configLib.checkCostTrackingHook(baseConfig({ costTracking: { enabled: true } }), dir);
+    assert.deepEqual(result, { ok: true });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkCostTrackingHook: only SessionEnd present -> ok:false naming the missing SubagentStop entry', () => {
+  const dir = costTrackingProject({ settings: ONE_COST_HOOK_SETTINGS });
+  try {
+    const result = configLib.checkCostTrackingHook(baseConfig({ costTracking: { enabled: true } }), dir);
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /SubagentStop/);
+    assert.doesNotMatch(result.reason, /SessionEnd/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkCostTrackingHook: no settings.json -> ok:false, clean reason', () => {
+  const dir = costTrackingProject();
+  try {
+    const result = configLib.checkCostTrackingHook(baseConfig({ costTracking: { enabled: true } }), dir);
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /no \.claude\/settings\.json/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Cost tracking section: enabled + claude-code + both hooks present -> ok, no warning', () => {
+  const dir = costTrackingProject({ settings: BOTH_COST_HOOKS_SETTINGS });
+  try {
+    const emitted = { ok: [], warn: [] };
+    const { errors, warnings } = configLib.collectConfigIssues(
+      baseConfig({ costTracking: { enabled: true } }),
+      { out: dir, emit: { section: () => {}, ok: (l, v) => emitted.ok.push([l, v]), warn: (m) => emitted.warn.push(m) } },
+    );
+    assert.equal(errors.length, 0);
+    assert.equal(warnings.filter((w) => w.path === 'costTracking.hooks').length, 0);
+    assert.ok(emitted.ok.some(([label]) => label === 'costTracking.hooks'));
+    assert.equal(emitted.warn.length, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Cost tracking section: disabled -> section entirely silent', () => {
+  const dir = costTrackingProject();
+  try {
+    const emitted = { section: [] };
+    const { warnings } = configLib.collectConfigIssues(
+      baseConfig({ costTracking: { enabled: false } }),
+      { out: dir, emit: { section: (t) => emitted.section.push(t) } },
+    );
+    assert.equal(warnings.filter((w) => w.path === 'costTracking.hooks').length, 0);
+    assert.ok(!emitted.section.includes('Cost tracking'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Cost tracking section: claude-code absent from harnesses -> section entirely silent', () => {
+  const dir = costTrackingProject();
+  try {
+    const emitted = { section: [] };
+    const { warnings } = configLib.collectConfigIssues(
+      baseConfig({ harnesses: ['codex'], costTracking: { enabled: true } }),
+      { out: dir, emit: { section: (t) => emitted.section.push(t) } },
+    );
+    assert.equal(warnings.filter((w) => w.path === 'costTracking.hooks').length, 0);
+    assert.ok(!emitted.section.includes('Cost tracking'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('withCostTrackingFixHint appends the instruction once when reason has none', () => {
+  const msg = configLib.withCostTrackingFixHint('missing hook entries: SessionEnd, SubagentStop');
+  const hits = (msg.match(/concertino sync/g) || []).length;
+  assert.equal(hits, 1);
+});
+
+test('withCostTrackingFixHint does not double the instruction when reason already has one', () => {
+  const msg = configLib.withCostTrackingFixHint('no .claude/settings.json found — run `concertino sync`');
+  const hits = (msg.match(/concertino sync/g) || []).length;
+  assert.equal(hits, 1);
 });

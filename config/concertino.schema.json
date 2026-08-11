@@ -212,6 +212,14 @@
         "mergeMethod": { "enum": ["squash", "merge", "rebase"], "default": "squash", "description": "Passed to `gh pr merge --<mergeMethod>` when the auditor merges." }
       }
     },
+    "costTracking": {
+      "type": "object",
+      "description": "Whether `concertino sync` wires a SessionEnd/SubagentStop hook (report-cost.sh) that reports per-session Claude Code token/cost usage as run.cost events. Off by default — the checked-in pricing table (core/scripts/pricing-table.json) needs ongoing manual upkeep a project owner must opt into. Claude Code only in v1.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false, "description": "When true, concertino sync additively wires the SessionEnd + SubagentStop hooks into .claude/settings.json." }
+      }
+    },
     "commitTrailer": { "type": "string", "description": "Trailer appended to commits.", "default": "" }
   },
   "$defs": {

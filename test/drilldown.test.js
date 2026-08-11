@@ -69,6 +69,31 @@ test('a run predating this feature (no speed/models) renders absence gracefully,
   assert.doesNotMatch(out, /undefined/);
 });
 
+// --- track-per-run-cost-spend: drill-down per-run cost line -----------------
+// specs/drilldown-run-cost/spec.md's three states: a reported figure; a
+// harness-attributed "not reported" notice for a non-Claude-Code run; a
+// generic "not reported" notice for a Claude Code run with no data yet.
+
+test('renders the accumulated cost and token count when the run has reported cost data', () => {
+  const out = plain(renderDrillDown(run({
+    costUsd: 1.2345,
+    tokens: { inputTokens: 10000, outputTokens: 2000, cacheReadTokens: 500, cacheCreationTokens: 100 },
+  }), OPTS));
+  assert.match(out, /\$1\.23/);
+  assert.match(out, /12,600 tok/);
+});
+
+test('a non-Claude-Code run with no cost data names the harness explicitly', () => {
+  const out = plain(renderDrillDown(run({ harness: 'codex', costUsd: null, tokens: null }), OPTS));
+  assert.match(out, /cost not reported for codex/);
+});
+
+test('a Claude Code run with no cost data shows a generic notice, distinct from the harness-named one', () => {
+  const out = plain(renderDrillDown(run({ harness: 'claude-code', costUsd: null, tokens: null }), OPTS));
+  assert.match(out, /cost not reported/);
+  assert.doesNotMatch(out, /cost not reported for claude-code/);
+});
+
 test('renders the phase pipeline with the current phase marked', () => {
   const out = plain(renderDrillDown(run({}), OPTS));
   assert.match(out, /Setup ✓/);
