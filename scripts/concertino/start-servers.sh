@@ -79,7 +79,7 @@ start_one() {
   if curl -sf "$url" >/dev/null 2>&1; then
     echo "note: ${label} already healthy at ${url}, reusing" >&2
   else
-    ( cd "${WORKTREE_PATH}/${cwd}" && eval "nohup $cmd >\"$log\" 2>&1 & disown" )
+    ( cd "${WORKTREE_PATH}/${cwd}" && eval "nohup env $cmd >\"$log\" 2>&1 & disown" )
     if ! timeout "$timeout" bash -c \
         "until curl -sf '$url' >/dev/null 2>&1; do sleep 3; done"; then
       echo "FAIL ${label} did not become healthy at ${url} within ${timeout}s (log: ${log})" >&2
