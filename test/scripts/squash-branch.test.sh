@@ -55,7 +55,7 @@ git -C "$PRIMARY1" push -q origin main
 # Second clone as the feature branch's own checkout (this simulates the
 # worktree the executor works in).
 git clone -q "$REMOTE1" "$BRANCH1" 2>/dev/null
-git -C "$BRANCH1" checkout -q -b feature/con-129/CON-129
+git -C "$BRANCH1" checkout -q -b feature/con-129/CON-129 origin/main
 echo "own work" > "$BRANCH1/own-file.txt"
 commit_all "$BRANCH1" "feature commit 1"
 echo "own work 2" >> "$BRANCH1/own-file.txt"
@@ -200,7 +200,7 @@ git -C "$BASE2/primary" branch -M main
 git -C "$BASE2/primary" push -q origin main
 
 git clone -q "$REMOTE2" "$BRANCH2" 2>/dev/null
-git -C "$BRANCH2" checkout -q -b feature/con-129/CON-129-e
+git -C "$BRANCH2" checkout -q -b feature/con-129/CON-129-e origin/main
 CHANGE_DIR2="spec/changes/con-129-demo"
 mkdir -p "$BRANCH2/$CHANGE_DIR2"
 cat > "$BRANCH2/$CHANGE_DIR2/files-modified.md" <<'EOF'
@@ -258,7 +258,7 @@ chmod +x "$SCRIPT"
 
 BRANCH2B="$BASE2/branch-checkout-2"
 git clone -q "$REMOTE2" "$BRANCH2B" 2>/dev/null
-git -C "$BRANCH2B" checkout -q -b feature/con-129/CON-129-f
+git -C "$BRANCH2B" checkout -q -b feature/con-129/CON-129-f origin/main
 mkdir -p "$BRANCH2B/$CHANGE_DIR2"
 cat > "$BRANCH2B/$CHANGE_DIR2/files-modified.md" <<'EOF'
 - `declared-file.txt` — the only file this run declares
@@ -280,7 +280,7 @@ chmod +x "$SCRIPT"
 
 BRANCH2C="$BASE2/branch-checkout-3"
 git clone -q "$REMOTE2" "$BRANCH2C" 2>/dev/null
-git -C "$BRANCH2C" checkout -q -b feature/con-129/CON-129-g
+git -C "$BRANCH2C" checkout -q -b feature/con-129/CON-129-g origin/main
 mkdir -p "$BRANCH2C/$CHANGE_DIR2"
 cat > "$BRANCH2C/$CHANGE_DIR2/files-modified.md" <<'EOF'
 - `declared-file.txt` — the only file this run declares
@@ -314,7 +314,7 @@ git -C "$BASE3/primary" branch -M main
 git -C "$BASE3/primary" push -q origin main
 
 git clone -q "$REMOTE3" "$BRANCH3" 2>/dev/null
-git -C "$BRANCH3" checkout -q -b feature/con-129/CON-129-h
+git -C "$BRANCH3" checkout -q -b feature/con-129/CON-129-h origin/main
 CHANGE_DIR3="openspec/changes/con-129-clean-demo"
 mkdir -p "$BRANCH3/$CHANGE_DIR3"
 cat > "$BRANCH3/$CHANGE_DIR3/files-modified.md" <<'EOF'
@@ -365,7 +365,7 @@ CHANGE_DIR4="spec/changes/con-129-unparseable-demo"
 make_branch4() {
   local dir="$1"
   git clone -q "$REMOTE4" "$dir" 2>/dev/null
-  git -C "$dir" checkout -q -b "feature/con-129/$(basename "$dir")"
+  git -C "$dir" checkout -q -b "feature/con-129/$(basename "$dir")" origin/main
   mkdir -p "$dir/$CHANGE_DIR4"
   cat > "$dir/$CHANGE_DIR4/files-modified.md" <<'EOF'
 This run touched about 190 files across the reorganized directory tree; see

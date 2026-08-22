@@ -2,7 +2,7 @@ TICKET_ID: CON-129
 CHANGE_NAME: fix-squash-merge-base-guard
 WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/bug/fix-squash-merge-base-guard/CON-129
 BRANCH: bug/fix-squash-merge-base-guard/CON-129
-PHASE: Delivery
+PHASE: Cleanup-pending
 CYCLE: 1
 DEV_PORT: 5376
 BACKEND_PORT: 8283
