@@ -79,7 +79,11 @@ fi
 
 BASE_REF="${BASE_REMOTE}/${BASE_BRANCH}"
 
-git_wt() { git -C "$WORKTREE_PATH" "$@"; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./lib/git-child-env.sh
+source "${SCRIPT_DIR}/lib/git-child-env.sh"
+
+git_wt() { git_child -C "$WORKTREE_PATH" "$@"; }
 
 # --- D1: compute the true merge-base, refuse to guess under criss-cross ---
 MERGE_BASES="$(git_wt merge-base --all HEAD "$BASE_REF" 2>/dev/null)"
