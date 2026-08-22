@@ -772,8 +772,21 @@ repeating its steps.
 
 Run directly (no subagent).
 
-1. **Squash all branch commits** into one with subject
-   `{{var:_ticketPrefixExample}} <description>` and trailer `{{var:commitTrailer}}`.
+1. **Squash all branch commits**, via the canonical guarded script (CON-129 —
+   never an improvised `git reset --soft <base-ref>`, which stages a revert
+   of any sibling run that merged to the base ref mid-run):
+
+   ```bash
+   scripts/concertino/squash-branch.sh "$WORKTREE_PATH" <base-remote> <base-branch> \
+     "{{var:_ticketPrefixExample}} <description>
+
+   {{var:commitTrailer}}" "<change-dir>"
+   ```
+
+   A non-zero exit is a `BLOCKER`: treat it per the existing escalation
+   table, surfacing the script's printed unexpected-file list (and, for an
+   unparseable/missing `files-modified.md`, its raw content) to the human
+   rather than retrying with `--allow-empty-declaration` unilaterally.
 2. **Archive the planned change** (clean up the executor's handoff first so it
    doesn't trip hygiene checks):
    {{block:specArchive}}
