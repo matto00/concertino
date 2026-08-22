@@ -28,6 +28,8 @@ WORKTREE_PATH="${2:?missing WORKTREE_PATH}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/git-child-env.sh"
+# shellcheck disable=SC1091
 [ -f "${SCRIPT_DIR}/.concertino.env" ] && source "${SCRIPT_DIR}/.concertino.env"
 
 # utf8_safe_char_prefix <char-budget>
@@ -130,9 +132,9 @@ case "$PHASE" in
     BRANCH="${3:?delivery assert needs <BRANCH>}"
     TICKET_ID="${4:-}"
     GATE_TICKET="${TICKET_ID:-${WORKTREE_PATH##*/}}"
-    git -C "$WORKTREE_PATH" rev-parse --verify --quiet "refs/remotes/origin/${BRANCH}" >/dev/null \
+    git_child -C "$WORKTREE_PATH" rev-parse --verify --quiet "refs/remotes/origin/${BRANCH}" >/dev/null \
         || fail "branch ${BRANCH} not pushed to origin"
-    [ -z "$(git -C "$WORKTREE_PATH" status --porcelain)" ] \
+    [ -z "$(git_child -C "$WORKTREE_PATH" status --porcelain)" ] \
         || fail "worktree has uncommitted changes"
 
     # -----------------------------------------------------------------------
@@ -148,14 +150,14 @@ case "$PHASE" in
     # -----------------------------------------------------------------------
     STALE_REMOTE="${CONCERTINO_BASE_REMOTE:-origin}"
     STALE_BRANCH="${CONCERTINO_BASE_BRANCH:-main}"
-    if git -C "$WORKTREE_PATH" fetch --quiet "$STALE_REMOTE" "$STALE_BRANCH" 2>/dev/null; then
-      STALE_REMOTE_TIP="$(git -C "$WORKTREE_PATH" rev-parse "${STALE_REMOTE}/${STALE_BRANCH}" 2>/dev/null)" || STALE_REMOTE_TIP=""
+    if git_child -C "$WORKTREE_PATH" fetch --quiet "$STALE_REMOTE" "$STALE_BRANCH" 2>/dev/null; then
+      STALE_REMOTE_TIP="$(git_child -C "$WORKTREE_PATH" rev-parse "${STALE_REMOTE}/${STALE_BRANCH}" 2>/dev/null)" || STALE_REMOTE_TIP=""
       if [ -n "$STALE_REMOTE_TIP" ]; then
-        STALE_MERGE_BASE="$(git -C "$WORKTREE_PATH" merge-base HEAD "$STALE_REMOTE_TIP" 2>/dev/null)" || STALE_MERGE_BASE=""
+        STALE_MERGE_BASE="$(git_child -C "$WORKTREE_PATH" merge-base HEAD "$STALE_REMOTE_TIP" 2>/dev/null)" || STALE_MERGE_BASE=""
         if [ -n "$STALE_MERGE_BASE" ] && [ "$STALE_MERGE_BASE" != "$STALE_REMOTE_TIP" ]; then
-          STALE_BEHIND="$(git -C "$WORKTREE_PATH" rev-list --count "${STALE_MERGE_BASE}..${STALE_REMOTE_TIP}" 2>/dev/null)" || STALE_BEHIND=""
+          STALE_BEHIND="$(git_child -C "$WORKTREE_PATH" rev-list --count "${STALE_MERGE_BASE}..${STALE_REMOTE_TIP}" 2>/dev/null)" || STALE_BEHIND=""
           if [[ "$STALE_BEHIND" =~ ^[0-9]+$ ]] && [ "$STALE_BEHIND" -gt 0 ]; then
-            STALE_LOG="$(git -C "$WORKTREE_PATH" log --oneline -5 "${STALE_MERGE_BASE}..${STALE_REMOTE_TIP}" 2>/dev/null)" || STALE_LOG=""
+            STALE_LOG="$(git_child -C "$WORKTREE_PATH" log --oneline -5 "${STALE_MERGE_BASE}..${STALE_REMOTE_TIP}" 2>/dev/null)" || STALE_LOG=""
             if [ -n "$STALE_LOG" ]; then
               echo "WARN base ${STALE_REMOTE}/${STALE_BRANCH} has moved — this branch is ${STALE_BEHIND} commit(s) behind:" >&2
               while IFS= read -r stale_line; do

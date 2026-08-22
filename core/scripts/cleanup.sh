@@ -45,9 +45,11 @@ TICKET_ID="${4:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/git-child-env.sh"
+# shellcheck disable=SC1091
 [ -f "${SCRIPT_DIR}/.concertino.env" ] && source "${SCRIPT_DIR}/.concertino.env"
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+REPO_ROOT="$(git_child rev-parse --show-toplevel)"
 
 # `concertino sync`'s renderEnv writes both CONCERTINO_BASE_BRANCH and
 # CONCERTINO_BASE_REMOTE (see bin/concertino), the latter from
@@ -64,9 +66,9 @@ BASE_BRANCH="${CONCERTINO_BASE_BRANCH:-main}"
 
 # Remove the worktree (force: discards the now-merged working tree).
 if [ -d "$WORKTREE_PATH" ]; then
-  git -C "$REPO_ROOT" worktree remove "$WORKTREE_PATH" --force
+  git_child -C "$REPO_ROOT" worktree remove "$WORKTREE_PATH" --force
 fi
-git -C "$REPO_ROOT" worktree prune
+git_child -C "$REPO_ROOT" worktree prune
 
 # Phase-4 cleanup only runs post-merge, so reaching here means the run shipped.
 # The canonical ticket ID arrives as the explicit 4th argument (CON-64); the
@@ -103,14 +105,14 @@ attempt_fast_forward() {
   FF_REASON=""
   FF_WORKTREE=""
 
-  git -C "$REPO_ROOT" fetch --quiet "$BASE_REMOTE" "$BASE_BRANCH" 2>/dev/null || return 0
-  git -C "$REPO_ROOT" show-ref --verify --quiet "refs/remotes/${BASE_REMOTE}/${BASE_BRANCH}" || return 0
+  git_child -C "$REPO_ROOT" fetch --quiet "$BASE_REMOTE" "$BASE_BRANCH" 2>/dev/null || return 0
+  git_child -C "$REPO_ROOT" show-ref --verify --quiet "refs/remotes/${BASE_REMOTE}/${BASE_BRANCH}" || return 0
 
   local local_tip remote_tip
-  local_tip="$(git -C "$REPO_ROOT" rev-parse "refs/heads/${BASE_BRANCH}" 2>/dev/null)" || {
+  local_tip="$(git_child -C "$REPO_ROOT" rev-parse "refs/heads/${BASE_BRANCH}" 2>/dev/null)" || {
     FF_STATUS="no-local-base"; return 0
   }
-  remote_tip="$(git -C "$REPO_ROOT" rev-parse "${BASE_REMOTE}/${BASE_BRANCH}" 2>/dev/null)" || {
+  remote_tip="$(git_child -C "$REPO_ROOT" rev-parse "${BASE_REMOTE}/${BASE_BRANCH}" 2>/dev/null)" || {
     FF_STATUS="failed"; FF_REASON="could not resolve ${BASE_REMOTE}/${BASE_BRANCH} after fetch"; return 0
   }
 
@@ -119,7 +121,7 @@ attempt_fast_forward() {
     return 0
   fi
 
-  if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$local_tip" "$remote_tip"; then
+  if ! git_child -C "$REPO_ROOT" merge-base --is-ancestor "$local_tip" "$remote_tip"; then
     FF_STATUS="diverged"
     FF_REASON="local ${BASE_BRANCH} has commits ${BASE_REMOTE}/${BASE_BRANCH} does not (diverged)"
     return 0
@@ -132,11 +134,11 @@ attempt_fast_forward() {
       "worktree "*) wt="${line#worktree }" ;;
       "branch refs/heads/${BASE_BRANCH}") base_worktree="$wt" ;;
     esac
-  done < <(git -C "$REPO_ROOT" worktree list --porcelain)
+  done < <(git_child -C "$REPO_ROOT" worktree list --porcelain)
 
   if [ -z "$base_worktree" ]; then
     # Not checked out anywhere — a pure ref update, no working tree at risk.
-    if git -C "$REPO_ROOT" update-ref "refs/heads/${BASE_BRANCH}" "$remote_tip"; then
+    if git_child -C "$REPO_ROOT" update-ref "refs/heads/${BASE_BRANCH}" "$remote_tip"; then
       FF_STATUS="updated"
       FF_WORKTREE="$REPO_ROOT"
     else
@@ -146,13 +148,13 @@ attempt_fast_forward() {
     return 0
   fi
 
-  if [ -n "$(git -C "$base_worktree" status --porcelain 2>/dev/null)" ]; then
+  if [ -n "$(git_child -C "$base_worktree" status --porcelain 2>/dev/null)" ]; then
     FF_STATUS="dirty"
     FF_REASON="${BASE_BRANCH} is checked out at ${base_worktree} with uncommitted changes"
     return 0
   fi
 
-  if git -C "$base_worktree" merge --ff-only "${BASE_REMOTE}/${BASE_BRANCH}" >/dev/null 2>&1; then
+  if git_child -C "$base_worktree" merge --ff-only "${BASE_REMOTE}/${BASE_BRANCH}" >/dev/null 2>&1; then
     FF_STATUS="updated"
     FF_WORKTREE="$base_worktree"
   else
@@ -245,8 +247,25 @@ other_runs_live() {
 # (design.md Decision 4, revised after design-gate round 1) — `bin/concertino`
 # as a real file only exists in this repo's own self-hosting case, never
 # assumed elsewhere.
+# CONCERTINO_CLEANUP_SKIP_SYNC: env-gated escape hatch for the automatic
+# re-render below. Unset/falsy (default) — sync runs as documented above.
+# Set to a truthy value — the automatic `concertino sync` call is skipped,
+# but the rest of Phase-4 cleanup (worktree removal, server teardown,
+# run.end) proceeds unaffected. This is a real, named, off-by-default
+# capability, not a permanently-on hardcoded disable: a project that needs
+# to suppress the automatic sync (e.g. because its own `concertino` binary
+# resolution is misbehaving) sets this env var itself, rather than the
+# capability being baked into core/ as unconditionally disabled.
+CLEANUP_SKIP_SYNC="${CONCERTINO_CLEANUP_SKIP_SYNC:-}"
+case "$CLEANUP_SKIP_SYNC" in
+  1|true|TRUE|True|yes|YES) CLEANUP_SKIP_SYNC=1 ;;
+  *) CLEANUP_SKIP_SYNC=0 ;;
+esac
+
 if [ "$FF_STATUS" = "updated" ]; then
-  if other_runs_live; then
+  if [ "$CLEANUP_SKIP_SYNC" -eq 1 ]; then
+    echo "note: main fast-forwarded — \`concertino sync\` re-render skipped (CONCERTINO_CLEANUP_SKIP_SYNC set); run it manually if needed" >&2
+  elif other_runs_live; then
     echo "note: main fast-forwarded — skipping \`concertino sync\`: run ${LIVE_RUN_TICKET} is still live and the re-render would rewrite shared root artifacts under it; run \`concertino sync\` manually once it finishes" >&2
   else
     RENDER_OK=1
