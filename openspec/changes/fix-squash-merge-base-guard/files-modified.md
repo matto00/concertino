@@ -1,4 +1,0 @@
-- `core/scripts/squash-branch.sh` — new canonical guarded squash script (CON-129): resets against the true merge-base, guards staged files against the change-dir allowlist + parsed `files-modified.md`, always prints staged count/list, logs base advancement without gating on it.
-- `test/scripts/squash-branch.test.sh` — throwaway-repo acceptance test (red-before-green), invokes the real script via subprocess, proves each guard fires by mutating the real script file in place under a restoring trap.
-- `package.json` — added `bash test/scripts/squash-branch.test.sh` as a new conjunct to the `"test"` script.
-- `core/roles/orchestrator.md` — Phase 3 Delivery step 1 now invokes `scripts/concertino/squash-branch.sh` (passing `<change-dir>`) instead of leaving the squash mechanism unspecified; documents guard-trip as a `BLOCKER`.
