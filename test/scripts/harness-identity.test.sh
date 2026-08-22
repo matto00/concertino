@@ -92,6 +92,8 @@ new_scripts() {
   cp "$ROOT/core/scripts/setup-worktree.sh" "$d/"
   cp "$ROOT/core/scripts/emit-event.sh" "$d/"
   cp "$ROOT/core/scripts/resolve-speed.sh" "$d/"
+  mkdir -p "$d/lib"
+  cp "$ROOT/core/scripts/lib/git-child-env.sh" "$d/lib/"
   chmod +x "$d/resolve-speed.sh"
   cat > "$d/speeds.json" <<'JSON'
 {

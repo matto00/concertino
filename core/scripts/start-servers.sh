@@ -38,9 +38,11 @@ export DEV_PORT BACKEND_PORT
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/git-child-env.sh"
+# shellcheck disable=SC1091
 [ -f "${SCRIPT_DIR}/.concertino.env" ] && source "${SCRIPT_DIR}/.concertino.env"
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+REPO_ROOT="$(git_child rev-parse --show-toplevel)"
 BACKEND_LOG="${WORKTREE_PATH}/.concertino-backend.log"
 FRONTEND_LOG="${WORKTREE_PATH}/.concertino-frontend.log"
 
@@ -79,7 +81,7 @@ start_one() {
   if curl -sf "$url" >/dev/null 2>&1; then
     echo "note: ${label} already healthy at ${url}, reusing" >&2
   else
-    ( cd "${WORKTREE_PATH}/${cwd}" && eval "nohup $cmd >\"$log\" 2>&1 & disown" )
+    ( cd "${WORKTREE_PATH}/${cwd}" && eval "nohup env $cmd >\"$log\" 2>&1 & disown" )
     if ! timeout "$timeout" bash -c \
         "until curl -sf '$url' >/dev/null 2>&1; do sleep 3; done"; then
       echo "FAIL ${label} did not become healthy at ${url} within ${timeout}s (log: ${log})" >&2

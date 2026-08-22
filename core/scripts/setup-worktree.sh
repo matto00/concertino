@@ -106,6 +106,8 @@ HARNESS_OVERRIDE="${4:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/git-child-env.sh"
+# shellcheck disable=SC1091
 [ -f "${SCRIPT_DIR}/.concertino.env" ] && source "${SCRIPT_DIR}/.concertino.env"
 
 # Defense in depth (CON-62 design.md Decision 3): the orchestrator already
@@ -206,7 +208,7 @@ RESOLVED_PROVIDER="$(printf '%s' "$RESOLVED_SPEED_JSON" | jq -r '.provider // "d
 RESOLVED_SECOND_FINAL_GATE_SKEPTIC="$(printf '%s' "$RESOLVED_SPEED_JSON" | jq -r '.secondFinalGateSkeptic')"
 RESOLVED_EVALUATOR_CLEAN_WORKTREE="$(printf '%s' "$RESOLVED_SPEED_JSON" | jq -r '.evaluatorCleanWorktree')"
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+REPO_ROOT="$(git_child rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
 WORKTREE_BASE="${CONCERTINO_WORKTREE_BASE:-.concertino/worktrees}"
@@ -248,20 +250,20 @@ BACKEND_PORT=$((BACKEND_PORT_BASE + TEAM_OFFSET + TICKET_NUM))
 WORKTREE_PATH="${REPO_ROOT}/${WORKTREE_BASE}/${BRANCH}"
 
 # Create the worktree (reuse if it already exists for this branch).
-if git worktree list --porcelain | grep -qx "worktree ${WORKTREE_PATH}"; then
+if git_child worktree list --porcelain | grep -qx "worktree ${WORKTREE_PATH}"; then
   echo "note: worktree already present, reusing ${WORKTREE_PATH}" >&2
-elif git show-ref --verify --quiet "refs/heads/${BRANCH}"; then
-  git worktree add "$WORKTREE_PATH" "$BRANCH"      # branch exists, attach
+elif git_child show-ref --verify --quiet "refs/heads/${BRANCH}"; then
+  git_child worktree add "$WORKTREE_PATH" "$BRANCH"      # branch exists, attach
 else
   # New branch: cut from the fetched remote base, never from whatever local HEAD
   # happens to be. In a burst of sequential tickets each PR squash-merges on the
   # remote while local <base> stays behind, so branching from HEAD silently
   # produces conflicts whenever two tickets touch the same file.
   # Resuming an existing branch (above) must never re-base — only this path syncs.
-  if git fetch --quiet "$BASE_REMOTE" "$BASE_BRANCH" 2>/dev/null &&
-    git show-ref --verify --quiet "refs/remotes/${BASE_REMOTE}/${BASE_BRANCH}"; then
+  if git_child fetch --quiet "$BASE_REMOTE" "$BASE_BRANCH" 2>/dev/null &&
+    git_child show-ref --verify --quiet "refs/remotes/${BASE_REMOTE}/${BASE_BRANCH}"; then
     BASE_REF="${BASE_REMOTE}/${BASE_BRANCH}"
-  elif git show-ref --verify --quiet "refs/heads/${BASE_BRANCH}"; then
+  elif git_child show-ref --verify --quiet "refs/heads/${BASE_BRANCH}"; then
     BASE_REF="$BASE_BRANCH"
     echo "note: could not fetch ${BASE_REMOTE}/${BASE_BRANCH} — cutting from local ${BASE_BRANCH}" >&2
   else
@@ -272,7 +274,7 @@ else
   # <remote>/<base>, so `git status` reports the new branch as "ahead of main"
   # and a stray `git pull` would merge base in. Delivery sets the real upstream
   # with `git push -u origin <branch>`.
-  git worktree add --no-track "$WORKTREE_PATH" -b "$BRANCH" "$BASE_REF"
+  git_child worktree add --no-track "$WORKTREE_PATH" -b "$BRANCH" "$BASE_REF"
 fi
 
 # Copy env/secret files the app needs at boot but that aren't committed. Without
@@ -346,7 +348,13 @@ if [ -n "${CONCERTINO_WORKTREE_HOOKS:-}" ]; then
   for hook in "${HOOKS[@]}"; do
     hook="$(echo "$hook" | sed 's/^ *//;s/ *$//')"
     [ -z "$hook" ] && continue
-    ( cd "$WORKTREE_PATH" && eval "$hook" >/dev/null 2>&1 ) || true
+    # Strip GIT_* before eval'ing the configured hook (not just for the
+    # literal `npx husky install` default): any hook configured here may
+    # write into .git, and a hook run under an inherited poisoned GIT_DIR
+    # would misdirect onto the wrong repository regardless of `cd
+    # $WORKTREE_PATH`. Protects every hook this var may ever be set to, not
+    # only the currently configured one. See core/scripts/lib/git-child-env.sh.
+    ( cd "$WORKTREE_PATH" || exit 0; unset -v $(compgen -v GIT_ 2>/dev/null) 2>/dev/null; eval "$hook" >/dev/null 2>&1 ) || true
   done
 fi
 

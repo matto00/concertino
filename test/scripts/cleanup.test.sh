@@ -61,9 +61,10 @@ new_pair() {
   local remote="$base/remote.git" primary="$base/primary"
   git init -q --bare "$remote"
   git clone -q "$remote" "$primary" 2>/dev/null
-  mkdir -p "$primary/scripts/concertino"
+  mkdir -p "$primary/scripts/concertino/lib"
   cp "$CLEANUP" "$primary/scripts/concertino/cleanup.sh"
   cp "$EMIT" "$primary/scripts/concertino/emit-event.sh"
+  cp "$ROOT/core/scripts/lib/git-child-env.sh" "$primary/scripts/concertino/lib/git-child-env.sh"
   chmod +x "$primary/scripts/concertino/"*.sh
   # .concertino/ (the run log emit-event.sh --await writes to) must be
   # gitignored here exactly as it is in the real project — otherwise the
