@@ -1,0 +1,21 @@
+TICKET_ID: CON-128
+CHANGE_NAME: sync-provenance-diff-preview
+WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/task/sync-provenance-diff-preview/CON-128
+BRANCH: task/sync-provenance-diff-preview/CON-128
+PHASE: Delivery
+CYCLE: 1
+SKEPTIC_CYCLE: 1
+AGENT_MERGE: true
+TICKET_TYPE: feature
+DESIGN_QUESTIONS: null
+SPEED: default
+EXECUTION_CYCLES: 3
+SKEPTIC_DESIGN_ROUNDS: 3
+SKEPTIC_FINAL_ROUNDS: 2
+DEBUG_ATTEMPTS: 2
+MODELS: {"orchestrator":"sonnet","executor":"sonnet","evaluator":"sonnet","skeptic":"opus","auditor":"sonnet"}
+SECOND_FINAL_GATE_SKEPTIC: false
+EVALUATOR_CLEAN_WORKTREE: false
+DEV_PORT: 5375
+BACKEND_PORT: 8282
+NOTES: Note MODELS.skeptic overridden to opus per user instruction (resolve-speed default gave sonnet for all roles at 'default' speed — user explicitly requires opus for skeptic on both gates, orchestrator/executor/evaluator/auditor stay sonnet).
