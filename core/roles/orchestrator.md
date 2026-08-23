@@ -710,20 +710,18 @@ led to the plan actually being revised.
    `gather-escalation-context.sh`'s existing fallback rule ("How to raise
    one" below). Never let a malformed triage call block the escalation
    itself.
-4. **Raise the escalation:**
-
-   ```bash
-   ARGS=(ticket=$TICKET_ID role=orchestrator \
-     question="How should this suggested follow-up be handled: '<description>'?" \
-     options=fold-in,standalone,discard)
-   [ -n "$TRIAGE_CONTEXT" ] && ARGS+=(context="$TRIAGE_CONTEXT")
-   scripts/concertino/emit-event.sh escalation --await "${ARGS[@]}"
-   ```
-
-   Same blocking-call, per-call timeout, and off-ramp rules as "How to raise
-   one" below apply unchanged — this is that same mechanism, with
-   `triage-followup.sh`'s output standing in for a
-   `gather-escalation-context.sh` kind block as `context=`.
+4. **Raise the escalation** through "How to raise one" below, in full — the
+   same TUI-liveness check, topology branch, per-call timeout, and off-ramp
+   rules, not a second, hand-rolled call. Use
+   `question="How should this suggested follow-up be handled: '<description>'?"`,
+   `options=fold-in,standalone,discard`, and `context=$TRIAGE_CONTEXT` (when
+   non-empty) as that procedure's inputs — `triage-followup.sh`'s output
+   stands in for a `gather-escalation-context.sh` kind block as `context=`,
+   exactly as before. This is the same single call site every other
+   escalation in this document already routes through (CON-126) — it is
+   never appropriate to construct a bespoke `emit-event.sh escalation`
+   invocation here, since doing so would silently re-introduce an
+   unconditional blocking `--await` with no TUI-liveness gate.
 5. **Branch on the answer:**
    - **`discard`** — no further action beyond noting it in the run's
      summary. No ticket filed, no plan revision.
@@ -1107,29 +1105,99 @@ across in the first place — see `inline-orchestrator-mode` and
 channel either; the topology branch below is what additionally reaches the
 human in that case.
 
-**Then decide how you wait for the answer — by topology (CON-76):**
+**Then check whether a TUI is attached (CON-126), before deciding how you wait
+for the answer.** A `concertino watch` dashboard may or may not be running
+against this repo right now; blocking on `--await`/`--wait-only` against a
+screen no human can reach can only ever time out, burning the full escalation
+timeout for nothing. Check the single documented signal
+(`tui-liveness-detection`) immediately after presenting to chat above, and
+before either topology branch below:
+
+```bash
+if scripts/concertino/tui-attached.sh; then
+  TUI_ATTACHED=1
+else
+  TUI_ATTACHED=0
+fi
+```
+
+Ambiguity (missing lockfile, dead pid, torn state, any unexpected error)
+always resolves to `TUI_ATTACHED=0` — the script itself never exits 0 except
+when it has confirmed a live dashboard process.
+
+**Then decide how you wait for the answer — by topology (CON-76) first, with
+`TUI_ATTACHED` changing what *that* topology branch does at its own
+resolution step — never the other way around.** A subagent never blocks on
+resolution regardless of `TUI_ATTACHED` (it always raises non-blocking and
+returns), so `TUI_ATTACHED` only changes behavior inside the **root** branch
+below; do not let `TUI_ATTACHED=0` short-circuit past the topology check
+itself, or a non-root run silently loses its only path to the human (CON-76).
 
 - **You are the root** — this session has no parent orchestrator that spawned
   it (`--inline`, or Codex/OpenCode's default sequential single-thread flow,
   where the one thread reading this file *is* the root by construction).
-  Raise it as a single **blocking** call. This both lights up `NEEDS YOU` on
-  the dashboard and waits for the human's decision — the dashboard's
-  escalation screen writes the answer, and this call returns it directly.
   Only include `context=` when `CONTEXT` is non-empty — an event with
   `context=""` is not the same as one with no `context` field at all, and the
-  screen's "no context" rendering depends on the key being genuinely absent:
+  screen's "no context" rendering depends on the key being genuinely absent.
 
-  ```bash
-  ARGS=(ticket=$TICKET_ID role=orchestrator \
-    question="<one sentence, the decision you need>" \
-    options=approve,deny)
-  [ -n "$CONTEXT" ] && ARGS+=(context="$CONTEXT")
-  scripts/concertino/emit-event.sh escalation --await "${ARGS[@]}"
-  ```
+  - **`TUI_ATTACHED=1`:** raise it as a single **blocking** call. This both
+    lights up `NEEDS YOU` on the dashboard and waits for the human's
+    decision — the dashboard's escalation screen writes the answer, and this
+    call returns it directly:
+
+    ```bash
+    ARGS=(ticket=$TICKET_ID role=orchestrator \
+      question="<one sentence, the decision you need>" \
+      options=approve,deny)
+    [ -n "$CONTEXT" ] && ARGS+=(context="$CONTEXT")
+    scripts/concertino/emit-event.sh escalation --await "${ARGS[@]}"
+    ```
+
+  - **`TUI_ATTACHED=0`:** still call `--raise-only` first — this is
+    non-blocking (it writes `escalation.raised` and performs the existing
+    one-time stale-`answer.json` discard, then returns immediately) so the
+    run's bookkeeping stays consistent with the TUI-attached path and a
+    dashboard that attaches later finds a real, timestamped escalation to
+    poll against:
+
+    ```bash
+    ARGS=(ticket=$TICKET_ID role=orchestrator \
+      question="<one sentence, the decision you need>" \
+      options=approve,deny)
+    [ -n "$CONTEXT" ] && ARGS+=(context="$CONTEXT")
+    scripts/concertino/emit-event.sh escalation --raise-only "${ARGS[@]}"
+    ```
+
+    Then make **no `--await`/`--wait-only` call at all** — you already
+    presented the question to chat above, so simply wait there for the
+    human's reply. The moment it arrives, record it through `concertino
+    answer` (per `escalation-answer-cli`), never through a raw `emit-event.sh
+    escalation.answered` call:
+
+    ```bash
+    concertino answer $TICKET_ID "<their decision>"
+    # or, for one step of a multi-part escalation:
+    concertino answer $TICKET_ID "<their decision>" --sub <index> --total <n>
+    ```
+
+    This is a genuine write-path change from the root's `TUI_ATTACHED=1`
+    `--await`-timeout fallback below (which still uses a raw `emit-event.sh
+    escalation.answered` call and is unmodified) — this branch specifically
+    uses `concertino answer` because the ticket requires it be the single
+    authoritative write path for a chat-collected answer whenever a store
+    exists to write to. `concertino answer`'s existing
+    refusal-on-already-answered, first-write-wins guarantee applies
+    unweakened here. "A timeout is never an approval" holds trivially in this
+    branch: there is no deadline anywhere in it, so there is no elapsed-time
+    condition that could ever be mistaken for one.
 
 - **You are running as a Claude Code subagent** — dispatched via
   `Agent(subagent_type: concertino-orchestrator)`, the default,
-  non-`--inline` topology — raise it **without blocking** instead:
+  non-`--inline` topology — raise it **without blocking**, regardless of
+  `TUI_ATTACHED`. You never block on resolution either way — you bubble
+  `ESCALATION-PENDING` to your parent and let the *root's* later resolution
+  step (Decision 3 / "the root's resolution procedure" below) re-check
+  `TUI_ATTACHED` fresh at the moment it actually matters:
 
   ```bash
   ARGS=(ticket=$TICKET_ID role=orchestrator \
@@ -1230,10 +1298,10 @@ sub-agent's `question`/`options`/`context` for your own, and tagging
 `role=<raiser>` (e.g. `role=executor`) instead of `role=orchestrator`. This
 reuses `escalation.raised`/`escalation.answered` exactly as-is — no new event
 kind, no new `emit-event.sh` mode, no `kind=` parameter; `role=<raiser>` alone
-carries the distinction, and it composes uniformly with CON-126 (TUI
-detection, not yet built) whenever it lands, since the topology decision
-lives entirely in this one procedure regardless of which role originated the
-question. On receiving the raised verdict, you have already observed the
+carries the distinction, and it composes uniformly with the `TUI_ATTACHED`
+check above (CON-126), since the topology decision — including the
+TUI-liveness check — lives entirely in this one procedure regardless of which
+role originated the question. On receiving the raised verdict, you have already observed the
 sub-agent's own `verdict=ESCALATION`/`verdict=ESCALATION-RAISE` event and
 report (its normal, unweakened verdict-emission path — unchanged by this) —
 raising the human-facing `escalation.raised` relay here is a *separate,
@@ -1276,6 +1344,21 @@ child):
    transcript — i.e. it was relayed to you, not raised by you directly —
    present the question/options/context to the human in your own chat
    transcript now, before doing anything else below.
+1a. Re-check `scripts/concertino/tui-attached.sh` **fresh** (CON-126), right
+    here at resolution time — never reuse whatever `TUI_ATTACHED` value (if
+    any) was observed when the escalation was raised. A dashboard can attach
+    or detach in the interval between raise and resolution, and it is the
+    resolution-time state that determines whether polling can do anything
+    useful. Because every raise path (both `TUI_ATTACHED` branches above)
+    always calls `--raise-only`/`--await` first, `escalation.raised` with a
+    real `raised_at` exists for this ticket regardless of which branch raised
+    it — so if this fresh check now finds a TUI attached, step 2's
+    `--wait-only` polling has a genuine deadline to compute against, even for
+    an escalation that was originally raised with no TUI. If this fresh check
+    finds no TUI attached, skip step 2's polling loop entirely — there is
+    nothing on the dashboard side that could resolve it — and wait directly
+    for the chat reply, recording it through step 3's `concertino answer`
+    call exactly as below.
 2. Poll for a dashboard answer using repeated short `--wait-only` calls, each
    bounded by its own short per-call budget (~25–30s), looping again on exit
    code 2, stopping on exit 0 (resolved) or exit 1 (the escalation's *real*

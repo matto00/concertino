@@ -72,12 +72,30 @@ toolbox for this session.
      immediately, before doing anything else — if the escalation is one you
      already saw presented in this same payload, this is that same
      presentation, not a second one.
-  2. Poll for a dashboard answer with repeated short `--wait-only` calls
-     (`scripts/concertino/emit-event.sh escalation --wait-only max_wait_sec=30
-     ticket=<id>`), looping on exit 2, stopping on exit 0 (resolved) or exit 1
-     (the escalation's real deadline reached — handle exactly like a normal
-     `--await` timeout: never an approval, keep waiting in chat for a reply).
-     Between calls, remain able to accept a direct chat reply.
+  2. Re-check TUI liveness fresh, right here, before polling — never reuse
+     whatever `TUI_ATTACHED` value (if any) was observed when the escalation
+     was raised, since a dashboard can attach or detach between raise and
+     resolution (CON-126, `escalation-bubble-up`'s resolution-loop
+     requirement):
+
+     ```bash
+     if scripts/concertino/tui-attached.sh; then
+       scripts/concertino/emit-event.sh escalation --wait-only max_wait_sec=30 ticket=<id>
+     fi
+     ```
+
+     - **TUI attached (`tui-attached.sh` exits 0):** poll for a dashboard
+       answer with repeated short `--wait-only` calls as above, looping on
+       exit 2, stopping on exit 0 (resolved) or exit 1 (the escalation's real
+       deadline reached — handle exactly like a normal `--await` timeout:
+       never an approval, keep waiting in chat for a reply). Between calls,
+       remain able to accept a direct chat reply.
+     - **TUI not attached (`tui-attached.sh` exits non-zero):** skip the
+       `--wait-only` polling loop entirely — there is nothing on the
+       dashboard side that could resolve it — and wait directly for the
+       human's reply in chat instead. A timeout is never an approval; since
+       this branch never polls against a deadline, there is no elapsed-time
+       condition to mistake for one either.
   3. The moment the human replies in chat, write it through `concertino answer
      <ticket> <value> [--sub <index> --total <n>]` rather than acting on it
      directly, and branch on its result exactly as `core/roles/orchestrator.md`
