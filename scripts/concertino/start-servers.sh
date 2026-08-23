@@ -38,9 +38,11 @@ export DEV_PORT BACKEND_PORT
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/git-child-env.sh"
+# shellcheck disable=SC1091
 [ -f "${SCRIPT_DIR}/.concertino.env" ] && source "${SCRIPT_DIR}/.concertino.env"
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+REPO_ROOT="$(git_child rev-parse --show-toplevel)"
 BACKEND_LOG="${WORKTREE_PATH}/.concertino-backend.log"
 FRONTEND_LOG="${WORKTREE_PATH}/.concertino-frontend.log"
 
