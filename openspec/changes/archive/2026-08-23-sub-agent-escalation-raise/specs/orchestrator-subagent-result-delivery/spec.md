@@ -1,6 +1,6 @@
 ## MODIFIED Requirements
 
-### Requirement: Sub-agent results are documented as return-value-only, with a narrow SendMessage self-notify carve-out
+### Requirement: Sub-agent results are documented as return-value-only
 The rendered `.claude/agents/concertino-orchestrator.md` (Claude Code) SHALL state that a
 sub-agent's authoritative result is delivered only as the return value of the `Agent`/
 `SendMessage` call that spawned or resumed it — this remains true even though, as of the
