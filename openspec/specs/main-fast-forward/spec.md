@@ -77,10 +77,15 @@ emit a `gate.warning` telemetry event via `emit-event.sh` — the same event kin
 confirmed-still-behind-vs-unknown-state distinction the stderr note draws, so the run's event log
 (and therefore the dashboard) can distinguish this outcome from a clean run. This telemetry
 SHALL NOT change `cleanup.sh --phase4`'s exit code, SHALL NOT introduce a second blocking
-escalation, and SHALL NOT alter `run.end`'s `status=delivered` value. Regardless of outcome, the
-rest of Phase 4 (already-completed worktree removal, and whatever the caller does afterward)
-SHALL proceed — `cleanup.sh --phase4` SHALL NOT fail or exit non-zero solely because the
-fast-forward could not complete.
+escalation, and SHALL NOT alter `run.end`'s `status=delivered` value. Regardless of the
+fast-forward's own outcome, the rest of Phase 4 (already-completed worktree removal and branch
+deletion, and whatever the caller does afterward) SHALL proceed — `cleanup.sh --phase4` SHALL NOT
+fail or exit non-zero **solely because the fast-forward could not complete**. This exemption is
+narrower than before: it covers only the fast-forward comparison/escalation outcome itself
+(`dirty`, `diverged`, `failed`, `fetch-failed`, `no-local-base`) and does NOT extend to an
+unexpected git-command failure in the script's other hard-failing steps (worktree removal, or a
+confirmed-safe branch delete — see the `cleanup-failure-visibility` capability), which now do
+exit non-zero independent of the fast-forward outcome.
 
 #### Scenario: A retry answer re-attempts and succeeds
 - **WHEN** the fast-forward escalates due to a dirty tree, the human stashes their work out of
@@ -102,8 +107,8 @@ fast-forward could not complete.
   merge/update-ref failure)
 - **THEN** `cleanup.sh --phase4` logs a note that `main` remains behind, includes the reason when
   one is available, emits a `gate.warning` event with `gate=phase:cleanup`, `resolved=false`, and
-  a `reason=` stating `main` remains behind, and completes (still exiting 0, still emitting
-  `run.end status=delivered`) without raising a second escalation
+  a `reason=` stating `main` remains behind, and completes (still exiting 0 on this account,
+  still emitting `run.end status=delivered`) without raising a second escalation
 
 #### Scenario: A retry whose own fetch fails reports an unknown state, not "behind", and still emits telemetry
 - **WHEN** the human answers `retry` and the re-attempted fast-forward cannot fetch the
@@ -112,8 +117,14 @@ fast-forward could not complete.
 - **THEN** `cleanup.sh --phase4` logs a note stating that whether local `main` is behind could
   not be determined, states the reason (the fetch/lookup did not succeed), does NOT state that
   `main` remains behind, emits a `gate.warning` event with `gate=phase:cleanup`, `resolved=false`,
-  and a `reason=` stating the base state is unknown, and completes (still exiting 0, still
-  emitting `run.end status=delivered`) without raising a second escalation
+  and a `reason=` stating the base state is unknown, and completes (still exiting 0 on this
+  account, still emitting `run.end status=delivered`) without raising a second escalation
+
+#### Scenario: An unrelated hard git failure elsewhere in the script still exits non-zero even when the fast-forward itself succeeded
+- **WHEN** local `main` fast-forwards cleanly (`FF_STATUS=updated` or `current`) but worktree
+  removal or a confirmed-safe branch delete fails
+- **THEN** `cleanup.sh --phase4` exits non-zero, per the `cleanup-failure-visibility` capability —
+  the fast-forward's own success does not mask that separate failure
 
 ### Requirement: A successful fast-forward triggers a best-effort re-render
 `cleanup.sh --phase4` SHALL attempt to re-render the project's rendered artifacts (equivalent to
