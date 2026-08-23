@@ -34,7 +34,7 @@
       "model": "sonnet",
       "color": "orange",
       "description": "Implementation agent for the {{project}} ticket-delivery workflow. Implements the planned change, runs verification gates, commits. Resumable across evaluation cycles. Invoked only by the orchestrator.",
-      "baseTools": ["Read", "Edit", "Write", "Bash", "Grep", "Glob"],
+      "baseTools": ["Read", "Edit", "Write", "Bash", "Grep", "Glob", "SendMessage"],
       "usesUi": false,
       "mcpTools": {}
     },
@@ -42,7 +42,7 @@
       "model": "sonnet",
       "color": "purple",
       "description": "Code-review agent for the {{project}} ticket-delivery workflow. Three-phase review (spec/code/UI), re-runs gates, writes a structured report. Resumable across cycles. Invoked only by the orchestrator.",
-      "baseTools": ["Read", "Write", "Bash", "Grep", "Glob"],
+      "baseTools": ["Read", "Write", "Bash", "Grep", "Glob", "SendMessage"],
       "usesUi": true,
       "mcpTools": {
         "linear": ["mcp__linear__get_issue"],
@@ -53,7 +53,7 @@
       "model": "sonnet",
       "color": "red",
       "description": "Cold adversarial verification gate for the {{project}} ticket-delivery workflow. Spawned fresh at the design-soundness and final gates; verifies against ground truth, owns subjective design judgment. Invoked only by the orchestrator.",
-      "baseTools": ["Read", "Write", "Bash", "Grep", "Glob"],
+      "baseTools": ["Read", "Write", "Bash", "Grep", "Glob", "SendMessage"],
       "usesUi": true,
       "mcpTools": {
         "linear": ["mcp__linear__get_issue"],
@@ -64,7 +64,7 @@
       "model": "sonnet",
       "color": "cyan",
       "description": "Cold agent-merge auditor for the {{project}} ticket-delivery workflow. Spawned fresh, once, after PR creation when agent-merge is enabled for the run: verifies CI is green, the PR is mergeable, this run's own evaluator/skeptic gates passed, and the diff satisfies the ticket's acceptance criteria, then merges or escalates with the specific reason. Distinct from the evaluator (mid-loop mechanical checklist) and the skeptic (design/final judgment gates) — the auditor's job starts only after both have already passed. Invoked only by the orchestrator.",
-      "baseTools": ["Read", "Write", "Bash", "Grep", "Glob"],
+      "baseTools": ["Read", "Write", "Bash", "Grep", "Glob", "SendMessage"],
       "usesUi": false,
       "mcpTools": {
         "linear": ["mcp__linear__get_issue"],

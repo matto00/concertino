@@ -1,8 +1,5 @@
-# orchestrator-subagent-result-delivery Specification
+## MODIFIED Requirements
 
-## Purpose
-Documents that, on the ordinary spawn/resume path, a sub-agent's result is delivered only as the return value of the call that spawned or resumed it, and pins the artifact-inspection fallback and cross-harness safety properties that keep this guidance correct in the rendered role documents.
-## Requirements
 ### Requirement: Sub-agent results are documented as return-value-only
 The rendered `.claude/agents/concertino-orchestrator.md` (Claude Code) SHALL state that a
 sub-agent's authoritative result is delivered only as the return value of the `Agent`/
@@ -29,20 +26,6 @@ sub-agent mid-turn, before its return value is in hand.
 - **THEN** it does not state that executor/evaluator/skeptic/auditor have no `SendMessage` tool
   (that claim is now false) — it instead states the narrower, still-true fact above
 
-### Requirement: Mandatory artifact-inspection fallback
-The orchestrator role document SHALL instruct that whenever the orchestrator
-is not already holding a sub-agent's return value at a phase boundary — not
-only when the harness cannot wait inline — it must inspect the worktree
-(report file, new commits, `workflow-state.md`) and report what it finds,
-rather than ending its turn believing a message will arrive later.
-
-#### Scenario: Fallback is not conditioned on harness inability alone
-- **WHEN** the orchestrator role document's Phase 2 spawn/resume/final-gate
-  steps are read
-- **THEN** the artifact-inspection fallback is stated as applying whenever
-  the orchestrator is not holding a result, in addition to the
-  harness-cannot-wait-inline case
-
 ### Requirement: No new SendMessage-shaped instructions leak into Codex/OpenCode
 Rendering any of `core/roles/{orchestrator,executor,evaluator,skeptic,auditor}.md` for `codex` or `opencode` SHALL NOT introduce new text naming `SendMessage`, and SHALL NOT increase confusion by
 contradicting each harness's own `harnessResume` block in the same rendered file. This
@@ -53,4 +36,3 @@ was in scope), since `subagent-escalation-raise` adds new shared-prose sections 
 - **WHEN** `core/roles/{orchestrator,executor,evaluator,skeptic,auditor}.md` are rendered for
   `codex` and for `opencode`, before and after this change
 - **THEN** the count of `SendMessage` occurrences in each rendered file is unchanged
-

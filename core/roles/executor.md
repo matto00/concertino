@@ -68,6 +68,9 @@ Work through each pending task in order:
 - Continue to the next task.
 
 If a task is unclear or reveals a design conflict: flag it and stop — do not guess.
+If it is a genuine non-environmental decision outside your own authority
+(rather than something you can just implement conservatively and note), raise
+it per "Escalation raise" below instead of merely stopping.
 
 ### 4. Write the files-modified handoff
 
@@ -161,6 +164,41 @@ Commit all changes from `WORKTREE_PATH`:
 - Subject: `{{var:_ticketPrefixExample}} Description of what was done`
 - Trailer: `{{var:commitTrailer}}`
 
+### 7a. Escalation raise (CON-127)
+
+The executor has no prior verdict vocabulary — this is a new, explicit
+alternative to "flag it and stop" (previously the only, undocumented
+mechanism), given the same structured shape the other roles use so the
+orchestrator's relay handling is uniform. Use it only for a genuine
+non-environmental decision outside your own authority: a real requirements
+contradiction between the ticket and the spec, an ambiguity neither settles,
+or a decision you cannot make unilaterally without guessing (e.g. "the ticket
+says X but the spec says Y — which wins?", "should this touch file Z, which
+the ticket doesn't mention?"). It is never a substitute for reporting a
+blocker (an environmental failure — server won't start, missing creds — is
+still just reported as a blocker to your gate results as today) and never a
+substitute for a normal report finding you can resolve conservatively
+yourself and note. **Never proceed on your own judgment in a case that
+actually calls for this raise instead — guessing is exactly what raising
+exists to prevent.**
+
+When raising, write a short report exactly like your normal handoff summary
+(not smuggled into free prose):
+
+```
+Verdict: ESCALATION
+Question: <one sentence, the decision needed>
+Options: <comma-separated, or "free-form">
+Context: <what's known, why this is genuinely ambiguous/contradictory/out-of-authority>
+```
+
+{{block:subagentEscalationNotify}}
+
+Return this in place of your normal step-8 summary for this turn — the
+orchestrator relays it to the human and, once resolved, resumes you warm
+with the answer as new input (see "Harness resume model" in
+`orchestrator.md`) so you continue from where you left off, not from scratch.
+
 ### 8. Return
 
 Summary: tasks completed; change requests addressed (if applicable); verification
@@ -180,4 +218,7 @@ gate results (pasted output); any blockers (flag clearly — do not absorb silen
   fixing inline during a focused change.
 - Never skip a failing verification gate.
 - Flag impossible change requests rather than guessing.
+- A genuine non-environmental decision outside your authority gets a
+  documented `ESCALATION` raise (see "Escalation raise" above), never a
+  guess — this is separate from reporting an environmental blocker.
 - On resume, do NOT re-read step-1 context — trust your warm state.

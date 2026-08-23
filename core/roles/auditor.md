@@ -125,6 +125,40 @@ deliberately not taken) — not just a judgment for someone else to act on.
   unreachable, the script itself failed to run). Never retried as a code
   change — surfaced to the human exactly like every other `BLOCKER` in this
   system.
+- **ESCALATION-RAISE** (CON-127) — additive to the three above, not merged
+  into them, and deliberately **not** named bare `ESCALATION`: it would be a
+  one-token-apart, LLM-unsafe pair with your own `ESCALATE` in this same
+  slot, and the two route to materially different orchestrator behavior
+  (`ESCALATE` is a no-retry fallback to wait-for-"merged"; `ESCALATION-RAISE`
+  is relay-then-fresh-cold-respawn). `ESCALATE` is a **post-hoc finding**
+  after you have already completed your checklist and reached a verdict — a
+  real, expected, unmergeable/unmet fact. `ESCALATION-RAISE` is for a
+  genuine ambiguity you hit **before** you can even complete the checklist —
+  e.g. the acceptance criteria themselves are worded ambiguously enough that
+  you cannot judge Condition 4 at all without a human call on what "satisfies
+  AC N" even means here (distinct from "I checked and it's not traceable,"
+  which is already `ESCALATE`). This is expected to be rare. An
+  `ESCALATION-RAISE` does **not** consume or interact with your "one attempt,
+  no retry" circuit-breaker entry — that entry governs `ESCALATE`/`BLOCKER`
+  outcomes reached after a completed pass, not a raise that occurs before one
+  was ever reached; you are re-spawned once, fresh/cold, carrying the
+  resolved answer forward as an explicit additional input. Never proceed on
+  your own judgment in a case that actually calls for this raise instead.
+
+  When raising, write a short report exactly like your normal report:
+
+  ```
+  Verdict: ESCALATION-RAISE
+  Question: <one sentence, the decision needed>
+  Options: <comma-separated, or "free-form">
+  Context: <what's known, why this is genuinely ambiguous/contradictory/out-of-authority>
+  ```
+
+  `ESCALATION-RAISE` is an ordinary member of this role's verdict
+  vocabulary: it is written, `persist-evidence.sh`-persisted, and
+  `emit-event.sh verdict verdict=ESCALATION-RAISE`-emitted exactly like
+  `MERGE`/`ESCALATE`/`BLOCKER` already are (see Step 2 below) — no new
+  emission path, no step skipped. {{block:subagentEscalationNotify}}
 
 ### Merging (only on all four conditions holding)
 
@@ -161,7 +195,7 @@ Write to `WORKTREE_PATH/<change-dir>/auditor-report.md`:
 ### Condition 4 (acceptance criteria, traced cold)
 - (each AC + the specific code/behavior that satisfies it, or "not traceable: ...")
 
-### Verdict: MERGE | ESCALATE | BLOCKER
+### Verdict: MERGE | ESCALATE | BLOCKER | ESCALATION-RAISE
 
 ### Reason (only if ESCALATE or BLOCKER — specific, actionable)
 - ...
@@ -179,7 +213,7 @@ report path:
 scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/auditor-report.md"
 # READY ref=<durable path>
 scripts/concertino/emit-event.sh verdict \
-  ticket=$TICKET_ID role=auditor verdict=<MERGE|ESCALATE|BLOCKER> ref=<durable path from READY ref=>
+  ticket=$TICKET_ID role=auditor verdict=<MERGE|ESCALATE|BLOCKER|ESCALATION-RAISE> ref=<durable path from READY ref=>
 ```
 
 If `persist-evidence.sh` prints `FAIL` instead, emit `verdict` with no `ref`
@@ -195,7 +229,7 @@ duplication.
 ### Step 2: Return
 
 ```
-Verdict: MERGE | ESCALATE | BLOCKER
+Verdict: MERGE | ESCALATE | BLOCKER | ESCALATION-RAISE
 Report: <path>
 ```
 
@@ -228,6 +262,10 @@ Do not reproduce the report — the orchestrator reads it from file.
 - **`BLOCKER` is for environmental failures only** — a real merge condition
   failing (CI red, branch behind, review required, an untraceable AC) is
   `ESCALATE`, not `BLOCKER`.
+- **`ESCALATION-RAISE` is distinct from `ESCALATE`** — see "Verdict
+  vocabulary" above. Never write bare `ESCALATION` for this role; never
+  proceed on unilateral judgment in a case that actually calls for raising
+  one.
 - **Never pass `--delete-branch`** to `gh pr merge` — the worktree still has
   this branch checked out live.
 - **Never invoke `scripts/concertino/cleanup.sh`** (or any teardown of the
