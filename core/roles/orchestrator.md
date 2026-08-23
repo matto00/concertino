@@ -875,20 +875,43 @@ Phase 4's own internal step order below is unchanged either way:**
    ```
 
    `cleanup.sh` also fast-forwards local `<base>` now (bringing it up to date
-   after the merge that just happened) and, when it can't do that safely, may
-   itself block on an `emit-event.sh escalation --await` call exactly like the
-   ones described below. **Give this Bash call the same long, explicit timeout
-   guidance given for the orchestrator's own `--await` calls above** — it may
-   now block for as long as a human takes to answer. It always still exits 0
-   and prints its normal `READY cleaned worktree=...` line once that
-   escalation resolves (answered, skipped, or timed out), so this step
-   completes either way; there is nothing else to handle here. **For a design
-   ticket reached via the no-code entry condition above, this fast-forward
-   step is a safe, unmodified no-op**: it compares local `<base>`'s tip
-   against the fetched remote tip and returns immediately when they already
-   match, which is the expected state here since this ticket's branch never
-   pushed anything new to `<base>` — no script change is needed for this
-   branch.
+   after the merge that just happened), removes the merged ticket branch
+   (local and remote, once its content is confirmed identical to the merged
+   base), and, when the fast-forward can't complete safely (dirty tree,
+   diverged base), may itself block on an `emit-event.sh escalation --await`
+   call exactly like the ones described below. **Give this Bash call the
+   same long, explicit timeout guidance given for the orchestrator's own
+   `--await` calls above** — it may now block for as long as a human takes
+   to answer.
+
+   **Actually run/wait for this call and check its exit code** (CON-131) —
+   do not treat it as a fire-and-forget step:
+   - **Exit 0:** every hard-failing postcondition the script re-probes
+     (worktree removed or already absent, local branch deleted or
+     intentionally left in place) was confirmed true. Parse the `RESULT
+     worktree=<ok|fail|not-attempted> branch_local=<ok|fail|skipped|
+     not-attempted> branch_remote=<ok|fail_or_absent|skipped|not-attempted>
+     base=<...>` line the script prints to stderr immediately before
+     `READY cleaned worktree=...` and proceed to step 2 below. `base=`
+     reflects the fast-forward outcome specifically (`current`/`updated`
+     are the clean cases; `dirty`/`diverged`/`failed`/`fetch-failed`/
+     `no-local-base` are the tolerated non-fatal outcomes above) and never
+     affects the exit code — do not treat a non-`current`/`updated` `base=`
+     value as a reason to escalate; it already resolved (or was
+     deliberately skipped) via the `--await` call above.
+   - **Non-zero exit:** treat it exactly like any other environmental
+     Phase-4 failure already covered by this document's own escalation
+     table — a `BLOCKER`: surface it to the human (including the script's
+     own printed failing-command-and-stderr detail and whatever `RESULT`
+     line it managed to print), do not proceed to steps 2–3 until resolved,
+     and do not silently retry.
+
+   **For a design ticket reached via the no-code entry condition above, this
+   fast-forward step is a safe, unmodified no-op**: it compares local
+   `<base>`'s tip against the fetched remote tip and returns immediately
+   when they already match, which is the expected state here since this
+   ticket's branch never pushed anything new to `<base>` — no script change
+   is needed for this branch.
 
 2. Set the ticket to **Done** and post a closing comment (what shipped +
    merged PR link). **For a `TICKET_TYPE: design` ticket**, the closing

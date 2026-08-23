@@ -21,10 +21,19 @@ set -euo pipefail
 # Usage: cleanup.sh --phase4 <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]
 #    or: CONCERTINO_PHASE4=1 cleanup.sh <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]
 #
-# Prints "READY cleaned worktree=<path>" on success — ALWAYS exits 0,
-# regardless of whether the fast-forward below succeeded, escalated, or was
-# skipped. A stale base is a risk for the NEXT run, never a reason to leave
-# THIS already-merged ticket's teardown incomplete.
+# Prints "READY cleaned worktree=<path>" and, on every exit path past the
+# --phase4 guard, a machine-parseable "RESULT ..." summary line (see
+# print_result below) to stderr. Exits 0 ONLY when every hard-failing
+# postcondition this script re-probes (worktree absent, local branch absent
+# or intentionally left in place) was confirmed true; exits non-zero,
+# naming the failing command and its stderr, the instant any of those git
+# operations fails or a re-probed postcondition is found unmet. The ONE
+# deliberately-tolerant exception is the fast-forward comparison of local
+# <base> against the fetched remote (attempt_fast_forward, below): "main
+# cannot fast-forward" (dirty tree / diverged base / fetch failed) is a
+# distinct, reportable, non-fatal outcome and does NOT affect the exit code
+# — a stale base is a risk for the NEXT run, never a reason to leave THIS
+# already-merged ticket's worktree/branch teardown incomplete.
 # ===========================================================================
 
 # Phase-4 guard: proceed with the destructive steps only on explicit opt-in.
@@ -43,13 +52,81 @@ DEV_PORT="${2:-}"
 BACKEND_PORT="${3:-}"
 TICKET_ID="${4:-}"
 
+# ---------------------------------------------------------------------------
+# RESULT-line fields, declared to defined defaults immediately — before
+# REPO_ROOT, before anything else that can fail (design.md Decision 4). This
+# is what lets fail()/print_result() emit a coherent RESULT line even from
+# the very first hard-failing call, without dereferencing an unset variable
+# under `set -u`.
+# ---------------------------------------------------------------------------
+WT_OK="not-attempted"
+BRANCH=""
+BRANCH_LOCAL="not-attempted"
+BRANCH_REMOTE="not-attempted"
+FF_STATUS="not-attempted"
+
+# print_result: the machine-parseable summary line, printed to STDERR
+# deliberately (never stdout) — several call sites below invoke run_git via
+# `VAR="$(run_git ...)"` command substitution (e.g. REPO_ROOT), and a
+# command substitution only ever captures the subshell's stdout. A RESULT
+# line on stdout would be silently captured and discarded on exactly that
+# failure path, reproducing the very "failure happened but nothing legible
+# came out" defect this script exists to close (design-gate round 3, change
+# request 1). Printed on every exit path past this point: success,
+# fail()-driven hard failure (at whatever point it fires), and the existing
+# tolerant fast-forward outcome.
+print_result() {
+  echo "RESULT worktree=${WT_OK} branch_local=${BRANCH_LOCAL} branch_remote=${BRANCH_REMOTE} base=${FF_STATUS}" >&2
+}
+
+# fail: the one exit path for every hard-failing git operation below.
+# Always prints whatever RESULT state has been confirmed so far (never
+# nothing) to stderr before exiting non-zero, so a caller inspecting stderr
+# always finds exactly one RESULT line regardless of how early the failure
+# occurred.
+fail() {
+  echo "cleanup.sh: FAILED: $1" >&2
+  print_result
+  exit 1
+}
+
+# run_git <description> -- <command...>: wraps a single hard-failing git (or
+# git_child) invocation. On success, prints the command's stdout on stdout
+# and returns 0 — safe to use as `VAR="$(run_git ...)"`. On failure, prints
+# "cleanup.sh: FAILED <description>: <command>" plus the command's own
+# stderr (captured via a temp file, not `2>&1`, which would corrupt a stdout
+# capture) to stderr, then calls fail() to exit non-zero. This is what makes
+# the failure message name the specific failing command and isolate its
+# stderr, and what makes the RESULT line reliably reflect what happened
+# regardless of exactly where in the script a failure occurs (design.md
+# Decision 2).
+run_git() {
+  local desc="$1"; shift
+  [ "${1:-}" = "--" ] && shift
+  local out err rc
+  err="$(mktemp)"
+  if out="$("$@" 2>"$err")"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo "cleanup.sh: FAILED ${desc}: $*" >&2
+    sed 's/^/  /' "$err" >&2
+    rm -f "$err"
+    fail "${desc}"
+  fi
+  rm -f "$err"
+  printf '%s' "$out"
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/git-child-env.sh"
 # shellcheck disable=SC1091
 [ -f "${SCRIPT_DIR}/.concertino.env" ] && source "${SCRIPT_DIR}/.concertino.env"
 
-REPO_ROOT="$(git_child rev-parse --show-toplevel)"
+REPO_ROOT="$(run_git "resolve repo root" -- git_child rev-parse --show-toplevel)"
 
 # `concertino sync`'s renderEnv writes both CONCERTINO_BASE_BRANCH and
 # CONCERTINO_BASE_REMOTE (see bin/concertino), the latter from
@@ -60,24 +137,116 @@ REPO_ROOT="$(git_child rev-parse --show-toplevel)"
 BASE_REMOTE="${CONCERTINO_BASE_REMOTE:-origin}"
 BASE_BRANCH="${CONCERTINO_BASE_BRANCH:-main}"
 
-# Stop dev servers on this ticket's ports (no-op if already down).
-[ -n "$DEV_PORT" ]     && fuser -k "${DEV_PORT}/tcp"     2>/dev/null || true
-[ -n "$BACKEND_PORT" ] && fuser -k "${BACKEND_PORT}/tcp" 2>/dev/null || true
-
-# Remove the worktree (force: discards the now-merged working tree).
-if [ -d "$WORKTREE_PATH" ]; then
-  git_child -C "$REPO_ROOT" worktree remove "$WORKTREE_PATH" --force
-fi
-git_child -C "$REPO_ROOT" worktree prune
-
 # Phase-4 cleanup only runs post-merge, so reaching here means the run shipped.
 # The canonical ticket ID arrives as the explicit 4th argument (CON-64); the
 # worktree-basename inference stays only as a fallback for call sites rendered
 # before the argument existed. Inference is not reliable — a branch without
 # the <type>/<desc>/<TICKET-ID> suffix makes the basename a non-ticket, and
 # the run.end at the bottom of this script would then never be tagged, leaving
-# the run permanently non-terminal on the dashboard.
+# the run permanently non-terminal on the dashboard. Resolved up front (moved
+# ahead of the worktree-removal step) because branch resolution's
+# naming-convention fallback (Decision 3a) also needs it.
 T="${TICKET_ID:-${WORKTREE_PATH##*/}}"
+
+# Stop dev servers on this ticket's ports (no-op if already down).
+[ -n "$DEV_PORT" ]     && fuser -k "${DEV_PORT}/tcp"     2>/dev/null || true
+[ -n "$BACKEND_PORT" ] && fuser -k "${BACKEND_PORT}/tcp" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Resolve BRANCH, remove the worktree, and set WT_OK — all before any branch
+# deletion is attempted (git branch -D fails while a worktree still uses the
+# branch — design.md Decision 3).
+#
+# BRANCH resolution is two-step (Decision 3a, revised design-gate round 2):
+#   (a) worktree still present — parse `git worktree list --porcelain` for
+#       the branch it has checked out, captured BEFORE removal.
+#   (b) worktree already absent (the idempotent-re-run / "branch left
+#       behind" case — the ticket's own most-cited real scenario) — search
+#       local branches by this project's own naming convention
+#       (`.../<TICKET_ID>`); use it only if exactly one branch matches.
+# ---------------------------------------------------------------------------
+if [ -d "$WORKTREE_PATH" ]; then
+  _wt=""
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) _wt="${line#worktree }" ;;
+      "branch refs/heads/"*)
+        if [ "$_wt" = "$WORKTREE_PATH" ]; then
+          BRANCH="${line#branch refs/heads/}"
+        fi
+        ;;
+    esac
+  done < <(git_child -C "$REPO_ROOT" worktree list --porcelain)
+
+  run_git "remove worktree" -- git_child -C "$REPO_ROOT" worktree remove "$WORKTREE_PATH" --force >/dev/null
+  # Re-probe IMMEDIATELY — a `worktree remove` that returns 0 but leaves a
+  # non-empty directory behind must still be caught here, driving the exit
+  # code right away rather than merely being reported at the end.
+  if [ -d "$WORKTREE_PATH" ]; then
+    WT_OK=fail
+    fail "worktree still present after removal: $WORKTREE_PATH"
+  fi
+  WT_OK=ok
+else
+  # Already absent — the postcondition this field tracks is already true.
+  WT_OK=ok
+  if [ -n "$T" ]; then
+    MATCHES="$(git_child -C "$REPO_ROOT" branch --list "*/${T}" --format='%(refname:short)' 2>/dev/null || true)"
+    if [ "$(printf '%s\n' "$MATCHES" | grep -c .)" -eq 1 ]; then
+      BRANCH="$MATCHES"
+    fi
+  fi
+fi
+git_child -C "$REPO_ROOT" worktree prune 2>/dev/null || true   # soft, unchanged from today
+
+# ---------------------------------------------------------------------------
+# Branch deletion — content-equality against the fetched base, not
+# ancestry, so a squash-merged branch (commits not ancestors of <base>)
+# still deletes cleanly. Uses the two-dot diff form deliberately (design.md
+# Decision 3b): `git diff <base_remote>/<base_branch> <branch>`, NOT
+# three-dot `...` (merge-base-relative, non-empty for exactly the
+# squash-merge case this feature exists to handle). Never guesses when the
+# diff itself can't be computed (fetch failed, branch already gone) —
+# mirrors the same "unresolvable → report, don't force" posture the
+# fast-forward step below already uses.
+# ---------------------------------------------------------------------------
+if [ -n "$BRANCH" ] && [ "$BRANCH" != "$BASE_BRANCH" ]; then
+  git_child -C "$REPO_ROOT" fetch --quiet "$BASE_REMOTE" "$BASE_BRANCH" 2>/dev/null || true
+  if DIFF="$(git_child -C "$REPO_ROOT" diff "${BASE_REMOTE}/${BASE_BRANCH}" "${BRANCH}" 2>/dev/null)"; then
+    DIFF_OK=1
+  else
+    DIFF_OK=0
+  fi
+  if [ "$DIFF_OK" -eq 1 ] && [ -z "$DIFF" ]; then
+    run_git "delete local branch ${BRANCH}" -- git_child -C "$REPO_ROOT" branch -D "$BRANCH" >/dev/null
+    # Re-probe IMMEDIATELY — a `branch -D` that returns 0 but somehow left
+    # the ref behind must still be caught here, driving the exit code right
+    # away (the same "re-probe drives the exit code" principle as the
+    # worktree postcondition above).
+    if git_child -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/${BRANCH}" 2>/dev/null; then
+      BRANCH_LOCAL=fail
+      fail "branch ${BRANCH} still present after deletion"
+    fi
+    BRANCH_LOCAL=ok
+    # Remote branch deletion is best-effort: the remote branch is very
+    # commonly already gone by Phase 4 (host "delete branch on merge"
+    # defaults), and re-attempting a delete against an already-gone ref is
+    # not itself a defect worth failing the whole teardown over.
+    if git_child -C "$REPO_ROOT" push "$BASE_REMOTE" --delete "$BRANCH" 2>/dev/null; then
+      BRANCH_REMOTE=ok
+    else
+      BRANCH_REMOTE=fail_or_absent
+    fi
+  else
+    # Content differs from base, or the diff itself couldn't be computed
+    # (fetch failed, or the branch is already gone) — never force-delete.
+    BRANCH_LOCAL=skipped
+    BRANCH_REMOTE=skipped
+  fi
+else
+  BRANCH_LOCAL=skipped
+  BRANCH_REMOTE=skipped
+fi
 
 # ===========================================================================
 # Fast-forward local <base> to match the fetched remote (CON-25).
@@ -298,4 +467,5 @@ fi
 CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.end \
   "ticket=${T}" "status=delivered" || true
 
+print_result
 echo "READY cleaned worktree=${WORKTREE_PATH}"
