@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: The raise procedure consults TUI liveness before choosing how to resolve
-The topology branch (root vs. Claude Code subagent) is decided first and is never bypassed by
+The topology branch (root vs. Claude Code subagent) SHALL be decided first and SHALL never be bypassed by
 `TUI_ATTACHED`; `TUI_ATTACHED` only changes what the **root** branch does at its own resolution
 step. Immediately after presenting an escalation to the chat transcript (unconditional, per the
 existing requirement) and once the orchestrator has determined it is the **root** (no parent
