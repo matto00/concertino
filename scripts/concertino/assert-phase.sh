@@ -28,6 +28,8 @@ WORKTREE_PATH="${2:?missing WORKTREE_PATH}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/git-child-env.sh"
+# shellcheck disable=SC1091
 [ -f "${SCRIPT_DIR}/.concertino.env" ] && source "${SCRIPT_DIR}/.concertino.env"
 
 # utf8_safe_char_prefix <char-budget>
@@ -130,10 +132,105 @@ case "$PHASE" in
     BRANCH="${3:?delivery assert needs <BRANCH>}"
     TICKET_ID="${4:-}"
     GATE_TICKET="${TICKET_ID:-${WORKTREE_PATH##*/}}"
-    git -C "$WORKTREE_PATH" rev-parse --verify --quiet "refs/remotes/origin/${BRANCH}" >/dev/null \
+    git_child -C "$WORKTREE_PATH" rev-parse --verify --quiet "refs/remotes/origin/${BRANCH}" >/dev/null \
         || fail "branch ${BRANCH} not pushed to origin"
-    [ -z "$(git -C "$WORKTREE_PATH" status --porcelain)" ] \
+    [ -z "$(git_child -C "$WORKTREE_PATH" status --porcelain)" ] \
         || fail "worktree has uncommitted changes"
+
+    # -----------------------------------------------------------------------
+    # CON-132: a diff touching the commit-gate chain must not reach Delivery
+    # without recorded evidence. check-gate-chain-change.sh only CLASSIFIES
+    # the diff (design.md Decision 1/2); the evidence check itself lives
+    # here, fail-closed on any classification/read error (design.md Risks —
+    # "evidence file absent" is FAIL, not PASS).
+    # -----------------------------------------------------------------------
+    main_checkout() {
+      local common
+      common="$(git_child -C "$WORKTREE_PATH" rev-parse --git-common-dir 2>/dev/null)" || return 1
+      [ -z "$common" ] && return 1
+      case "$common" in
+        /*) ;;
+         *) common="$(cd "$WORKTREE_PATH" 2>/dev/null && cd "$common" 2>/dev/null && pwd)" || return 1 ;;
+      esac
+      ( cd "$(dirname "$common")" 2>/dev/null && pwd ) || return 1
+    }
+    GC_BASE_REMOTE="${CONCERTINO_BASE_REMOTE:-origin}"
+    GC_BASE_BRANCH="${CONCERTINO_BASE_BRANCH:-main}"
+    if GC_OUT="$("${SCRIPT_DIR}/check-gate-chain-change.sh" "$WORKTREE_PATH" "${GC_BASE_REMOTE}/${GC_BASE_BRANCH}" "$GATE_TICKET" 2>&1)"; then
+      GC_RC=0
+    else
+      GC_RC=$?
+    fi
+    if [ "$GC_RC" -ne 0 ]; then
+      fail "gate-chain classification failed (fail-closed): $(printf '%s' "$GC_OUT" | tr '\n' ' ' | cut -c1-200)"
+    elif printf '%s\n' "$GC_OUT" | grep -q '^GATECHAIN yes$'; then
+      GC_ROOT="$(main_checkout)"
+      if [ -z "${GC_ROOT:-}" ]; then
+        fail "gate-chain diff detected but could not resolve main checkout to look up evidence"
+      else
+        GC_EVIDENCE_DIR="${GC_ROOT}/.concertino/runs/${GATE_TICKET}/evidence"
+
+        # --- (a) the answered implications checklist, persisted design.md ---
+        GC_DESIGN_MD=""
+        for f in "${GC_EVIDENCE_DIR}"/openspec/changes/*/design.md; do
+          [ -f "$f" ] && GC_DESIGN_MD="$f" && break
+        done
+        if [ -z "$GC_DESIGN_MD" ]; then
+          fail "gate-chain diff detected: no persisted design.md found under ${GC_EVIDENCE_DIR}/openspec/changes/*/design.md — the Gate-Chain Implications Checklist evidence is missing"
+        else
+          GC_CHECKLIST_OUT="$(node -e '
+            const fs = require("fs");
+            const text = fs.readFileSync(process.argv[1], "utf8");
+            const HEADING = "## Gate-Chain Implications Checklist";
+            const idx = text.indexOf(HEADING);
+            if (idx === -1) { console.log("FAIL missing heading"); process.exit(0); }
+            const rest = text.slice(idx + HEADING.length);
+            const nextHeading = rest.search(/\n##\s/);
+            const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
+            const prompts = [
+              "What does it execute?",
+              "What environment does it inherit, and from where?",
+              "Does it write anything outside its own sandbox?",
+              "Does it behave differently from a linked worktree than from a main checkout?",
+              "What happens on its first run?"
+            ];
+            const placeholders = new Set(["tbd", "n/a", "na", "todo", ""]);
+            const missing = [];
+            for (const p of prompts) {
+              const marker = `**${p}**`;
+              const at = section.indexOf(marker);
+              if (at === -1) { missing.push(p); continue; }
+              const lineEnd = section.indexOf("\n", at);
+              const answer = (lineEnd === -1 ? section.slice(at + marker.length) : section.slice(at + marker.length, lineEnd)).trim();
+              if (placeholders.has(answer.toLowerCase())) missing.push(p);
+            }
+            if (missing.length) console.log("FAIL unanswered: " + missing.join(" | "));
+            else console.log("PASS");
+          ' "$GC_DESIGN_MD" 2>&1)"
+          case "$GC_CHECKLIST_OUT" in
+            PASS) ;;
+            *) fail "gate-chain diff detected: Gate-Chain Implications Checklist incomplete in $(basename "$(dirname "$GC_DESIGN_MD")")/design.md — ${GC_CHECKLIST_OUT}" ;;
+          esac
+        fi
+
+        # --- (b) a passing isolation-test transcript for EVERY gate-chain- --
+        # --- touching script path the diff actually contains ---------------
+        while IFS= read -r gc_line; do
+          case "$gc_line" in
+            SCRIPT\ *)
+              gc_script_path="${gc_line#SCRIPT }"
+              gc_flat="$(printf '%s' "$gc_script_path" | sed 's#/#__#g')"
+              gc_transcript="${GC_EVIDENCE_DIR}/.concertino/gate-chain-isolation-evidence/${gc_flat}.md"
+              if [ ! -f "$gc_transcript" ]; then
+                fail "gate-chain diff detected: no isolation-test evidence for changed script ${gc_script_path} (expected ${gc_transcript})"
+              elif ! grep -qF '**PASS**' "$gc_transcript"; then
+                fail "gate-chain diff detected: isolation-test evidence for ${gc_script_path} does not record a PASS verdict (${gc_transcript})"
+              fi
+              ;;
+          esac
+        done <<< "$GC_OUT"
+      fi
+    fi
 
     # -----------------------------------------------------------------------
     # CON-31: best-effort, non-blocking stale-base warning. Fetches the
@@ -148,14 +245,14 @@ case "$PHASE" in
     # -----------------------------------------------------------------------
     STALE_REMOTE="${CONCERTINO_BASE_REMOTE:-origin}"
     STALE_BRANCH="${CONCERTINO_BASE_BRANCH:-main}"
-    if git -C "$WORKTREE_PATH" fetch --quiet "$STALE_REMOTE" "$STALE_BRANCH" 2>/dev/null; then
-      STALE_REMOTE_TIP="$(git -C "$WORKTREE_PATH" rev-parse "${STALE_REMOTE}/${STALE_BRANCH}" 2>/dev/null)" || STALE_REMOTE_TIP=""
+    if git_child -C "$WORKTREE_PATH" fetch --quiet "$STALE_REMOTE" "$STALE_BRANCH" 2>/dev/null; then
+      STALE_REMOTE_TIP="$(git_child -C "$WORKTREE_PATH" rev-parse "${STALE_REMOTE}/${STALE_BRANCH}" 2>/dev/null)" || STALE_REMOTE_TIP=""
       if [ -n "$STALE_REMOTE_TIP" ]; then
-        STALE_MERGE_BASE="$(git -C "$WORKTREE_PATH" merge-base HEAD "$STALE_REMOTE_TIP" 2>/dev/null)" || STALE_MERGE_BASE=""
+        STALE_MERGE_BASE="$(git_child -C "$WORKTREE_PATH" merge-base HEAD "$STALE_REMOTE_TIP" 2>/dev/null)" || STALE_MERGE_BASE=""
         if [ -n "$STALE_MERGE_BASE" ] && [ "$STALE_MERGE_BASE" != "$STALE_REMOTE_TIP" ]; then
-          STALE_BEHIND="$(git -C "$WORKTREE_PATH" rev-list --count "${STALE_MERGE_BASE}..${STALE_REMOTE_TIP}" 2>/dev/null)" || STALE_BEHIND=""
+          STALE_BEHIND="$(git_child -C "$WORKTREE_PATH" rev-list --count "${STALE_MERGE_BASE}..${STALE_REMOTE_TIP}" 2>/dev/null)" || STALE_BEHIND=""
           if [[ "$STALE_BEHIND" =~ ^[0-9]+$ ]] && [ "$STALE_BEHIND" -gt 0 ]; then
-            STALE_LOG="$(git -C "$WORKTREE_PATH" log --oneline -5 "${STALE_MERGE_BASE}..${STALE_REMOTE_TIP}" 2>/dev/null)" || STALE_LOG=""
+            STALE_LOG="$(git_child -C "$WORKTREE_PATH" log --oneline -5 "${STALE_MERGE_BASE}..${STALE_REMOTE_TIP}" 2>/dev/null)" || STALE_LOG=""
             if [ -n "$STALE_LOG" ]; then
               echo "WARN base ${STALE_REMOTE}/${STALE_BRANCH} has moved — this branch is ${STALE_BEHIND} commit(s) behind:" >&2
               while IFS= read -r stale_line; do
