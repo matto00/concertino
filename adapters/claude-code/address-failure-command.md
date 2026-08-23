@@ -36,7 +36,7 @@ Identical to `/concertino-deliver`'s own "When the orchestrator returns"
 section (`adapters/claude-code/command.md`) — the `ESCALATION-PENDING` bubble
 handling, `ESCALATION`/`BLOCKER` relay, the "merged" pause, and the
 `SendMessage`-unavailable `RESUME — do not start over` fallback all apply
-unchanged. This command differs only in how the orchestrator's turn *begins*
+unchanged. This command differs only in how the orchestrator's turn _begins_
 (the Address-Failure entry point instead of ordinary Setup), never in how it
 ends or resumes across a compaction — the orchestrator is the same agent
 either way, given a different starting instruction.
