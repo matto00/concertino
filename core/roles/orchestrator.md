@@ -107,6 +107,7 @@ below for the full raise/bubble/resume protocol this exception exists for.
 | Signal       | From              | Action                                                                                          |
 | ------------ | ----------------- | ----------------------------------------------------------------------------------------------- |
 | `ESCALATION` | Planning          | Present to human, collect answer, continue                                                       |
+| `ESCALATION` | Executor/Evaluator/Skeptic | Relay to human via the existing raise procedure — do not decide it yourself                |
 | `BLOCKER`    | Evaluator/Skeptic/Auditor | Surface to human, wait for direction — do not loop                                        |
 | PASS         | Evaluator         | Run the **final gate (Skeptic)** — do NOT deliver yet                                            |
 | FAIL         | Evaluator         | Read report, resume executor with `EVALUATION_REPORT_PATH`                                       |
@@ -114,6 +115,7 @@ below for the full raise/bubble/resume protocol this exception exists for.
 | REFUTE       | Skeptic           | Read report; revise artifacts (design gate) or resume executor with change requests (final gate) |
 | MERGE        | Auditor           | PR already merged — proceed directly to Phase 4 (agent-merge runs only)                          |
 | ESCALATE     | Auditor           | Read report, surface the specific reason, fall back to wait-for-"merged" (agent-merge runs only) |
+| `ESCALATION-RAISE` | Auditor     | Same as sub-agent `ESCALATION` above, but raised *before* the auditor has reached `MERGE`/`ESCALATE`/`BLOCKER` — distinct from `ESCALATE` (a post-hoc finding); relay to human, do not decide it yourself |
 
 ---
 
@@ -1220,6 +1222,36 @@ below, fit comfortably inside the harness default too.)
     answer="<their decision, one line>" || true
   ```
 
+**A sub-agent-originated escalation (CON-127).** When executor/evaluator/
+skeptic returns `ESCALATION`, or auditor returns `ESCALATION-RAISE`, raise it
+through this *exact same* topology branch above — `--await` if you are the
+root, `--raise-only` if you are yourself a subagent — substituting the
+sub-agent's `question`/`options`/`context` for your own, and tagging
+`role=<raiser>` (e.g. `role=executor`) instead of `role=orchestrator`. This
+reuses `escalation.raised`/`escalation.answered` exactly as-is — no new event
+kind, no new `emit-event.sh` mode, no `kind=` parameter; `role=<raiser>` alone
+carries the distinction, and it composes uniformly with CON-126 (TUI
+detection, not yet built) whenever it lands, since the topology decision
+lives entirely in this one procedure regardless of which role originated the
+question. On receiving the raised verdict, you have already observed the
+sub-agent's own `verdict=ESCALATION`/`verdict=ESCALATION-RAISE` event and
+report (its normal, unweakened verdict-emission path — unchanged by this) —
+raising the human-facing `escalation.raised` relay here is a *separate,
+additional* step, not a replacement for or a wait on that verdict event; both
+exist for the same raise, for different purposes (the role's own accounting
+vs. the human-facing relay). You relay it — you never decide the substance of
+the question yourself. The resume contract once the human has answered — which
+raising roles resume warm vs. cold, and how the sub-agent learns your own
+agent ref to self-notify you in the first place — is stated in "Harness
+resume model" above; it is harness-specific and lives there, not here.
+
+This never introduces a new exception to "never end your turn while a spawned
+or resumed sub-agent is still outstanding": the sub-agent's `ESCALATION`/
+`ESCALATION-RAISE` return is its own normal way of yielding control back to
+you (its turn already ended when you receive it), not a wait-for-inbound-
+message loop on either side — you already have its full return value in hand
+before you start the relay above.
+
 ### Receiving a bubbled escalation, and the root's resolution loop (CON-76)
 
 **If you receive an `ESCALATION-PENDING` result from a child you spawned**
@@ -1360,6 +1392,10 @@ Every bound named below is `workflow-state.md`'s resolved value for this run
 - **BLOCKER (environmental):** dev server won't start, creds missing, infra/tooling
   failure. Never retried as a code change.
 - **Contradiction:** a change request that is impossible or contradicts the spec.
+- **Sub-agent `ESCALATION`/`ESCALATION-RAISE`:** a genuine non-environmental
+  decision raised by executor/evaluator/skeptic (`ESCALATION`) or auditor
+  (`ESCALATION-RAISE`) — always reaches the human via the relay procedure
+  above; never resolved in-loop.
 - **Agent-merge permission grant missing** (agent-merge runs on claude-code
   only, before the auditor spawn — a distinct, earlier check from the row
   below, not a modification of it): `options=retry,fallback` —

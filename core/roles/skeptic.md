@@ -158,7 +158,7 @@ collision-safe by construction (the `next-report-number.sh` call above), so
 scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/skeptic-<GATE>-<M>.md" --no-clobber
 # READY ref=<durable path>
 scripts/concertino/emit-event.sh verdict \
-  ticket=$TICKET_ID role=skeptic verdict=<CONFIRM|REFUTE|BLOCKER> ref=<durable path from READY ref=>
+  ticket=$TICKET_ID role=skeptic verdict=<CONFIRM|REFUTE|BLOCKER|ESCALATION> ref=<durable path from READY ref=>
 ```
 
 If `persist-evidence.sh` prints `FAIL`, emit `verdict` with no `ref` field at
@@ -172,10 +172,43 @@ second event pointing at the identical file would duplicate it for no
 reader benefit (see `add-evidence-event-emission`'s design.md for the full
 reasoning) — don't "fix" this into duplication.
 
+### Escalation raise (CON-127)
+
+`ESCALATION` is a fourth, distinct signal alongside `CONFIRM | REFUTE |
+BLOCKER` — not a replacement for any of them. Use it only for a genuine
+non-environmental decision outside the skeptic's own authority: a real
+requirements contradiction between the ticket and the spec, an ambiguity
+neither settles, or a decision the skeptic cannot make unilaterally without
+guessing. It is never a substitute for `REFUTE` (a design/code objection is
+always a Change Request) and never a substitute for `BLOCKER` (which stays
+environmental-only, unchanged — see Guardrails below). Never proceed on your
+own judgment in a case that actually calls for this.
+
+Because the skeptic is always spawned fresh/cold (never warm-resumed, by
+design — unchanged), an `ESCALATION` from the skeptic still results in a
+**fresh cold** re-spawn once resolved, exactly like every other skeptic
+round — but with the resolved answer supplied as an explicit additional
+input, so the same ambiguity is never re-asked or re-derived a second time.
+
+When raising, write a short report exactly like the normal skeptic report:
+
+```
+Verdict: ESCALATION
+Question: <one sentence, the decision needed>
+Options: <comma-separated, or "free-form">
+Context: <what's known, why this is genuinely ambiguous/contradictory/out-of-authority>
+```
+
+`ESCALATION` is an ordinary member of this role's verdict vocabulary: it is
+written, `persist-evidence.sh`-persisted, and
+`emit-event.sh verdict verdict=ESCALATION`-emitted exactly like `CONFIRM`/
+`REFUTE`/`BLOCKER` already are (see Step 2 below) — no new emission path, no
+step skipped. {{block:subagentEscalationNotify}}
+
 ### Step 2: Return
 
 ```
-Verdict: CONFIRM | REFUTE | BLOCKER
+Verdict: CONFIRM | REFUTE | BLOCKER | ESCALATION
 Report: WORKTREE_PATH/<change-dir>/skeptic-<GATE>-<M>.md
 ```
 
@@ -196,6 +229,9 @@ reads it from file.
 - **REFUTE must be specific and actionable** — name the file:line / AC / screenshot
   and what's wrong, never "feels off".
 - `BLOCKER` is for environmental failures only — code/design issues are Change Requests.
+- `ESCALATION` is a separate, non-environmental signal from `BLOCKER` — see
+  "Escalation raise" above. Never proceed on unilateral judgment in a case
+  that actually calls for raising one.
 - If `scripts/concertino/next-report-number.sh` prints `FAIL`, tag `BLOCKER`
   with the script's stderr — environmental, same as a `persist-evidence.sh`
   or `start-servers.sh` `FAIL`. Never guess a fallback `skeptic-<GATE>-<N>.md`

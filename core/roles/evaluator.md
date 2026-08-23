@@ -207,12 +207,41 @@ Issues: ...
 
 If `BLOCKER`, append the issue, diagnosis, and "Required: human intervention".
 
+### Escalation raise (CON-127)
+
+`ESCALATION` is a fourth, distinct signal alongside `PASS | FAIL | BLOCKER` —
+not a replacement for any of them. Use it only for a genuine
+non-environmental decision outside the evaluator's own authority: a real
+requirements contradiction between the ticket and the spec, an ambiguity
+neither settles, or a decision the evaluator cannot make unilaterally without
+guessing. It is never a substitute for `FAIL` (a code-quality finding is
+always a Change Request) and never a substitute for `BLOCKER` (which stays
+environmental-only, unchanged — see Guardrails below). Never proceed on your
+own judgment in a case that actually calls for this — guessing is exactly
+what raising exists to prevent.
+
+When raising, write a short report exactly like the normal evaluation report
+(not smuggled into free prose):
+
+```
+Verdict: ESCALATION
+Question: <one sentence, the decision needed>
+Options: <comma-separated, or "free-form">
+Context: <what's known, why this is genuinely ambiguous/contradictory/out-of-authority>
+```
+
+`ESCALATION` is an ordinary member of this role's verdict vocabulary: it is
+written, `persist-evidence.sh`-persisted, and
+`emit-event.sh verdict verdict=ESCALATION`-emitted exactly like `PASS`/
+`FAIL`/`BLOCKER` already are (see Step 2 below) — no new emission path, no
+step skipped. {{block:subagentEscalationNotify}}
+
 ### Step 2: Return verdict
 
 Return only:
 
 ```
-Overall: PASS | FAIL | BLOCKER
+Overall: PASS | FAIL | BLOCKER | ESCALATION
 Report: WORKTREE_PATH/<change-dir>/evaluation-<M>.md
 ```
 
@@ -231,7 +260,7 @@ collision-safe by construction (the `next-report-number.sh` call above), so
 scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/evaluation-<M>.md" --no-clobber
 # READY ref=<durable path>
 scripts/concertino/emit-event.sh verdict \
-  ticket=$TICKET_ID role=evaluator verdict=<PASS|FAIL|BLOCKER> ref=<durable path from READY ref=>
+  ticket=$TICKET_ID role=evaluator verdict=<PASS|FAIL|BLOCKER|ESCALATION> ref=<durable path from READY ref=>
 ```
 
 If `persist-evidence.sh` prints `FAIL`, emit `verdict` with no `ref` field at
@@ -269,6 +298,9 @@ to resolve for a pass, plus a recommendation for the human.
 - Phase 3 is mandatory when its triggers match — not optional.
 - Non-blocking suggestions don't cause FAIL — a PASS with suggestions is still a PASS.
 - `BLOCKER` is for environmental failures only — code issues go in Change Requests.
+- `ESCALATION` is a separate, non-environmental signal from `BLOCKER` — see
+  "Escalation raise" above. Never proceed on unilateral judgment in a case
+  that actually calls for raising one.
 - If `scripts/concertino/next-report-number.sh` prints `FAIL`, tag `BLOCKER`
   with the script's stderr — environmental, same as a `persist-evidence.sh`
   or `start-servers.sh` `FAIL`. Never guess a fallback `evaluation-<N>.md`
