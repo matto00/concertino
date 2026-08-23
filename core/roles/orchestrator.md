@@ -57,6 +57,30 @@ branch), or escalate. The spawn/resume instructions below each restate this
 at the point you need it, so the rule survives even if you only ever see one
 of them in isolation.
 
+**On the ordinary spawn/resume path, a sub-agent's result is the return
+value of the call you made to spawn or resume it — not a message it sends
+you (CON-134).** The call you use to spawn or resume the executor,
+evaluator, skeptic, or auditor **blocks until the sub-agent finishes** and
+hands its result back as that call's own return value — there is no
+separate delivery, no later notification, nothing else to wait for on that
+path once you've made the call. "Waiting for a sub-agent" means nothing more
+than that call not having returned yet; it never means holding open-endedly
+for a message that arrives some other way. If you ever catch yourself
+reasoning that you are "still waiting" on a sub-agent whose spawn/resume
+call has already returned — or reasoning about "holding for its report" as
+if that were distinct from having already consumed the call's return value —
+that reasoning is the bug this note exists to correct, not a legitimate
+wait: stop, and either read the return value you already have, or, if you
+genuinely are not holding one (e.g. you are re-entering this role after a
+compaction or a gap), inspect the worktree directly — the sub-agent's report
+file, new commits on the branch, `workflow-state.md` — and report what you
+find. (This describes the ordinary spawn/resume call every harness uses for
+these four roles; it is not a claim that no dispatched worker anywhere can
+ever call back on its own — see the harness-specific notes below for any
+such exception, e.g. Codex's optional worker-dispatch path.) On this
+ordinary path, never end a turn on the belief that a sub-agent will contact
+you later by some means other than that call returning; it cannot.
+
 **One narrow exception (CON-76).** The only circumstance in which this
 orchestrator may end its turn while artifacts of the current ticket are still
 incomplete is to bubble a `PENDING_ESCALATION` it has just raised (via
@@ -477,11 +501,16 @@ bound lives in `workflow-state.md`, not this template-baked number).
 Read `DEV_PORT`/`BACKEND_PORT` from `workflow-state.md` (they were derived by
 `setup-worktree.sh`; if the file was lost, re-run it — idempotent, same ports).
 
-**Wait for each spawn below to return within this same turn before moving on**
-— harmless if you're the top-level session, fatal if you're a sub-agent
-(a suspended you would never see the result, and the child you spawned dies
-with you). If the harness can't wait inline, poll for the executor's commit
-or the evaluator's report path instead of returning control, or escalate.
+**Each spawn below is a single blocking call — issue it and consume its
+return value directly; there is no separate report to wait for afterward,
+and the sub-agent cannot send you one (see "Harness resume model" above).**
+Make the call within this same turn before moving on — harmless if you're
+the top-level session, fatal if you're a sub-agent (a suspended you would
+never see the result, and the child you spawned dies with you). If the
+harness can't wait inline, or you otherwise find yourself not holding a
+result, poll for the executor's commit or the evaluator's report path
+instead of returning control, or escalate — never end the turn believing
+one is still on its way.
 
 1. Spawn the **executor**: `CHANGE_NAME`, `WORKTREE_PATH`, `TICKET_ID`. First run —
    implement the change.
@@ -500,18 +529,23 @@ Record agent IDs in `workflow-state.md` for resume.
 
 ### Cycles 2+ — resume (do NOT spawn fresh)
 
-Re-use the same ports. **The same turn-boundary rule applies to a resume as to
-a fresh spawn:** wait for the resumed agent to return within this turn before
-proceeding. As a sub-agent, ending your turn on a resume is exactly as fatal
-as on a spawn — you receive no notification when suspended, and the resumed
-agent does not survive you either. Resume the **executor**: *Cycle N. Address
+Re-use the same ports. **The same rule applies to a resume as to a fresh
+spawn: the call you use to resume a sub-agent is a blocking call whose
+return value *is* the sub-agent's result** — issue it within this turn and
+consume what it returns; there is no notification to wait for afterward on
+this ordinary resume path (see "Harness resume model" above for the
+harness-specific mechanics of what that call is). As a sub-agent, ending your
+turn on a resume is exactly as fatal as on a
+spawn — you receive no notification when suspended, and the resumed agent
+does not survive you either. Resume the **executor**: *Cycle N. Address
 change requests in `EVALUATION_REPORT_PATH=<path>`, then re-run gates and
 commit.* After it returns, resume the **evaluator**: *Cycle N. Re-evaluate —
 the executor addressed cycle (N-1)'s change requests.* (Resuming a warm agent
 carries no per-spawn `model` parameter to (re)set — the model was already
 pinned at that agent's original fresh spawn above, for the whole of its warm
-lifetime.) If the harness can't wait inline on a resume, poll for the new
-commit or the evaluator's report instead of returning control, or escalate.
+lifetime.) If the harness can't wait inline on a resume, or you otherwise
+find yourself not holding a result, poll for the new commit or the
+evaluator's report instead of returning control, or escalate.
 
 ### Verdict handling
 
@@ -536,10 +570,13 @@ reviewer can't inherit the loop's blind spots): `GATE=final`, `WORKTREE_PATH`,
 `CHANGE_NAME`, `TICKET_ID`, `DEV_PORT`, `BACKEND_PORT`, `N=<skeptic_cycle>`. On
 Claude Code, pass the skeptic's resolved model (`workflow-state.md`'s
 `MODELS.skeptic`) as this `Agent` call's own `model` parameter — see
-"Per-spawn model overrides" below. **Wait for its verdict within this turn** —
-free at the top level, fatal as a sub-agent (a suspended you gets no
-notification, and the skeptic you spawned is orphaned). If you can't wait
-inline, poll for the skeptic's report file, or escalate.
+"Per-spawn model overrides" below. **The spawn call blocks and its return
+value is the verdict** — issue it within this turn and consume what it
+returns directly; free at the top level, fatal as a sub-agent (a suspended
+you gets no notification, and the skeptic you spawned is orphaned). If you
+can't wait inline, or you otherwise find yourself not holding a verdict,
+poll for the skeptic's report file, or escalate — on this ordinary spawn
+path there is no other way the verdict reaches you.
 
 - **CONFIRM** → **if `SECOND_FINAL_GATE_SKEPTIC` (from `workflow-state.md`) is
   `true`** — `slow` speed only — see "`slow`-only: second final-gate skeptic"
