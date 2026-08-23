@@ -332,6 +332,18 @@ Execute directly (no subagent).
 4. **Escalate if needed:** stop and present an `ESCALATION` block for new external
    dependencies, major architectural changes, breaking API changes, or scope
    significantly beyond the ticket. Self-approve everything else.
+4a. **Gate-chain advisory (CON-132; non-blocking, complementary to the
+   mechanical Delivery-time check).** If the ticket text or an early
+   file-touch plan suggests `.husky/**` or a script `.husky/pre-commit`
+   invokes will be touched, note this explicitly and remind the design-gate
+   skeptic (step 5) to hold `design.md` to a `## Gate-Chain Implications
+   Checklist` section answering, verbatim: **What does it execute?** /
+   **What environment does it inherit, and from where?** / **Does it write
+   anything outside its own sandbox?** / **Does it behave differently from
+   a linked worktree than from a main checkout?** / **What happens on its
+   first run?** — the same wording `check-gate-chain-change.sh`'s Delivery
+   gate (Phase 3) checks for mechanically. This is advisory only (the real
+   diff doesn't exist until Execution) — the hard block is at Delivery.
 5. **Design-soundness gate (Skeptic).** Spawn the skeptic **fresh** (cold — never
    resumed) with `GATE=design`, `WORKTREE_PATH`, `CHANGE_NAME`, `TICKET_ID`. On
    Claude Code, pass the skeptic's resolved model (`workflow-state.md`'s
@@ -772,7 +784,21 @@ repeating its steps.
 
 Run directly (no subagent).
 
-1. **Squash all branch commits**, via the canonical guarded script (CON-129 —
+1. **Re-persist `design.md` once more, unconditionally, before the squash**
+   (CON-132 — cheap and idempotent, mirrors Phase 1 step 6's persist call):
+
+   ```bash
+   scripts/concertino/persist-evidence.sh "$TICKET_ID" "$WORKTREE_PATH/<change-dir>/design.md"
+   ```
+
+   This exists because a gate-chain script is typically written during
+   Execution, not Planning — the `## Gate-Chain Implications Checklist`
+   section, if answered at all, is usually filled in after Phase 1's
+   one-time persist already ran. Without this, the Delivery gate below
+   would check a stale, pre-checklist copy. Skip silently on `FAIL` (same
+   as Phase 1 step 6) — never block the phase transition on a failed
+   persist.
+2. **Squash all branch commits**, via the canonical guarded script (CON-129 —
    never an improvised `git reset --soft <base-ref>`, which stages a revert
    of any sibling run that merged to the base ref mid-run):
 
@@ -787,16 +813,20 @@ Run directly (no subagent).
    table, surfacing the script's printed unexpected-file list (and, for an
    unparseable/missing `files-modified.md`, its raw content) to the human
    rather than retrying with `--allow-empty-declaration` unilaterally.
-2. **Archive the planned change** (clean up the executor's handoff first so it
+3. **Archive the planned change** (clean up the executor's handoff first so it
    doesn't trip hygiene checks):
    {{block:specArchive}}
-3. **Push the branch:** `git push -u origin <branch>`, then gate:
+4. **Push the branch:** `git push -u origin <branch>`, then gate:
    `scripts/concertino/assert-phase.sh delivery "$WORKTREE_PATH" "<branch>" "$TICKET_ID"`. Do not
-   create the PR until this passes.
-4. **Create the PR** (`gh pr create` targeting the base branch): title
+   create the PR until this passes. (CON-132: this call now also fails
+   closed if the branch's diff touches the commit-gate chain and either the
+   `design.md` checklist or a per-script isolation-test transcript is
+   missing — see step 1 above and `core/roles/executor.md` for where that
+   evidence comes from.)
+5. **Create the PR** (`gh pr create` targeting the base branch): title
    `{{var:_ticketPrefixExample}} <brief description>`; body links the ticket and
    summarizes behavioral changes, test plan, risks/follow-ups.
-5. **Emit a `pr` telemetry event** for the run's PR, now that `PR_URL` is known
+6. **Emit a `pr` telemetry event** for the run's PR, now that `PR_URL` is known
    and durable (CON-55 — this is the one place in the whole workflow the URL
    becomes a fact; nothing needs to be inferred or fetched later):
 
@@ -809,8 +839,8 @@ Run directly (no subagent).
    local-file `ref`, and there is no corresponding `persist-evidence.sh` call
    (the URL itself is the durable reference; there is no local file to
    persist).
-6. **Post the PR link back to the ticket.**
-7. **Branch on `AGENT_MERGE`** (resolved once at Setup — see above):
+7. **Post the PR link back to the ticket.**
+8. **Branch on `AGENT_MERGE`** (resolved once at Setup — see above):
 
    - **`AGENT_MERGE = false`** (today's behavior, unchanged): read the final
      evaluation report now (the only time a PASS report is read). For each

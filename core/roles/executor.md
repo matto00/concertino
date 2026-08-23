@@ -106,6 +106,54 @@ Per `verification-before-completion.md`: do not report a gate as passing until y
 have run it fresh and read its output. Gate results in your return must be
 **pasted command output with exit codes**, not prose summaries.
 
+### 6a. Gate-chain changes (CON-132): isolation-test before wiring
+
+If this change touches `.husky/**`, or adds/modifies a script `.husky/pre-commit`
+invokes, treat it as a **live-infrastructure change**, not an ordinary edit — a
+commit-gate runs with git's own environment, on every subsequent commit, in
+every worktree, for every contributor.
+
+- **Answer the implications checklist in `design.md`**, under a heading named
+  exactly `## Gate-Chain Implications Checklist`, with these five sub-items,
+  worded exactly (the mechanical Delivery-gate check greps for this literal
+  wording — do not paraphrase):
+  - `**What does it execute?**`
+  - `**What environment does it inherit, and from where?**`
+  - `**Does it write anything outside its own sandbox?**`
+  - `**Does it behave differently from a linked worktree than from a main checkout?**`
+  - `**What happens on its first run?**`
+
+  Answer each with real content — `TBD`/`N/A`/empty is rejected as a dodge by
+  the mechanical check.
+
+- **Isolation-test the gate before the commit that wires it in.** Run:
+
+  ```bash
+  scripts/concertino/test-gate-in-isolation.sh "$TICKET_ID" "<path-to-gate-script>"
+  ```
+
+  This exercises the actual target script once against a disposable fixture
+  repo under a hook-shaped environment and records a pass/fail corruption
+  verdict. **"I ran the script from a shell and it passed" is NOT evidence
+  for a hook-invoked script** — a plain shell/main-checkout invocation
+  exports no `GIT_DIR`; only a hook run from a linked worktree does, and
+  that inherited `GIT_DIR` is exactly the mechanism this class of bug turns
+  on. A `FAIL` from the helper means the script is not yet safe to wire in —
+  fix the root cause (per `systematic-debugging.md`) and re-run, never wire
+  in a script that hasn't produced a passing transcript.
+
+- **Staging (advisory, not mechanically enforced — see design.md Decision
+  7): commit the new/modified script first, the `.husky/pre-commit` wiring
+  line second**, only once the isolation-test evidence for that exact
+  script already exists. Never split them the other way (wiring committed
+  before the script exists) — that leaves any worktree with a hook
+  referencing a missing script.
+
+The mechanical Delivery gate (`assert-phase.sh delivery`) fails closed on a
+gate-chain-touching diff missing either the checklist or a passing
+isolation-test transcript for every gate-chain-touching script the diff
+contains — this is enforced by the workflow, not by remembering to do it.
+
 ### 7. Commit
 
 Commit all changes from `WORKTREE_PATH`:

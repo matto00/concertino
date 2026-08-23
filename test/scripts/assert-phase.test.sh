@@ -389,5 +389,170 @@ check "only one event (gate.result) when fetch fails" \
   "$([ -f "$LOG" ] && wc -l < "$LOG" | tr -d ' ' || echo 0)" "1"
 rm -rf "$BASE"
 
+# =============================================================================
+# CON-132: gate-chain-touching diffs must not reach Delivery without recorded
+# evidence. Every case runs the REAL script (assert-phase.sh delivery, which
+# calls the real check-gate-chain-change.sh) against a throwaway bare
+# remote + clone, red-before-green: the FAIL cases are proven to actually
+# fail before the PASS case is proven to pass.
+# =============================================================================
+
+# Same base + clone/push shape as new_stale_base_pair(), seeded instead with a
+# .husky/pre-commit hook that runs `npm run check:foo`, resolving (via
+# package.json) to scripts/check-foo.mjs -- the fixture check-gate-chain-
+# change.sh's own selftest already exercises directly.
+new_gatechain_pair() {
+  local base="$1" branch="$2"
+  local remote="$base/remote.git" seed wt="$base/$branch"
+  git init -q --bare "$remote"
+  seed="$(mktemp -d)"
+  git init -q "$seed"
+  mkdir -p "$seed/.husky" "$seed/scripts"
+  cat > "$seed/.husky/pre-commit" <<'EOF'
+#!/usr/bin/env sh
+npm run check:foo
+EOF
+  cat > "$seed/package.json" <<'EOF'
+{"scripts": {"check:foo": "node scripts/check-foo.mjs"}}
+EOF
+  cat > "$seed/scripts/check-foo.mjs" <<'EOF'
+console.log("ok");
+EOF
+  echo "hello" > "$seed/README.md"
+  # Evidence written under .concertino/runs/... below lands INSIDE this
+  # fixture's own worktree (main_checkout() resolves a plain clone to
+  # itself, exactly like new_stale_base_pair()'s WT) — ignore it, or the
+  # gate's own OTHER "worktree has uncommitted changes" precondition trips
+  # on the evidence files these tests deliberately create.
+  echo ".concertino/" > "$seed/.gitignore"
+  git -C "$seed" add -A
+  git -C "$seed" -c user.email=t@t.com -c user.name=t commit -q -m init
+  git -C "$seed" branch -M main
+  git -C "$seed" remote add origin "$remote"
+  git -C "$seed" push -q origin main
+  rm -rf "$seed"
+
+  git clone -q "$remote" "$wt" 2>/dev/null
+  git -C "$wt" -c user.email=t@t.com -c user.name=t checkout -q -b "$branch" origin/main
+  printf '%s' "$wt"
+}
+
+write_full_checklist() {
+  local design_md="$1"
+  mkdir -p "$(dirname "$design_md")"
+  cat > "$design_md" <<'EOF'
+## Context
+
+Some ordinary design content.
+
+## Gate-Chain Implications Checklist
+
+- **What does it execute?** Runs `node scripts/check-foo.mjs`.
+- **What environment does it inherit, and from where?** GIT_* vars from the hook.
+- **Does it write anything outside its own sandbox?** No.
+- **Does it behave differently from a linked worktree than from a main checkout?** No, GIT_WORK_TREE unaffected.
+- **What happens on its first run?** It runs live under Husky against the real repo.
+EOF
+}
+
+write_passing_isolation_transcript() {
+  local dest="$1"
+  mkdir -p "$(dirname "$dest")"
+  cat > "$dest" <<'EOF'
+# Gate-in-isolation transcript
+
+## Verdict
+
+**PASS**
+EOF
+}
+
+echo "assert-phase.sh delivery (CON-132 gate-chain evidence)"
+
+# --- gate-chain diff (.husky touched) + no evidence at all -> FAIL ----------
+BASE="$(mktemp -d)"
+WT="$(new_gatechain_pair "$BASE" "GC-1")"
+cat > "$WT/.husky/pre-commit" <<'EOF'
+#!/usr/bin/env sh
+npm run check:foo
+npm run check:bar
+EOF
+git -C "$WT" add -A
+git -C "$WT" -c user.email=t@t.com -c user.name=t commit -q -m "wire second gate"
+git -C "$WT" push -q origin "HEAD:refs/heads/GC-1"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+( cd "$WT" && "$SCRIPT" delivery "$WT" "GC-1" ) >"$OUT" 2>"$ERR"
+RC=$?
+check "exit 1: gate-chain diff, no evidence"  "$RC" "1"
+has "names missing design.md checklist"       "Gate-Chain Implications Checklist evidence is missing" "$ERR"
+rm -rf "$BASE"
+
+# --- gate-chain diff + checklist only, no isolation evidence -> FAIL -------
+BASE="$(mktemp -d)"
+WT="$(new_gatechain_pair "$BASE" "GC-2")"
+cat > "$WT/scripts/check-foo.mjs" <<'EOF'
+console.log("changed");
+EOF
+git -C "$WT" add -A
+git -C "$WT" -c user.email=t@t.com -c user.name=t commit -q -m "modify hook-invoked script"
+git -C "$WT" push -q origin "HEAD:refs/heads/GC-2"
+write_full_checklist "$WT/.concertino/runs/GC-2/evidence/openspec/changes/some-change/design.md"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+( cd "$WT" && "$SCRIPT" delivery "$WT" "GC-2" ) >"$OUT" 2>"$ERR"
+RC=$?
+check "exit 1: checklist present, isolation evidence missing" "$RC" "1"
+has "names the specific missing script" "no isolation-test evidence for changed script scripts/check-foo.mjs" "$ERR"
+rm -rf "$BASE"
+
+# --- gate-chain diff touching script A, isolation evidence only for unrelated script B -> FAIL naming A ---
+BASE="$(mktemp -d)"
+WT="$(new_gatechain_pair "$BASE" "GC-3")"
+cat > "$WT/scripts/check-foo.mjs" <<'EOF'
+console.log("changed again");
+EOF
+git -C "$WT" add -A
+git -C "$WT" -c user.email=t@t.com -c user.name=t commit -q -m "modify check-foo, not check-bar"
+git -C "$WT" push -q origin "HEAD:refs/heads/GC-3"
+write_full_checklist "$WT/.concertino/runs/GC-3/evidence/openspec/changes/some-change/design.md"
+write_passing_isolation_transcript "$WT/.concertino/runs/GC-3/evidence/.concertino/gate-chain-isolation-evidence/scripts__check-bar.mjs.md"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+( cd "$WT" && "$SCRIPT" delivery "$WT" "GC-3" ) >"$OUT" 2>"$ERR"
+RC=$?
+check "exit 1: evidence for unrelated script does not satisfy the gate" "$RC" "1"
+has "names scripts/check-foo.mjs specifically" "no isolation-test evidence for changed script scripts/check-foo.mjs" "$ERR"
+rm -rf "$BASE"
+
+# --- gate-chain diff + checklist + isolation evidence for every touched script -> PASS ---
+BASE="$(mktemp -d)"
+WT="$(new_gatechain_pair "$BASE" "GC-4")"
+cat > "$WT/scripts/check-foo.mjs" <<'EOF'
+console.log("changed once more");
+EOF
+git -C "$WT" add -A
+git -C "$WT" -c user.email=t@t.com -c user.name=t commit -q -m "modify check-foo, with full evidence"
+git -C "$WT" push -q origin "HEAD:refs/heads/GC-4"
+write_full_checklist "$WT/.concertino/runs/GC-4/evidence/openspec/changes/some-change/design.md"
+write_passing_isolation_transcript "$WT/.concertino/runs/GC-4/evidence/.concertino/gate-chain-isolation-evidence/scripts__check-foo.mjs.md"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+( cd "$WT" && "$SCRIPT" delivery "$WT" "GC-4" ) >"$OUT" 2>"$ERR"
+RC=$?
+check "exit 0: full evidence present for every touched script" "$RC" "0"
+check "stdout is PASS delivery" "$(cat "$OUT")" "PASS delivery"
+rm -rf "$BASE"
+
+# --- non-gate-chain diff -> PASS, unaffected by this requirement -----------
+BASE="$(mktemp -d)"
+WT="$(new_gatechain_pair "$BASE" "GC-5")"
+echo "more docs" >> "$WT/README.md"
+git -C "$WT" add -A
+git -C "$WT" -c user.email=t@t.com -c user.name=t commit -q -m "docs only"
+git -C "$WT" push -q origin "HEAD:refs/heads/GC-5"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+( cd "$WT" && "$SCRIPT" delivery "$WT" "GC-5" ) >"$OUT" 2>"$ERR"
+RC=$?
+check "exit 0: non-gate-chain diff needs no evidence" "$RC" "0"
+check "stdout is PASS delivery (non-gate-chain)" "$(cat "$OUT")" "PASS delivery"
+rm -rf "$BASE"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
