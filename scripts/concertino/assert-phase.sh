@@ -93,6 +93,28 @@ START_TS="$(now_ms)"
 
 looks_like_ticket() { [[ "$1" =~ ^[A-Za-z#][A-Za-z0-9_-]*[0-9]$ ]]; }
 
+# main_checkout <worktree-path>
+#
+# Resolves the main checkout root from within a linked worktree, exactly as
+# the `delivery` case's gate-chain evidence check has always done. Hoisted
+# above the `case` block (CON-136) since `setup`'s own premise-validation
+# evidence check now needs it too — the worktree exists by the time this
+# script runs (assert-phase.sh setup runs at Setup step 5, after
+# setup-worktree.sh has already run at step 4), so resolving against
+# $WORKTREE_PATH is safe here even though the premise-validation *write*
+# itself happens earlier, against the main checkout directly (design.md
+# Decision 1).
+main_checkout() {
+  local wt="$1" common
+  common="$(git_child -C "$wt" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  [ -z "$common" ] && return 1
+  case "$common" in
+    /*) ;;
+     *) common="$(cd "$wt" 2>/dev/null && cd "$common" 2>/dev/null && pwd)" || return 1 ;;
+  esac
+  ( cd "$(dirname "$common")" 2>/dev/null && pwd ) || return 1
+}
+
 case "$PHASE" in
   setup)
     TICKET_ID="${3:-}"
@@ -111,6 +133,102 @@ case "$PHASE" in
     for f in ${CONCERTINO_ENV_FILES:-}; do
       [ -f "$WORKTREE_PATH/$f" ] || fail "env file not present in worktree: $f (servers will fail)"
     done
+
+    # -------------------------------------------------------------------
+    # CON-136: a run that skipped the premise-validation step must not
+    # reach Planning/Execution. Resolved against the main checkout, the
+    # same way the delivery gate's gate-chain evidence check resolves it
+    # (main_checkout() above) — persist-evidence.sh always writes there,
+    # never into the worktree. Runs unconditionally on every setup
+    # invocation, not gated behind any diff classification.
+    # -------------------------------------------------------------------
+    PV_ROOT="$(main_checkout "$WORKTREE_PATH")" || PV_ROOT=""
+    if [ -z "${PV_ROOT:-}" ]; then
+      fail "premise-validation check: could not resolve main checkout to look up evidence"
+    else
+      PV_EVIDENCE="${PV_ROOT}/.concertino/runs/${GATE_TICKET}/evidence/premise-validation.md"
+      if [ ! -f "$PV_EVIDENCE" ]; then
+        fail "premise-validation evidence missing: ${PV_EVIDENCE} (Setup must validate the ticket's premise before branch derivation)"
+      else
+        PV_CHECK_OUT="$(node -e '
+          const fs = require("fs");
+          const text = fs.readFileSync(process.argv[1], "utf8");
+          const HEADING = "## Premise Validation";
+          const idx = text.indexOf(HEADING);
+          if (idx === -1) { console.log("FAIL missing heading"); process.exit(0); }
+          const rest = text.slice(idx + HEADING.length);
+          const nextHeading = rest.search(/\n##\s/);
+          const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
+          const fields = [
+            "Claims checked:",
+            "Already-done scope:",
+            "Sibling collisions:"
+          ];
+          const placeholders = new Set(["tbd", "n/a", "na", "todo", ""]);
+          const missing = [];
+          for (const f of fields) {
+            const marker = `**${f}**`;
+            const at = section.indexOf(marker);
+            if (at === -1) { missing.push(f); continue; }
+            const lineEnd = section.indexOf("\n", at);
+            const answer = (lineEnd === -1 ? section.slice(at + marker.length) : section.slice(at + marker.length, lineEnd)).trim();
+            if (placeholders.has(answer.toLowerCase())) missing.push(f);
+          }
+          if (missing.length) { console.log("FAIL unanswered: " + missing.join(" | ")); process.exit(0); }
+
+          const verdictMatch = section.match(/\*\*Verdict:\*\*\s*([^\n]*)/);
+          const verdict = verdictMatch ? verdictMatch[1].trim() : "";
+          const validVerdicts = new Set(["no-drift", "minor-staleness", "material-drift"]);
+          if (!validVerdicts.has(verdict)) { console.log("FAIL invalid verdict: " + JSON.stringify(verdict)); process.exit(0); }
+          console.log("PASS " + verdict);
+        ' "$PV_EVIDENCE" 2>&1)"
+        case "$PV_CHECK_OUT" in
+          "PASS "*)
+            PV_VERDICT="${PV_CHECK_OUT#PASS }"
+            if [ "$PV_VERDICT" = "material-drift" ]; then
+              # -----------------------------------------------------------
+              # A recorded material-drift verdict is necessary but not
+              # sufficient (design.md Decision 3, CON-30 precedent): also
+              # require a matching escalation.raised event. No `kind` field
+              # survives emit-event.sh's structural drop, so the
+              # discriminator is a prefix match on `context` against the
+              # fixed TICKET-DRIFT-ESCALATION marker
+              # (gather-escalation-context.sh's ticket-drift kind, task 1).
+              # A degraded raise (gather-escalation-context.sh itself
+              # failed, escalation raised without context=) still fails
+              # this check — intended fail-closed behavior, not a bug.
+              # -----------------------------------------------------------
+              PV_EVENTS="${PV_ROOT}/.concertino/runs/${GATE_TICKET}/events.jsonl"
+              if [ ! -f "$PV_EVENTS" ]; then
+                fail "premise-validation verdict is material-drift but no events.jsonl found for escalation evidence (${PV_EVENTS})"
+              else
+                PV_ESC_OUT="$(node -e '
+                  const fs = require("fs");
+                  const raw = fs.readFileSync(process.argv[1], "utf8");
+                  const ticket = process.argv[2];
+                  const marker = "TICKET-DRIFT-ESCALATION";
+                  let found = false;
+                  for (const line of raw.split("\n")) {
+                    if (!line.trim()) continue;
+                    let ev;
+                    try { ev = JSON.parse(line); } catch { continue; }
+                    if (!ev || ev.kind !== "escalation.raised" || ev.ticket !== ticket) continue;
+                    if (ev.role !== "orchestrator") continue;
+                    if (typeof ev.context === "string" && ev.context.startsWith(marker)) { found = true; break; }
+                  }
+                  console.log(found ? "PASS" : "FAIL");
+                ' "$PV_EVENTS" "$GATE_TICKET" 2>&1)"
+                [ "$PV_ESC_OUT" = "PASS" ] \
+                  || fail "premise-validation verdict is material-drift but no matching ticket-drift escalation.raised event found (role=orchestrator, context starting with TICKET-DRIFT-ESCALATION) in ${PV_EVENTS}"
+              fi
+            fi
+            ;;
+          *)
+            fail "premise-validation evidence incomplete in ${PV_EVIDENCE}: ${PV_CHECK_OUT}"
+            ;;
+        esac
+      fi
+    fi
     ;;
 
   servers)
@@ -144,16 +262,6 @@ case "$PHASE" in
     # here, fail-closed on any classification/read error (design.md Risks —
     # "evidence file absent" is FAIL, not PASS).
     # -----------------------------------------------------------------------
-    main_checkout() {
-      local common
-      common="$(git_child -C "$WORKTREE_PATH" rev-parse --git-common-dir 2>/dev/null)" || return 1
-      [ -z "$common" ] && return 1
-      case "$common" in
-        /*) ;;
-         *) common="$(cd "$WORKTREE_PATH" 2>/dev/null && cd "$common" 2>/dev/null && pwd)" || return 1 ;;
-      esac
-      ( cd "$(dirname "$common")" 2>/dev/null && pwd ) || return 1
-    }
     GC_BASE_REMOTE="${CONCERTINO_BASE_REMOTE:-origin}"
     GC_BASE_BRANCH="${CONCERTINO_BASE_BRANCH:-main}"
     if GC_OUT="$("${SCRIPT_DIR}/check-gate-chain-change.sh" "$WORKTREE_PATH" "${GC_BASE_REMOTE}/${GC_BASE_BRANCH}" "$GATE_TICKET" 2>&1)"; then
@@ -164,7 +272,7 @@ case "$PHASE" in
     if [ "$GC_RC" -ne 0 ]; then
       fail "gate-chain classification failed (fail-closed): $(printf '%s' "$GC_OUT" | tr '\n' ' ' | cut -c1-200)"
     elif printf '%s\n' "$GC_OUT" | grep -q '^GATECHAIN yes$'; then
-      GC_ROOT="$(main_checkout)"
+      GC_ROOT="$(main_checkout "$WORKTREE_PATH")"
       if [ -z "${GC_ROOT:-}" ]; then
         fail "gate-chain diff detected but could not resolve main checkout to look up evidence"
       else

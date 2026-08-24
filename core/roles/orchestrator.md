@@ -171,13 +171,13 @@ Never let telemetry block delivery: if a call fails, continue.
    - **Exactly one match, value in the implemented set** (see
      `CONCERTINO_IMPLEMENTED_HARNESSES` in `.concertino.env` for the current
      set — today `claude-code`, `codex`, `opencode`) → record the value as
-     `HARNESS_OVERRIDE` for step 3 below.
+     `HARNESS_OVERRIDE` for step 4 below.
    - **Exactly one match, value NOT implemented (e.g. `local-llm`), OR more
      than one matching label (ambiguous)** → **hard stop here.** Do not derive
-     a branch name (step 2) or call `setup-worktree.sh` (step 3) — no
+     a branch name (step 3) or call `setup-worktree.sh` (step 4) — no
      worktree is created. Surface the ticket id and the unsupported/ambiguous
      value(s) to the human exactly like the `FAIL` → `BLOCKER` treatment in
-     step 3 below.
+     step 4 below.
 
    **Check for a design-ticket type (CON-100).** Also immediately after the
    fetch, alongside the check above: a label matching exactly `type:design`
@@ -189,10 +189,105 @@ Never let telemetry block delivery: if a call fails, continue.
    boolean-ish signal (a ticket either is or isn't one), two agreeing signals
    is not a conflict, and there is no open value set to validate against.
    Record the resolved value as `TICKET_TYPE` (`design` or `feature`) for
-   step 6 below.
-2. **Derive a branch name:** `[feature|task|bug]/[3-5-word-description]/[ticket-id]`
+   step 7 below.
+2. **Validate the ticket's premise against the live tree (CON-136).** A
+   ticket's premise decays silently between filing and running: files move,
+   fixes land elsewhere, root causes get refuted, sibling tickets subsume
+   scope. An agent that trusts a stale ticket does not fail loudly — it
+   builds correct, well-tested machinery for a problem that no longer
+   exists, and every downstream gate passes, because those gates check the
+   work against the ticket, not the ticket against reality. This step runs
+   here, before a branch is derived or a worktree exists, because the
+   worktree is the expensive artifact (a branch, a port allocation, a
+   running dev/backend server pair) every subsequent phase is built around.
+
+   **Procedure.** Against the live main checkout (the directory this session
+   is itself running in — no worktree exists yet):
+   - Verify the ticket's stated premise: for a bug/incident ticket, confirm
+     the stated root cause still holds; for any ticket citing specific
+     files, paths, symbols, or counts, confirm they exist as described.
+   - Check for already-done scope: which acceptance-criteria bullets, if
+     any, are already satisfied on the base branch.
+   - Check for sibling collisions, scoped to the ticket's own Linear
+     parent/epic relation (`includeRelations` on the `get_issue` call
+     already made in step 1 — no new tool call), cross-checked against
+     recent merge history (`git log --oneline -20 <base>` is enough to
+     catch a same-epic sibling merged in the preceding days). No broader
+     search — collisions with tickets outside the current epic/parent are
+     out of scope.
+
+   **Evidence write — one shell invocation, before step 3 below.** Construct
+   `premise-validation.md` in this fixed shape:
+
+   ```markdown
+   ## Premise Validation
+
+   **Claims checked:** <one line per cited fact/root-cause claim, each tagged CONFIRMED | STALE | UNVERIFIABLE, with what was found>
+   **Already-done scope:** <which acceptance-criteria bullets, if any, are already satisfied on the base branch — or "none">
+   **Sibling collisions:** <recently-merged tickets, especially epic siblings, whose scope overlaps or invalidates this ticket's enumeration — or "none found">
+   **Verdict:** no-drift | minor-staleness | material-drift
+   ```
+
+   Then issue the write, the persist call, and the cleanup as **one shell
+   invocation** against the main checkout's absolute repo-root path (a bare
+   filename at that root — required for `persist-evidence.sh` to resolve the
+   correct destination; concertino runs multiple orchestrators unattended
+   against one shared main checkout, so a fixed filename there is a genuine
+   cross-run collision surface — one invocation shrinks, but does not
+   eliminate, that window):
+
+   ```bash
+   # $MAIN_CHECKOUT_ROOT is this session's own absolute working directory —
+   # no worktree exists yet, so this IS the main checkout.
+   cat > "$MAIN_CHECKOUT_ROOT/premise-validation.md" <<'EOF'
+   ...
+   EOF
+   ( cd "$MAIN_CHECKOUT_ROOT" && scripts/concertino/persist-evidence.sh "$TICKET_ID" premise-validation.md; rm -f premise-validation.md )
+   ```
+
+   **Verdict branch.**
+   - **`no-drift` or `minor-staleness`** → proceed directly to step 3
+     (branch derivation). `minor-staleness` (a moved path, an off-by-one
+     count — something that doesn't change what gets built) is corrected
+     inline in the artifact; no escalation.
+   - **`material-drift`** (a refuted root cause, scope already fully
+     implemented, or a sibling collision that invalidates the ticket's
+     enumeration) → raise a `ticket-drift` escalation via the existing "How
+     to raise one" procedure below, with `claimed` set to what the ticket
+     states, `actual` set to what the live tree/base branch shows, and
+     `options` covering at least `proceed-as-written`,
+     `proceed-with-restated-scope`, `halt`. Do not proceed to step 3 or call
+     `setup-worktree.sh` until it resolves. If
+     `gather-escalation-context.sh` itself fails and the escalation is
+     raised without `context=` (its own documented degraded-raise
+     fallback), step 5's gate below will still fail closed on the missing
+     `TICKET-DRIFT-ESCALATION` marker — this is intended fail-closed
+     behavior, not a bug to fix by loosening that check to an
+     existence-only test.
+
+   **Cost on a no-drift ticket.** One read/verification pass over the
+   ticket's own cited facts against the live tree (typically a handful of
+   `grep`/`git log`/file-existence checks) plus one short
+   `persist-evidence.sh` write — no sub-agent spawn, no new escalation, no
+   new loop. The same order of cost as step 7's own per-run evidence write.
+
+   **Where the mechanical backstop actually fires.** Be honest about this:
+   `assert-phase.sh setup` (step 5 below) cannot structurally run before the
+   worktree exists — its checks resolve against `$WORKTREE_PATH`, which step
+   4 creates. So a run that skips this step is not caught until the
+   worktree already exists; the "written before branch derivation" ordering
+   above is a prompt-level instruction, not something the gate can enforce
+   before the fact. The backstop still fires before Planning or Execution
+   ever begins, though — materially earlier than every real incident this
+   step responds to was actually caught.
+
+   **Distinct from `core/laws/ticket-drafting-escalation.md`.** That law
+   covers ambiguity present *at drafting time* — a ticket that was never
+   well-specified. This step covers a well-drafted ticket that has since
+   become *untrue* — facts changed after filing. Adjacent, never merged.
+3. **Derive a branch name:** `[feature|task|bug]/[3-5-word-description]/[ticket-id]`
    (`feature/` net-new behavior; `task/` tests/tooling/infra; `bug/` regressions).
-3. **Create the worktree** by calling the canonical script (do not hand-roll
+4. **Create the worktree** by calling the canonical script (do not hand-roll
    `git worktree` / env-copy / port math — the script is the source of truth),
    passing `SPEED` (or `default` if unset) as the third argument and any
    `HARNESS_OVERRIDE` recorded in step 1 as the optional fourth — this is
@@ -215,15 +310,15 @@ Never let telemetry block delivery: if a call fails, continue.
    unsupported `HARNESS_OVERRIDE`, re-validated here independently of step 1's
    own check as defense in depth), treat it as a `BLOCKER`: surface to the
    human rather than guessing a resolution.
-4. **Gate before advancing:** `scripts/concertino/assert-phase.sh setup "$WORKTREE_PATH" "$TICKET_ID"`.
+5. **Gate before advancing:** `scripts/concertino/assert-phase.sh setup "$WORKTREE_PATH" "$TICKET_ID"`.
    If it prints `FAIL`, do not proceed — re-run setup or escalate.
-5. **Resolve `AGENT_MERGE` once, for the whole run.** `AGENT_MERGE_OVERRIDE`
+6. **Resolve `AGENT_MERGE` once, for the whole run.** `AGENT_MERGE_OVERRIDE`
    takes precedence when it is `true` or `false`; otherwise fall back to the
    config default `{{var:agentMerge.enabled}}`. This resolution happens
    exactly once, here — never recomputed later in the run.
-6. Write initial `workflow-state.md` (PHASE: Planning, AGENT_MERGE: `<resolved
+7. Write initial `workflow-state.md` (PHASE: Planning, AGENT_MERGE: `<resolved
    value>`, `TICKET_TYPE: <resolved value>` (from the design-ticket-type
-   check above), `DESIGN_QUESTIONS: null`, plus every field parsed in step 3:
+   check above), `DESIGN_QUESTIONS: null`, plus every field parsed in step 4:
    `SPEED`, `EXECUTION_CYCLES`, `SKEPTIC_DESIGN_ROUNDS`, `SKEPTIC_FINAL_ROUNDS`,
    `DEBUG_ATTEMPTS`, `MODELS`, `SECOND_FINAL_GATE_SKEPTIC`,
    `EVALUATOR_CLEAN_WORKTREE` — see `core/workflow-state.template.md`). Every
@@ -280,7 +375,7 @@ never a second, parallel implementation of it.
    ```
 
    Parse `WORKTREE_PATH`/`DEV_PORT`/`BACKEND_PORT` exactly as ordinary Setup
-   step 3 does. **If the script prints `FAIL`** — e.g. the branch itself was
+   step 4 does. **If the script prints `FAIL`** — e.g. the branch itself was
    also deleted (a stale branch-cleanup job, alongside a manually-removed
    worktree) — treat it as a `BLOCKER`, surfaced to the human exactly like
    any other environmental Setup failure. Never silently downgrade this to
@@ -1075,11 +1170,12 @@ fails silently.
 
 First, gather context — the escalation screen renders it above the question's
 options so the human can decide without attaching to this session. If the
-escalation is one of `gather-escalation-context.sh`'s six kinds (a new
+escalation is one of `gather-escalation-context.sh`'s seven kinds (a new
 external dependency, a breaking API change, budget exhausted, an
-environmental BLOCKER, a contradiction between requirements, or a
-ticket-drafting ambiguity per `ticket-drafting-escalation.md`), run it for
-that kind and capture its output:
+environmental BLOCKER, a contradiction between requirements, a
+ticket-drafting ambiguity per `ticket-drafting-escalation.md`, or a
+ticket-drift per Setup step 2 above), run it for that kind and capture its
+output:
 
 ```bash
 CONTEXT="$(scripts/concertino/gather-escalation-context.sh <kind> k=v ...)" || CONTEXT=""
@@ -1087,11 +1183,11 @@ CONTEXT="$(scripts/concertino/gather-escalation-context.sh <kind> k=v ...)" || C
 
 This identifies which of the escalation kinds already below applies — it is
 not a new decision, just naming the grounds for the one you're already making.
-Not every escalation fits one of the six kinds cleanly (e.g. a major
-architectural change or scope drift raised as a Planning ESCALATION); when it
-doesn't, or the script fails for any reason, `CONTEXT` is simply empty — raise
-the escalation anyway, without `context=`, rather than let a malformed
-context call block it.
+Not every escalation fits one of the seven kinds cleanly (e.g. a major
+architectural change raised as a Planning ESCALATION); when it doesn't, or
+the script fails for any reason, `CONTEXT` is simply empty — raise the
+escalation anyway, without `context=`, rather than let a malformed context
+call block it.
 
 **Present it in your own chat transcript immediately, before anything else
 below (CON-76).** Post the question — and, for the multi-part form, every
@@ -1488,6 +1584,12 @@ Every bound named below is `workflow-state.md`'s resolved value for this run
   retry — fall back to the wait-for-"merged" flow (see Non-Goals of the
   agent-merge design: an `ESCALATE` reflects a merge-time fact the executor
   cannot "fix" by writing code).
+- **`material-drift` (CON-136):** Setup step 2's premise-validation check
+  finds a refuted root cause, scope already fully implemented, or a sibling
+  collision that invalidates the ticket's enumeration — raised as a
+  `ticket-drift` escalation with what-was-claimed vs. what-is-true and
+  `proceed-as-written`/`proceed-with-restated-scope`/`halt` options; blocks
+  branch derivation and worktree creation until resolved.
 
 ### Circuit breakers (bounded counters — all persisted in `workflow-state.md`)
 

@@ -1,0 +1,44 @@
+## 1. gather-escalation-context.sh — ticket-drift kind
+
+- [x] 1.1 Add `ticket-drift` to `VALID_KINDS` in `core/scripts/gather-escalation-context.sh`.
+- [x] 1.2 Add a `ticket-drift)` case requiring `claimed`, `actual`, `options`. Its output SHALL begin with the literal first line `TICKET-DRIFT-ESCALATION`, then a structured block (claimed/actual/options) matching the other six kinds' shape (design.md Decisions 3-4).
+- [x] 1.3 Add/extend the script's own unit-style probe (however the existing kinds are tested — check for an existing test harness first) covering: success with all fields, missing-field failure, and that the six pre-existing kinds are unaffected.
+
+## 2. assert-phase.sh — mandatory premise-validation evidence check
+
+- [x] 2.1 In `core/scripts/assert-phase.sh`'s `setup)` case, resolve the main checkout the same way the `delivery)` case's `main_checkout()` helper already does (reuse it, don't duplicate — hoist it above the `case` block if needed since both branches now need it).
+- [x] 2.2 Add a fail-closed check: `.concertino/runs/<GATE_TICKET>/evidence/premise-validation.md` must exist under the resolved main checkout.
+- [x] 2.3 Add a `node` heading-scan (mirroring the Delivery gate's existing gate-chain-checklist scan exactly — same placeholder set `tbd`/`n/a`/`na`/`todo`/empty) verifying the `## Premise Validation` heading is present and its three fields (`**Claims checked:**`, `**Already-done scope:**`, `**Sibling collisions:**`) are each non-placeholder.
+- [x] 2.4 Verify the `**Verdict:**` line is present and its value is one of `no-drift`, `minor-staleness`, `material-drift`; fail on anything else (missing, empty, or an unrecognized value).
+- [x] 2.5 When `**Verdict:** material-drift`, additionally require an `escalation.raised` event for that ticket in `.concertino/runs/<GATE_TICKET>/events.jsonl` tagged `role=orchestrator` whose `context` field **starts with** the literal marker `TICKET-DRIFT-ESCALATION` (prefix match — not a `kind=` field, which `emit-event.sh` deliberately drops; design.md Decision 3). Fail closed if absent. `no-drift`/`minor-staleness` verdicts skip this check entirely.
+- [x] 2.6 Ensure every new failure path uses the existing `fail()` helper (so `FIRST_ERROR`/exit-code semantics stay consistent with the rest of the script) and that the check runs unconditionally on every `setup` invocation (not gated behind any diff classification).
+
+## 3. core/roles/orchestrator.md — the Setup step itself
+
+- [x] 3.1 Insert a new step between today's step 1 (fetch ticket / harness / design-type checks) and step 2 (derive branch name): "Validate the ticket's premise against the live tree."
+- [x] 3.2 Write the step's procedure: verify cited facts/paths/symbols/counts and (for bug/incident tickets) the stated root cause against the live main checkout; check acceptance criteria against the base branch for already-done scope; check for sibling collisions scoped to the ticket's own Linear parent/epic relation (via `includeRelations` on the existing `get_issue` call) cross-checked against recent merge history (`git log --oneline -20 <base>` is sufficient).
+- [x] 3.3 Write the step's evidence-write instruction: construct `premise-validation.md` in the fixed shape (design.md Decision 2), then issue the write, `persist-evidence.sh "$TICKET_ID" premise-validation.md`, and `rm -f premise-validation.md` cleanup as **one shell invocation** against the main checkout's absolute repo-root path (bare filename at that root — required for `persist-evidence.sh` to resolve the correct destination; a single invocation shrinks, but per design.md's Risks does not eliminate, the fleet-model cross-run collision window on that fixed filename) — all **before** step 2 (branch derivation) runs. State the residual honestly rather than asserting the race away.
+- [x] 3.4 Write the verdict branch: `no-drift`/`minor-staleness` → proceed directly to branch derivation (minor-staleness corrects the fact inline in the artifact, no escalation). `material-drift` → raise a `ticket-drift` escalation (task 1) via the existing "How to raise one" procedure, and do not proceed to branch derivation or `setup-worktree.sh` until it resolves. Note explicitly that if `gather-escalation-context.sh` itself fails and the escalation is raised without `context=` (its own documented fallback), the setup gate's material-drift check (task 2.5) will still fail closed on the missing marker — this is intended fail-closed behavior, not a bug to "fix" by loosening the check to an existence-only test.
+- [x] 3.5 State the no-drift cost explicitly in the step's prose (design.md Decision 5) — no sub-agent spawn, no new loop, one evidence write.
+- [x] 3.6 Add `material-drift` as a new row in the "Always reaches the human" table (Escalation & Circuit Breakers section), alongside the existing rows, so it's discoverable from that index the same way every other escalation kind already is.
+- [x] 3.7 Add one cross-reference sentence near this new step (not inside `core/laws/ticket-drafting-escalation.md` itself) distinguishing this step (premise decays after drafting) from that law (ambiguity present at drafting time) — do not edit that law's own text.
+
+## 4. Render and sync
+
+- [x] 4.1 Run `concertino sync` (or the project's equivalent render step) so `.claude/agents/concertino-orchestrator.md`, `scripts/concertino/assert-phase.sh`, `scripts/concertino/gather-escalation-context.sh` reflect the `core/` edits, for every implemented harness (`claude-code`, `codex`, `opencode`).
+- [x] 4.2 Render-diff proxy (CON-134/CON-127 precedent): render all three harnesses into throwaway dirs from `main` (pre-change) and from this branch (post-change); diff occurrence counts of any harness-specific tool name baseline-vs-modified to confirm no shared `core/` prose leaked a Claude-Code-only tool name into the Codex/OpenCode renders. Record the result (pass/fail) as evidence.
+
+## 5. Fixtures and verification (red-before-green)
+
+- [x] 5.1 Build a throwaway probe worktree **inside `.concertino/worktrees/`** (never a scratchpad path) with a fabricated `.concertino/runs/<fixture-ticket>/` tree.
+- [x] 5.2 Fixture A (CON-128-shaped): re-run the design's actual check procedure (task 3.2's commands — e.g. an inode/`readlink` comparison of the global install path against the dev checkout) against CON-128's verbatim original claim ("a stale globally-installed concertino silently downgrades rendered files on sync"), and record the *derived* finding (refuted, with the command output) into `**Claims checked:**` — not a pre-written conclusion (design.md Decision 7 / AC5). With that derived `**Verdict:** material-drift` and **no** matching `escalation.raised` event, run `assert-phase.sh setup` against it and confirm `FAIL` (task 2.5's check catching an unescalated material-drift verdict).
+- [x] 5.3 Same fixture, now with a matching `ticket-drift` `escalation.raised` event (context starting with `TICKET-DRIFT-ESCALATION`, produced via `gather-escalation-context.sh ticket-drift`, task 1) added to `events.jsonl` — confirm `assert-phase.sh setup` no longer fails on account of the material-drift check.
+- [x] 5.4 Fixture B (CON-131-shaped): re-run the check procedure against CON-131's verbatim original claim ("the helio repo root is a bare checkout") — e.g. `git config --get core.bare` against the live repo — and record the derived finding, demonstrating how the step's claims-checked/verdict fields would have surfaced that drift before a worktree was ever built for it.
+- [x] 5.5 Mutation test proving the gate can fail: take a **complete, passing** `premise-validation.md` fixture and mutate a single field (e.g. blank out `**Sibling collisions:**`, or set `**Verdict:** bogus-value`) — confirm `assert-phase.sh setup` goes from PASS to FAIL on that single-line mutation, and confirm it reports the specific missing/invalid field. Repeat for the missing-file case (delete the artifact entirely).
+- [x] 5.6 Confirm every assertion above binds to the real rendered `scripts/concertino/assert-phase.sh` (not a copy or the `core/` source only) — run the actual script against the actual fixture paths, not a reimplementation of its logic.
+- [x] 5.7 Confirm `RESULT`/`FAIL` output is captured correctly (not swallowed inside an unadorned `$(...)` command substitution) in every probe — assert on the captured value, not merely the exit code, where the design calls for a specific message.
+
+## 6. Documentation and evidence
+
+- [x] 6.1 Update `core/scripts/README.md` (or wherever `assert-phase.sh`'s checks are indexed, if such an index exists) to mention the new setup-gate premise-validation check.
+- [x] 6.2 Leave a short note in `files-modified.md` (or the handoff file this project's executor already produces) enumerating every touched `core/` and rendered file, for delivery-time hygiene.
