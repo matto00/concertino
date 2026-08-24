@@ -3,15 +3,21 @@ set -uo pipefail
 
 # ===========================================================================
 # gather-escalation-context.sh — format a structured context block for one of
-# the six escalation kinds CON-11 (and CON-50's ticket-ambiguity addition)
-# enumerate, so the context an escalation carries is a committed procedure
-# rather than prose the orchestrator improvises at raise time.
+# the seven escalation kinds CON-11 (and CON-50's ticket-ambiguity addition,
+# and CON-136's ticket-drift addition) enumerate, so the context an
+# escalation carries is a committed procedure rather than prose the
+# orchestrator improvises at raise time.
 #
 # Usage: gather-escalation-context.sh <KIND> [k=v ...]
 #
 # KIND is one of: dependency, api-change, budget, blocker, contradiction,
-# ticket-ambiguity. Each kind requires specific k=v fields (see the case
-# block below). On
+# ticket-ambiguity, ticket-drift. Each kind requires specific k=v fields (see
+# the case block below). ticket-drift's output additionally opens with a
+# fixed literal marker line, TICKET-DRIFT-ESCALATION, before its structured
+# block — escalation.raised events carry no caller-settable `kind` field
+# (emit-event.sh drops it), so a consumer (assert-phase.sh setup's
+# material-drift check) identifies a ticket-drift escalation via a prefix
+# match on `context` alone. On
 # success, prints a structured, human-readable plain-text block to stdout and
 # exits 0 — the caller passes that block through as `context=` on the
 # `emit-event.sh escalation --await` call that follows it.
@@ -29,7 +35,7 @@ set -uo pipefail
 # budget/persistence logic stays in the one place that already owns it.
 # ===========================================================================
 
-VALID_KINDS="dependency api-change budget blocker contradiction ticket-ambiguity"
+VALID_KINDS="dependency api-change budget blocker contradiction ticket-ambiguity ticket-drift"
 
 fail() {
   echo "FAIL $1" >&2
@@ -131,6 +137,17 @@ Ticket-drafting ambiguity — an unresolved fork was about to be finalized
   signal:        ${F[signal]}
   detail:        ${F[detail]}
   draft excerpt: ${F[draft_excerpt]}
+EOF
+    ;;
+
+  ticket-drift)
+    require claimed actual options
+    cat <<EOF
+TICKET-DRIFT-ESCALATION
+Ticket premise has drifted from the live tree
+  claimed: ${F[claimed]}
+  actual:  ${F[actual]}
+  options: ${F[options]}
 EOF
     ;;
 esac

@@ -23,12 +23,34 @@ new_repo() {
   printf '%s' "$d"
 }
 
+# CON-136: setup now unconditionally requires premise-validation.md evidence,
+# resolved against the main checkout. `git rev-parse --git-common-dir` run
+# from a fake `$WT/.git` (an empty directory, not a real gitdir) walks up
+# past it and resolves to the enclosing $REPO's real .git, exactly like it
+# already did for the pre-CON-136 checks in this file — so evidence lives at
+# $REPO/.concertino/runs/<ticket>/evidence/premise-validation.md.
+# write_pv_evidence <repo-root> <ticket> [verdict]
+write_pv_evidence() {
+  local root="$1" ticket="$2" verdict="${3:-no-drift}" dir
+  dir="$root/.concertino/runs/$ticket/evidence"
+  mkdir -p "$dir"
+  cat > "$dir/premise-validation.md" <<EOF
+## Premise Validation
+
+**Claims checked:** no specific facts cited
+**Already-done scope:** none
+**Sibling collisions:** none found
+**Verdict:** ${verdict}
+EOF
+}
+
 echo "assert-phase.sh"
 
 # --- passing phase emits a numeric duration and no first_error -------------
 REPO="$(new_repo)"
 WT="$REPO/worktrees/HEL-1"
 mkdir -p "$WT/.git"          # satisfies the "looks like a git worktree" check
+write_pv_evidence "$REPO" "HEL-1"
 OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT")"
 RC=$?
 LOG="$REPO/.concertino/runs/HEL-1/events.jsonl"
@@ -146,6 +168,7 @@ rm -rf "$REPO"
 REPO="$(new_repo)"
 WT="$REPO/worktrees/HEL-4"
 mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "HEL-4"
 SAW_NON_MULTIPLE=no
 for _ in $(seq 1 20); do
   (cd "$REPO" && "$SCRIPT" setup "$WT") >/dev/null
@@ -176,6 +199,7 @@ echo "assert-phase.sh (CON-80: explicit ticket id)"
 REPO="$(new_repo)"
 WT="$REPO/worktrees/local-llm-harnesses"     # basename is NOT ticket-shaped
 mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "TICK-9"
 OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" TICK-9)"
 RC=$?
 LOG="$REPO/.concertino/runs/TICK-9/events.jsonl"
@@ -194,6 +218,7 @@ rm -rf "$REPO"
 REPO="$(new_repo)"
 WT="$REPO/worktrees/local-llm-harnesses"
 mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "local-llm-harnesses"
 OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT")"
 RC=$?
 LOG="$REPO/.concertino/runs/local-llm-harnesses/events.jsonl"
@@ -208,6 +233,7 @@ rm -rf "$REPO"
 REPO="$(new_repo)"
 WT="$REPO/worktrees/con-79"        # lowercase, ticket-shaped (Linear's own gitBranchName case)
 mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "CON-79"
 OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" CON-79)"
 RC=$?
 LOG="$REPO/.concertino/runs/CON-79/events.jsonl"
@@ -228,6 +254,7 @@ rm -rf "$REPO"
 REPO="$(new_repo)"
 WT="$REPO/worktrees/HEL-20"
 mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "HEL-20"
 OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT")"
 RC=$?
 LOG="$REPO/.concertino/runs/HEL-20/events.jsonl"
@@ -553,6 +580,167 @@ RC=$?
 check "exit 0: non-gate-chain diff needs no evidence" "$RC" "0"
 check "stdout is PASS delivery (non-gate-chain)" "$(cat "$OUT")" "PASS delivery"
 rm -rf "$BASE"
+
+# =============================================================================
+# CON-136: assert-phase.sh setup — mandatory premise-validation evidence
+# =============================================================================
+
+echo "assert-phase.sh setup (CON-136: premise-validation evidence)"
+
+# --- missing evidence file entirely -> FAIL, naming it ----------------------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/PV-1"
+mkdir -p "$WT/.git"
+ERR="$(cd "$REPO" && "$SCRIPT" setup "$WT" PV-1 2>&1 >/dev/null)"
+RC=$?
+check "exit 1: no premise-validation.md at all" "$RC" "1"
+has "names the missing evidence file" "premise-validation.md" <(printf '%s' "$ERR")
+rm -rf "$REPO"
+
+# --- heading present but a required field left blank/placeholder -> FAIL ----
+REPO="$(new_repo)"
+WT="$REPO/worktrees/PV-2"
+mkdir -p "$WT/.git"
+mkdir -p "$REPO/.concertino/runs/PV-2/evidence"
+cat > "$REPO/.concertino/runs/PV-2/evidence/premise-validation.md" <<'EOF'
+## Premise Validation
+
+**Claims checked:** file X still exists, confirmed
+**Already-done scope:** none
+**Sibling collisions:** tbd
+**Verdict:** no-drift
+EOF
+ERR="$(cd "$REPO" && "$SCRIPT" setup "$WT" PV-2 2>&1 >/dev/null)"
+RC=$?
+check "exit 1: placeholder field (tbd) fails" "$RC" "1"
+has "names the unanswered field" "Sibling collisions" <(printf '%s' "$ERR")
+rm -rf "$REPO"
+
+# --- an invalid verdict value -> FAIL ----------------------------------------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/PV-3"
+mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "PV-3" "bogus-value"
+ERR="$(cd "$REPO" && "$SCRIPT" setup "$WT" PV-3 2>&1 >/dev/null)"
+RC=$?
+check "exit 1: unrecognized verdict value" "$RC" "1"
+has "names the invalid verdict" "invalid verdict" <(printf '%s' "$ERR")
+rm -rf "$REPO"
+
+# --- a complete no-drift artifact passes -------------------------------------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/PV-4"
+mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "PV-4" "no-drift"
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" PV-4)"
+RC=$?
+check "exit 0: complete no-drift evidence passes" "$RC" "0"
+check "stdout is PASS setup (no-drift)" "$OUT" "PASS setup"
+rm -rf "$REPO"
+
+# --- a complete minor-staleness artifact passes, no escalation required -----
+REPO="$(new_repo)"
+WT="$REPO/worktrees/PV-5"
+mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "PV-5" "minor-staleness"
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" PV-5)"
+RC=$?
+check "exit 0: complete minor-staleness evidence passes" "$RC" "0"
+check "stdout is PASS setup (minor-staleness)" "$OUT" "PASS setup"
+rm -rf "$REPO"
+
+# --- material-drift verdict, NO matching escalation event -> FAIL -----------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/PV-6"
+mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "PV-6" "material-drift"
+ERR="$(cd "$REPO" && "$SCRIPT" setup "$WT" PV-6 2>&1 >/dev/null)"
+RC=$?
+check "exit 1: material-drift with no escalation event" "$RC" "1"
+has "names the missing escalation" "escalation" <(printf '%s' "$ERR")
+rm -rf "$REPO"
+
+# --- material-drift verdict, an escalation.raised event exists but its
+#     context does NOT start with the TICKET-DRIFT-ESCALATION marker -> FAIL
+REPO="$(new_repo)"
+WT="$REPO/worktrees/PV-7"
+mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "PV-7" "material-drift"
+mkdir -p "$REPO/.concertino/runs/PV-7"
+node -e '
+  const fs = require("fs");
+  const ev = {t: Date.now(), kind: "escalation.raised", project: "x", ticket: "PV-7", role: "orchestrator", question: "q", context: "some unrelated context, no marker"};
+  fs.writeFileSync(process.argv[1], JSON.stringify(ev) + "\n");
+' "$REPO/.concertino/runs/PV-7/events.jsonl"
+ERR="$(cd "$REPO" && "$SCRIPT" setup "$WT" PV-7 2>&1 >/dev/null)"
+RC=$?
+check "exit 1: material-drift, escalation present but no marker prefix" "$RC" "1"
+rm -rf "$REPO"
+
+# --- material-drift verdict, a matching ticket-drift escalation.raised event
+#     (role=orchestrator, context starting with the marker) -> PASS ---------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/PV-8"
+mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "PV-8" "material-drift"
+mkdir -p "$REPO/.concertino/runs/PV-8"
+node -e '
+  const fs = require("fs");
+  const ev = {t: Date.now(), kind: "escalation.raised", project: "x", ticket: "PV-8", role: "orchestrator", question: "q", context: "TICKET-DRIFT-ESCALATION\nclaimed: X\nactual: Y\noptions: proceed-as-written,proceed-with-restated-scope,halt"};
+  fs.writeFileSync(process.argv[1], JSON.stringify(ev) + "\n");
+' "$REPO/.concertino/runs/PV-8/events.jsonl"
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" PV-8)"
+RC=$?
+check "exit 0: material-drift with a matching ticket-drift escalation" "$RC" "0"
+check "stdout is PASS setup (material-drift + escalation)" "$OUT" "PASS setup"
+rm -rf "$REPO"
+
+# --- mutation test (task 5.5): a complete, PASSing artifact, mutated one
+#     field at a time, flips PASS -> FAIL on that single-line change --------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/PV-9"
+mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "PV-9" "no-drift"
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" PV-9)"
+check "mutation baseline: complete artifact passes" "$OUT" "PASS setup"
+
+# blank out Sibling collisions
+sed -i 's/^\*\*Sibling collisions:\*\* none found$/**Sibling collisions:** /' \
+  "$REPO/.concertino/runs/PV-9/evidence/premise-validation.md"
+ERR="$(cd "$REPO" && "$SCRIPT" setup "$WT" PV-9 2>&1 >/dev/null)"
+RC=$?
+check "mutation: blanked Sibling collisions flips PASS to FAIL" "$RC" "1"
+has "mutation: names the blanked field" "Sibling collisions" <(printf '%s' "$ERR")
+rm -rf "$REPO"
+
+REPO="$(new_repo)"
+WT="$REPO/worktrees/PV-10"
+mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "PV-10" "no-drift"
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" PV-10)"
+check "mutation baseline 2: complete artifact passes" "$OUT" "PASS setup"
+
+sed -i 's/^\*\*Verdict:\*\* no-drift$/**Verdict:** bogus-value/' \
+  "$REPO/.concertino/runs/PV-10/evidence/premise-validation.md"
+ERR="$(cd "$REPO" && "$SCRIPT" setup "$WT" PV-10 2>&1 >/dev/null)"
+RC=$?
+check "mutation: bogus Verdict flips PASS to FAIL" "$RC" "1"
+has "mutation: names the invalid verdict" "invalid verdict" <(printf '%s' "$ERR")
+rm -rf "$REPO"
+
+# --- deleting the evidence file entirely (after a prior PASS) -> FAIL -------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/PV-11"
+mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "PV-11" "no-drift"
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" PV-11)"
+check "mutation baseline 3: complete artifact passes" "$OUT" "PASS setup"
+rm -f "$REPO/.concertino/runs/PV-11/evidence/premise-validation.md"
+ERR="$(cd "$REPO" && "$SCRIPT" setup "$WT" PV-11 2>&1 >/dev/null)"
+RC=$?
+check "deleted evidence file: flips PASS to FAIL" "$RC" "1"
+has "deleted evidence file: names the missing file" "premise-validation.md" <(printf '%s' "$ERR")
+rm -rf "$REPO"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

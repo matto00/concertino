@@ -71,6 +71,27 @@ check "ticket-ambiguity mentions detail"  "$(printf '%s' "$OUT" | grep -c 'does 
 check "ticket-ambiguity mentions draft excerpt" \
   "$(printf '%s' "$OUT" | grep -c 'likely acceptable to leave X out for now')" "1"
 
+# --- ticket-drift happy path ------------------------------------------------
+OUT="$("$SCRIPT" ticket-drift claimed="a stale global install downgrades rendered files" actual="the global is an npm-link symlink to the dev checkout, same inode" options="proceed-as-written,proceed-with-restated-scope,halt")"
+RC=$?
+check "ticket-drift exits 0"                "$RC" "0"
+check "ticket-drift first line is the marker" \
+  "$(printf '%s' "$OUT" | head -n1)" "TICKET-DRIFT-ESCALATION"
+check "ticket-drift mentions claimed"       "$(printf '%s' "$OUT" | grep -c 'a stale global install downgrades rendered files')" "1"
+check "ticket-drift mentions actual"        "$(printf '%s' "$OUT" | grep -c 'npm-link symlink to the dev checkout')" "1"
+check "ticket-drift mentions options"       "$(printf '%s' "$OUT" | grep -c 'proceed-as-written,proceed-with-restated-scope,halt')" "1"
+
+# --- ticket-drift: missing required fields fails without partial context ---
+OUT="$("$SCRIPT" ticket-drift claimed="X" 2>/tmp/gec-err)"
+RC=$?
+check "ticket-drift missing fields: exit non-zero" "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
+check "ticket-drift missing fields: nothing on stdout" \
+  "$(printf '%s' "$OUT" | wc -c | tr -d ' ')" "0"
+check "ticket-drift missing fields: FAIL on stderr" "$(grep -c '^FAIL' /tmp/gec-err)" "1"
+check "ticket-drift missing fields: names the missing fields" \
+  "$(grep -c 'actual' /tmp/gec-err)" "1"
+rm -f /tmp/gec-err
+
 # --- ticket-ambiguity: missing required fields fails without partial context
 OUT="$("$SCRIPT" ticket-ambiguity signal=hedge-phrase 2>/tmp/gec-err)"
 RC=$?

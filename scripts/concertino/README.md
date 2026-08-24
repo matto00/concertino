@@ -16,7 +16,18 @@ file — so they stay generic and the config is the single source of truth.
 - Success prints machine-parseable `READY <key>=<value>` lines on stdout.
 - Failure prints `FAIL <reason>` on stderr and exits non-zero.
 - `assert-phase.sh` prints `PASS <phase>` / `FAIL <reason>` — it is the
-  postcondition gate the orchestrator runs before leaving a phase.
+  postcondition gate the orchestrator runs before leaving a phase. The
+  `setup` phase additionally requires (CON-136) a
+  `.concertino/runs/<TICKET_ID>/evidence/premise-validation.md` artifact,
+  resolved against the main checkout the same way the `delivery` phase's own
+  gate-chain evidence check resolves it: a `## Premise Validation` heading
+  with all three fields (`**Claims checked:**`, `**Already-done scope:**`,
+  `**Sibling collisions:**`) substantively answered and a `**Verdict:**` of
+  `no-drift`, `minor-staleness`, or `material-drift`; a `material-drift`
+  verdict additionally requires a matching `ticket-drift`
+  `escalation.raised` event (role=orchestrator, `context` starting with the
+  literal marker `TICKET-DRIFT-ESCALATION`) in that run's `events.jsonl`.
+  This check runs unconditionally on every `setup` invocation.
 - `emit-event.sh` appends one JSON line to
   `<main checkout>/.concertino/runs/<TICKET>/events.jsonl`. In normal mode it
   always exits 0, including on internal error, so telemetry can never fail a
@@ -36,8 +47,13 @@ file — so they stay generic and the config is the single source of truth.
   destination) and does not swallow that failure, because a caller must never
   build an `evidence`/`verdict` ref from a copy that was never actually made.
 - `gather-escalation-context.sh` is a pure formatter: it prints a structured
-  context block for one of six escalation kinds to stdout, or `FAIL`s on a
-  missing required field or an unrecognized kind. It does not know about
+  context block for one of seven escalation kinds to stdout, or `FAIL`s on a
+  missing required field or an unrecognized kind. The `ticket-drift` kind
+  (CON-136) opens its output with the literal first line
+  `TICKET-DRIFT-ESCALATION`, before the `claimed`/`actual`/`options` block —
+  `emit-event.sh` drops any caller-supplied `kind=`, so this is how
+  `assert-phase.sh setup`'s material-drift check identifies a matching
+  escalation from `context` alone (a prefix match). It does not know about
   `emit-event.sh`'s byte cap and does not persist anything itself — pass its
   output as `context=` on the `emit-event.sh escalation --await` call, which
   owns truncation/persistence for an oversized value.
@@ -65,7 +81,7 @@ file — so they stay generic and the config is the single source of truth.
 | `emit-event.sh`     | Append a dashboard event; `--await` blocks for an answer   | `<kind> [--await] k=v ...`                                  |
 | `persist-evidence.sh` | Copy an artifact into the main checkout, print a durable ref | `<TICKET_ID> <SOURCE_PATH>`                               |
 | `set-ticket-state.sh` | Set a local ticket's state (write-back seam for `ticketProvider.kind: "local"`) | `<tickets-dir> <TICKET_ID> <state>`               |
-| `gather-escalation-context.sh` | Format a structured context block for an escalation kind | `<dependency\|api-change\|budget\|blocker\|contradiction\|ticket-ambiguity> k=v ...` |
+| `gather-escalation-context.sh` | Format a structured context block for an escalation kind | `<dependency\|api-change\|budget\|blocker\|contradiction\|ticket-ambiguity\|ticket-drift> k=v ...` |
 | `triage-followup.sh` | Classify a suggested follow-up as fold-in/standalone from file overlap + caller-supplied judgment | `description=... files=... ac_relevant=<yes\|no> effort=<small\|large> worktree=... [base=...]` |
 | `next-report-number.sh` | Collision-safe, disk-derived filename number for the evaluator's/skeptic's next review report | `<change-dir> <kind>`                    |
 
