@@ -53,6 +53,25 @@ wait_for_escalation() {
   return 1
 }
 
+# CON-138: the fast-forward escalation's `--await` call is now gated on
+# `tui-attached.sh` — a real, live-owned pid written into a watch.lock
+# fixture, exactly as tui-attached.test.sh's own "live owned pid" case does,
+# is what makes tui-attached.sh report "attached" so the pre-CON-138
+# escalation scenarios below still exercise the --await path.
+simulate_tui_attached() {
+  # $1 = primary checkout dir
+  sleep 60 &
+  TUI_LIVE_PID=$!
+  mkdir -p "$1/.concertino/cache"
+  printf '{"pid":%d}' "$TUI_LIVE_PID" > "$1/.concertino/cache/watch.lock"
+}
+
+stop_tui_simulation() {
+  [ -n "${TUI_LIVE_PID:-}" ] && kill "$TUI_LIVE_PID" 2>/dev/null
+  wait "${TUI_LIVE_PID:-}" 2>/dev/null
+  TUI_LIVE_PID=""
+}
+
 # A bare "remote" plus a "primary" checkout cloned from it, with cleanup.sh
 # and emit-event.sh vendored in and COMMITTED — an uncommitted copy would
 # itself register as the "dirty tree" this whole suite exercises.
@@ -64,6 +83,7 @@ new_pair() {
   mkdir -p "$primary/scripts/concertino/lib"
   cp "$CLEANUP" "$primary/scripts/concertino/cleanup.sh"
   cp "$EMIT" "$primary/scripts/concertino/emit-event.sh"
+  cp "$ROOT/core/scripts/tui-attached.sh" "$primary/scripts/concertino/tui-attached.sh"
   cp "$ROOT/core/scripts/lib/git-child-env.sh" "$primary/scripts/concertino/lib/git-child-env.sh"
   chmod +x "$primary/scripts/concertino/"*.sh
   # .concertino/ (the run log emit-event.sh --await writes to) must be
@@ -227,6 +247,7 @@ rm -rf "$BASE"
 
 # --- dirty tree: escalates, changes nothing, skip leaves it untouched -------
 BASE="$(mktemp -d)"; new_pair "$BASE"
+simulate_tui_attached "$BASE/primary"
 advance_remote "$BASE/remote.git"
 echo "uncommitted local edit" >> "$BASE/primary/file.txt"
 BEFORE_MAIN="$(git -C "$BASE/primary" rev-parse main)"
@@ -245,10 +266,12 @@ grep -q "uncommitted local edit" "$BASE/primary/file.txt" && ok "the uncommitted
 has "prints READY despite a dirty-tree escalation" "READY cleaned worktree=" "$OUT"
 [ -f "$LOG" ] && grep -q escalation.answered "$LOG" && ok "the answered escalation is logged" || bad "the answered escalation is logged" "no escalation.answered"
 hasnt "no gate.warning on a skip (no retry attempted)" "gate.warning" "$LOG"
+stop_tui_simulation
 rm -rf "$BASE"
 
 # --- diverged base: escalates, changes nothing -------------------------------
 BASE="$(mktemp -d)"; new_pair "$BASE"
+simulate_tui_attached "$BASE/primary"
 git -C "$BASE/primary" -c user.email=t@t.com -c user.name=t commit -q --allow-empty -m "a local commit origin doesn't have"
 BEFORE_MAIN="$(git -C "$BASE/primary" rev-parse main)"
 WT="$BASE/TICK-5"
@@ -264,10 +287,12 @@ AFTER_MAIN="$(git -C "$BASE/primary" rev-parse main)"
 check "local main is untouched (diverged)" "$AFTER_MAIN" "$BEFORE_MAIN"
 has "prints READY despite a diverged-base escalation" "READY cleaned worktree=" "$OUT"
 hasnt "no gate.warning on a diverged-base skip (no retry attempted)" "gate.warning" "$LOG"
+stop_tui_simulation
 rm -rf "$BASE"
 
 # --- retry: a second attempt that now resolves cleanly succeeds -------------
 BASE="$(mktemp -d)"; new_pair "$BASE"
+simulate_tui_attached "$BASE/primary"
 advance_remote "$BASE/remote.git"
 echo "uncommitted local edit" >> "$BASE/primary/file.txt"
 WT="$BASE/TICK-6"
@@ -288,10 +313,12 @@ check "local main fast-forwarded on the retried attempt" "$AFTER_MAIN" "$REMOTE_
 has "prints READY after a successful retry" "READY cleaned worktree=" "$OUT"
 hasnt "no 'remains behind' note after a successful retry" "remains behind" "$ERR"
 hasnt "no gate.warning after a successful retry" "gate.warning" "$LOG"
+stop_tui_simulation
 rm -rf "$BASE"
 
 # --- retry exhaustion, confirmed still-dirty: keeps "remains behind" wording -
 BASE="$(mktemp -d)"; new_pair "$BASE"
+simulate_tui_attached "$BASE/primary"
 advance_remote "$BASE/remote.git"
 echo "uncommitted local edit" >> "$BASE/primary/file.txt"
 BEFORE_MAIN="$(git -C "$BASE/primary" rev-parse main)"
@@ -327,10 +354,12 @@ check "gate.warning ticket tagged (still-dirty retry)" \
   "TICK-7"
 check "run.end still status=delivered alongside the gate.warning (still-dirty retry)" \
   "$(run_end_ticket "$LOG")" "TICK-7/delivered"
+stop_tui_simulation
 rm -rf "$BASE"
 
 # --- retry exhaustion, retry's own fetch fails: reports unknown state -------
 BASE="$(mktemp -d)"; new_pair "$BASE"
+simulate_tui_attached "$BASE/primary"
 advance_remote "$BASE/remote.git"
 echo "uncommitted local edit" >> "$BASE/primary/file.txt"
 WT="$BASE/TICK-8"
@@ -364,6 +393,109 @@ check "gate.warning ticket tagged (fetch-failed retry)" \
   "TICK-8"
 check "run.end still status=delivered alongside the gate.warning (fetch-failed retry)" \
   "$(run_end_ticket "$LOG")" "TICK-8/delivered"
+stop_tui_simulation
+rm -rf "$BASE"
+
+# ===========================================================================
+# CON-138 — no TUI attached: never block on --await, skip straight to the
+# existing skip/timeout outcome, and emit exactly one gate.warning instead of
+# raising an escalation. No watch.lock fixture here at all, so
+# tui-attached.sh reports "not attached" exactly as it would with no real
+# dashboard running.
+# ===========================================================================
+
+# --- dirty tree, no TUI: skips immediately, no escalation, one gate.warning
+BASE="$(mktemp -d)"; new_pair "$BASE"
+advance_remote "$BASE/remote.git"
+echo "uncommitted local edit" >> "$BASE/primary/file.txt"
+BEFORE_MAIN="$(git -C "$BASE/primary" rev-parse main)"
+WT="$BASE/TICK-9"
+LOG="$BASE/primary/.concertino/runs/TICK-9/events.jsonl"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-9
+RC=$?
+check "exits 0 with no TUI attached (dirty tree)" "$RC" "0"
+AFTER_MAIN="$(git -C "$BASE/primary" rev-parse main)"
+check "local main is untouched (no TUI, dirty tree)" "$AFTER_MAIN" "$BEFORE_MAIN"
+grep -q "uncommitted local edit" "$BASE/primary/file.txt" && ok "the uncommitted edit itself is untouched (no TUI)" || bad "the uncommitted edit itself is untouched (no TUI)" "edit vanished"
+has "prints READY with no TUI attached (dirty tree)" "READY cleaned worktree=" "$OUT"
+[ -f "$LOG" ] && grep -q escalation.raised "$LOG" && bad "no escalation.raised with no TUI attached" "escalation.raised was written" || ok "no escalation.raised with no TUI attached"
+has "gate.warning event emitted with no TUI attached (dirty tree)" "gate.warning" "$LOG"
+check "exactly one gate.warning with no TUI attached (dirty tree)" \
+  "$(grep -c '"kind":"gate.warning"' "$LOG" 2>/dev/null)" "1"
+check "gate.warning gate=phase:cleanup (no TUI, dirty tree)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).find(e=>e.kind==="gate.warning");console.log(l.gate)' "$LOG")" \
+  "phase:cleanup"
+check "gate.warning resolved=false (no TUI, dirty tree)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).find(e=>e.kind==="gate.warning");console.log(l.resolved)' "$LOG")" \
+  "false"
+check "gate.warning reason names no TUI attached (no TUI, dirty tree)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).find(e=>e.kind==="gate.warning");console.log(/no TUI attached/.test(l.reason))' "$LOG")" \
+  "true"
+check "gate.warning reason names the underlying dirty state (no TUI, dirty tree)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).find(e=>e.kind==="gate.warning");console.log(/dirty/.test(l.reason))' "$LOG")" \
+  "true"
+rm -rf "$BASE"
+
+# --- diverged base, no TUI: skips immediately, no escalation, one gate.warning
+BASE="$(mktemp -d)"; new_pair "$BASE"
+git -C "$BASE/primary" -c user.email=t@t.com -c user.name=t commit -q --allow-empty -m "a local commit origin doesn't have"
+BEFORE_MAIN="$(git -C "$BASE/primary" rev-parse main)"
+WT="$BASE/TICK-10"
+LOG="$BASE/primary/.concertino/runs/TICK-10/events.jsonl"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-10
+RC=$?
+check "exits 0 with no TUI attached (diverged)" "$RC" "0"
+AFTER_MAIN="$(git -C "$BASE/primary" rev-parse main)"
+check "local main is untouched (no TUI, diverged)" "$AFTER_MAIN" "$BEFORE_MAIN"
+has "prints READY with no TUI attached (diverged)" "READY cleaned worktree=" "$OUT"
+[ -f "$LOG" ] && grep -q escalation.raised "$LOG" && bad "no escalation.raised with no TUI attached (diverged)" "escalation.raised was written" || ok "no escalation.raised with no TUI attached (diverged)"
+has "gate.warning event emitted with no TUI attached (diverged)" "gate.warning" "$LOG"
+check "gate.warning reason names no TUI attached (no TUI, diverged)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).find(e=>e.kind==="gate.warning");console.log(/no TUI attached/.test(l.reason))' "$LOG")" \
+  "true"
+rm -rf "$BASE"
+
+# --- no TUI attached: the no-TUI branch resolves fast (sub-second), not on
+# the escalation timeout — CON-138 task 4.1's wall-clock demonstration,
+# following CON-126's own precedent of measuring actual elapsed time.
+BASE="$(mktemp -d)"; new_pair "$BASE"
+advance_remote "$BASE/remote.git"
+echo "uncommitted local edit" >> "$BASE/primary/file.txt"
+WT="$BASE/TICK-11"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+START_NS=$(date +%s%N)
+run_cleanup "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-11
+RC=$?
+END_NS=$(date +%s%N)
+ELAPSED_MS=$(( (END_NS - START_NS) / 1000000 ))
+check "exits 0 with no TUI attached (timing run)" "$RC" "0"
+echo "  .... no-TUI dirty-tree path elapsed: ${ELAPSED_MS}ms" >&2
+[ "$ELAPSED_MS" -lt 5000 ] && ok "no-TUI path resolves in well under a second-scale escalation timeout (${ELAPSED_MS}ms)" \
+  || bad "no-TUI path resolves in well under a second-scale escalation timeout" "took ${ELAPSED_MS}ms"
+rm -rf "$BASE"
+
+# --- TUI attached (stubbed): the --await call is still reached — task 4.2's
+# demonstration that the TUI-attached branch is not silently short-circuited.
+# tui-attached.sh is stubbed to exit 0 (a real live-pid watch.lock, exactly
+# as simulate_tui_attached() above does) and the escalation is answered
+# `skip` as soon as it lands, so the call is confirmed reached without
+# actually depending on a live dashboard process to answer it.
+BASE="$(mktemp -d)"; new_pair "$BASE"
+advance_remote "$BASE/remote.git"
+echo "uncommitted local edit" >> "$BASE/primary/file.txt"
+WT="$BASE/TICK-12"
+LOG="$BASE/primary/.concertino/runs/TICK-12/events.jsonl"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+simulate_tui_attached "$BASE/primary"
+run_cleanup "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-12 &
+CPID=$!
+wait_for_escalation "$LOG" && ok "TUI attached: the --await call is reached" \
+  || bad "TUI attached: the --await call is reached" "escalation.raised never landed"
+write_answer "$BASE/primary" TICK-12 skip
+wait "$CPID"
+stop_tui_simulation
 rm -rf "$BASE"
 
 # ===========================================================================
@@ -585,12 +717,14 @@ squash_merge_into_main "$BASE/primary" "bug/x/TICK-1316"
 git -C "$BASE/primary" -c user.email=t@t.com -c user.name=t commit -q --allow-empty -m "local-only commit"
 LOG="$BASE/primary/.concertino/runs/TICK-1316/events.jsonl"
 OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+simulate_tui_attached "$BASE/primary"
 run_cleanup "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-1316 &
 CPID=$!
 wait_for_escalation "$LOG" && ok "diverged base + real branch deletion: escalation still raised" \
   || bad "diverged base + real branch deletion: escalation still raised" "escalation.raised never landed"
 write_answer "$BASE/primary" TICK-1316 skip
 wait "$CPID"; RC=$?
+stop_tui_simulation
 check "exits 0 (diverged base tolerated, worktree/branch still cleaned up)" "$RC" "0"
 has  "RESULT worktree=ok despite a diverged/skipped base" "worktree=ok" "$ERR"
 has  "RESULT branch_local=ok despite a diverged/skipped base" "branch_local=ok" "$ERR"
