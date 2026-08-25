@@ -524,11 +524,16 @@ run_cleanup_fakebin() {
 }
 
 fake_event() {
-  # $1 = repo, $2 = ticket, $3 = kind — appends one event line shaped exactly
-  # as emit-event.sh writes it (the fields cleanup.sh's liveness grep reads).
-  mkdir -p "$1/.concertino/runs/$2"
-  printf '{"t":1,"kind":"%s","project":"p","ticket":"%s","role":"script"}\n' "$3" "$2" \
-    >> "$1/.concertino/runs/$2/events.jsonl"
+  # $1 = repo, $2 = ticket, $3 = kind, $4 = optional "t" (epoch ms, defaults
+  # to now) — appends one event line shaped exactly as emit-event.sh writes
+  # it (the fields cleanup.sh's liveness grep/staleness check read). CON-121:
+  # defaulting to "now" (not the old hardcoded 1970 "t":1) is what keeps
+  # every pre-CON-121 liveness case passing for the reason it always did —
+  # recency — not by accident of the staleness check never having existed.
+  local repo="$1" ticket="$2" kind="$3" ts="${4:-$(($(date +%s) * 1000))}"
+  mkdir -p "$repo/.concertino/runs/$ticket"
+  printf '{"t":%s,"kind":"%s","project":"p","ticket":"%s","role":"script"}\n' "$ts" "$kind" "$ticket" \
+    >> "$repo/.concertino/runs/$ticket/events.jsonl"
 }
 
 # --- another live run present: sync skipped, fast-forward itself unaffected -
@@ -568,6 +573,103 @@ has  "sync invoked with --out= at the repo root" "sync --out=" "$BASE/sync-invoc
 hasnt "no skip note when no other run is live" "skipping \`concertino sync\`" "$ERR"
 check "this run's own run.end still lands afterwards" \
   "$(run_end_ticket "$BASE/primary/.concertino/runs/TICK-31/events.jsonl")" "TICK-31/delivered"
+rm -rf "$BASE"
+
+# ===========================================================================
+# CON-121 — other_runs_live()'s false-positive window must be bounded by a
+# staleness check on the last logged event's timestamp, not indefinite via
+# run.start-with-no-run.end alone. This is the HEL-560/HEL-395 shape: an
+# orchestrator's final turn ends on an unresolved Phase-4 escalation, run.end
+# never lands, and (pre-fix) that run is reported "live" forever.
+# ===========================================================================
+
+# --- stale run (run.start, no run.end, last event past the staleness
+# --- window): sync proceeds — this is the HEL-560 shape ---------------------
+BASE="$(mktemp -d)"; new_pair "$BASE"; new_fakebin "$BASE"
+git -C "$BASE/primary" checkout -q -b scratch
+advance_remote "$BASE/remote.git"
+STALE_TS=$(( ($(date +%s) - 7 * 3600) * 1000 ))  # 7h old > default 6h window
+fake_event "$BASE/primary" TICK-88 run.start "$STALE_TS"
+WT="$BASE/TICK-32"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup_fakebin "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-32 "$BASE/fakebin"
+check "exits 0 (stale run, sync proceeds)" "$?" "0"
+check "sync WAS invoked once the other run's last event is past the staleness window" \
+  "$([ -e "$BASE/sync-invocations.txt" ] && echo invoked || echo not-invoked)" "invoked"
+hasnt "no skip note once the other run is stale" "skipping \`concertino sync\`" "$ERR"
+rm -rf "$BASE"
+
+# --- recent run (run.start, no run.end, last event within the staleness
+# --- window): sync still skipped — the no-false-negative case --------------
+BASE="$(mktemp -d)"; new_pair "$BASE"; new_fakebin "$BASE"
+git -C "$BASE/primary" checkout -q -b scratch
+advance_remote "$BASE/remote.git"
+RECENT_TS=$(( ($(date +%s) - 5 * 3600) * 1000 ))  # 5h old < default 6h window
+fake_event "$BASE/primary" TICK-88 run.start "$RECENT_TS"
+WT="$BASE/TICK-33"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup_fakebin "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-33 "$BASE/fakebin"
+check "exits 0 (recent run, sync skipped)" "$?" "0"
+check "sync NOT invoked while the other run's last event is still within the staleness window" \
+  "$([ -e "$BASE/sync-invocations.txt" ] && echo invoked || echo not-invoked)" "not-invoked"
+has "stderr notes the skip and names the still-live run" "skipping \`concertino sync\`: run TICK-88 is still live" "$ERR"
+rm -rf "$BASE"
+
+# --- run.end present with an old t: sync still proceeds, unchanged from
+# --- today (regression guard — staleness must never override a completed
+# --- run.end into "live") ---------------------------------------------------
+BASE="$(mktemp -d)"; new_pair "$BASE"; new_fakebin "$BASE"
+git -C "$BASE/primary" checkout -q -b scratch
+advance_remote "$BASE/remote.git"
+OLD_TS=$(( ($(date +%s) - 100 * 3600) * 1000 ))  # far in the past
+fake_event "$BASE/primary" TICK-88 run.start "$OLD_TS"
+fake_event "$BASE/primary" TICK-88 run.end "$OLD_TS"
+WT="$BASE/TICK-34"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup_fakebin "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-34 "$BASE/fakebin"
+check "exits 0 (completed run with old t, sync proceeds)" "$?" "0"
+check "sync WAS invoked for a completed (run.end present) run regardless of its age" \
+  "$([ -e "$BASE/sync-invocations.txt" ] && echo invoked || echo not-invoked)" "invoked"
+hasnt "no skip note for a completed run" "skipping \`concertino sync\`" "$ERR"
+rm -rf "$BASE"
+
+# --- CONCERTINO_LIVE_RUN_STALE_HOURS override is honoured: a run just
+# --- outside a shortened custom window is treated as not-live --------------
+BASE="$(mktemp -d)"; new_pair "$BASE"; new_fakebin "$BASE"
+git -C "$BASE/primary" checkout -q -b scratch
+advance_remote "$BASE/remote.git"
+JUST_OUTSIDE_1H_TS=$(( ($(date +%s) - 90 * 60) * 1000 ))  # 1.5h old
+fake_event "$BASE/primary" TICK-88 run.start "$JUST_OUTSIDE_1H_TS"
+WT="$BASE/TICK-35"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+( cd "$BASE/primary" && PATH="$BASE/fakebin:$PATH" CONCERTINO_LIVE_RUN_STALE_HOURS=1 \
+  bash scripts/concertino/cleanup.sh --phase4 "$WT" "" "" TICK-35 ) > "$OUT" 2> "$ERR"
+check "exits 0 (custom 1h window, run just outside it, sync proceeds)" "$?" "0"
+check "CONCERTINO_LIVE_RUN_STALE_HOURS=1 treats a 1.5h-old run as not-live" \
+  "$([ -e "$BASE/sync-invocations.txt" ] && echo invoked || echo not-invoked)" "invoked"
+rm -rf "$BASE"
+
+# --- unparsable/missing t on the last line: fails closed to live -----------
+BASE="$(mktemp -d)"; new_pair "$BASE"; new_fakebin "$BASE"
+git -C "$BASE/primary" checkout -q -b scratch
+advance_remote "$BASE/remote.git"
+mkdir -p "$BASE/primary/.concertino/runs/TICK-88"
+# Every line here is missing a numeric "t" field entirely (not just the last
+# one) — a backward scan that stopped only at the first non-matching line
+# and gave up would already fail closed correctly here; the real regression
+# risk is a scan that keeps looking past a torn line and finds a stale "t"
+# further back, so this fixture must contain NO parseable "t" anywhere.
+printf '{"kind":"run.start","project":"p","ticket":"TICK-88","role":"script"}\n' \
+  >> "$BASE/primary/.concertino/runs/TICK-88/events.jsonl"
+printf '{"kind":"run.progress","project":"p","ticket":"TICK-88"\n' \
+  >> "$BASE/primary/.concertino/runs/TICK-88/events.jsonl"  # torn/unparsable trailing line, no "t"
+WT="$BASE/TICK-36"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup_fakebin "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-36 "$BASE/fakebin"
+check "exits 0 (unparsable last t, fails closed to live)" "$?" "0"
+check "sync NOT invoked when the last line's t is unparsable (fail closed to LIVE)" \
+  "$([ -e "$BASE/sync-invocations.txt" ] && echo invoked || echo not-invoked)" "not-invoked"
+has "stderr notes the skip for the unparsable-timestamp run" "skipping \`concertino sync\`: run TICK-88 is still live" "$ERR"
 rm -rf "$BASE"
 
 # ===========================================================================
