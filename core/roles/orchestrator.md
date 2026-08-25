@@ -469,6 +469,12 @@ Execute directly (no subagent).
 3. **Create the planning artifacts** (proposal/design/tasks, plus spec deltas if
    the change affects a contract), in dependency order — **`TICKET_TYPE ==
    feature` only**, per the branch in step 2 above:
+
+   **Stated CLI surface (CON-130).** The `openspec` invocations below target
+   `@fission-ai/openspec` **v1.2.0** (npm `latest` has since moved to
+   **1.10.0**). If `openspec <cmd> --help` ever disagrees with a command
+   documented here, trust `--help`, do not guess, and file a follow-up
+   ticket rather than improvising a flag.
 {{block:specArtifacts}}
 4. **Escalate if needed:** stop and present an `ESCALATION` block for new external
    dependencies, major architectural changes, breaking API changes, or scope
@@ -579,8 +585,8 @@ guessed answers the way step 3 would.
    question): extend `ticket.md`'s acceptance criteria to state that combined
    scope explicitly, then write `proposal.md`/`design.md`/`tasks.md` (and any
    spec deltas) for it via {{block:specArtifacts}} — this design ticket never
-   ran step 3 above — re-run `openspec validate --change <CHANGE_NAME>`
-   clean, then a fresh design-gate skeptic spawn to `CONFIRM` (same procedure
+   ran step 3 above — re-run `openspec validate <CHANGE_NAME> --type change`
+   until it exits zero, then a fresh design-gate skeptic spawn to `CONFIRM` (same procedure
    and `SKEPTIC_DESIGN_ROUNDS` budget as step 5 above; `REFUTE` handled
    identically). The sub-procedure's own step 1 ("make the change directory
    editable again," undoing an `openspec archive`) does not apply at this
@@ -865,8 +871,8 @@ led to the plan actually being revised.
         `proposal.md` (What Changes/Capabilities), `design.md` (if the added
         scope needs its own decisions), and `tasks.md` for the added scope —
         a real edit, not a comment recording the decision.
-     3. **Re-validate.** Re-run `openspec validate --change <CHANGE_NAME>`
-        clean.
+     3. **Re-validate.** Re-run `openspec validate <CHANGE_NAME> --type change`
+        until it exits zero.
      4. **Re-run the design gate.** Fresh skeptic spawn (cold), `GATE=design`,
         on the revised plan — same procedure as Phase 1 step 5, bounded by
         the same `SKEPTIC_DESIGN_ROUNDS` already resolved for this run.
