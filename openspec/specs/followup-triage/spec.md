@@ -98,7 +98,7 @@ cleanup runs (Phase 4 call site): (1) the current change's `ticket.md`
 what the evaluator and the final-gate skeptic trace acceptance criteria
 from), `proposal.md`, `design.md` (if the added scope needs its own
 decisions), and `tasks.md` are extended to cover the added scope;
-(2) `openspec validate --change <CHANGE_NAME>` is re-run clean; (3) a fresh
+(2) `openspec validate <CHANGE_NAME> --type change` exits zero; (3) a fresh
 design-soundness skeptic gate (`GATE=design`) is run on the revised plan and
 reaches `CONFIRM`, bounded by the same `SKEPTIC_DESIGN_ROUNDS` already
 resolved for this run. Only once all three hold does the orchestrator

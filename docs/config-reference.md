@@ -255,7 +255,7 @@ ticket-state commits to the remote manually (or grant push access and
   "changeDir": "openspec/changes/<CHANGE_NAME>",
   "scaffoldCmd": "openspec new change \"<CHANGE_NAME>\"",
   "applyCmd":   "openspec instructions apply --change \"<CHANGE_NAME>\" --json",
-  "validateCmd":"openspec validate --change \"<CHANGE_NAME>\"",
+  "validateCmd":"openspec validate \"<CHANGE_NAME>\" --type change",
   "archiveCmd": "openspec archive \"<CHANGE_NAME>\" --yes"
 }
 ```
