@@ -342,10 +342,34 @@ attempt_fast_forward
 # does NOT raise a second escalation.
 if [ "$FF_STATUS" = "dirty" ] || [ "$FF_STATUS" = "diverged" ] || [ "$FF_STATUS" = "failed" ]; then
   REASON="${FF_REASON:-fast-forward could not complete}"
-  ANSWER="$("${SCRIPT_DIR}/emit-event.sh" escalation --await \
-    ticket="$T" \
-    question="can't fast-forward local ${BASE_BRANCH} (${REASON})" \
-    options=retry,skip || true)"
+
+  # CON-138: never block on --await when no TUI can possibly answer it.
+  # `cleanup.sh` is a synchronous script with no chat channel and no
+  # resumable agent state to fall back on — unlike orchestrator.md's
+  # no-TUI branch, there is no live caller left to hand a "resolve me
+  # later" token to by the time this runs (this is the last thing Phase 4
+  # does). $SCRIPT_DIR-relative, NOT cwd-relative (see design.md Decision
+  # 1): cleanup.sh runs against an arbitrary worktree cwd, so the
+  # cwd-relative form orchestrator.md uses would fail closed here.
+  if "${SCRIPT_DIR}/tui-attached.sh"; then
+    ANSWER="$("${SCRIPT_DIR}/emit-event.sh" escalation --await \
+      ticket="$T" \
+      question="can't fast-forward local ${BASE_BRANCH} (${REASON})" \
+      options=retry,skip || true)"
+  else
+    # No TUI attached: leave local <base> exactly as found (the existing
+    # skip/timeout outcome) and make the outcome dashboard-visible via the
+    # same gate.warning family used below, rather than a silent `|| true`.
+    # Deliberately does NOT also call `--raise-only` here — see design.md
+    # Decision 3b (an unresolved escalation left open at the very end of
+    # Phase 4 would make other_runs_live() false-positive forever, per
+    # CON-121).
+    NO_TUI_NOTE="skipped fast-forward escalation: no TUI attached (${FF_STATUS}: ${REASON})"
+    echo "note: ${NO_TUI_NOTE}" >&2
+    CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" gate.warning \
+      ticket="$T" gate=phase:cleanup resolved=false "reason=${NO_TUI_NOTE}" || true
+    ANSWER=""
+  fi
 
   if [ "$ANSWER" = "retry" ]; then
     attempt_fast_forward
