@@ -215,3 +215,69 @@ traced and applied (§6), and (4) you have sent the "merged" confirmation back
 so the orchestrator can run its own Phase 4. Treating the PR-created moment as
 the finish line is the single most common way to let a real problem (an
 unresolved conflict, a missing env var) slip through unnoticed.
+
+## 10. A "waiting" completion is a stall — nudge it, never wait for it
+
+This is the single highest-frequency failure in headless driving: **seven
+occurrences across one two-session batch** (helio, 2026-08-26/27), every one
+recovered by a nudge, none self-recovering.
+
+An orchestrator ends its turn with a line like:
+
+- "Executor resumed for cycle 2. Waiting for it to complete."
+- "Waiting for the executor's response to the fix request."
+- "Waiting for CI checks to complete before squash-merging."
+- "I'll continue driving Evaluation ... as soon as it reports back."
+
+Ending a turn is not waiting. Nothing wakes a subagent when its own child
+finishes, so the run is dead until a human intervenes. Upstream this is
+CON-140 / CON-146.
+
+### The rule
+
+When a task-completion notification arrives whose result text describes
+*waiting, monitoring, or intending to continue* rather than a finished
+outcome, **treat it as a stall and nudge immediately.** Do not wait to see
+whether it resumes. It will not.
+
+Terminal results read like outcomes — "merged as `abc1234`", "verdict PASS",
+"escalating: need a decision on X". Non-terminal results read like intentions.
+
+### Why you cannot automate this away
+
+An external watchdog can *detect* a stall from `events.jsonl` (an
+`agent.spawn` with no terminal record past a timeout) but cannot *act* on
+one. A stalled orchestrator has ended its turn, so it polls nothing —
+`concertino answer` and every other file-based channel reach only an agent
+that is still running and blocked in-turn. The only things that can resume a
+stalled subagent are `SendMessage` from its parent session and a human typing.
+Both live inside a session; neither is available to an external process. That
+is why this is driver discipline rather than tooling.
+
+### The nudge that works
+
+Send, to the stalled agent:
+
+1. `RESUME — do not start over. Read workflow-state.md and continue from the
+   phase recorded there.`
+2. Quote its own yielding sentence back and name the failure explicitly, so it
+   does not re-derive the situation from scratch.
+3. Replace the rule with a *procedure*: poll inside your own turn — read
+   `events.jsonl`, check the worktree with `git log` / `git status` / the
+   change-dir artifacts; for CI use `gh pr checks <n> --watch`, which blocks
+   in-turn and is the right tool.
+4. Restate the standing constraints (models, escalation threshold, merge
+   policy). A resumed agent has lost none of its context, but restating is
+   cheap and it costs a whole cycle if one has drifted.
+5. Where you can, hand it the state you already verified — PR number, head
+   SHA, which checks are green — so it does not spend a turn re-deriving what
+   you already know.
+
+### Warning it in advance does not work
+
+Across this batch every orchestrator was given an explicit, specific warning
+about this exact failure mode in its spawn prompt — several also with concrete
+polling instructions — and stalled anyway. Prose has now failed at four
+escalating strengths (role doc ×8, a targeted doc fix, a bespoke per-run
+warning, warning plus procedure). Budget for nudging as a normal cost of
+driving; do not assume a better-worded brief removes it.
