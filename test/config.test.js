@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const { execSync } = require('child_process');
 const configLib = require('../lib/config');
+const renderLib = require('../lib/cli/render');
 
 // CON-57: lib/config.js is the shared extraction (design.md Decision 2/3)
 // both `bin/concertino` (cmdValidate/cmdUpdate) and the settings screen
@@ -831,4 +832,50 @@ test('withCostTrackingFixHint does not double the instruction when reason alread
   const msg = configLib.withCostTrackingFixHint('no .claude/settings.json found — run `concertino sync`');
   const hits = (msg.match(/concertino sync/g) || []).length;
   assert.equal(hits, 1);
+});
+
+// --- CON-148: cleanup.skipSync -------------------------------------------
+// The point of routing this through config is that the rendered
+// .concertino.env survives a re-render. These assert the two halves of that:
+// the value reaches renderEnv's output, and omitting the section changes
+// nothing at all.
+
+test('cleanup.skipSync defaults to false and is not emitted when absent', () => {
+  const c = configLib.withDefaults(baseConfig({}));
+  assert.equal(c.cleanup.skipSync, false);
+
+  const env = renderLib.renderEnv(c);
+  assert.ok(
+    !env.includes('CONCERTINO_CLEANUP_SKIP_SYNC'),
+    'a project that omits `cleanup` must get a byte-identical .concertino.env',
+  );
+});
+
+test('cleanup.skipSync true emits CONCERTINO_CLEANUP_SKIP_SYNC=1', () => {
+  const c = configLib.withDefaults(baseConfig({ cleanup: { skipSync: true } }));
+  const env = renderLib.renderEnv(c);
+  assert.ok(env.includes('CONCERTINO_CLEANUP_SKIP_SYNC=1'));
+});
+
+test('cleanup.skipSync false is treated as opt-out, not opt-in', () => {
+  // Guards against a truthiness bug: only `=== true` opts in, so an explicit
+  // `false` must be indistinguishable from omitting the key.
+  const c = configLib.withDefaults(baseConfig({ cleanup: { skipSync: false } }));
+  assert.ok(!renderLib.renderEnv(c).includes('CONCERTINO_CLEANUP_SKIP_SYNC'));
+});
+
+test('a non-boolean cleanup.skipSync fails validation naming the field and value', () => {
+  const { errors } = configLib.collectConfigIssues(
+    baseConfig({ cleanup: { skipSync: 'yes' } }),
+    { out: __dirname },
+  );
+  const hit = errors.find((e) => e.path === 'cleanup.skipSync');
+  assert.ok(hit, 'expected a cleanup.skipSync error');
+  assert.match(hit.message, /must be a boolean/);
+  assert.match(hit.message, /"yes"/);
+});
+
+test('omitting cleanup entirely produces no cleanup.skipSync diagnostic', () => {
+  const { errors } = configLib.collectConfigIssues(baseConfig({}), { out: __dirname });
+  assert.equal(errors.filter((e) => e.path === 'cleanup.skipSync').length, 0);
 });

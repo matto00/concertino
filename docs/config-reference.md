@@ -473,6 +473,34 @@ missing from `.claude/settings.json` — run `concertino sync` to add it.
 | ----- | ---- | ------- | ------- |
 | `enabled` | boolean | `false` | Wires the `report-cost.sh` hook into `.claude/settings.json` when `true`. `false` (the default) leaves `hooks` completely untouched — not even created if absent. |
 
+## `cleanup`
+
+```json
+"cleanup": { "skipSync": true }
+```
+
+Whether `cleanup.sh`'s end-of-run `concertino sync` is skipped. When `true`,
+`renderEnv` emits `CONCERTINO_CLEANUP_SKIP_SYNC=1` into `.concertino.env`,
+which `cleanup.sh` sources before reading the variable — so the setting
+survives every re-render instead of being erased by the next sync.
+
+**Set this when your project tracks `scripts/concertino/` in git.** With the
+rendered scripts tracked *and* auto-sync on, every `cleanup.sh --phase4`
+leaves uncommitted render changes in the working tree at the end of a ticket,
+and the next ticket's `git add -A` sweeps them into an unrelated PR. That
+failure is silent and crosses ticket boundaries — it corrupts a later PR, not
+the one that caused it.
+
+The trade is that renders become deliberate: you run `concertino sync` when
+you mean to, and its diff is its own reviewable commit rather than a stray
+addition to whatever ticket happened to finish last. For a project that
+gitignores the rendered scripts, leave this off — auto-sync is the right
+behavior there, since there is no working-tree diff to leak.
+
+| Field | Type | Default | Purpose |
+| ----- | ---- | ------- | ------- |
+| `skipSync` | boolean | `false` | Skips `cleanup.sh`'s automatic end-of-run `concertino sync`. Omitting `cleanup` entirely leaves `.concertino.env` byte-identical to before this key existed. |
+
 ## `providers`
 
 ```json
