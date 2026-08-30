@@ -498,6 +498,30 @@ other_runs_live() {
 # to the default of 6 hours. A project that observes legitimately longer (or
 # wants a tighter) delivery durations than this repo's own history sets this
 # env var itself, same pattern as CONCERTINO_CLEANUP_SKIP_SYNC.
+# CON-150: re-read the env file when the fast-forward moved the base.
+#
+# `.concertino.env` is sourced once at startup (line ~127), which is BEFORE
+# the fast-forward above. So on the very run whose fast-forward introduces or
+# changes an env-derived gate, the gate is evaluated against the pre-merge
+# snapshot and the new value is invisible for exactly one run.
+#
+# That is not hypothetical: helio's HEL-812 merge added
+# CONCERTINO_CLEANUP_SKIP_SYNC=1 to the rendered env, and the cleanup run for
+# that very ticket auto-synced anyway. It happened to be harmless only because
+# the render was idempotent against the just-merged tree — with any version
+# skew it would have left uncommitted changes under a newly-TRACKED
+# scripts/concertino/, which is the exact corruption that setting exists to
+# prevent, on the one run nobody would think to check.
+#
+# Re-sourcing here rather than at each gate keeps this correct for EVERY
+# env-derived gate below (CONCERTINO_LIVE_RUN_STALE_HOURS too), not just the
+# skip-sync one, and preserves the existing precedence: the file wins over the
+# process environment, exactly as the startup source already established.
+if [ "$FF_STATUS" = "updated" ] && [ -f "${SCRIPT_DIR}/.concertino.env" ]; then
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/.concertino.env"
+fi
+
 CLEANUP_SKIP_SYNC="${CONCERTINO_CLEANUP_SKIP_SYNC:-}"
 case "$CLEANUP_SKIP_SYNC" in
   1|true|TRUE|True|yes|YES) CLEANUP_SKIP_SYNC=1 ;;

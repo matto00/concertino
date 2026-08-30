@@ -891,5 +891,67 @@ check "the UNRELATED branch is untouched" \
 git -C "$OTHER_WT" worktree remove --force "$OTHER_WT" 2>/dev/null || true
 rm -rf "$BASE"
 
+
+# ===========================================================================
+# CON-150 — `.concertino.env` is sourced once at startup, BEFORE the
+# fast-forward. So on the very run whose fast-forward introduces an
+# env-derived gate, that gate was previously evaluated against the pre-merge
+# snapshot and took effect one run late.
+#
+# Real incident: helio's HEL-812 merge added CONCERTINO_CLEANUP_SKIP_SYNC=1 to
+# the rendered env, and the cleanup for that very ticket auto-synced anyway —
+# harmless only because the render happened to be idempotent. With any version
+# skew it would have left uncommitted changes under a newly-TRACKED
+# scripts/concertino/, the exact corruption the setting exists to prevent.
+# ===========================================================================
+
+advance_remote_adding_env() {
+  # Like advance_remote, but the landed commit is what INTRODUCES the env
+  # file carrying the gate — reproducing the HEL-812 shape exactly.
+  local remote="$1" line="$2" other
+  other="$(mktemp -d)"
+  git clone -q "$remote" "$other" 2>/dev/null
+  git -C "$other" checkout -q main
+  mkdir -p "$other/scripts/concertino"
+  printf '%s\n' "$line" > "$other/scripts/concertino/.concertino.env"
+  git -C "$other" add -A
+  git -C "$other" -c user.email=t@t.com -c user.name=t commit -q -m "add env gate"
+  git -C "$other" push -q origin main
+  rm -rf "$other"
+}
+
+# --- the fast-forward itself introduces the gate: it must take effect NOW ---
+BASE="$(mktemp -d)"; new_pair "$BASE"; new_fakebin "$BASE"
+# Primary stays ON main deliberately: with base checked out, cleanup.sh
+# fast-forwards via `git merge --ff-only`, which updates the WORKING TREE and
+# so actually delivers the new .concertino.env to disk. The `update-ref` path
+# taken when base is not checked out moves the ref only, leaving the file
+# unchanged — that shape cannot exercise this bug at all.
+advance_remote_adding_env "$BASE/remote.git" "CONCERTINO_CLEANUP_SKIP_SYNC=1"
+WT="$BASE/TICK-40"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup_fakebin "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-40 "$BASE/fakebin"
+check "exits 0 (gate arrived via the fast-forward)" "$?" "0"
+check "local main still fast-forwarded" \
+  "$(git -C "$BASE/primary" rev-parse refs/heads/main)" "$(git -C "$BASE/primary" rev-parse origin/main)"
+check "sync NOT invoked — the just-merged gate is honoured on this same run" \
+  "$([ -e "$BASE/sync-invocations.txt" ] && echo invoked || echo not-invoked)" "not-invoked"
+has  "stderr prints the skip note" "CONCERTINO_CLEANUP_SKIP_SYNC set" "$ERR"
+has  "prints READY" "READY cleaned worktree=" "$OUT"
+rm -rf "$BASE"
+
+# --- control: same shape, gate absent from the landed commit -> sync runs ---
+# Without this the case above could pass for the wrong reason (e.g. sync never
+# invoked at all in this fixture shape).
+BASE="$(mktemp -d)"; new_pair "$BASE"; new_fakebin "$BASE"
+advance_remote_adding_env "$BASE/remote.git" "CONCERTINO_BASE_BRANCH='main'"
+WT="$BASE/TICK-41"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup_fakebin "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-41 "$BASE/fakebin"
+check "control: sync IS invoked when the landed env carries no gate" \
+  "$([ -e "$BASE/sync-invocations.txt" ] && echo invoked || echo not-invoked)" "invoked"
+hasnt "control: no skip note" "CONCERTINO_CLEANUP_SKIP_SYNC set" "$ERR"
+rm -rf "$BASE"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
