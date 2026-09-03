@@ -138,6 +138,36 @@ run_check "$REPO" branch-3 TEST-3
 has "3.1 failed CI names the check as failed, not pending" "CI failed: build" "$ERR"
 rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
 
+# --- SKIPPED/NEUTRAL are terminal non-failures, not failed checks -----------
+# Regression guard: a workflow that deliberately no-ops on PRs it does not
+# apply to (e.g. a Dependabot-metadata job gated on the PR author) reports
+# SKIPPED on every other PR. Treating that as a failed check fails closed on
+# every such PR forever -- observed in the wild on helio, where it blocked
+# agent-merge on 100% of non-Dependabot PRs.
+REPO="$(new_repo)"
+write_events "$REPO" TEST-32 "$EVAL_PASS" "$SKEPTIC_CONFIRM"
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' '{"statusCheckRollup":[{"name":"build","conclusion":"SUCCESS"},{"name":"label-update-type","conclusion":"SKIPPED"},{"name":"advisory","conclusion":"NEUTRAL"}]}' > "$GH_MOCK_DIR/rollup.json"
+printf '%s' "$CLEAN_MERGE" > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-32 TEST-32
+check "3.2 SKIPPED/NEUTRAL alongside SUCCESS exits zero" "$RC" "0"
+check "3.3 SKIPPED/NEUTRAL alongside SUCCESS prints PASS" "$OUT" "PASS"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- ...but a real failure alongside SKIPPED is still caught ----------------
+# Guards the guard: 3.2/3.3 would also pass if the whitelist were widened to
+# accept everything, so prove the discrimination survives.
+REPO="$(new_repo)"
+write_events "$REPO" TEST-33 "$EVAL_PASS" "$SKEPTIC_CONFIRM"
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' '{"statusCheckRollup":[{"name":"label-update-type","conclusion":"SKIPPED"},{"name":"build","conclusion":"FAILURE"}]}' > "$GH_MOCK_DIR/rollup.json"
+printf '%s' "$CLEAN_MERGE" > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-33 TEST-33
+has "3.4 a real FAILURE beside a SKIPPED is still named as failed" "CI failed: build" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
 # --- an empty rollup passes the CI check ------------------------------------
 REPO="$(new_repo)"
 write_events "$REPO" TEST-4 "$EVAL_PASS" "$SKEPTIC_CONFIRM"

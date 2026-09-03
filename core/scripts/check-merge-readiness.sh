@@ -20,7 +20,12 @@ set -uo pipefail
 #      is used, and a real conflict aborts the merge and falls through to
 #      the ordinary BEHIND failure below for a human to resolve. See
 #      "Reconciliation (condition 0)" below.
-#   1. CI green      — every check reported on BRANCH's PR is SUCCESS. A
+#   1. CI green      — every check reported on BRANCH's PR is SUCCESS,
+#      SKIPPED or NEUTRAL. SKIPPED/NEUTRAL are terminal non-failures, not
+#      passes-in-waiting: a workflow that deliberately no-ops on PRs it
+#      does not apply to (e.g. a Dependabot-metadata job gated on the PR
+#      author) reports SKIPPED on every other PR, and treating that as a
+#      failed check fails closed on every such PR forever. A
 #      PENDING/QUEUED/IN_PROGRESS/missing conclusion is a DISTINCT failure
 #      from an actual failed check ("a pending check is not a pass" — the
 #      ticket is explicit these are never collapsed into one message), but
@@ -171,7 +176,7 @@ if [ "$FAILED" -eq 0 ]; then
     FAILED_NAMES="$(printf '%s' "$ROLLUP_RAW" | jq -r '
       [.statusCheckRollup[]? |
         ((.conclusion // .state // "") | ascii_upcase) as $c |
-        select($c != "" and $c != "SUCCESS" and $c != "PENDING" and $c != "QUEUED" and $c != "IN_PROGRESS" and $c != "WAITING" and $c != "EXPECTED") |
+        select($c != "" and $c != "SUCCESS" and $c != "SKIPPED" and $c != "NEUTRAL" and $c != "PENDING" and $c != "QUEUED" and $c != "IN_PROGRESS" and $c != "WAITING" and $c != "EXPECTED") |
         (.name // .context // "unnamed check")
       ] | join(", ")' 2>/dev/null)"
     if [ -n "$FAILED_NAMES" ]; then
