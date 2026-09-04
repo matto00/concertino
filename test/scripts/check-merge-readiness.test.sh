@@ -265,6 +265,52 @@ run_check "$REPO" branch-10 TEST-10
 has "10.1 non-CONFIRM skeptic verdict fails, naming the gate" "skeptic gate not confirmed" "$ERR"
 rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
 
+# --- CON-152: owner override of a budget-exhausted final gate --------------
+# HEL-971. A REFUTE resolved by the human answering `proceed-to-delivery` is a
+# legitimate resolution the gate had no representation for, so such a run was
+# permanently unmergeable by agent-merge.
+REPO="$(new_repo)"
+write_events "$REPO" TEST-20 "$EVAL_PASS" \
+  '{"t":2,"kind":"verdict","role":"skeptic","verdict":"REFUTE"}' \
+  '{"t":3,"kind":"escalation.answered","answer":"proceed-to-delivery"}'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+printf '%s' "$CLEAN_MERGE" > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-20 TEST-20
+check "20.1 an override after a REFUTE exits zero" "$RC" "0"
+check "20.2 an override after a REFUTE prints PASS" "$OUT" "PASS"
+has "20.3 the override is reported as an override, not as a CONFIRM" "cleared by owner override" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# Guards the guard, part 1: a STALE override must not clear a LATER refute.
+# Without the index comparison this passes and the gate becomes forgeable by
+# replaying an old escalation.
+REPO="$(new_repo)"
+write_events "$REPO" TEST-21 "$EVAL_PASS" \
+  '{"t":2,"kind":"escalation.answered","answer":"proceed-to-delivery"}' \
+  '{"t":3,"kind":"verdict","role":"skeptic","verdict":"REFUTE"}'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+printf '%s' "$CLEAN_MERGE" > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-21 TEST-21
+has "21.1 an override PRECEDING the latest REFUTE does not clear the gate" "skeptic gate not confirmed" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# Guards the guard, part 2: a different escalation answer must not clear it.
+REPO="$(new_repo)"
+write_events "$REPO" TEST-22 "$EVAL_PASS" \
+  '{"t":2,"kind":"verdict","role":"skeptic","verdict":"REFUTE"}' \
+  '{"t":3,"kind":"escalation.answered","answer":"extend-final-gate"}'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+printf '%s' "$CLEAN_MERGE" > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-22 TEST-22
+has "22.1 a non-proceed escalation answer does not clear the gate" "skeptic gate not confirmed" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
 # --- "latest" verdict wins even when an earlier one would have failed ------
 REPO="$(new_repo)"
 write_events "$REPO" TEST-11 \

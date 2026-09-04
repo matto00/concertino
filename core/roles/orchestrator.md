@@ -712,7 +712,23 @@ path there is no other way the verdict reaches you.
   gate re-runs the gates itself). Increment `SKEPTIC_CYCLE`. Budget: read
   `SKEPTIC_FINAL_ROUNDS` from `workflow-state.md` (the `default` speed's value
   is **{{var:budgets.skepticFinalRounds}}**, shown only as an illustrative
-  example) REFUTE rounds; if still REFUTE, escalate.
+  example) REFUTE rounds; if still REFUTE, escalate with
+  **`options=proceed-to-delivery,extend-final-gate,halt`** (CON-152).
+
+  Those three tokens are a **contract, not a suggestion**:
+  `check-merge-readiness.sh` treats an `escalation.answered` carrying exactly
+  `proceed-to-delivery`, recorded after the latest skeptic `REFUTE`, as
+  clearing the skeptic gate — which is the only way a run resolved by owner
+  override can ever pass agent-merge (CON-152). Raise this escalation with
+  any other option set and a legitimate override leaves the gate permanently
+  unsatisfiable.
+
+  **Never emit a `verdict role=skeptic` event yourself to represent an
+  override.** The gate is cleared by the human's recorded answer, not by your
+  report of it: `escalation.answered` is written only by `emit-event.sh`'s own
+  resolution path from an answer file a human wrote, so no agent can forge
+  one. A relayed authorization is not authority — an orchestrator-written
+  CONFIRM would be exactly that, and the auditor is right to refuse it.
   If the harness can't wait inline on either the executor resume or the
   skeptic re-spawn, poll for the executor's new commit / the skeptic's report
   file instead of returning control, or escalate.
@@ -1631,7 +1647,7 @@ model a role runs on move.
 | Loop                         | Bound (`workflow-state.md` field, default-speed example) | On exhaustion                          |
 | ---------------------------- | ---------------------------------------------------------- | -------------------------------------- |
 | Execution ↔ Evaluation       | `EXECUTION_CYCLES` ({{var:budgets.executionCycles}})        | escalate (evaluator emits Critical Path) |
-| Skeptic final gate           | `SKEPTIC_FINAL_ROUNDS` ({{var:budgets.skepticFinalRounds}})  | escalate with skeptic report           |
+| Skeptic final gate           | `SKEPTIC_FINAL_ROUNDS` ({{var:budgets.skepticFinalRounds}})  | escalate with skeptic report, `options=proceed-to-delivery,extend-final-gate,halt` (CON-152 — the readiness check reads these exact tokens) |
 | Skeptic design gate          | `SKEPTIC_DESIGN_ROUNDS` ({{var:budgets.skepticDesignRounds}}) | escalate (or sooner if same item survives) |
 | Executor debug (per symptom) | `DEBUG_ATTEMPTS` ({{var:budgets.debugAttempts}})             | executor escalates the symptom         |
 | Server start                 | 1 attempt (health-wait timeout)        | `BLOCKER` → human                      |
