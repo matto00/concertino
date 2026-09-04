@@ -49,8 +49,13 @@ set -uo pipefail
 #        (a) the fixed allowlist glob `<CHANGE_DIR>/**`
 #        (b) paths parsed from `<CHANGE_DIR>/files-modified.md`, extracting
 #            ONLY lines matching `^\s*[-*]\s*` followed by a backtick-quoted
-#            path (D2a) — backticks appearing elsewhere on a line are never
-#            treated as paths.
+#            path (D2a) — lines carrying no leading bullet are never scanned,
+#            so a continuation line declares nothing. On a qualifying bullet
+#            EVERY backtick-quoted, path-shaped span counts, not merely the
+#            first (D2a-ii), so a grouped bullet declares all of its paths.
+#            A span is path-shaped if it contains `/` or a dotted extension;
+#            inline code spans on a bullet are therefore never treated as
+#            paths.
 #      Any staged path outside that union is a loud stop, no commit.
 #      A missing/unparseable files-modified.md while staged files remain
 #      outside the allowlist is ALSO a loud stop, unless
@@ -130,10 +135,24 @@ FILES_MODIFIED_PATH="${WORKTREE_PATH%/}/${CHANGE_DIR_NORM}/files-modified.md"
 DECLARED_PATHS=""
 if [ -f "$FILES_MODIFIED_PATH" ]; then
   # D2a: only lines starting (after leading whitespace) with a markdown
-  # bullet immediately followed by a backtick-quoted path count. Backticks
-  # elsewhere on the line are ignored.
+  # bullet immediately followed by a backtick-quoted path qualify. Prose
+  # lines, and continuation lines carrying no bullet, are never scanned.
+  #
+  # D2a-ii (CON-151): a qualifying bullet declares EVERY backtick-quoted
+  # path on it, not just the first. The original single-capture sed
+  # (`s/...`([^`]+)`.*/\1/`) silently dropped every path after the first on
+  # a grouped bullet, so a declaration that looked complete parsed as
+  # partial and the guard refused files the author had genuinely declared.
+  # That direction is fail-closed (a loud refusal, never a silent pass), so
+  # it cost runs time rather than safety -- but the fix must not overshoot
+  # into over-declaring, which WOULD weaken the guard. Hence the path-shaped
+  # filter below: a span counts only if it contains a `/` or a dotted
+  # extension, so inline code spans on a bullet (`--allow-empty-declaration`,
+  # `Option[T]`) cannot enter the allowlist.
   DECLARED_PATHS="$(grep -E '^[[:space:]]*[-*][[:space:]]*`[^`]+`' "$FILES_MODIFIED_PATH" \
-    | sed -E 's/^[[:space:]]*[-*][[:space:]]*`([^`]+)`.*/\1/')"
+    | grep -oE '`[^`]+`' \
+    | tr -d '`' \
+    | grep -E '(/|\.[A-Za-z0-9]+$)')"
 fi
 DECLARED_COUNT=0
 if [ -n "$DECLARED_PATHS" ]; then
@@ -203,6 +222,10 @@ else
     echo "FAIL staged file set exceeds the run's declared touched-file set. Unexpected file(s):" >&2
     printf '%s' "$UNEXPECTED" | sed 's/^/  /' >&2
     echo "(allowed: ${CHANGE_DIR_NORM}/** plus paths declared in ${FILES_MODIFIED_PATH})" >&2
+    echo "Declaration format: each path must be a backtick-quoted, path-shaped span on a line" >&2
+    echo "starting with a '-' or '*' bullet. A grouped bullet may declare several paths and all" >&2
+    echo "of them count, but a continuation line carrying no bullet declares nothing -- if a file" >&2
+    echo "above looks already declared, check that its line actually starts with a bullet." >&2
     echo "Refusing to commit. Investigate before re-running." >&2
     exit 1
   fi

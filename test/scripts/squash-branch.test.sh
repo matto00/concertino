@@ -19,8 +19,18 @@ PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; echo "       $2"; }
 
+# CON-151: restore from a snapshot taken NOW, not from git HEAD. The former
+# `git checkout -- core/scripts/squash-branch.sh` did not restore this test's
+# own mutation -- it discarded ANY uncommitted change to that file, so merely
+# running this suite silently reverted a legitimate in-progress edit to the
+# script, with no error and no diff to notice. Snapshotting the live file
+# restores exactly what was there, whether or not it matches HEAD.
+PRISTINE_SCRIPT="$(mktemp)"
+cp "$ROOT/core/scripts/squash-branch.sh" "$PRISTINE_SCRIPT"
 restore_script() {
-  git -C "$ROOT" checkout -q -- "core/scripts/squash-branch.sh" 2>/dev/null || true
+  cp "$PRISTINE_SCRIPT" "$ROOT/core/scripts/squash-branch.sh" 2>/dev/null || true
+  rm -f "$PRISTINE_SCRIPT" "$ROOT/core/scripts/squash-branch.sh".bak.* \
+        "$ROOT/core/scripts/squash-branch.sh".bak2.* 2>/dev/null || true
 }
 # Belt-and-braces: whatever else happens, the real script must never be left
 # mutated when this test process exits.
@@ -391,6 +401,67 @@ make_branch4 "$BRANCH4B"
 OUT4B="$("$SCRIPT" "$BRANCH4B" origin main "CON-129 unparseable, with opt-in" "$CHANGE_DIR4" --allow-empty-declaration 2>&1)"
 RC4B=$?
 if [ "$RC4B" -eq 0 ]; then ok "3.7 --allow-empty-declaration opts in and succeeds"; else bad "3.7 --allow-empty-declaration opts in and succeeds" "exit=$RC4B output=$OUT4B"; fi
+
+# ---------------------------------------------------------------------
+# Scenario 5 (CON-151): a grouped bullet declares EVERY path on it, and the
+# widened parse does not overshoot into over-declaring.
+# ---------------------------------------------------------------------
+echo "Scenario 5: grouped-bullet declarations (CON-151)"
+
+BASE5="$(mktemp -d)"
+REMOTE5="$BASE5/remote.git"
+git init -q --bare "$REMOTE5"
+git clone -q "$REMOTE5" "$BASE5/primary" 2>/dev/null
+echo "root" > "$BASE5/primary/root.txt"
+commit_all "$BASE5/primary" "init"
+git -C "$BASE5/primary" branch -M main
+git -C "$BASE5/primary" push -q origin main
+CHANGE_DIR5="spec/changes/con-151-demo"
+
+# 5a: three paths on ONE bullet, plus a continuation line. Before the fix the
+# parse kept only alpha.txt, so beta/gamma tripped the guard as "undeclared".
+BRANCH5A="$BASE5/branch-a"
+git clone -q "$REMOTE5" "$BRANCH5A" 2>/dev/null
+git -C "$BRANCH5A" checkout -q -b feature/con-151/CON-151-a origin/main
+mkdir -p "$BRANCH5A/$CHANGE_DIR5"
+cat > "$BRANCH5A/$CHANGE_DIR5/files-modified.md" <<'EOF'
+- `alpha.txt`, `beta.txt` and `gamma.txt` — all three rewritten together
+EOF
+for f in alpha beta gamma; do echo "$f" > "$BRANCH5A/$f.txt"; done
+commit_all "$BRANCH5A" "executor commit (grouped bullet)"
+OUT5A="$("$SCRIPT" "$BRANCH5A" origin main "CON-151 grouped bullet" "$CHANGE_DIR5" 2>&1)"
+RC5A=$?
+if [ "$RC5A" -eq 0 ]; then
+  ok "CON-151 every path on a grouped bullet is declared"
+else
+  bad "CON-151 every path on a grouped bullet is declared" "exit=$RC5A output=$OUT5A"
+fi
+
+# 5b: guards the guard. A genuinely undeclared stray must STILL trip, and an
+# inline code span on a bullet (`--allow-empty-declaration`) must not become a
+# declaration. Over-declaring is the one direction that would weaken D2a.
+BRANCH5B="$BASE5/branch-b"
+git clone -q "$REMOTE5" "$BRANCH5B" 2>/dev/null
+git -C "$BRANCH5B" checkout -q -b feature/con-151/CON-151-b origin/main
+mkdir -p "$BRANCH5B/$CHANGE_DIR5"
+cat > "$BRANCH5B/$CHANGE_DIR5/files-modified.md" <<'EOF'
+- `alpha.txt`, `beta.txt` — declared pair; pass `--allow-empty-declaration` to skip
+  `sneaky.txt` — continuation line, carries no bullet, declares nothing
+EOF
+for f in alpha beta sneaky; do echo "$f" > "$BRANCH5B/$f.txt"; done
+commit_all "$BRANCH5B" "executor commit (undeclared continuation-line file)"
+OUT5B="$("$SCRIPT" "$BRANCH5B" origin main "CON-151 no overshoot" "$CHANGE_DIR5" 2>&1)"
+RC5B=$?
+if [ "$RC5B" -ne 0 ] && echo "$OUT5B" | grep -qF "sneaky.txt"; then
+  ok "CON-151 a continuation-line path is still undeclared and still trips the guard"
+else
+  bad "CON-151 a continuation-line path is still undeclared and still trips the guard" "exit=$RC5B output=$OUT5B"
+fi
+if echo "$OUT5B" | grep -q "continuation line carrying no bullet declares nothing"; then
+  ok "CON-151 refusal explains the bullet/continuation format rule"
+else
+  bad "CON-151 refusal explains the bullet/continuation format rule" "output: $OUT5B"
+fi
 
 # ---------------------------------------------------------------------
 echo ""
