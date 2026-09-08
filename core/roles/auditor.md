@@ -71,12 +71,29 @@ verdict `PASS`, latest `role=skeptic` verdict `CONFIRM`, read from the event
 log). It prints `PASS` and exits 0 only when all three hold; otherwise it
 prints one `FAIL <reason>` line per failed check to stderr.
 
-- **CI still running is not itself an escalation.** The script polls a
-  pending/in-progress check for up to `CONCERTINO_CI_WAIT_TIMEOUT_SEC`
-  (default 7 minutes) before giving up — the common case ("just check again
-  in a bit") is now handled without your involvement. Only a check that is
-  still pending after that window, or one that actually failed, produces a
-  `FAIL`.
+- **CI still running is not itself an escalation, and is no longer a `FAIL`
+  either.** The script polls a pending/in-progress check for up to
+  `CONCERTINO_CI_WAIT_TIMEOUT_SEC` (default 9 minutes). If checks are *still
+  running* when that expires, it prints one `PENDING <names>` line and exits
+  **3** — a distinct, resumable outcome. Only a check that actually **failed**
+  produces a `FAIL`.
+- **On `PENDING` (exit 3): re-invoke the script. Do not escalate, and do not
+  merge.** The run is not finished; you have no verdict to give yet. Re-invoke
+  up to **3 times total** (≈27 minutes of waiting). Only if it is *still*
+  `PENDING` after the third invocation do you escalate — and then the reason
+  is "CI has not completed after ~27 minutes", which is a genuine anomaly
+  worth a human, not the ordinary case of a slow job.
+  - The window deliberately sits under your 10-minute tool timeout rather
+    than above the slowest job. A repo whose required checks outrun 9 minutes
+    (a Scala or heavy-integration `backend` job easily does) is **expected**
+    to return `PENDING` once or twice on a normal, healthy PR. Treating that
+    as a finding is the CON-159 defect: it escalated every single PR to a
+    human for a run that was merely not done yet.
+  - Conditions 2–3 are **skipped** on a `PENDING` return, by design — a
+    mergeability reading taken while CI is still moving has a shelf life, and
+    reporting it next to a "come back later" would invite acting on it. So a
+    `PENDING` result tells you nothing about conditions 2–3, and you must not
+    infer anything about them from its absence.
 - **A `BEHIND` branch is not itself an escalation either.** Before checking
   CI/mergeability at all, the script merges the PR's base into `BRANCH` once
   (fetch + `git merge` + push — never a rebase or force-push, so your
