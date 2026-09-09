@@ -37,6 +37,20 @@ set -uo pipefail
 #                     files outside the change-dir allowlist remain. Without
 #                     it, that case is a loud stop, not a silent pass.
 #
+# Environment:
+#   DRY_RUN=1         (CON-164) run every validation the normal path runs --
+#                     merge-base computation, base-advancement logging,
+#                     staged-file-set computation, the CON-162 staged-blob /
+#                     on-disk / divergence checks, declaration parsing, and
+#                     the allowlist comparison -- and return the same exit
+#                     code the same invocation would have produced without
+#                     the flag, for every guard verdict. Performs no `git
+#                     reset`, no `git commit`, no HEAD movement, no index
+#                     change. Exact string match against "1"; any other
+#                     value (including "true") takes the normal, committing
+#                     path. Matches helio's scripts/release/cut-release.sh
+#                     convention.
+#
 # Guard (design.md D2/D2a/D2b):
 #   1. Reset target is ALWAYS `git merge-base --all HEAD <base-remote>/<base-
 #      branch>` (D1) — never the base ref's tip directly. More than one
@@ -76,6 +90,10 @@ CHANGE_DIR="${5:?usage: squash-branch.sh <WORKTREE_PATH> <BASE_REMOTE> <BASE_BRA
 ALLOW_EMPTY_DECLARATION=0
 if [ "${6:-}" = "--allow-empty-declaration" ]; then
   ALLOW_EMPTY_DECLARATION=1
+fi
+DRY_RUN_MODE=0
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  DRY_RUN_MODE=1
 fi
 
 if [ ! -d "$WORKTREE_PATH" ]; then
@@ -281,6 +299,11 @@ fi
 
 # --- Guard passed: reset against the merge-base, never the base ref's live
 # tip, then create the squash commit ---
+if [ "$DRY_RUN_MODE" = "1" ]; then
+  echo "READY dry run: guard passed, nothing committed (DRY_RUN=1)"
+  exit 0
+fi
+
 if ! git_wt reset --soft "$MERGE_BASE" >/dev/null 2>&1; then
   echo "FAIL git reset --soft ${MERGE_BASE} failed" >&2
   exit 1
