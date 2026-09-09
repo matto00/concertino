@@ -1,21 +1,4 @@
-# delivery-squash-guard Specification
-
-## Purpose
-Canonical procedure for squashing a delivery branch that always resets against the branch's true merge-base (never the base ref's live tip), guards the staged file set against the run's declared scope, and always surfaces the staged file count and list before committing.
-
-## Requirements
-
-### Requirement: Squash resets against the branch's true merge-base
-The delivery squash step SHALL reset the branch against
-`git merge-base HEAD <base-ref>` rather than against `<base-ref>`'s current
-tip, so commits landed on the base after the branch diverged are never staged
-as reverts.
-
-#### Scenario: Base advanced with an unrelated merge during Execution
-- **WHEN** a sibling change merges to the base ref while this branch is still
-  in its Execution/Evaluation loop, and the branch later reaches Delivery
-- **THEN** squashing resets against the merge-base computed at squash time,
-  and the sibling change's files are not staged for deletion or modification
+## MODIFIED Requirements
 
 ### Requirement: Staged file set is guarded against the run's declared touched-file set
 The squash step SHALL compare the file set that the merge-base reset *would*
@@ -64,17 +47,7 @@ regardless of whether the guard trips.
 - **THEN** the staged file count and list were already printed to output
   before that reset and commit
 
-### Requirement: Base advancement is logged explicitly
-The squash step SHALL detect and log when the base ref's tip differs from the
-computed merge-base (i.e. the base advanced since the branch point), without
-requiring a rebase before squashing.
-
-#### Scenario: Base ref tip differs from merge-base
-- **WHEN** `<base-ref>`'s current tip is not identical to
-  `git merge-base HEAD <base-ref>`
-- **THEN** the script logs that the base advanced and how many commits
-  separate the merge-base from the base ref's tip, then proceeds using D1's
-  merge-base reset
+## ADDED Requirements
 
 ### Requirement: A refusal leaves the branch exactly as it found it
 The squash step SHALL NOT move HEAD, alter the index, or alter the working

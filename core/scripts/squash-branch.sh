@@ -44,8 +44,9 @@ set -uo pipefail
 #   2. Base-advancement is logged (commits between merge-base and base tip)
 #      but never blocks or forces a rebase (D3) — D1 already makes the reset
 #      safe regardless of how far the base advanced.
-#   3. After `git reset --soft <merge-base>`, the staged file set
-#      (`git diff --cached --name-only`) is compared against the union of:
+#   3. Before HEAD ever moves, the prospective staged file set
+#      (`git diff --cached --name-only <merge-base>`) is compared against the
+#      union of:
 #        (a) the fixed allowlist glob `<CHANGE_DIR>/**`
 #        (b) paths parsed from `<CHANGE_DIR>/files-modified.md`, extracting
 #            ONLY lines matching `^\s*[-*]\s*` followed by a backtick-quoted
@@ -114,14 +115,9 @@ else
   echo "INFO base ${BASE_REF} has not advanced past the merge-base."
 fi
 
-# --- D1: reset against the merge-base, never the base ref's live tip ---
-if ! git_wt reset --soft "$MERGE_BASE" >/dev/null 2>&1; then
-  echo "FAIL git reset --soft ${MERGE_BASE} failed" >&2
-  exit 1
-fi
-
-# --- Staged file set ---
-STAGED_FILES="$(git_wt diff --cached --name-only)"
+# --- Staged file set (prospective: computed against the merge-base without
+# moving HEAD, so a refusal never leaves the branch reset) ---
+STAGED_FILES="$(git_wt diff --cached --name-only "$MERGE_BASE")"
 STAGED_COUNT=0
 if [ -n "$STAGED_FILES" ]; then
   STAGED_COUNT="$(printf '%s\n' "$STAGED_FILES" | grep -c .)"
@@ -231,7 +227,13 @@ else
   fi
 fi
 
-# --- Guard passed: create the squash commit ---
+# --- Guard passed: reset against the merge-base, never the base ref's live
+# tip, then create the squash commit ---
+if ! git_wt reset --soft "$MERGE_BASE" >/dev/null 2>&1; then
+  echo "FAIL git reset --soft ${MERGE_BASE} failed" >&2
+  exit 1
+fi
+
 if ! git_wt commit -q -m "$SUBJECT" >/dev/null 2>&1; then
   echo "FAIL git commit failed after guard passed" >&2
   exit 1
