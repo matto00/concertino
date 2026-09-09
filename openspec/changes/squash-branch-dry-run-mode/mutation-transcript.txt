@@ -1,0 +1,32 @@
+CON-164 dry-run mutation-failability transcript
+=================================================
+
+Mutated run (dry-run early return deleted from squash-branch.sh):
+  HEAD before: c1c036b3e0d142a00c74ca9d39391771d118e635
+  HEAD after:  a49233f315de894d33553b4b09db43fa8f2dec02
+  exit code:   0
+  HEAD moved:  yes
+
+  --- output ---
+INFO base origin/main has not advanced past the merge-base.
+Staged file count: 2
+Staged files:
+  openspec/changes/con-164-dry-run-demo/files-modified.md
+  own-file-d.txt
+READY squash commit created on feature/con-164/CON-164-d
+  --------------
+
+Restored run (pristine squash-branch.sh, same DRY_RUN=1 invocation shape):
+  HEAD before: 294f36f287dbed82039f3093e9bdb841f697d5d7
+  HEAD after:  294f36f287dbed82039f3093e9bdb841f697d5d7
+  exit code:   0
+  HEAD moved:  no
+
+  --- output ---
+INFO base origin/main has not advanced past the merge-base.
+Staged file count: 2
+Staged files:
+  openspec/changes/con-164-dry-run-demo/files-modified.md
+  own-file-d2.txt
+READY dry run: guard passed, nothing committed (DRY_RUN=1)
+  --------------

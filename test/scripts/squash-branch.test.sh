@@ -30,7 +30,8 @@ cp "$ROOT/core/scripts/squash-branch.sh" "$PRISTINE_SCRIPT"
 restore_script() {
   cp "$PRISTINE_SCRIPT" "$ROOT/core/scripts/squash-branch.sh" 2>/dev/null || true
   rm -f "$PRISTINE_SCRIPT" "$ROOT/core/scripts/squash-branch.sh".bak.* \
-        "$ROOT/core/scripts/squash-branch.sh".bak2.* 2>/dev/null || true
+        "$ROOT/core/scripts/squash-branch.sh".bak2.* \
+        "$ROOT/core/scripts/squash-branch.sh".bak3.* 2>/dev/null || true
 }
 # Belt-and-braces: whatever else happens, the real script must never be left
 # mutated when this test process exits.
@@ -789,6 +790,291 @@ if [ "$RC6H" -eq 0 ]; then
 else
   bad "4.5 ordinary consistent-declaration run still commits" "exit=$RC6H output=$OUT6H"
 fi
+
+# ---------------------------------------------------------------------
+# Scenario 7 (CON-164, tasks 2.1-2.6, 3.1-3.3): DRY_RUN=1 must run the full
+# guard and report the same verdict without ever mutating the branch.
+# ---------------------------------------------------------------------
+echo "Scenario 7: DRY_RUN=1 consults the guard without committing"
+
+BASE7="$(mktemp -d)"
+REMOTE7="$BASE7/remote.git"
+
+git init -q --bare "$REMOTE7"
+git clone -q "$REMOTE7" "$BASE7/primary" 2>/dev/null
+echo "root" > "$BASE7/primary/root.txt"
+commit_all "$BASE7/primary" "init"
+git -C "$BASE7/primary" branch -M main
+git -C "$BASE7/primary" push -q origin main
+
+CHANGE_DIR7="openspec/changes/con-164-dry-run-demo"
+
+# --- 7a (task 2.1-2.3): passing fixture -- guard would pass. Prove
+# DRY_RUN=1 exits 0, prints the dry-run marker, and mutates nothing. ---
+BRANCH7A="$BASE7/branch-a"
+git clone -q "$REMOTE7" "$BRANCH7A" 2>/dev/null
+git -C "$BRANCH7A" checkout -q -b feature/con-164/CON-164-a origin/main
+mkdir -p "$BRANCH7A/$CHANGE_DIR7"
+cat > "$BRANCH7A/$CHANGE_DIR7/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work
+EOF
+echo "own work" > "$BRANCH7A/own-file.txt"
+commit_all "$BRANCH7A" "executor commit (declaration + own file, consistent)"
+
+HEAD_BEFORE7A="$(git -C "$BRANCH7A" rev-parse HEAD)"
+TREE_BEFORE7A="$(git -C "$BRANCH7A" write-tree)"
+STATUS_BEFORE7A="$(git -C "$BRANCH7A" status --porcelain)"
+COUNT_BEFORE7A="$(git -C "$BRANCH7A" rev-list --count HEAD)"
+
+OUT7A="$(DRY_RUN=1 "$SCRIPT" "$BRANCH7A" origin main "CON-164 dry run passing" "$CHANGE_DIR7" 2>&1)"
+RC7A=$?
+
+HEAD_AFTER7A="$(git -C "$BRANCH7A" rev-parse HEAD)"
+TREE_AFTER7A="$(git -C "$BRANCH7A" write-tree)"
+STATUS_AFTER7A="$(git -C "$BRANCH7A" status --porcelain)"
+COUNT_AFTER7A="$(git -C "$BRANCH7A" rev-list --count HEAD)"
+
+if [ "$RC7A" -eq 0 ]; then
+  ok "2.3 DRY_RUN=1 on a passing fixture exits 0"
+else
+  bad "2.3 DRY_RUN=1 on a passing fixture exits 0" "exit=$RC7A output=$OUT7A"
+fi
+if [ "$HEAD_BEFORE7A" = "$HEAD_AFTER7A" ]; then
+  ok "2.3 DRY_RUN=1 does not move HEAD"
+else
+  bad "2.3 DRY_RUN=1 does not move HEAD" "before=$HEAD_BEFORE7A after=$HEAD_AFTER7A"
+fi
+if [ "$TREE_BEFORE7A" = "$TREE_AFTER7A" ]; then
+  ok "2.3 DRY_RUN=1 leaves the staged tree hash unchanged"
+else
+  bad "2.3 DRY_RUN=1 leaves the staged tree hash unchanged" "before=$TREE_BEFORE7A after=$TREE_AFTER7A"
+fi
+if [ "$STATUS_BEFORE7A" = "$STATUS_AFTER7A" ]; then
+  ok "2.3 DRY_RUN=1 leaves git status --porcelain unchanged"
+else
+  bad "2.3 DRY_RUN=1 leaves git status --porcelain unchanged" "before=[$STATUS_BEFORE7A] after=[$STATUS_AFTER7A]"
+fi
+if [ "$COUNT_BEFORE7A" = "$COUNT_AFTER7A" ]; then
+  ok "2.3 DRY_RUN=1 creates no squash commit (commit count unchanged)"
+else
+  bad "2.3 DRY_RUN=1 creates no squash commit (commit count unchanged)" "before=$COUNT_BEFORE7A after=$COUNT_AFTER7A"
+fi
+if echo "$OUT7A" | grep -qF "READY dry run: guard passed, nothing committed (DRY_RUN=1)"; then
+  ok "2.3 DRY_RUN=1 output contains the dry-run marker"
+else
+  bad "2.3 DRY_RUN=1 output contains the dry-run marker" "output: $OUT7A"
+fi
+if echo "$OUT7A" | grep -qF "squash commit created"; then
+  bad "2.3 DRY_RUN=1 output does not contain the wet 'squash commit created' wording" "output: $OUT7A"
+else
+  ok "2.3 DRY_RUN=1 output does not contain the wet 'squash commit created' wording"
+fi
+
+# --- 7b (task 2.4): refusal-path identity -- same fixture, run once with
+# DRY_RUN=1 and once without; same exit code, same refusal diagnostic. Not
+# cited as evidence dry-run mode exists (task 2.6): it passes vacuously
+# against a script that ignores DRY_RUN entirely. 2.3 above is load-bearing.
+# ---------------------------------------------------------------------
+BRANCH7B_WET="$BASE7/branch-b-wet"
+git clone -q "$REMOTE7" "$BRANCH7B_WET" 2>/dev/null
+git -C "$BRANCH7B_WET" checkout -q -b feature/con-164/CON-164-b-wet origin/main
+mkdir -p "$BRANCH7B_WET/$CHANGE_DIR7"
+cat > "$BRANCH7B_WET/$CHANGE_DIR7/files-modified.md" <<'EOF'
+- `declared-file.txt` — the only file this run declares
+EOF
+echo "declared" > "$BRANCH7B_WET/declared-file.txt"
+echo "stray" > "$BRANCH7B_WET/stray-unrelated-file.txt"
+commit_all "$BRANCH7B_WET" "executor commit (with an undeclared stray file)"
+OUT7B_WET="$("$SCRIPT" "$BRANCH7B_WET" origin main "CON-164 refusal wet" "$CHANGE_DIR7" 2>&1)"
+RC7B_WET=$?
+
+BRANCH7B_DRY="$BASE7/branch-b-dry"
+git clone -q "$REMOTE7" "$BRANCH7B_DRY" 2>/dev/null
+git -C "$BRANCH7B_DRY" checkout -q -b feature/con-164/CON-164-b-dry origin/main
+mkdir -p "$BRANCH7B_DRY/$CHANGE_DIR7"
+cat > "$BRANCH7B_DRY/$CHANGE_DIR7/files-modified.md" <<'EOF'
+- `declared-file.txt` — the only file this run declares
+EOF
+echo "declared" > "$BRANCH7B_DRY/declared-file.txt"
+echo "stray" > "$BRANCH7B_DRY/stray-unrelated-file.txt"
+commit_all "$BRANCH7B_DRY" "executor commit (with an undeclared stray file)"
+OUT7B_DRY="$(DRY_RUN=1 "$SCRIPT" "$BRANCH7B_DRY" origin main "CON-164 refusal dry" "$CHANGE_DIR7" 2>&1)"
+RC7B_DRY=$?
+
+if [ "$RC7B_WET" -eq "$RC7B_DRY" ] && [ "$RC7B_DRY" -ne 0 ]; then
+  ok "2.4 DRY_RUN=1 refusal exit code matches the wet refusal exit code"
+else
+  bad "2.4 DRY_RUN=1 refusal exit code matches the wet refusal exit code" "wet=$RC7B_WET dry=$RC7B_DRY"
+fi
+if [ "$OUT7B_WET" = "$OUT7B_DRY" ]; then
+  ok "2.4 DRY_RUN=1 refusal diagnostic is byte-identical to the wet refusal diagnostic"
+else
+  bad "2.4 DRY_RUN=1 refusal diagnostic is byte-identical to the wet refusal diagnostic" "wet=[$OUT7B_WET] dry=[$OUT7B_DRY]"
+fi
+
+# --- 7c (task 2.5): exact-match semantics -- DRY_RUN=true must take the wet
+# path and commit, proving no looser truthiness test was adopted. Uses its
+# own fresh fixture so this commit does not make 7a's assertions
+# order-dependent. ---
+BRANCH7C="$BASE7/branch-c"
+git clone -q "$REMOTE7" "$BRANCH7C" 2>/dev/null
+git -C "$BRANCH7C" checkout -q -b feature/con-164/CON-164-c origin/main
+mkdir -p "$BRANCH7C/$CHANGE_DIR7"
+cat > "$BRANCH7C/$CHANGE_DIR7/files-modified.md" <<'EOF'
+- `own-file-c.txt` — feature work
+EOF
+echo "own work" > "$BRANCH7C/own-file-c.txt"
+commit_all "$BRANCH7C" "executor commit (declaration + own file, consistent)"
+
+HEAD_BEFORE7C="$(git -C "$BRANCH7C" rev-parse HEAD)"
+OUT7C="$(DRY_RUN=true "$SCRIPT" "$BRANCH7C" origin main "CON-164 truthy DRY_RUN" "$CHANGE_DIR7" 2>&1)"
+RC7C=$?
+HEAD_AFTER7C="$(git -C "$BRANCH7C" rev-parse HEAD)"
+
+if [ "$RC7C" -eq 0 ] && [ "$HEAD_BEFORE7C" != "$HEAD_AFTER7C" ]; then
+  ok "2.5 DRY_RUN=true (not exact-match '1') takes the wet path and commits"
+else
+  bad "2.5 DRY_RUN=true (not exact-match '1') takes the wet path and commits" "exit=$RC7C before=$HEAD_BEFORE7C after=$HEAD_AFTER7C output=$OUT7C"
+fi
+if echo "$OUT7C" | grep -qF "squash commit created"; then
+  ok "2.5 DRY_RUN=true output is the wet success message"
+else
+  bad "2.5 DRY_RUN=true output is the wet success message" "output: $OUT7C"
+fi
+
+# --- 7d (tasks 3.1-3.2, D4a): failability proof -- mutate the real script to
+# delete the dry-run early return, re-run the 2.3 passing fixture with
+# DRY_RUN=1, and assert HEAD moved. Assert the mutation actually changed the
+# file (task 3.1a) before trusting the result. Reuses the file's existing
+# snapshot-and-trap machinery (PRISTINE_SCRIPT / restore_script / trap). ---
+BRANCH7D="$BASE7/branch-d"
+git clone -q "$REMOTE7" "$BRANCH7D" 2>/dev/null
+git -C "$BRANCH7D" checkout -q -b feature/con-164/CON-164-d origin/main
+mkdir -p "$BRANCH7D/$CHANGE_DIR7"
+cat > "$BRANCH7D/$CHANGE_DIR7/files-modified.md" <<'EOF'
+- `own-file-d.txt` — feature work
+EOF
+echo "own work" > "$BRANCH7D/own-file-d.txt"
+commit_all "$BRANCH7D" "executor commit (declaration + own file, consistent)"
+
+cp "$SCRIPT" "$SCRIPT.bak3.$$"
+BEFORE_MUTATE_HASH="$(sha256sum "$SCRIPT" | cut -d' ' -f1)"
+# Delete the dry-run early-return block: the marker line, its exit 0, and the
+# guarding `if` block. Anchored on the marker string per task 3.1a.
+python3 - "$SCRIPT" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    lines = f.readlines()
+marker_idx = None
+for i, line in enumerate(lines):
+    if "READY dry run:" in line:
+        marker_idx = i
+        break
+assert marker_idx is not None, "dry-run marker line not found"
+# The block is: if [ "$DRY_RUN_MODE" = "1" ]; then / echo marker / exit 0 / fi
+start = marker_idx - 1
+assert lines[start].strip().startswith("if"), lines[start]
+end = marker_idx + 2
+assert lines[end].strip() == "fi", lines[end]
+del lines[start:end + 1]
+with open(path, "w") as f:
+    f.writelines(lines)
+PYEOF
+chmod +x "$SCRIPT"
+AFTER_MUTATE_HASH="$(sha256sum "$SCRIPT" | cut -d' ' -f1)"
+
+if [ "$BEFORE_MUTATE_HASH" != "$AFTER_MUTATE_HASH" ]; then
+  ok "3.1a mutation actually changed the script file (hash before != after)"
+else
+  bad "3.1a mutation actually changed the script file (hash before != after)" "hash unchanged: $BEFORE_MUTATE_HASH"
+fi
+
+HEAD_BEFORE7D="$(git -C "$BRANCH7D" rev-parse HEAD)"
+OUT7D_MUTATED="$(DRY_RUN=1 "$SCRIPT" "$BRANCH7D" origin main "CON-164 mutated should still commit" "$CHANGE_DIR7" 2>&1)"
+RC7D_MUTATED=$?
+HEAD_AFTER7D_MUTATED="$(git -C "$BRANCH7D" rev-parse HEAD)"
+
+if [ "$RC7D_MUTATED" -eq 0 ] && [ "$HEAD_BEFORE7D" != "$HEAD_AFTER7D_MUTATED" ]; then
+  ok "3.1 mutation-guarded no-mutation proof is failable: deleting the dry-run early return makes DRY_RUN=1 commit anyway (HEAD moved: before=$HEAD_BEFORE7D after=$HEAD_AFTER7D_MUTATED)"
+else
+  bad "3.1 mutation-guarded no-mutation proof is failable: deleting the dry-run early return makes DRY_RUN=1 commit anyway" "expected exit 0 with HEAD moved; got exit=$RC7D_MUTATED before=$HEAD_BEFORE7D after=$HEAD_AFTER7D_MUTATED output=$OUT7D_MUTATED"
+fi
+
+# Restore, then prove the restored real script does NOT move HEAD on the
+# same fixture (task 3.2/3.3 transcript: mutated-moved vs restored-unchanged).
+mv "$SCRIPT.bak3.$$" "$SCRIPT"
+chmod +x "$SCRIPT"
+
+BRANCH7D2="$BASE7/branch-d2"
+git clone -q "$REMOTE7" "$BRANCH7D2" 2>/dev/null
+git -C "$BRANCH7D2" checkout -q -b feature/con-164/CON-164-d2 origin/main
+mkdir -p "$BRANCH7D2/$CHANGE_DIR7"
+cat > "$BRANCH7D2/$CHANGE_DIR7/files-modified.md" <<'EOF'
+- `own-file-d2.txt` — feature work
+EOF
+echo "own work" > "$BRANCH7D2/own-file-d2.txt"
+commit_all "$BRANCH7D2" "executor commit (declaration + own file, consistent)"
+
+HEAD_BEFORE7D2="$(git -C "$BRANCH7D2" rev-parse HEAD)"
+OUT7D_RESTORED="$(DRY_RUN=1 "$SCRIPT" "$BRANCH7D2" origin main "CON-164 restored should not commit" "$CHANGE_DIR7" 2>&1)"
+RC7D_RESTORED=$?
+HEAD_AFTER7D2="$(git -C "$BRANCH7D2" rev-parse HEAD)"
+
+if [ "$RC7D_RESTORED" -eq 0 ] && [ "$HEAD_BEFORE7D2" = "$HEAD_AFTER7D2" ]; then
+  ok "3.2 restored real script leaves HEAD unchanged under DRY_RUN=1 after trap-restore"
+else
+  bad "3.2 restored real script leaves HEAD unchanged under DRY_RUN=1 after trap-restore" "exit=$RC7D_RESTORED before=$HEAD_BEFORE7D2 after=$HEAD_AFTER7D2 output=$OUT7D_RESTORED"
+fi
+
+# Task 3.3: the mutation transcript is committed, static evidence in the
+# change directory (openspec/changes/squash-branch-dry-run-mode/mutation-
+# transcript.txt) -- it is NOT regenerated on every ordinary test run. This
+# suite is permanent; the change directory is not (it disappears once the
+# change is archived), so writing into it unconditionally would dirty a
+# tracked file on every `npm test` and, post-archive, would target a
+# directory that no longer exists. Always compute the transcript to a
+# throwaway temp file; only copy it into the change directory when a caller
+# explicitly opts in via CON164_RECORD_TRANSCRIPT=1 (to deliberately
+# regenerate the committed evidence), and even then, report -- rather than
+# silently swallow via a failed redirect -- the case where the change
+# directory is gone.
+CON164_TRANSCRIPT_TMP="$(mktemp)"
+{
+  echo "CON-164 dry-run mutation-failability transcript"
+  echo "================================================="
+  echo
+  echo "Mutated run (dry-run early return deleted from squash-branch.sh):"
+  echo "  HEAD before: $HEAD_BEFORE7D"
+  echo "  HEAD after:  $HEAD_AFTER7D_MUTATED"
+  echo "  exit code:   $RC7D_MUTATED"
+  echo "  HEAD moved:  $([ "$HEAD_BEFORE7D" != "$HEAD_AFTER7D_MUTATED" ] && echo yes || echo no)"
+  echo
+  echo "  --- output ---"
+  echo "$OUT7D_MUTATED"
+  echo "  --------------"
+  echo
+  echo "Restored run (pristine squash-branch.sh, same DRY_RUN=1 invocation shape):"
+  echo "  HEAD before: $HEAD_BEFORE7D2"
+  echo "  HEAD after:  $HEAD_AFTER7D2"
+  echo "  exit code:   $RC7D_RESTORED"
+  echo "  HEAD moved:  $([ "$HEAD_BEFORE7D2" != "$HEAD_AFTER7D2" ] && echo yes || echo no)"
+  echo
+  echo "  --- output ---"
+  echo "$OUT7D_RESTORED"
+  echo "  --------------"
+} > "$CON164_TRANSCRIPT_TMP"
+
+if [ "${CON164_RECORD_TRANSCRIPT:-0}" = "1" ]; then
+  CON164_TRANSCRIPT_DEST="$ROOT/openspec/changes/squash-branch-dry-run-mode/mutation-transcript.txt"
+  if [ -d "$(dirname "$CON164_TRANSCRIPT_DEST")" ]; then
+    cp "$CON164_TRANSCRIPT_TMP" "$CON164_TRANSCRIPT_DEST"
+    echo "  (CON164_RECORD_TRANSCRIPT=1: mutation transcript written to $CON164_TRANSCRIPT_DEST)"
+  else
+    echo "  INFO CON164_RECORD_TRANSCRIPT=1 set but $(dirname "$CON164_TRANSCRIPT_DEST") no longer exists (change likely archived) -- transcript left only at $CON164_TRANSCRIPT_TMP"
+  fi
+fi
+rm -f "$CON164_TRANSCRIPT_TMP"
 
 # ---------------------------------------------------------------------
 echo ""
