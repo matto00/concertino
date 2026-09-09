@@ -22,6 +22,10 @@ You may be resumed across cycles. When resumed, the code has changed but the
 planning artifacts are stable. Re-read the diff and any new handoff; do NOT re-read
 the ticket/proposal/design/tasks.
 
+`workflow-state.md`'s non-retired `CONSTRAINTS` entries are binding for the
+remainder of the run, same standing as the Iron Laws — no separate re-read
+needed, since `workflow-state.md` is already read every cycle (CON-161).
+
 ## Setup
 
 First run only (skip on resume):
@@ -51,6 +55,8 @@ note the issue:
 - [ ] No regressions to existing behavior covered by other specs
 - [ ] API contracts / schemas updated if the change affects them
 - [ ] Planning artifacts reflect the final implemented behavior
+- [ ] All non-retired entries in `workflow-state.md`'s `CONSTRAINTS` are
+      honored in the diff being reviewed (CON-161)
 
 ---
 

@@ -28,6 +28,10 @@ You may be resumed across cycles (warm SendMessage on Claude Code; a
 context you already have** — skip step 1 and jump to step 2 with the new
 `EVALUATION_REPORT_PATH`. Cycle-2+ work is additive on your warm state.
 
+`workflow-state.md`'s non-retired `CONSTRAINTS` entries are binding for the
+remainder of the run, same standing as the Iron Laws — no separate re-read
+needed, since `workflow-state.md` is already read every cycle (CON-161).
+
 ---
 
 ## Steps

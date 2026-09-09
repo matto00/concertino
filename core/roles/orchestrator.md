@@ -490,6 +490,15 @@ Execute directly (no subagent).
 4. **Escalate if needed:** stop and present an `ESCALATION` block for new external
    dependencies, major architectural changes, breaking API changes, or scope
    significantly beyond the ticket. Self-approve everything else.
+   - **Methodology-carryover (CON-161):** when the human's answer to a
+     Planning `ESCALATION` itself settles a standing methodology constraint
+     (no skeptic verdict involved), append a
+     `{"gate":"planning","round":1,"verdict":"n/a","promoted":[...]}`
+     `CONSTRAINT_REVIEWS` entry to `workflow-state.md`, plus the matching
+     `CONSTRAINTS` entry (`"agreed_at":"planning"`) and `tasks.md`
+     `## Standing Constraints` bullet — immediately upon resolution, before
+     continuing Planning. This entry does **not** increment or count against
+     `SKEPTIC_VERDICTS_TOTAL`.
 4a. **Gate-chain advisory (CON-132; non-blocking, complementary to the
    mechanical Delivery-time check).** If the ticket text or an early
    file-touch plan suggests `.husky/**` or a script `.husky/pre-commit`
@@ -525,6 +534,19 @@ Execute directly (no subagent).
      believed you fixed, do not burn further rounds** — present that item to
      the human as an `ESCALATION` immediately. If still REFUTE at the last
      round, escalate.
+   - **Methodology-carryover (CON-161): record this verdict immediately, before
+     re-running the gate or resuming the executor — never defer.** Increment
+     `workflow-state.md`'s `SKEPTIC_VERDICTS_TOTAL` and append one
+     `CONSTRAINT_REVIEWS` entry —
+     `{"verdict_seq":<n>,"gate":"design","round":<n>,"verdict":"CONFIRM|REFUTE","promoted":[...]}`
+     — for CONFIRM and REFUTE alike, every round. When this verdict settles a
+     methodology-shaped constraint (a how-to-verify or how-to-implement rule
+     meant to bind for the rest of the run, not a one-off already-applied
+     fix), also append the `CONSTRAINTS` entry (`{"id":"C<n>","text":"...",
+     "agreed_at":"design-gate","retired":false}`) and the matching
+     `tasks.md` `## Standing Constraints` bullet (`- [C<n>] <text>`), and
+     record that id in this review's `promoted`; otherwise `promoted` is
+     `[]`.
 6. **Persist evidence for the planning artifacts.** For each artifact just
    written (`ticket.md`, `proposal.md`, `design.md`, `tasks.md`, and any spec
    delta files under `specs/`):
@@ -744,6 +766,16 @@ path there is no other way the verdict reaches you.
   skeptic re-spawn, poll for the executor's new commit / the skeptic's report
   file instead of returning control, or escalate.
 - **BLOCKER** → environmental; surface to human, wait for direction.
+- **Methodology-carryover (CON-161): record every CONFIRM/REFUTE verdict
+  immediately, before resuming the executor or re-running the gate — never
+  defer.** Increment `workflow-state.md`'s `SKEPTIC_VERDICTS_TOTAL` and
+  append one `CONSTRAINT_REVIEWS` entry —
+  `{"verdict_seq":<n>,"gate":"final","round":<n>,"verdict":"CONFIRM|REFUTE","promoted":[...]}`
+  — for every round of every verdict, including the second final-gate
+  skeptic below. When a verdict settles a methodology-shaped constraint,
+  also append the `CONSTRAINTS` entry (`"agreed_at":"final-gate"`) and the
+  matching `tasks.md` `## Standing Constraints` bullet, recording its id in
+  this review's `promoted`; otherwise `promoted` is `[]`.
 
 #### `slow`-only: second final-gate skeptic
 
@@ -968,6 +1000,24 @@ repeating its steps.
 ## Phase 3: Delivery
 
 Run directly (no subagent).
+
+0. **Methodology-carryover divergence check (CON-161).** Run, before design.md's
+   re-persist and before the squash/archive — the change dir still lives at
+   its pre-archive path at this point, and this run's own constraint record
+   is already final (the final gate's last `CONFIRM` was recorded per its own
+   `CONSTRAINT_REVIEWS`/`SKEPTIC_VERDICTS_TOTAL` step above, before Phase 3
+   was ever entered):
+
+   ```bash
+   scripts/concertino/check-constraints-carryover.sh "$WORKTREE_PATH" "$CHANGE_NAME"
+   ```
+
+   Exit `0` (`OK`/`OK (none)`) → proceed to step 1. Any non-zero exit
+   (`DIVERGED`/`MISSING`) → treat as a Phase-3 environmental `BLOCKER`:
+   surface to the human, do **not** squash or archive until resolved. This is
+   a direct script call — never wired into `assert-phase.sh`'s `delivery`
+   phase, which fires only after step 3 below has already archived the
+   change dir (see design.md Decision 2a).
 
 1. **Re-persist `design.md` once more, unconditionally, before the squash**
    (CON-132 — cheap and idempotent, mirrors Phase 1 step 6's persist call):
@@ -1718,6 +1768,16 @@ model a role runs on move.
   value or `speeds` config field skips, weakens, or replaces it with a
   non-cold spawn. `slow`'s `secondFinalGateSkeptic` may only *add* a second
   independent cold skeptic on top of it, never substitute for it.
+- **Methodology-carryover (CON-161): `CONSTRAINTS`/`CONSTRAINT_REVIEWS` bind
+  you too.** `workflow-state.md`'s non-retired `CONSTRAINTS` entries are
+  binding on the orchestrator itself, not only on the executor/evaluator —
+  including when you compose the resume input for a sub-agent spawn (e.g.
+  `EVALUATION_REPORT_PATH`, a resumed executor/evaluator's other inputs). Do
+  not hand a sub-agent resume input that contradicts a standing constraint.
+  **Retiring a constraint** (e.g. an expiring exception): set that entry's
+  `retired` to `true` in place in `CONSTRAINTS` — ids are never removed or
+  reused, so the id-diff check (`check-constraints-carryover.sh`) keeps
+  working.
 - Resolve `SPEED`/budgets/models exactly once, at Setup, via
   `setup-worktree.sh` (which itself calls `resolve-speed.sh`) — never call
   `resolve-speed.sh` a second time yourself; every subsequent read is from
