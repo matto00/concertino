@@ -2,7 +2,9 @@
 
 ## Purpose
 Mechanically classifies diffs touching the target repo's commit-gate chain (`.husky/**` or a hook-invoked script) as live-infrastructure changes and blocks Delivery until an answered implications checklist and per-script isolation-test evidence are recorded — closing the workflow gap that let a new pre-commit gate's first execution run live and brick a real repo.
+
 ## Requirements
+
 ### Requirement: Gate-chain diffs are mechanically classified
 The delivery workflow SHALL provide a script (`scripts/concertino/check-gate-chain-change.sh`) that, given a worktree and its base branch, determines whether the branch's diff touches the target repo's commit-gate chain: any path under `.husky/**`, or a script referenced (directly or via a `package.json` `scripts` entry) from `.husky/pre-commit`'s command list.
 
@@ -25,6 +27,8 @@ The delivery workflow SHALL provide a script (`scripts/concertino/check-gate-cha
 
 A run that omits either piece of evidence, or that has isolation-test evidence only for some (not all) of the gate-chain-touching scripts actually in the diff, SHALL fail this gate regardless of whether an agent believed it had satisfied the requirement — the check is against the evidence artifacts on disk, keyed to the specific script paths the diff actually touched, not against agent self-report or an unrelated script's passing evidence.
 
+**Answer extent (CON-169).** Each checklist sub-item's answer SHALL be read as the whole span from the end of its `**<prompt>**` marker to the earliest subsequent occurrence of any other known prompt marker, or to the end of the `## Gate-Chain Implications Checklist` section when no such marker follows — NOT merely to the first newline after the marker. An answer MAY therefore begin on the line below its marker, span multiple lines, and contain blank lines and bold spans of its own. Placeholder detection (`tbd`, `n/a`, `na`, `todo`, empty) SHALL be applied to that whole trimmed span, so a prompt that is empty, holds only a placeholder, or holds only markdown list-marker/whitespace residue (e.g. the bare `-` swept in from an immediately following bulleted prompt's own marker — the bulleted style, `- **<prompt>**`, this checklist's own template uses) across its full extent is still reported unanswered.
+
 #### Scenario: Gate-chain diff with no evidence
 - **WHEN** the branch's diff is gate-chain-touching and no evidence directory/files exist for the ticket
 - **THEN** `assert-phase.sh delivery` fails with a message identifying the missing evidence
@@ -44,6 +48,19 @@ A run that omits either piece of evidence, or that has isolation-test evidence o
 #### Scenario: Non-gate-chain diff
 - **WHEN** the branch's diff is not gate-chain-touching
 - **THEN** `assert-phase.sh delivery` runs unaffected by this requirement (no evidence required)
+
+#### Scenario: A checklist prompt answered as a multi-line block satisfies the checklist check
+- **WHEN** a gate-chain-touching diff's persisted `design.md` answers `What does it execute?` with a multi-line explanation beginning on the line below the prompt marker, leaving the remainder of the marker line empty
+- **THEN** `assert-phase.sh delivery` does not report that prompt as unanswered
+
+#### Scenario: A bulleted checklist prompt left empty before another bulleted prompt still fails the delivery gate
+
+- **WHEN** a gate-chain-touching diff's persisted `design.md` writes `- **What does it execute?**` with nothing after it, as its own bullet immediately followed by another bulleted prompt (e.g. `- **What environment does it inherit, and from where?** ...` on the next line)
+- **THEN** `assert-phase.sh delivery` fails with a message naming `What does it execute?` as unanswered — the swept-in leading `-` of the next bullet does not count as an answer
+
+#### Scenario: A checklist prompt left empty across its whole extent still fails the delivery gate
+- **WHEN** a gate-chain-touching diff's persisted `design.md` has a `What happens on its first run?` marker followed only by blank lines until the end of the section
+- **THEN** `assert-phase.sh delivery` fails with a message naming that prompt as unanswered
 
 ### Requirement: Isolation-test helper for a new or modified gate
 The delivery workflow SHALL provide `scripts/concertino/test-gate-in-isolation.sh`, which exercises the actual target gate script exactly once against a disposable fixture repo (created under `mktemp -d`, never a real repo) shaped to reproduce a linked-worktree hook invocation (`GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` exported as Husky exports them for a linked worktree), and persists a transcript recording the run's command, the fixture's observed before/after state, and a pass/fail corruption verdict. The helper SHALL NOT require the target script to behave differently across two runs to produce passing evidence — a target script that is already safe under the hook-shaped environment SHALL be able to produce passing evidence from its single run.
@@ -65,4 +82,3 @@ The delivery workflow SHALL provide `scripts/concertino/test-gate-in-isolation.s
 #### Scenario: Helper leaves the real, surrounding repo's git state provably unchanged
 - **WHEN** the helper executes its run
 - **THEN** it records a small, fixed set of concrete invariants of the real repo it is running inside (`git rev-parse --is-bare-repository`, `git rev-parse HEAD`, and `git worktree list`) immediately before and immediately after the run, and fails loudly — surfacing the diff between the two snapshots — if any of them changed. This targets the specific, real failure mode (the surrounding repo itself being bricked) rather than the unbounded, unimplementable "no file anywhere outside the fixture was ever touched" claim — the helper cannot observe every filesystem write without OS-level tracing (`strace`/`inotify`), which this design deliberately does not depend on.
-

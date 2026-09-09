@@ -2,9 +2,9 @@
 
 TICKET: CON-169
 CHANGE_NAME: premise-validation-multiline-answers
-PHASE: Execution
+PHASE: Delivery
 CYCLE: 3
-SKEPTIC_CYCLE: 1
+SKEPTIC_CYCLE: 2
 DESIGN_ROUNDS_USED: 4 (one-round extension, reasoning in design-gate-budget-decision.md; CONFIRM on round 4)
 WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/bug/premise-validation-multiline-answers/CON-169
 BRANCH: bug/premise-validation-multiline-answers/CON-169
