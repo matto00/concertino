@@ -57,6 +57,29 @@ strip_documented_as_broken() {
   sed '/documented-as-broken:start/,/documented-as-broken:end/d' "$1"
 }
 
+# An UNBALANCED marker is the amnesty this whole mechanism exists to prevent:
+# `sed '/start/,/end/d'` with no matching end address deletes from the start
+# marker to END OF FILE, so one dropped end-marker line -- a merge conflict, a
+# copy-paste slip -- silently removes everything after it from the assertion and
+# the suite still reports green. That is strictly worse than the substring guard
+# it replaced. Balance must therefore be checked BEFORE any strip is trusted.
+markers_balanced() {
+  local starts ends
+  starts=$(grep -c 'documented-as-broken:start' "$1" || true)
+  ends=$(grep -c 'documented-as-broken:end' "$1" || true)
+  [ "$starts" = "$ends" ]
+}
+
+# Precondition on a.4: an unbalanced marker set makes the stripped text
+# meaningless, so refuse to draw any conclusion from it rather than reporting a
+# green that means nothing.
+if markers_balanced "$ORCH_MD"; then
+  ok "a.3b documented-as-broken markers are balanced in the rendered doc"
+else
+  bad "a.3b documented-as-broken markers are balanced in the rendered doc" \
+      "start/end counts differ -- the strip would delete to end of file"
+fi
+
 ORCH_UNMARKED="$OUT/orchestrator-unmarked.md"
 strip_documented_as_broken "$ORCH_MD" > "$ORCH_UNMARKED"
 
@@ -67,6 +90,21 @@ hasnt "a.4 no broken 'validate --change' outside a documented-as-broken block" "
 # occurrence is still caught -- without which the marker would silently disable
 # the guard entirely.
 has "a.5 the documented-as-broken warning is still present in the rendered doc" "validate --change" "$ORCH_MD"
+
+# a.7 proves a.3b is failable, and proves the specific hazard: an unclosed start
+# marker followed by a genuinely broken usage. Without the balance check this
+# case reports 8/8 green with the guard entirely disabled.
+UNBALANCED="$OUT/orchestrator-unbalanced.md"
+{ cat "$ORCH_MD"
+  printf '\n<!-- documented-as-broken:start -->\n'
+  printf 'Run `openspec validate --change "<NAME>"` to check.\n'
+} > "$UNBALANCED"
+if markers_balanced "$UNBALANCED"; then
+  bad "a.7 an unclosed start marker is detected (strip cannot silently swallow the rest)" \
+      "markers_balanced accepted a file with an unmatched start marker"
+else
+  ok "a.7 an unclosed start marker is detected (strip cannot silently swallow the rest)"
+fi
 
 MUTANT="$OUT/orchestrator-mutant.md"
 { cat "$ORCH_UNMARKED"; printf '\nRun `openspec validate --change "<NAME>"` to check.\n'; } > "$MUTANT"
