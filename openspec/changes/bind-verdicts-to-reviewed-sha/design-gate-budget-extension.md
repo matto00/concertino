@@ -1,0 +1,13 @@
+# Design-gate budget extension — CON-166 (round 4 of a budgeted 3)
+
+The owner's stated bar: an extension still finding NEW defects each round is legitimate; one justified by "I think there is more here" is not. Findings round by round:
+
+- **Round 1 — 8 blocking findings, all new.** Among them: condition 0's own BEHIND-reconcile would make the script declare its own push stale on every base-advanced PR; the specified `-- .` pathspec made a failing diff read as "no drift" (vacuity, inside the defence written against vacuity); `openspec/` hardcoded breaks `kind: none` projects; ~20 existing fixtures go red with no task covering them; Decision 4a contradicted task 3.3 on the lease.
+- **Round 2 — 6 blocking findings, all new, none a restatement.** The revised Decision 1's `<base_ref>` was unbound under `set -u`; empty `PATHS` silently inverts the pathspec into a whole-commit diff; `headRefOid` is fetched nowhere in the script despite the design asserting it was; spec.md still mandated the lease release Decision 4a had withdrawn; the red-before rule was unsatisfiable for must-PASS assertions.
+- **Round 3 — 3 blocking findings, all new, and one of them a defect the ROUND-2 FIX INTRODUCED.** The "base ref must be an ancestor of head" requirement, adopted from round 2's CR 3(b), refuses the ordinary advanced-base run — measured false in throwaway fixtures, and self-contradictory against this change's own task 4.7 and spec.md. Also: refusal assertions need the same exact-output requirement as must-PASS ones, or a broken fixture reads as proof; and task 4.7's advanced-base assertion had no proof method.
+
+Each round found defects the previous round did not, and round 3 found one that round 2's own remedy created. That is the "still finding new defects" condition, not "I think there is more here." Round 4 is bounded to a verification of round 3's three fixes plus a freshness pass; if it CONFIRMs, the extension ends there.
+
+- **Round 4 — 2 blocking findings, both new.** The archive-prefix exclusion was applied at two sites, making Decision 7's own headline mutation unsatisfiable (removing either site alone leaves the squash-shaped case green) — the unsatisfiable-proof-method class round 2 flagged, resurfacing in a new place. And task 5.1/Decision 3a materially understated the existing-fixture retrofit: measured, the shared `new_repo()` helper adds no `origin` remote and the `gh` mock serves neither `headRefOid` nor `baseRefName`, so the ~20 fixtures fail for reasons the task never named.
+
+Round 4 confirmed all three of round 3's fixes closed and still found two new blocking defects. The "still finding new defects" condition continues to hold. Round 5 is bounded to verifying round 4's two fixes.

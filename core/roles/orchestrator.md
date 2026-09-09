@@ -135,7 +135,8 @@ below for the full raise/bubble/resume protocol this exception exists for.
 | REFUTE       | Skeptic           | Read report; revise artifacts (design gate) or resume executor with change requests (final gate) |
 | MERGE        | Auditor           | PR already merged — proceed directly to Phase 4 (agent-merge runs only)                          |
 | ESCALATE     | Auditor           | Read report, surface the specific reason, fall back to wait-for-"merged" (agent-merge runs only) |
-| `ESCALATION-RAISE` | Auditor     | Same as sub-agent `ESCALATION` above, but raised *before* the auditor has reached `MERGE`/`ESCALATE`/`BLOCKER` — distinct from `ESCALATE` (a post-hoc finding); relay to human, do not decide it yourself |
+| `STALE`      | Auditor           | (CON-166) Reviewed source moved since the named role's verdict — **not** an escalation and **not** a permanent block: re-run the named gate(s) (evaluator and/or skeptic) against the CURRENT head, then re-invoke the auditor. Does not consume the auditor's one-attempt circuit-breaker entry — that entry governs `ESCALATE`/`BLOCKER` reached after a completed pass, not a mechanically resumable "do work, then retry" outcome (agent-merge runs only) |
+| `ESCALATION-RAISE` | Auditor     | Same as sub-agent `ESCALATION` above, but raised *before* the auditor has reached `MERGE`/`ESCALATE`/`BLOCKER`/`STALE` — distinct from `ESCALATE` (a post-hoc finding); relay to human, do not decide it yourself |
 
 ---
 
@@ -1655,6 +1656,15 @@ Every bound named below is `workflow-state.md`'s resolved value for this run
   retry — fall back to the wait-for-"merged" flow (see Non-Goals of the
   agent-merge design: an `ESCALATE` reflects a merge-time fact the executor
   cannot "fix" by writing code).
+- **Auditor `STALE`** (CON-166, agent-merge runs only): NOT a circuit-breaker
+  entry — this is a mechanically resumable "do work, then retry", not a
+  post-hoc finding. Re-run the named role's gate (evaluator and/or skeptic,
+  per the `STALE <role> ...` line(s)) against the CURRENT head, then
+  re-invoke the auditor. Re-invoking after a genuine re-review is expected
+  to clear it; if it does not (the re-review's own fresh `head_sha` is
+  itself immediately stale again), that is an anomaly worth surfacing to a
+  human rather than looping indefinitely — use judgment, the same way a
+  repeatedly-`PENDING` CI check eventually becomes a human question.
 - **`material-drift` (CON-136):** Setup step 2's premise-validation check
   finds a refuted root cause, scope already fully implemented, or a sibling
   collision that invalidates the ticket's enumeration — raised as a
