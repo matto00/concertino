@@ -1,0 +1,44 @@
+{
+  "_comment": [
+    "Self-maintained, checked-in pricing table for report-cost.sh's cost_usd",
+    "computation (design.md Decision 2 of the track-per-run-cost-spend change).",
+    "NOT fetched live, NOT authoritative — a dashboard ESTIMATE that can drift",
+    "from Anthropic's real, invoiced rates over time. Keys are the exact",
+    "`message.model` id Claude Code's own session transcript writes (the",
+    "dated form, e.g. `claude-sonnet-4-5-20250929`, confirmed empirically",
+    "against a real transcript — see this change's tasks.md 7.1/7.2), not the",
+    "short alias (`sonnet`) `lib/config.js`'s modelTiers resolve to.",
+    "",
+    "All rates are USD per MILLION tokens (Anthropic's own published unit).",
+    "cacheCreationPerMTok is the 5-minute ephemeral cache write rate (1.25x",
+    "the model's own inputPerMTok, per Anthropic's published multiplier);",
+    "cacheReadPerMTok is 0.1x inputPerMTok. A model id with no entry here",
+    "degrades to 'tokens known, $ unknown' (report-cost.sh omits cost_usd",
+    "entirely) rather than a guessed price — see design.md Decision 2/4.",
+    "",
+    "UPKEEP OBLIGATION: seeded once, at this change's authoring time, for the",
+    "Sonnet/Opus/Haiku ids `lib/config.js`'s DEFAULT_MODEL_TIERS/FALLBACK_MODEL",
+    "resolve to for claude-code. A new model release, or a published price",
+    "change to an existing one, will NOT self-update — the project owner who",
+    "enabled costTracking.enabled is responsible for keeping this current (see",
+    "docs/config-reference.md)."
+  ],
+  "claude-opus-4-1-20250805": {
+    "inputPerMTok": 15,
+    "outputPerMTok": 75,
+    "cacheReadPerMTok": 1.5,
+    "cacheCreationPerMTok": 18.75
+  },
+  "claude-sonnet-4-5-20250929": {
+    "inputPerMTok": 3,
+    "outputPerMTok": 15,
+    "cacheReadPerMTok": 0.3,
+    "cacheCreationPerMTok": 3.75
+  },
+  "claude-haiku-4-5-20251001": {
+    "inputPerMTok": 1,
+    "outputPerMTok": 5,
+    "cacheReadPerMTok": 0.1,
+    "cacheCreationPerMTok": 1.25
+  }
+}
