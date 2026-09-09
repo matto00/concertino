@@ -742,5 +742,378 @@ check "deleted evidence file: flips PASS to FAIL" "$RC" "1"
 has "deleted evidence file: names the missing file" "premise-validation.md" <(printf '%s' "$ERR")
 rm -rf "$REPO"
 
+# =============================================================================
+# CON-169: premise-validation / gate-chain-checklist field answers may span
+# multiple lines. Each PROOF test below is demonstrated red against the
+# pre-fix parser (git show abd71b7:core/scripts/assert-phase.sh) — see
+# .concertino/runs/CON-169/evidence/.concertino/tmp/pre-fix-parser-transcript.txt
+# (persisted into the main checkout by persist-evidence.sh) for that
+# transcript; the assertions here only need to hold against the current
+# (fixed) script. Per design.md's Testing strategy, every PROOF assertion
+# matches on the specific "FAIL unanswered: <field>" text and field name,
+# never on exit status alone.
+# =============================================================================
+
+echo "assert-phase.sh setup (CON-169: multi-line field answers)"
+
+# --- 2.1 PROOF: a multi-bullet Claims-checked answer, with an internal
+#     blank line between bullets, beneath an empty marker line -> PASS ------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/ML-1"
+mkdir -p "$WT/.git"
+mkdir -p "$REPO/.concertino/runs/ML-1/evidence"
+cat > "$REPO/.concertino/runs/ML-1/evidence/premise-validation.md" <<'EOF'
+## Premise Validation
+
+**Claims checked:**
+
+- Claim A: root cause X still present -- CONFIRMED, verified via probe.
+
+- Claim B: sibling ticket Y already fixed this -- STALE, file no longer exists.
+
+**Already-done scope:** none
+**Sibling collisions:** none found
+**Verdict:** no-drift
+EOF
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" ML-1)"
+RC=$?
+check "PROOF 2.1: multi-bullet answer with internal blank line passes" "$RC" "0"
+check "PROOF 2.1: stdout is PASS setup" "$OUT" "PASS setup"
+rm -rf "$REPO"
+
+# --- 2.2 GUARD: a field genuinely empty across its whole multi-line
+#     extent -> FAIL naming exactly that field. This is a GUARD, not a
+#     PROOF: it fails identically ("rc=1") under both the pre-fix and fixed
+#     parsers (task 3.2 -- confirmed by hand, see run evidence transcript),
+#     because the pre-fix parser also reports it unanswered (blank marker
+#     line). Failability is demonstrated by mutation: filling the field in
+#     must flip it to PASS. --------------------------------------------------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/ML-2"
+mkdir -p "$WT/.git"
+mkdir -p "$REPO/.concertino/runs/ML-2/evidence"
+cat > "$REPO/.concertino/runs/ML-2/evidence/premise-validation.md" <<'EOF'
+## Premise Validation
+
+**Claims checked:** file X still exists, confirmed
+**Already-done scope:**
+
+**Sibling collisions:** none found
+**Verdict:** no-drift
+EOF
+ERR="$REPO/err.txt"
+( cd "$REPO" && "$SCRIPT" setup "$WT" ML-2 ) >/dev/null 2>"$ERR"
+RC=$?
+check "GUARD 2.2: empty-across-extent field fails" "$RC" "1"
+has "GUARD 2.2: names exactly Already-done scope" "FAIL unanswered: Already-done scope:" "$ERR"
+# failability by mutation: fill the field in -> must flip to PASS
+sed -i 's/^\*\*Already-done scope:\*\*$/**Already-done scope:** now filled in/' \
+  "$REPO/.concertino/runs/ML-2/evidence/premise-validation.md"
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" ML-2)"
+RC=$?
+check "GUARD 2.2: failable by mutation (filled-in field passes)" "$RC" "0"
+check "GUARD 2.2: mutation stdout is PASS setup" "$OUT" "PASS setup"
+rm -rf "$REPO"
+
+# --- 2.3 PROOF: a bold span inside an answer's prose must not be mistaken
+#     for a field marker -> PASS --------------------------------------------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/ML-3"
+mkdir -p "$WT/.git"
+mkdir -p "$REPO/.concertino/runs/ML-3/evidence"
+cat > "$REPO/.concertino/runs/ML-3/evidence/premise-validation.md" <<'EOF'
+## Premise Validation
+
+**Claims checked:**
+- Note: this mentions **something else:** inline but is not a real field.
+**Already-done scope:** none
+**Sibling collisions:** none found
+**Verdict:** no-drift
+EOF
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" ML-3)"
+RC=$?
+check "PROOF 2.3: bold span inside prose does not truncate the answer" "$RC" "0"
+check "PROOF 2.3: stdout is PASS setup" "$OUT" "PASS setup"
+rm -rf "$REPO"
+
+# --- 2.4 PROOF: a multi-line answer in a file with no trailing newline at
+#     EOF is read correctly. NOTE: this fixture's "Sibling collisions"
+#     extent is still bounded by the following **Verdict:** marker, not by
+#     the section/file end -- the genuine field-runs-to-EOF path (no marker
+#     follows at all) is exercised through the same shared function by
+#     PROOF 2.7a's last checklist prompt. This fixture's job is narrower:
+#     confirm a multi-line answer parses correctly even when the file as a
+#     whole has no trailing newline. -----------------------------------------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/ML-4"
+mkdir -p "$WT/.git"
+mkdir -p "$REPO/.concertino/runs/ML-4/evidence"
+printf '%s' '## Premise Validation
+
+**Claims checked:** ok
+**Already-done scope:** none
+**Sibling collisions:**
+- item one
+- item two, ending abruptly with no trailing newline
+**Verdict:** no-drift' > "$REPO/.concertino/runs/ML-4/evidence/premise-validation.md"
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" ML-4)"
+RC=$?
+check "PROOF 2.4: multi-line answer parses correctly with no trailing newline in the file" "$RC" "0"
+check "PROOF 2.4: stdout is PASS setup" "$OUT" "PASS setup"
+rm -rf "$REPO"
+
+# --- 2.5 PROOF: fields written out of document order -> PASS (extent is
+#     derived from actual positions, never a negative slice) ---------------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/ML-5"
+mkdir -p "$WT/.git"
+mkdir -p "$REPO/.concertino/runs/ML-5/evidence"
+cat > "$REPO/.concertino/runs/ML-5/evidence/premise-validation.md" <<'EOF'
+## Premise Validation
+
+**Sibling collisions:** none found
+**Verdict:** no-drift
+**Claims checked:**
+- claim one, confirmed
+- claim two, confirmed
+**Already-done scope:** none
+EOF
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" ML-5)"
+RC=$?
+check "PROOF 2.5: out-of-order fields still parse" "$RC" "0"
+check "PROOF 2.5: stdout is PASS setup" "$OUT" "PASS setup"
+rm -rf "$REPO"
+
+# --- 2.6 GUARD: the single-line form that works today keeps working.
+#     Expected to pass under BOTH the pre-fix and fixed parsers (that's the
+#     point) — this is a regression guard, not a proof of this change.
+#     Failability is demonstrated by mutation below, not by a pre-fix run. --
+REPO="$(new_repo)"
+WT="$REPO/worktrees/ML-6"
+mkdir -p "$WT/.git"
+write_pv_evidence "$REPO" "ML-6" "no-drift"
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" ML-6)"
+RC=$?
+check "GUARD 2.6: single-line answers still pass (no regression)" "$RC" "0"
+check "GUARD 2.6: stdout is PASS setup" "$OUT" "PASS setup"
+# failability by mutation: blank the single-line answer -> must flip to FAIL
+sed -i 's/^\*\*Claims checked:\*\* no specific facts cited$/**Claims checked:** /' \
+  "$REPO/.concertino/runs/ML-6/evidence/premise-validation.md"
+ERR="$REPO/err2.txt"
+( cd "$REPO" && "$SCRIPT" setup "$WT" ML-6 ) >/dev/null 2>"$ERR"
+RC=$?
+check "GUARD 2.6: failable by mutation (blanked single-line answer fails)" "$RC" "1"
+has "GUARD 2.6: mutation names the blanked field" "FAIL unanswered: Claims checked:" "$ERR"
+rm -rf "$REPO"
+
+echo "assert-phase.sh delivery (CON-169: multi-line Gate-Chain checklist answers)"
+
+# --- 2.7a PROOF: multi-line checklist answers (including one ending at EOF
+#     with no trailing newline) + full isolation evidence -> PASS ----------
+BASE="$(mktemp -d)"
+WT="$(new_gatechain_pair "$BASE" "ML-GC-1")"
+cat > "$WT/scripts/check-foo.mjs" <<'EOF'
+console.log("changed for CON-169 multi-line checklist test");
+EOF
+git -C "$WT" add -A
+git -C "$WT" -c user.email=t@t.com -c user.name=t commit -q -m "modify hook-invoked script"
+git -C "$WT" push -q origin "HEAD:refs/heads/ML-GC-1"
+DESIGN_MD="$WT/.concertino/runs/ML-GC-1/evidence/openspec/changes/some-change/design.md"
+mkdir -p "$(dirname "$DESIGN_MD")"
+printf '%s' '## Context
+
+Some ordinary design content.
+
+## Gate-Chain Implications Checklist
+
+- **What does it execute?**
+  Runs `node scripts/check-foo.mjs`, invoked from `.husky/pre-commit` via
+  `npm run check:foo`.
+- **What environment does it inherit, and from where?**
+  Inherits `GIT_*` vars exported by git into the hook subprocess, plus the
+  ambient PATH of whatever shell invoked the commit.
+- **Does it write anything outside its own sandbox?** No.
+- **Does it behave differently from a linked worktree than from a main checkout?**
+  No — it never resolves `GIT_WORK_TREE` itself, so the inherited-env hazard
+  this checklist exists to catch does not apply here.
+- **What happens on its first run?**
+  It runs live under Husky against the real repo on the very next commit,
+  with no separate opt-in step.' > "$DESIGN_MD"
+write_passing_isolation_transcript "$WT/.concertino/runs/ML-GC-1/evidence/.concertino/gate-chain-isolation-evidence/scripts__check-foo.mjs.md"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+( cd "$WT" && "$SCRIPT" delivery "$WT" "ML-GC-1" ) >"$OUT" 2>"$ERR"
+RC=$?
+check "PROOF 2.7a: multi-line checklist answers (incl. EOF-terminated) pass" "$RC" "0"
+check "PROOF 2.7a: stdout is PASS delivery" "$(cat "$OUT")" "PASS delivery"
+rm -rf "$BASE"
+
+# --- 2.7b GUARD: one checklist prompt genuinely empty across its whole
+#     multi-line extent -> FAIL naming exactly that prompt. This is a
+#     GUARD, not a PROOF: it fails identically under both the pre-fix and
+#     fixed parsers (task 3.2 -- confirmed by hand, see run evidence
+#     transcript). Failability is demonstrated by mutation below. -----------
+BASE="$(mktemp -d)"
+WT="$(new_gatechain_pair "$BASE" "ML-GC-2")"
+cat > "$WT/scripts/check-foo.mjs" <<'EOF'
+console.log("changed for CON-169 empty-extent checklist test");
+EOF
+git -C "$WT" add -A
+git -C "$WT" -c user.email=t@t.com -c user.name=t commit -q -m "modify hook-invoked script"
+git -C "$WT" push -q origin "HEAD:refs/heads/ML-GC-2"
+DESIGN_MD="$WT/.concertino/runs/ML-GC-2/evidence/openspec/changes/some-change/design.md"
+mkdir -p "$(dirname "$DESIGN_MD")"
+# Deliberately no leading "- " bullet dash on each prompt here: this
+# fixture isolates the plain empty-string extent case from the
+# markdown-list-residue case (LIST_RESIDUE_ONLY in field-answers.js),
+# which has its own dedicated PROOF-in-reverse coverage below
+# (final-gate skeptic, CON-169).
+cat > "$DESIGN_MD" <<'EOF'
+## Context
+
+Some ordinary design content.
+
+## Gate-Chain Implications Checklist
+
+**What does it execute?** Runs `node scripts/check-foo.mjs`.
+**What environment does it inherit, and from where?**
+
+**Does it write anything outside its own sandbox?** No.
+**Does it behave differently from a linked worktree than from a main checkout?** No.
+**What happens on its first run?** It runs live under Husky.
+EOF
+ERR="$BASE/err.txt"
+( cd "$WT" && "$SCRIPT" delivery "$WT" "ML-GC-2" ) >/dev/null 2>"$ERR"
+RC=$?
+check "GUARD 2.7b: empty-across-extent prompt fails" "$RC" "1"
+has "GUARD 2.7b: names exactly the blank prompt" \
+  "FAIL unanswered: What environment does it inherit, and from where?" "$ERR"
+# failability by mutation: fill the prompt's answer in -> checklist step
+# must pass (isolation evidence is added too, so the whole gate passes).
+sed -i 's/^\*\*What environment does it inherit, and from where?\*\*$/**What environment does it inherit, and from where?** now filled in/' \
+  "$DESIGN_MD"
+write_passing_isolation_transcript "$WT/.concertino/runs/ML-GC-2/evidence/.concertino/gate-chain-isolation-evidence/scripts__check-foo.mjs.md"
+OUT="$BASE/out2.txt"; ERR2="$BASE/err2.txt"
+( cd "$WT" && "$SCRIPT" delivery "$WT" "ML-GC-2" ) >"$OUT" 2>"$ERR2"
+RC=$?
+check "GUARD 2.7b: failable by mutation (filled-in prompt + evidence passes)" "$RC" "0"
+check "GUARD 2.7b: mutation stdout is PASS delivery" "$(cat "$OUT")" "PASS delivery"
+rm -rf "$BASE"
+
+# --- 2.8 GUARD: a field answered only "TBD" on the line below its marker
+#     (design.md Decision 4's "newly caught" case) -> FAIL naming the field.
+#     This is a GUARD, not a PROOF: for this exact shape (marker line
+#     wholly empty, "TBD" alone on the next line) the pre-fix parser
+#     ALSO fails it -- coincidentally, via its "" empty-first-line branch,
+#     without ever actually reading the word "TBD" -- so the rc/message are
+#     identical under both parsers (confirmed by hand; not a tautology
+#     bug, just not a distinguishing fixture for this shape). Failability
+#     is demonstrated by mutation: filling the answer in for real flips it
+#     to PASS. --------------------------------------------------------------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/ML-7"
+mkdir -p "$WT/.git"
+mkdir -p "$REPO/.concertino/runs/ML-7/evidence"
+cat > "$REPO/.concertino/runs/ML-7/evidence/premise-validation.md" <<'EOF'
+## Premise Validation
+
+**Claims checked:**
+TBD
+**Already-done scope:** none
+**Sibling collisions:** none found
+**Verdict:** no-drift
+EOF
+ERR="$REPO/err.txt"
+( cd "$REPO" && "$SCRIPT" setup "$WT" ML-7 ) >/dev/null 2>"$ERR"
+RC=$?
+check "GUARD 2.8: TBD alone on the line below the marker fails" "$RC" "1"
+has "GUARD 2.8: names exactly Claims checked" "FAIL unanswered: Claims checked:" "$ERR"
+# failability by mutation: replace TBD with a real answer -> must flip to PASS
+sed -i 's/^TBD$/a real, non-placeholder claim/' \
+  "$REPO/.concertino/runs/ML-7/evidence/premise-validation.md"
+OUT="$(cd "$REPO" && "$SCRIPT" setup "$WT" ML-7)"
+RC=$?
+check "GUARD 2.8: failable by mutation (real answer passes)" "$RC" "0"
+check "GUARD 2.8: mutation stdout is PASS setup" "$OUT" "PASS setup"
+rm -rf "$REPO"
+
+# --- 2.9 PROOF-IN-REVERSE: an empty field written as its own markdown
+#     bullet, immediately followed by another bulleted field, must still
+#     be caught -- this is the bulleted-checklist style the templates and
+#     this suite's own PROOF 2.7a fixture actually use. Before
+#     LIST_RESIDUE_ONLY was added, extractFieldAnswers swept the next
+#     bullet's leading "-" into the empty field's extent, trimming to "-"
+#     (not "") and silently PASSING -- a regression this change introduced
+#     relative to the pre-fix parser, not an inherited gap (final-gate
+#     skeptic REFUTE, CON-169). "PROOF-in-reverse" because the assertion
+#     is RED against the parser as shipped through the prior cycle (it
+#     incorrectly passed) and GREEN against both the ORIGINAL pre-fix
+#     parser (which happened to reject it too, via its own first-line
+#     mechanism) and the corrected parser (which rejects it for the
+#     right reason). ---------------------------------------------------------
+REPO="$(new_repo)"
+WT="$REPO/worktrees/ML-9"
+mkdir -p "$WT/.git"
+mkdir -p "$REPO/.concertino/runs/ML-9/evidence"
+cat > "$REPO/.concertino/runs/ML-9/evidence/premise-validation.md" <<'EOF'
+## Premise Validation
+
+- **Claims checked:**
+- **Already-done scope:** none
+- **Sibling collisions:** none found
+- **Verdict:** no-drift
+EOF
+ERR="$REPO/err.txt"
+( cd "$REPO" && "$SCRIPT" setup "$WT" ML-9 ) >/dev/null 2>"$ERR"
+RC=$?
+check "PROOF-IN-REVERSE 2.9: bulleted empty field is still caught" "$RC" "1"
+has "PROOF-IN-REVERSE 2.9: names exactly Claims checked" "FAIL unanswered: Claims checked:" "$ERR"
+rm -rf "$REPO"
+
+# --- 2.10 PROOF-IN-REVERSE: the same mechanism, on the Delivery gate's
+#     Gate-Chain Implications Checklist, in the exact bulleted style
+#     PROOF 2.7a already uses ("- **<prompt>**") -- the skeptic's finding
+#     applies to both call sites, not just premise-validation. -------------
+BASE="$(mktemp -d)"
+WT="$(new_gatechain_pair "$BASE" "ML-GC-3")"
+cat > "$WT/scripts/check-foo.mjs" <<'EOF'
+console.log("changed for CON-169 bulleted-empty checklist test");
+EOF
+git -C "$WT" add -A
+git -C "$WT" -c user.email=t@t.com -c user.name=t commit -q -m "modify hook-invoked script"
+git -C "$WT" push -q origin "HEAD:refs/heads/ML-GC-3"
+DESIGN_MD="$WT/.concertino/runs/ML-GC-3/evidence/openspec/changes/some-change/design.md"
+mkdir -p "$(dirname "$DESIGN_MD")"
+cat > "$DESIGN_MD" <<'EOF'
+## Context
+
+Some ordinary design content.
+
+## Gate-Chain Implications Checklist
+
+- **What does it execute?**
+- **What environment does it inherit, and from where?** GIT_* vars.
+- **Does it write anything outside its own sandbox?** No.
+- **Does it behave differently from a linked worktree than from a main checkout?** No.
+- **What happens on its first run?** Runs live under Husky.
+EOF
+ERR="$BASE/err.txt"
+( cd "$WT" && "$SCRIPT" delivery "$WT" "ML-GC-3" ) >/dev/null 2>"$ERR"
+RC=$?
+check "PROOF-IN-REVERSE 2.10: bulleted empty checklist prompt is still caught" "$RC" "1"
+has "PROOF-IN-REVERSE 2.10: names exactly the blank prompt" \
+  "FAIL unanswered: What does it execute?" "$ERR"
+rm -rf "$BASE"
+
+# --- 1.6 parity assertion: both call sites resolve the field-answers lib
+#     to the same absolute path, and no private copy of the old first-
+#     newline extraction logic remains in the script. -----------------------
+echo "assert-phase.sh (CON-169: shared-lib parity, task 1.6)"
+REQUIRE_COUNT="$(grep -c 'require(process.argv\[2\])' "$SCRIPT")"
+check "parity: exactly two call sites require the shared lib" "$REQUIRE_COUNT" "2"
+OLD_PARSER_COUNT="$(grep -c 'indexOf("\\n", at)' "$SCRIPT" || true)"
+check "parity: zero remaining first-newline extraction sites" "$OLD_PARSER_COUNT" "0"
+LIB_ARGS="$(grep -o '"\${SCRIPT_DIR}/lib/field-answers\.js"' "$SCRIPT" | sort -u | wc -l | tr -d ' ')"
+check "parity: both sites resolve the lib via the same SCRIPT_DIR-relative path" "$LIB_ARGS" "1"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

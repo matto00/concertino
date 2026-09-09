@@ -152,6 +152,7 @@ case "$PHASE" in
       else
         PV_CHECK_OUT="$(node -e '
           const fs = require("fs");
+          const { missingFields } = require(process.argv[2]);
           const text = fs.readFileSync(process.argv[1], "utf8");
           const HEADING = "## Premise Validation";
           const idx = text.indexOf(HEADING);
@@ -164,16 +165,13 @@ case "$PHASE" in
             "Already-done scope:",
             "Sibling collisions:"
           ];
+          // "Verdict:" is included as a delimiter only, so a Sibling
+          // collisions answer stops where the verdict begins rather than
+          // swallowing it (design.md Decision 5); it is not itself required
+          // by this loop and keeps its own separate regex validation below.
           const placeholders = new Set(["tbd", "n/a", "na", "todo", ""]);
-          const missing = [];
-          for (const f of fields) {
-            const marker = `**${f}**`;
-            const at = section.indexOf(marker);
-            if (at === -1) { missing.push(f); continue; }
-            const lineEnd = section.indexOf("\n", at);
-            const answer = (lineEnd === -1 ? section.slice(at + marker.length) : section.slice(at + marker.length, lineEnd)).trim();
-            if (placeholders.has(answer.toLowerCase())) missing.push(f);
-          }
+          const missing = missingFields(section, [...fields, "Verdict:"], placeholders)
+            .filter((f) => f !== "Verdict:");
           if (missing.length) { console.log("FAIL unanswered: " + missing.join(" | ")); process.exit(0); }
 
           const verdictMatch = section.match(/\*\*Verdict:\*\*\s*([^\n]*)/);
@@ -181,7 +179,7 @@ case "$PHASE" in
           const validVerdicts = new Set(["no-drift", "minor-staleness", "material-drift"]);
           if (!validVerdicts.has(verdict)) { console.log("FAIL invalid verdict: " + JSON.stringify(verdict)); process.exit(0); }
           console.log("PASS " + verdict);
-        ' "$PV_EVIDENCE" 2>&1)"
+        ' "$PV_EVIDENCE" "${SCRIPT_DIR}/lib/field-answers.js" 2>&1)"
         case "$PV_CHECK_OUT" in
           "PASS "*)
             PV_VERDICT="${PV_CHECK_OUT#PASS }"
@@ -288,6 +286,7 @@ case "$PHASE" in
         else
           GC_CHECKLIST_OUT="$(node -e '
             const fs = require("fs");
+            const { missingFields } = require(process.argv[2]);
             const text = fs.readFileSync(process.argv[1], "utf8");
             const HEADING = "## Gate-Chain Implications Checklist";
             const idx = text.indexOf(HEADING);
@@ -303,18 +302,10 @@ case "$PHASE" in
               "What happens on its first run?"
             ];
             const placeholders = new Set(["tbd", "n/a", "na", "todo", ""]);
-            const missing = [];
-            for (const p of prompts) {
-              const marker = `**${p}**`;
-              const at = section.indexOf(marker);
-              if (at === -1) { missing.push(p); continue; }
-              const lineEnd = section.indexOf("\n", at);
-              const answer = (lineEnd === -1 ? section.slice(at + marker.length) : section.slice(at + marker.length, lineEnd)).trim();
-              if (placeholders.has(answer.toLowerCase())) missing.push(p);
-            }
+            const missing = missingFields(section, prompts, placeholders);
             if (missing.length) console.log("FAIL unanswered: " + missing.join(" | "));
             else console.log("PASS");
-          ' "$GC_DESIGN_MD" 2>&1)"
+          ' "$GC_DESIGN_MD" "${SCRIPT_DIR}/lib/field-answers.js" 2>&1)"
           case "$GC_CHECKLIST_OUT" in
             PASS) ;;
             *) fail "gate-chain diff detected: Gate-Chain Implications Checklist incomplete in $(basename "$(dirname "$GC_DESIGN_MD")")/design.md — ${GC_CHECKLIST_OUT}" ;;
