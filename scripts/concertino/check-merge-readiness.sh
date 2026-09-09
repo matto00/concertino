@@ -20,7 +20,12 @@ set -uo pipefail
 #      is used, and a real conflict aborts the merge and falls through to
 #      the ordinary BEHIND failure below for a human to resolve. See
 #      "Reconciliation (condition 0)" below.
-#   1. CI green      — every check reported on BRANCH's PR is SUCCESS. A
+#   1. CI green      — every check reported on BRANCH's PR is SUCCESS,
+#      SKIPPED or NEUTRAL. SKIPPED/NEUTRAL are terminal non-failures, not
+#      passes-in-waiting: a workflow that deliberately no-ops on PRs it
+#      does not apply to (e.g. a Dependabot-metadata job gated on the PR
+#      author) reports SKIPPED on every other PR, and treating that as a
+#      failed check fails closed on every such PR forever. A
 #      PENDING/QUEUED/IN_PROGRESS/missing conclusion is a DISTINCT failure
 #      from an actual failed check ("a pending check is not a pass" — the
 #      ticket is explicit these are never collapsed into one message), but
@@ -45,11 +50,32 @@ set -uo pipefail
 #      without a separate design/final `gate` field: see design.md
 #      Decision 2 of the agent-merge-role change — by construction, the
 #      final-gate CONFIRM is always the most recent by the time the auditor
-#      runs.)
+#      runs.) CON-152: the skeptic leg is ALSO satisfied when the human
+#      answered a budget-exhaustion escalation `proceed-to-delivery` AFTER
+#      that latest skeptic verdict — an owner override, reported as such
+#      rather than as a CONFIRM. Read from `escalation.answered`, which only
+#      emit-event.sh's resolution path writes from a human's answer file, so
+#      no agent can forge it; an orchestrator-written verdict never clears
+#      this gate.
 #
 # Prints "PASS" and exits 0 only when conditions 1-3 hold. Otherwise prints
 # one "FAIL <reason>" line per failed condition to stderr and exits
-# non-zero — the same stdout/stderr contract assert-phase.sh already uses. A
+# non-zero — the same stdout/stderr contract assert-phase.sh already uses.
+#
+# CON-159: a check that is merely STILL RUNNING when the wait window expires
+# is reported distinctly — one "PENDING <names>" line, exit code 3 — and is
+# NOT a FAIL. The two states were previously indistinguishable, so a repo
+# whose slowest required check outruns the window (helio's Scala `backend`
+# job takes ~12m against a 7m default) escalated to a human on EVERY PR,
+# for a run that was simply not finished yet. The window cannot just be
+# raised past the slowest job: the caller's tool timeout (10m, see below)
+# bounds how long this script may block at all. So the script stays under
+# that ceiling and hands the caller a resumable "not yet" instead of a
+# verdict. The caller re-invokes; it does not escalate. Conditions 2-3 are
+# skipped in that case — they would be judging a HEAD whose CI is still
+# moving.
+#
+# A
 # failure whose reason begins "could not query ... via gh" is an
 # environmental failure (gh unauthenticated, GitHub unreachable) — the
 # auditor treats that shape of failure as BLOCKER, and every other failure
@@ -64,7 +90,7 @@ set -uo pipefail
 #
 # Tunables (env, not sourced from .concertino.env — override directly when
 # needed, e.g. in tests):
-#   CONCERTINO_CI_WAIT_TIMEOUT_SEC        (default 420 = 7m)
+#   CONCERTINO_CI_WAIT_TIMEOUT_SEC        (default 540 = 9m)
 #   CONCERTINO_CI_POLL_INTERVAL_SEC       (default 20)
 #   CONCERTINO_MERGE_RECHECK_TIMEOUT_SEC  (default 90 = 1.5m)
 #   CONCERTINO_MERGE_RECHECK_INTERVAL_SEC (default 10)
@@ -74,12 +100,14 @@ WORKTREE_PATH="${1:?usage: check-merge-readiness.sh <WORKTREE_PATH> <BRANCH> <TI
 BRANCH="${2:?usage: check-merge-readiness.sh <WORKTREE_PATH> <BRANCH> <TICKET_ID>}"
 TICKET_ID="${3:?usage: check-merge-readiness.sh <WORKTREE_PATH> <BRANCH> <TICKET_ID>}"
 
-CI_WAIT_TIMEOUT="${CONCERTINO_CI_WAIT_TIMEOUT_SEC:-420}"
+CI_WAIT_TIMEOUT="${CONCERTINO_CI_WAIT_TIMEOUT_SEC:-540}"
 CI_POLL_INTERVAL="${CONCERTINO_CI_POLL_INTERVAL_SEC:-20}"
 MERGE_RECHECK_TIMEOUT="${CONCERTINO_MERGE_RECHECK_TIMEOUT_SEC:-90}"
 MERGE_RECHECK_INTERVAL="${CONCERTINO_MERGE_RECHECK_INTERVAL_SEC:-10}"
 
 FAILED=0
+CI_PENDING=0
+CI_PENDING_NAMES=""
 fail() {
   echo "FAIL $*" >&2
   FAILED=1
@@ -171,7 +199,7 @@ if [ "$FAILED" -eq 0 ]; then
     FAILED_NAMES="$(printf '%s' "$ROLLUP_RAW" | jq -r '
       [.statusCheckRollup[]? |
         ((.conclusion // .state // "") | ascii_upcase) as $c |
-        select($c != "" and $c != "SUCCESS" and $c != "PENDING" and $c != "QUEUED" and $c != "IN_PROGRESS" and $c != "WAITING" and $c != "EXPECTED") |
+        select($c != "" and $c != "SUCCESS" and $c != "SKIPPED" and $c != "NEUTRAL" and $c != "PENDING" and $c != "QUEUED" and $c != "IN_PROGRESS" and $c != "WAITING" and $c != "EXPECTED") |
         (.name // .context // "unnamed check")
       ] | join(", ")' 2>/dev/null)"
     if [ -n "$FAILED_NAMES" ]; then
@@ -182,7 +210,10 @@ if [ "$FAILED" -eq 0 ]; then
       break # every check SUCCESS, or an empty rollup — condition 1 passes
     fi
     if [ "$ci_elapsed" -ge "$CI_WAIT_TIMEOUT" ]; then
-      fail "CI pending after ${CI_WAIT_TIMEOUT}s: ${PENDING_NAMES}"
+      # NOT a fail: these checks are running, not broken. Report the state
+      # and let the caller come back to it. See CON-159 in the header.
+      CI_PENDING=1
+      CI_PENDING_NAMES="$PENDING_NAMES"
       break
     fi
     sleep "$CI_POLL_INTERVAL"
@@ -191,7 +222,10 @@ if [ "$FAILED" -eq 0 ]; then
 fi
 
 # --- 2: mergeable, polled only on the transient UNKNOWN state --------------
-if [ "$FAILED" -eq 0 ]; then
+# Skipped while CI is still pending: mergeability judged against a HEAD whose
+# checks are still moving is a reading with a shelf life, and reporting it
+# alongside a "come back later" would invite acting on it.
+if [ "$FAILED" -eq 0 ] && [ "$CI_PENDING" -eq 0 ]; then
   merge_elapsed=0
   while :; do
     MERGE_RAW="$(cd "$WORKTREE_PATH" && gh pr view "$BRANCH" --json mergeable,mergeStateStatus,reviewDecision 2>&1)"
@@ -238,6 +272,11 @@ if [ "$FAILED" -eq 0 ]; then
 fi
 
 # --- 3: this run's own gates passed -----------------------------------------
+if [ "$CI_PENDING" -ne 0 ]; then
+  echo "PENDING ${CI_PENDING_NAMES} (still running after ${CI_WAIT_TIMEOUT}s — not a failure; re-invoke)" >&2
+  exit 3
+fi
+
 ROOT="$(main_checkout)"
 if [ -z "${ROOT:-}" ]; then
   fail "could not resolve main checkout (not inside a git repo?)"
@@ -256,17 +295,40 @@ else
       (split("\n") | map(select(length > 0)) | map(try fromjson catch empty)) as $evs
       | ($evs | map(select(.kind == "verdict" and .role == "evaluator")) | last | (.verdict // "MISSING")) as $ev
       | ($evs | map(select(.kind == "verdict" and .role == "skeptic")) | last | (.verdict // "MISSING")) as $sk
-      | "EVAL=\($ev)\nSKEPTIC=\($sk)"
+      | ([$evs | to_entries[] | select(.value.kind == "verdict" and .value.role == "skeptic")] | last | (.key // -1)) as $ski
+      | ([$evs | to_entries[] | select(.value.kind == "escalation.answered" and (.value.answer == "proceed-to-delivery"))] | last | (.key // -1)) as $ovi
+      | "EVAL=\($ev)\nSKEPTIC=\($sk)\nOVERRIDE=\(if $ovi > $ski then "yes" else "no" end)"
     ' "$LOG" 2>/dev/null)"
     EVAL_VERDICT="$(printf '%s\n' "$GATE_INFO" | sed -n 's/^EVAL=//p')"
     SKEPTIC_VERDICT="$(printf '%s\n' "$GATE_INFO" | sed -n 's/^SKEPTIC=//p')"
+    SKEPTIC_OVERRIDE="$(printf '%s\n' "$GATE_INFO" | sed -n 's/^OVERRIDE=//p')"
     [ -z "$EVAL_VERDICT" ] && EVAL_VERDICT="MISSING"
     [ -z "$SKEPTIC_VERDICT" ] && SKEPTIC_VERDICT="MISSING"
+    [ -z "$SKEPTIC_OVERRIDE" ] && SKEPTIC_OVERRIDE="no"
 
     [ "$EVAL_VERDICT" = "PASS" ] \
       || fail "evaluator gate not passed (latest role=evaluator verdict: ${EVAL_VERDICT})"
-    [ "$SKEPTIC_VERDICT" = "CONFIRM" ] \
-      || fail "skeptic gate not confirmed (latest role=skeptic verdict: ${SKEPTIC_VERDICT})"
+    # CON-152: an owner override of a budget-exhausted final gate is a
+    # legitimate resolution the gate previously had no way to represent, so
+    # ANY run resolved that way was permanently unmergeable by agent-merge.
+    # Same shape as CON-149/HEL-959, one layer up: a real non-failure state
+    # with no representation. Cleared by the HUMAN's recorded answer, never by
+    # an agent-written verdict -- `escalation.answered` is written only by
+    # emit-event.sh's own resolution path, from an answer file a human wrote,
+    # so no agent can forge one. An orchestrator-emitted CONFIRM standing in
+    # for an override would be a relayed authorization, which is not
+    # authority. The override must also POST-DATE the latest skeptic verdict
+    # (index comparison above), so a stale override from an earlier
+    # escalation can never clear a REFUTE raised after it. Reported
+    # distinguishably from a real CONFIRM so the log still says who cleared
+    # the gate.
+    if [ "$SKEPTIC_VERDICT" = "CONFIRM" ]; then
+      :
+    elif [ "$SKEPTIC_OVERRIDE" = "yes" ]; then
+      echo "NOTE skeptic gate cleared by owner override (proceed-to-delivery answered after the latest role=skeptic verdict: ${SKEPTIC_VERDICT}) — not a skeptic CONFIRM" >&2
+    else
+      fail "skeptic gate not confirmed (latest role=skeptic verdict: ${SKEPTIC_VERDICT})"
+    fi
   fi
 fi
 

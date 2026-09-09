@@ -37,6 +37,20 @@ set -uo pipefail
 #                     files outside the change-dir allowlist remain. Without
 #                     it, that case is a loud stop, not a silent pass.
 #
+# Environment:
+#   DRY_RUN=1         (CON-164) run every validation the normal path runs --
+#                     merge-base computation, base-advancement logging,
+#                     staged-file-set computation, the CON-162 staged-blob /
+#                     on-disk / divergence checks, declaration parsing, and
+#                     the allowlist comparison -- and return the same exit
+#                     code the same invocation would have produced without
+#                     the flag, for every guard verdict. Performs no `git
+#                     reset`, no `git commit`, no HEAD movement, no index
+#                     change. Exact string match against "1"; any other
+#                     value (including "true") takes the normal, committing
+#                     path. Matches helio's scripts/release/cut-release.sh
+#                     convention.
+#
 # Guard (design.md D2/D2a/D2b):
 #   1. Reset target is ALWAYS `git merge-base --all HEAD <base-remote>/<base-
 #      branch>` (D1) — never the base ref's tip directly. More than one
@@ -44,13 +58,19 @@ set -uo pipefail
 #   2. Base-advancement is logged (commits between merge-base and base tip)
 #      but never blocks or forces a rebase (D3) — D1 already makes the reset
 #      safe regardless of how far the base advanced.
-#   3. After `git reset --soft <merge-base>`, the staged file set
-#      (`git diff --cached --name-only`) is compared against the union of:
+#   3. Before HEAD ever moves, the prospective staged file set
+#      (`git diff --cached --name-only <merge-base>`) is compared against the
+#      union of:
 #        (a) the fixed allowlist glob `<CHANGE_DIR>/**`
 #        (b) paths parsed from `<CHANGE_DIR>/files-modified.md`, extracting
 #            ONLY lines matching `^\s*[-*]\s*` followed by a backtick-quoted
-#            path (D2a) — backticks appearing elsewhere on a line are never
-#            treated as paths.
+#            path (D2a) — lines carrying no leading bullet are never scanned,
+#            so a continuation line declares nothing. On a qualifying bullet
+#            EVERY backtick-quoted, path-shaped span counts, not merely the
+#            first (D2a-ii), so a grouped bullet declares all of its paths.
+#            A span is path-shaped if it contains `/` or a dotted extension;
+#            inline code spans on a bullet are therefore never treated as
+#            paths.
 #      Any staged path outside that union is a loud stop, no commit.
 #      A missing/unparseable files-modified.md while staged files remain
 #      outside the allowlist is ALSO a loud stop, unless
@@ -70,6 +90,10 @@ CHANGE_DIR="${5:?usage: squash-branch.sh <WORKTREE_PATH> <BASE_REMOTE> <BASE_BRA
 ALLOW_EMPTY_DECLARATION=0
 if [ "${6:-}" = "--allow-empty-declaration" ]; then
   ALLOW_EMPTY_DECLARATION=1
+fi
+DRY_RUN_MODE=0
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  DRY_RUN_MODE=1
 fi
 
 if [ ! -d "$WORKTREE_PATH" ]; then
@@ -109,14 +133,9 @@ else
   echo "INFO base ${BASE_REF} has not advanced past the merge-base."
 fi
 
-# --- D1: reset against the merge-base, never the base ref's live tip ---
-if ! git_wt reset --soft "$MERGE_BASE" >/dev/null 2>&1; then
-  echo "FAIL git reset --soft ${MERGE_BASE} failed" >&2
-  exit 1
-fi
-
-# --- Staged file set ---
-STAGED_FILES="$(git_wt diff --cached --name-only)"
+# --- Staged file set (prospective: computed against the merge-base without
+# moving HEAD, so a refusal never leaves the branch reset) ---
+STAGED_FILES="$(git_wt diff --cached --name-only "$MERGE_BASE")"
 STAGED_COUNT=0
 if [ -n "$STAGED_FILES" ]; then
   STAGED_COUNT="$(printf '%s\n' "$STAGED_FILES" | grep -c .)"
@@ -127,13 +146,79 @@ fi
 CHANGE_DIR_NORM="${CHANGE_DIR%/}"
 
 FILES_MODIFIED_PATH="${WORKTREE_PATH%/}/${CHANGE_DIR_NORM}/files-modified.md"
-DECLARED_PATHS=""
+DECLARATION_INDEX_PATH="${CHANGE_DIR_NORM}/files-modified.md"
+
+# --- CON-162 D1/D2/D4/D4a: read the declaration from the STAGED BLOB, not the
+# worktree copy, so the bytes the guard validates are the bytes the prospective
+# commit will capture. The single on-disk-presence test below is the ONLY
+# `[ -f "$FILES_MODIFIED_PATH" ]` branch-routing control in this script (per
+# design.md D2/D7 -- on-disk presence is evaluated first and routes control;
+# everything downstream reuses this one boolean rather than re-testing).
+FILE_ON_DISK=0
 if [ -f "$FILES_MODIFIED_PATH" ]; then
+  FILE_ON_DISK=1
+fi
+
+STAGED_BLOB=""
+STAGED_BLOB_PRESENT=0
+if STAGED_BLOB="$(git_wt show ":${DECLARATION_INDEX_PATH}" 2>/dev/null)"; then
+  STAGED_BLOB_PRESENT=1
+fi
+
+if [ "$FILE_ON_DISK" -eq 1 ] && [ "$STAGED_BLOB_PRESENT" -eq 0 ]; then
+  # D4: on disk but not staged -- it will not be committed, so treating its
+  # contents as the declaration is the same defect in a different costume.
+  # This refusal is unconditional: neither ALLOW_EMPTY_DECLARATION nor any
+  # other flag suppresses it (D5).
+  echo "FAIL files-modified.md exists on disk at ${FILES_MODIFIED_PATH} but has no staged blob in the index (untracked, or staged for deletion)." >&2
+  echo "It will not be part of the prospective commit, so its on-disk content cannot be validated as the declaration." >&2
+  echo "Remedy: git add ${DECLARATION_INDEX_PATH}" >&2
+  echo "        then re-run." >&2
+  exit 1
+fi
+
+if [ "$FILE_ON_DISK" -eq 1 ] && [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
+  # D2/D7: divergence check, gated on FILE_ON_DISK (per D2's precondition --
+  # `git diff --quiet` exits 1 for a worktree deletion, so running this
+  # ungated would misfire on the D4a shape below). This refusal is also
+  # unconditional: ALLOW_EMPTY_DECLARATION does not suppress it (D5).
+  if ! git_wt diff --quiet -- "$DECLARATION_INDEX_PATH"; then
+    echo "FAIL files-modified.md differs between the staged index and the worktree copy." >&2
+    echo "The guard must validate the same bytes the commit will capture, and cannot silently pick a side (index or worktree) when they disagree." >&2
+    echo "Remedy: stage the corrected declaration (git add ${DECLARATION_INDEX_PATH}), or revert the worktree copy to match what is staged, then re-run." >&2
+    exit 1
+  fi
+fi
+
+if [ "$FILE_ON_DISK" -eq 0 ] && [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
+  # D4a: staged blob present, no worktree copy. Not a divergence -- parse and
+  # enforce the blob, exactly as D1 requires. Noted here (not silently) so the
+  # one exemption in this design is visible in a transcript.
+  echo "INFO files-modified.md declaration read from the index; no worktree copy is present."
+fi
+
+DECLARED_PATHS=""
+if [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
   # D2a: only lines starting (after leading whitespace) with a markdown
-  # bullet immediately followed by a backtick-quoted path count. Backticks
-  # elsewhere on the line are ignored.
-  DECLARED_PATHS="$(grep -E '^[[:space:]]*[-*][[:space:]]*`[^`]+`' "$FILES_MODIFIED_PATH" \
-    | sed -E 's/^[[:space:]]*[-*][[:space:]]*`([^`]+)`.*/\1/')"
+  # bullet immediately followed by a backtick-quoted path qualify. Prose
+  # lines, and continuation lines carrying no bullet, are never scanned.
+  #
+  # D2a-ii (CON-151): a qualifying bullet declares EVERY backtick-quoted
+  # path on it, not just the first. The original single-capture sed
+  # (`s/...`([^`]+)`.*/\1/`) silently dropped every path after the first on
+  # a grouped bullet, so a declaration that looked complete parsed as
+  # partial and the guard refused files the author had genuinely declared.
+  # That direction is fail-closed (a loud refusal, never a silent pass), so
+  # it cost runs time rather than safety -- but the fix must not overshoot
+  # into over-declaring, which WOULD weaken the guard. Hence the path-shaped
+  # filter below: a span counts only if it contains a `/` or a dotted
+  # extension, so inline code spans on a bullet (`--allow-empty-declaration`,
+  # `Option[T]`) cannot enter the allowlist.
+  DECLARED_PATHS="$(printf '%s\n' "$STAGED_BLOB" \
+    | grep -E '^[[:space:]]*[-*][[:space:]]*`[^`]+`' \
+    | grep -oE '`[^`]+`' \
+    | tr -d '`' \
+    | grep -E '(/|\.[A-Za-z0-9]+$)')"
 fi
 DECLARED_COUNT=0
 if [ -n "$DECLARED_PATHS" ]; then
@@ -182,12 +267,12 @@ fi
 if [ "$DECLARED_COUNT" -eq 0 ] && [ -n "$UNEXPECTED" ]; then
   if [ "$ALLOW_EMPTY_DECLARATION" -ne 1 ]; then
     echo "FAIL no usable declaration in files-modified.md while staged files remain outside the allowlist (${CHANGE_DIR_NORM}/**)." >&2
-    if [ -f "$FILES_MODIFIED_PATH" ]; then
-      echo "--- raw files-modified.md content ---" >&2
-      cat "$FILES_MODIFIED_PATH" >&2
-      echo "--------------------------------------" >&2
+    if [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
+      echo "--- raw files-modified.md content (staged) ---" >&2
+      printf '%s\n' "$STAGED_BLOB" >&2
+      echo "------------------------------------------------" >&2
     else
-      echo "(files-modified.md is missing at ${FILES_MODIFIED_PATH})" >&2
+      echo "(no staged declaration blob exists at ${DECLARATION_INDEX_PATH})" >&2
     fi
     echo "Staged paths outside the allowlist:" >&2
     printf '%s' "$UNEXPECTED" | sed 's/^/  /' >&2
@@ -202,13 +287,28 @@ else
   if [ -n "$UNEXPECTED" ]; then
     echo "FAIL staged file set exceeds the run's declared touched-file set. Unexpected file(s):" >&2
     printf '%s' "$UNEXPECTED" | sed 's/^/  /' >&2
-    echo "(allowed: ${CHANGE_DIR_NORM}/** plus paths declared in ${FILES_MODIFIED_PATH})" >&2
+    echo "(allowed: ${CHANGE_DIR_NORM}/** plus paths declared in the staged declaration at ${DECLARATION_INDEX_PATH})" >&2
+    echo "Declaration format: each path must be a backtick-quoted, path-shaped span on a line" >&2
+    echo "starting with a '-' or '*' bullet. A grouped bullet may declare several paths and all" >&2
+    echo "of them count, but a continuation line carrying no bullet declares nothing -- if a file" >&2
+    echo "above looks already declared, check that its line actually starts with a bullet." >&2
     echo "Refusing to commit. Investigate before re-running." >&2
     exit 1
   fi
 fi
 
-# --- Guard passed: create the squash commit ---
+# --- Guard passed: reset against the merge-base, never the base ref's live
+# tip, then create the squash commit ---
+if [ "$DRY_RUN_MODE" = "1" ]; then
+  echo "READY dry run: guard passed, nothing committed (DRY_RUN=1)"
+  exit 0
+fi
+
+if ! git_wt reset --soft "$MERGE_BASE" >/dev/null 2>&1; then
+  echo "FAIL git reset --soft ${MERGE_BASE} failed" >&2
+  exit 1
+fi
+
 if ! git_wt commit -q -m "$SUBJECT" >/dev/null 2>&1; then
   echo "FAIL git commit failed after guard passed" >&2
   exit 1
