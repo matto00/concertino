@@ -4,7 +4,7 @@ description: Drive multiple concertino orchestrator runs concurrently from direc
 license: MIT
 metadata:
   author: concertino
-  version: "1.0"
+  version: "1.1"
 ---
 
 Coordinate several concertino ticket-delivery runs at once as their **driver** —
@@ -16,7 +16,8 @@ yourself instead of a merge-confirmation screen.
 
 Every rule below exists because skipping it caused a real, specific incident in
 production driving (helio, 2026-08-16/17 — one session, seven tickets, three
-near-misses). This is not theoretical hardening; it is what actually broke.
+near-misses; and 2026-09-07/09 — two nights, five lanes, 19 merged PRs, which
+added §§11-15). This is not theoretical hardening; it is what actually broke.
 
 ---
 
@@ -281,3 +282,152 @@ polling instructions — and stalled anyway. Prose has now failed at four
 escalating strengths (role doc ×8, a targeted doc fix, a bespoke per-run
 warning, warning plus procedure). Budget for nudging as a normal cost of
 driving; do not assume a better-worded brief removes it.
+
+
+## 11. Dispatch one orchestrator per ticket — never a queue to one lane
+
+The orchestrator role is built around **single-ticket, single-worktree
+delivery**. Its entire state machine is keyed to one run: `run.start`,
+`.concertino/runs/<TICKET>/`, `workflow-state.md`, phase assertions,
+`squash-branch.sh`, `cleanup.sh --phase4`. Handing one orchestrator a
+multi-ticket queue makes it re-enter that machine repeatedly inside a single
+context, and the context is what breaks first.
+
+Measured on helio, 2026-09-07/09:
+
+| lane shape | tokens |
+|---|---|
+| one ticket, long-lived lane | **630k** |
+| three tickets, one lane | 369k and degrading |
+| **one ticket, fresh orchestrator** (incl. a cold resume of a half-finished run) | **154k** |
+
+A batch lane compacts around ticket two or three — and what it loses is exactly
+the accumulated constraint knowledge that makes the *later* tickets good. A
+fresh per-ticket orchestrator starts at zero and receives those constraints from
+your spawn prompt, which is cheap and lossless.
+
+Three further reasons, each observed:
+
+- **Failure isolation.** A lane stopped by accident took its whole remaining
+  queue with it. Per-ticket, that loses one run.
+- **Staleness.** Long-lived orchestrators are precisely what goes stale (§10).
+  A short-lived one has less turn surface on which to yield.
+- **Reconstruction.** A replacement orchestrator, given only the ticket and the
+  worktree, recovered a run whose `workflow-state.md` was **three phases stale**
+  by reading `events.jsonl` — and did it for a quarter of the long-lived lane's
+  token cost.
+
+**So: you hold the queue.** Dispatch the next ticket on each merge notification.
+That is the loop, and it costs you one `Agent` call per ticket.
+
+The exception is scale, not preference: a run of small mechanical tickets pays
+60–70% orchestrator overhead (setup, planning artifacts, gate rounds, delivery,
+cleanup) on each one. For a genuinely mechanical, cross-cutting, or urgent
+change — a lockfile bump unblocking every lane, a release cut — do it yourself
+directly and say so.
+
+## 12. Everything you assert to a lane is a claim it must verify
+
+You will be wrong, and lanes will act on it. Across one batch the driver was
+wrong **six times**:
+
+- attributed an e2e race to a ticket before measurements existed (it was
+  pre-existing, and reproduced at a *higher* rate on the prior commit);
+- called a fix "one line" without reading the file — the conditional also
+  wrapped a Load-more button, so the "fix" would have shipped a visible,
+  focusable, dead control;
+- amplified a false rationale from one ticket into a new one, raised its
+  priority on that basis, and specified a verification target that passes
+  *without* the fix;
+- endorsed a guard whose mutation exercised a branch that cannot leak;
+- handed an executor a citation mapping that was backwards;
+- relayed a ticket's "plausibly one token" premise as a reason a fix would be
+  tractable — it was 17 sites across 8 stylesheets.
+
+**Every single one was caught by a lane checking rather than executing.** None
+was caught by the driver re-reading its own message.
+
+The mitigation is structural, not resolve: **brief every lane that driver
+statements are claims to verify, and say so in the spawn prompt.** Then treat a
+lane correcting you as the system working, not as friction. When it happens,
+say so plainly and move on — a lane that has been thanked for correcting you
+corrects you again.
+
+## 13. Record the owner's answer durably, not just in a message
+
+A ruling relayed by `SendMessage` exists only in a transcript. Twice in one
+batch a decision shipped to production with **no durable provenance**: the run's
+event log showed `escalation.raised` with no `escalation.answered`, and the
+reasoning survived nowhere a later reader would look.
+
+When the owner rules on an escalation:
+
+```bash
+concertino answer <TICKET> <answer-value>
+```
+
+...**and** record the reasoning where the artifact lives — a ticket comment, the
+PR body — not only in the relay. Say *why*, not just *what*: the value of the
+record is that whoever later observes the consequence ("the Yellow focus ring
+isn't yellow") closes it as an accepted decision rather than reopening it as a
+bug.
+
+Check this at close-out. One run finished with **three escalations raised and
+zero answered**.
+
+## 14. Verify your own instruments
+
+The tools you use to watch the fleet lie in specific, learnable ways.
+
+- **A background watchdog can report "completed" while still running** — that
+  is the wrapper shell exiting, not the `nohup`'d process. Confirm with
+  `kill -0 "$(cat watchdog.pid)"`. Trusting the notification once produced five
+  concurrent watchdogs with stale lane maps.
+- **The agent list's status text is a frozen label, not current activity.** A
+  lane can read "Commenting on HEL-1046" while working something unrelated
+  hours later. **The token count is the reliable identifier** — match it against
+  each lane's last reported usage before acting on a row. Getting this wrong
+  means stopping the wrong lane.
+- **A reused dev server may be serving another branch.** `start-servers.sh`
+  reports "already healthy, reusing" without checking what that process is
+  serving. Confirm with `readlink /proc/<pid>/cwd` before anything is judged
+  against it — including anything you put in front of the owner.
+- **Watchdog thresholds need two signals**: a tight fleet-wide one (no
+  transcript in the whole session written for ~15 min) and a much looser
+  per-lane backstop (~3h). One mtime is wrong, because children write their own
+  transcripts and a legitimate executor can run for hours.
+- **Update the lane map whenever the queue moves.** A watchdog pointed at
+  finished tickets is worse than none: it reports false positives on parked
+  lanes and misses the live ones.
+
+## 15. Knowing when to stop a review loop
+
+Gate rounds that keep finding real defects are not automatically worth
+continuing. One ticket ran **eight design rounds and two document
+regenerations** before writing a line of implementation code, and every round
+found something real — but the findings changed *kind*, and that is the signal.
+
+Stop when **the remaining risk moves from a person to a mechanism.** Concretely,
+these together are enough:
+
+- **Substance has been independently confirmed** more than once, by a reader
+  that did not write it.
+- **Findings have migrated into the loop's own repairs.** When the last rounds
+  find zero defects in the artifact and only defects in the edits to it, the
+  loop is no longer converging on the artifact — it is orbiting. Watch the base
+  rate: "my own fix introduced the next finding" reached **5 of 7**.
+- **The failure mode that caused the last round is now covered by a machine**,
+  not by an intention to be careful.
+- **Findings changed kind**: 6, 4, 4, 4, 1 across five rounds, where the early
+  rounds each found a new *class* of defect and the late ones found only
+  clerical errors. Converged-on-kind is a much better stopping signal than
+  "the budget ran out."
+
+Two instruments matter more than another round:
+
+- **When the fixer and the checker are the same context, the loop does not
+  converge.** Use a cold reader that **reports and does not edit**; the fixer
+  fixes; the cold reader re-reads.
+- **Push the residual check into a gate that was going to run anyway** — the
+  evaluator, the final gate — rather than spending a fresh round on it. No
+  extra round, no lost coverage.
