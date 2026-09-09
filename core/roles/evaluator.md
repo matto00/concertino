@@ -155,6 +155,10 @@ scripts/concertino/start-servers.sh "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"
 scripts/concertino/assert-phase.sh servers "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"
 ```
 
+Never invoke `npm`/`vite`/`sbt`/`npx playwright` bare (e.g. `npm run dev`) as a
+substitute — a bare invocation silently inherits an ambient default port/cwd
+instead of this run's pinned config, and nothing complains (CON-165).
+
 If the script prints `FAIL` (a server never became healthy): include the
 referenced log excerpt and tag as `BLOCKER` — environmental, requires human
 intervention. Do not debug the dev environment as a code change request.

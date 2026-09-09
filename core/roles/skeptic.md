@@ -93,6 +93,9 @@ binding doc):
   `scripts/concertino/start-servers.sh "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"`,
   then `scripts/concertino/assert-phase.sh servers "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"`.
   If it `FAIL`s, that's an environmental `BLOCKER` — report it, don't guess.
+  Never invoke `npm`/`vite`/`sbt`/`npx playwright` bare as a substitute — a bare
+  invocation silently inherits an ambient default port/cwd instead of this
+  run's pinned config, and nothing complains (CON-165).
 - Navigate to **each changed view**. **Take screenshots and look at them** — this
   is a visual-judgment task, not an accessibility-tree task.
 - Judge against the design standard: token usage (no hardcoded values where a token

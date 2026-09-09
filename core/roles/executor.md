@@ -100,6 +100,12 @@ gates whose `when` matches:
 
 {{block:gates}}
 
+If a gate failure tempts starting a dev/backend server ad hoc to debug it, use
+the canonical `scripts/concertino/start-servers.sh` — never invoke
+`npm`/`vite`/`sbt`/`npx playwright` bare (e.g. `npm run dev`). A bare
+invocation silently inherits an ambient default port/cwd instead of this
+run's pinned config, and nothing complains (CON-165).
+
 Fix any failure before proceeding. Never skip a failing gate. When a gate fails or
 you hit a bug, follow `systematic-debugging.md`: **no fix without a probe-confirmed
 root cause** — name the failing layer, run a minimal probe that confirms the cause,
