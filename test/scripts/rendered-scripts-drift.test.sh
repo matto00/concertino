@@ -14,9 +14,8 @@
 # be red on arrival for that file with a remedy that cannot clear it).
 #
 # Missing counterparts are reported separately from content mismatches,
-# and honour a narrow exemption list -- seeded with pricing-table.json and
-# report-cost.sh (owner has not ruled -- tracked by CON-173) -- that
-# suppresses ONLY the missing-counterpart case, never a content mismatch.
+# and honour a narrow exemption list -- currently EMPTY -- that suppresses
+# ONLY the missing-counterpart case, never a content mismatch.
 # The exemption table is readable from the environment
 # (RENDERED_SCRIPTS_DRIFT_EXEMPT_EXTRA, newline-separated relative paths)
 # so the mechanism can be tested without editing this script.
@@ -49,12 +48,13 @@ echo "rendered-scripts-drift.test.sh (CON-172 rendered-script-drift-gate)"
 run_drift_check() {
   local core_dir="$1" rendered_dir="$2" extra_exempt="${3:-}"
 
-  # Built-in exemption table: every entry carries a written reason naming a
-  # tracked open question.
-  local -A exempt=(
-    ["pricing-table.json"]="owner has not ruled -- tracked by CON-173"
-    ["report-cost.sh"]="owner has not ruled -- tracked by CON-173"
-  )
+  # Built-in exemption table: deliberately EMPTY. Every entry must carry a
+  # written reason naming a tracked open question, and there is no such open
+  # question right now -- CON-173 was resolved by rendering and committing
+  # pricing-table.json and report-cost.sh rather than by exempting them.
+  # Keep it empty: an exemption is a suppressed defect, so the bar for adding
+  # one is a named, tracked, answerable question, not a convenience.
+  local -A exempt=()
   if [ -n "$extra_exempt" ]; then
     while IFS= read -r line; do
       [ -z "$line" ] && continue
@@ -211,20 +211,23 @@ run_drift_check "$D/core" "$D/rendered" >/dev/null
 check "2.13 removed the throwaway file: green again" "$?" "0"
 rm -rf "$D"
 
-# --- 2.14 built-in exemption suppresses the missing case ---------------------
+# --- 2.14 an exemption suppresses the missing case ---------------------------
+#     Driven by a synthetic env-supplied entry, not by the built-in table,
+#     which is empty by design. This keeps the mechanism under test without
+#     requiring a real suppressed defect to exist for the test to mean
+#     anything -- and it stays honest if the built-in table is ever repopulated.
 D="$(new_scratch_trees)"
-cat > "$D/core/pricing-table.json" <<'EOF'
+cat > "$D/core/only-in-core.json" <<'EOF'
 {}
 EOF
 run_drift_check "$D/core" "$D/rendered" >/dev/null
-check "2.15 exempt file (pricing-table.json), no rendered counterpart: green" "$?" "0"
+check "2.15a unexempt file, no rendered counterpart: red (the exemption is load-bearing)" "$?" "1"
+run_drift_check "$D/core" "$D/rendered" "only-in-core.json" >/dev/null
+check "2.15b same file, exempted: green" "$?" "0"
 rm -rf "$D"
 
 # --- 2.16 exemption does NOT suppress a content mismatch (via a synthetic
-#     env-supplied entry over an ordinary rendered file -- never touching
-#     scripts/concertino/pricing-table.json or report-cost.sh, which are
-#     absent in this worktree but present as owner-protected untracked
-#     files in the main checkout) -------------------------------------------
+#     env-supplied entry over an ordinary rendered file) --------------------
 D="$(new_scratch_trees)"
 printf 'X' >> "$D/rendered/a.sh"
 OUT="$(run_drift_check "$D/core" "$D/rendered" "a.sh")"; RC=$?
