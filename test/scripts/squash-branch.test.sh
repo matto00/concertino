@@ -220,6 +220,9 @@ echo "declared" > "$BRANCH2/declared-file.txt"
 echo "stray" > "$BRANCH2/stray-unrelated-file.txt"
 commit_all "$BRANCH2" "executor commit (with an undeclared stray file)"
 
+HEAD_BEFORE2="$(git -C "$BRANCH2" rev-parse HEAD)"
+COMMIT_COUNT_BEFORE2="$(git -C "$BRANCH2" rev-list --count HEAD)"
+
 OUT2="$("$SCRIPT" "$BRANCH2" origin main "CON-129 should not commit" "$CHANGE_DIR2" 2>&1)"
 RC2=$?
 if [ "$RC2" -ne 0 ]; then ok "3.5 guard exits non-zero for an undeclared stray file"; else bad "3.5 guard exits non-zero for an undeclared stray file" "exit=0 output=$OUT2"; fi
@@ -228,20 +231,32 @@ if echo "$OUT2" | grep -qF "stray-unrelated-file.txt"; then
 else
   bad "3.5 guard output names the unexpected file explicitly" "output: $OUT2"
 fi
-# No new commit should have been created: the guard trips AFTER the
-# (already-performed) `reset --soft <merge-base>`, so HEAD is back at the
-# merge-base (1 commit — "init") with the executor's work left staged, not
-# committed. Confirm via the staged diff, not a commit that was never made.
+# No new commit should have been created, and — per the validate-before-reset
+# contract (CON-163) — HEAD must not have moved at all: the guard now runs
+# BEFORE any reset, so a refusal leaves the branch's own commits exactly
+# where the executor left them, reachable from HEAD. Compare against values
+# recorded before the run, never against a literal.
 COMMIT_COUNT2="$(git -C "$BRANCH2" rev-list --count HEAD)"
-if [ "$COMMIT_COUNT2" -eq 1 ]; then
-  ok "3.5 no squash commit was created on guard trip (HEAD still at merge-base)"
+if [ "$COMMIT_COUNT2" -eq "$COMMIT_COUNT_BEFORE2" ]; then
+  ok "3.5 no squash commit was created on guard trip (commit count unchanged)"
 else
-  bad "3.5 no squash commit was created on guard trip (HEAD still at merge-base)" "commit count=$COMMIT_COUNT2"
+  bad "3.5 no squash commit was created on guard trip (commit count unchanged)" "before=$COMMIT_COUNT_BEFORE2 after=$COMMIT_COUNT2"
 fi
-if git -C "$BRANCH2" diff --cached --name-only | grep -qF "stray-unrelated-file.txt"; then
-  ok "3.5 the stray file remains staged (uncommitted) after the guard trip"
+HEAD_AFTER2="$(git -C "$BRANCH2" rev-parse HEAD)"
+if [ "$HEAD_AFTER2" = "$HEAD_BEFORE2" ]; then
+  ok "3.5 HEAD is unchanged across the guard trip"
 else
-  bad "3.5 the stray file remains staged (uncommitted) after the guard trip" "not found in staged diff"
+  bad "3.5 HEAD is unchanged across the guard trip" "before=$HEAD_BEFORE2 after=$HEAD_AFTER2"
+fi
+# The stray file is not lost: it is still present and reachable from HEAD.
+# In this fixture it was committed by the executor before the script ran, so
+# the index is legitimately clean after the fix (nothing was ever reset) —
+# the old "remains staged" form cannot hold under the new ordering. What
+# matters is that the file still exists on the branch's own history.
+if git -C "$BRANCH2" show --name-only --pretty=format: HEAD 2>/dev/null | grep -qx "stray-unrelated-file.txt"; then
+  ok "3.5 the stray file remains reachable from HEAD after the guard trip (work not lost)"
+else
+  bad "3.5 the stray file remains reachable from HEAD after the guard trip (work not lost)" "not found in HEAD's tree"
 fi
 
 echo "Scenario 2b: deleting the guard block from the real script makes this fail (exit 0, commits)"
@@ -306,6 +321,67 @@ if [ "$RC2C" -ne 0 ]; then
 else
   bad "3.5 restored real script trips the guard again after trap-restore" "exit=$RC2C output=$OUT2C"
 fi
+
+# ---------------------------------------------------------------------
+# Scenario 2d (task 3.2, design.md D4): mutation proof for the
+# validate-before-reset ordering (CON-163). The regression guard added
+# above (HEAD unchanged across a refused run) must be mutation-failable by
+# reintroducing the EARLY reset specifically -- not by weakening the guard's
+# strictness, which would prove the wrong thing. Uses a fixture whose branch
+# carries its own commit past the merge-base (declared-file.txt +
+# stray-unrelated-file.txt, committed via commit_all below), so HEAD and the
+# merge-base do not coincide and the assertion is not vacuous.
+# ---------------------------------------------------------------------
+echo "Scenario 2d: mutation proof -- reintroducing the early reset makes the HEAD-unchanged guard go red"
+
+BRANCH2D="$BASE2/branch-checkout-4"
+git clone -q "$REMOTE2" "$BRANCH2D" 2>/dev/null
+git -C "$BRANCH2D" checkout -q -b feature/con-129/CON-129-h origin/main
+mkdir -p "$BRANCH2D/$CHANGE_DIR2"
+cat > "$BRANCH2D/$CHANGE_DIR2/files-modified.md" <<'EOF'
+- `declared-file.txt` — the only file this run declares
+EOF
+echo "declared" > "$BRANCH2D/declared-file.txt"
+echo "stray" > "$BRANCH2D/stray-unrelated-file.txt"
+commit_all "$BRANCH2D" "executor commit (with an undeclared stray file)"
+
+cp "$SCRIPT" "$SCRIPT.bak.$$"
+# Reintroduce the early reset at its OLD position -- immediately after the
+# merge-base is computed, before the staged-set inspection -- exactly the
+# defect CON-163 fixes. This is the ordering mutation, not a guard-strictness
+# mutation.
+python3 - "$SCRIPT" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    lines = f.readlines()
+target = "# --- Staged file set (prospective: computed against the merge-base without\n"
+idx = lines.index(target)
+early_reset = (
+    'if ! git_wt reset --soft "$MERGE_BASE" >/dev/null 2>&1; then\n'
+    '  echo "FAIL git reset --soft ${MERGE_BASE} failed" >&2\n'
+    '  exit 1\n'
+    'fi\n\n'
+)
+lines.insert(idx, early_reset)
+with open(path, "w") as f:
+    f.writelines(lines)
+PYEOF
+chmod +x "$SCRIPT"
+
+HEAD_BEFORE2D="$(git -C "$BRANCH2D" rev-parse HEAD)"
+OUT2D="$("$SCRIPT" "$BRANCH2D" origin main "CON-129 should not commit" "$CHANGE_DIR2" 2>&1)"
+RC2D=$?
+HEAD_AFTER2D="$(git -C "$BRANCH2D" rev-parse HEAD)"
+
+if [ "$RC2D" -ne 0 ] && [ "$HEAD_AFTER2D" != "$HEAD_BEFORE2D" ]; then
+  ok "3.2 HEAD-unchanged guard is mutation-failable by reintroducing the early reset (HEAD moved: before=$HEAD_BEFORE2D after=$HEAD_AFTER2D)"
+else
+  bad "3.2 HEAD-unchanged guard is mutation-failable by reintroducing the early reset" "expected refusal with HEAD moved; got exit=$RC2D before=$HEAD_BEFORE2D after=$HEAD_AFTER2D output=$OUT2D"
+fi
+
+mv "$SCRIPT.bak.$$" "$SCRIPT"
+chmod +x "$SCRIPT"
 
 # ---------------------------------------------------------------------
 # Scenario 3 (tasks 3.6): always print staged count/list, no violations.
@@ -387,6 +463,7 @@ EOF
 
 BRANCH4A="$BASE4/branch-a"
 make_branch4 "$BRANCH4A"
+HEAD_BEFORE4A="$(git -C "$BRANCH4A" rev-parse HEAD)"
 OUT4A="$("$SCRIPT" "$BRANCH4A" origin main "CON-129 unparseable, no opt-in" "$CHANGE_DIR4" 2>&1)"
 RC4A=$?
 if [ "$RC4A" -ne 0 ]; then ok "3.7 unparseable declaration fails loudly without --allow-empty-declaration"; else bad "3.7 unparseable declaration fails loudly without --allow-empty-declaration" "exit=0 output=$OUT4A"; fi
@@ -394,6 +471,12 @@ if echo "$OUT4A" | grep -qF "outstanding-file.txt" && echo "$OUT4A" | grep -qi "
   ok "3.7 output includes both the raw declaration content and the outstanding staged path"
 else
   bad "3.7 output includes both the raw declaration content and the outstanding staged path" "output: $OUT4A"
+fi
+HEAD_AFTER4A="$(git -C "$BRANCH4A" rev-parse HEAD)"
+if [ "$HEAD_AFTER4A" = "$HEAD_BEFORE4A" ]; then
+  ok "3.3 HEAD is unchanged across the missing/unparseable-declaration refusal"
+else
+  bad "3.3 HEAD is unchanged across the missing/unparseable-declaration refusal" "before=$HEAD_BEFORE4A after=$HEAD_AFTER4A"
 fi
 
 BRANCH4B="$BASE4/branch-b"
