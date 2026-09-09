@@ -18,5 +18,5 @@ MODELS: {"orchestrator":"opus","executor":"sonnet","evaluator":"opus","skeptic":
 SECOND_FINAL_GATE_SKEPTIC: false
 EVALUATOR_CLEAN_WORKTREE: false
 CYCLE: 2
-SKEPTIC_CYCLE: 1
+SKEPTIC_CYCLE: 2
 SKEPTIC_DESIGN_ROUNDS_USED: 5 (extended from 3; justification in design-gate-budget-extension.md)
