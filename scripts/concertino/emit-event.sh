@@ -237,6 +237,12 @@ SUB_QUESTIONS=""
 # per-call poll budget, distinct from the escalation's real deadline. Never
 # folded into FIELDS/OTHER_FIELDS: it is a --wait-only invocation parameter,
 # not part of any event payload.
+# CON-166: captured separately (like CONTEXT/SUB_QUESTIONS above) so the
+# post-loop verdict-SHA logic below can tell "the caller stated a head_sha"
+# apart from "the generic k=v passthrough already wrote one" — the generic
+# `*)` case still folds head_sha into FIELDS/OTHER_FIELDS unchanged for every
+# other event kind; this var only drives the head_sha_source decision.
+HEAD_SHA=""
 MAX_WAIT_SEC=""
 
 for kv in ${ARGS+"${ARGS[@]}"}; do
@@ -248,6 +254,14 @@ for kv in ${ARGS+"${ARGS[@]}"}; do
     role)         ROLE="$val" ;;
     project)      PROJECT="$val" ;;
     max_wait_sec) MAX_WAIT_SEC="$val" ;;
+    head_sha)
+      # Falls through to FIELDS exactly like the generic `*)` case (that half
+      # is precondition-guaranteed by today's script and is not new
+      # behaviour — design.md Decision 2) — HEAD_SHA is the extra copy the
+      # post-loop head_sha_source logic below needs.
+      HEAD_SHA="$val"
+      FIELDS="${FIELDS},\"head_sha\":$(json_value "$val")"
+      ;;
     # `t` and `kind` are written by build_line and are structural, not payload.
     # Letting a caller pass them through emits the key twice; JSON.parse keeps
     # the LAST, so a stray `t=` silently reorders the whole log (the reducer
@@ -282,6 +296,27 @@ for kv in ${ARGS+"${ARGS[@]}"}; do
              ;;
   esac
 done
+
+# CON-166 (design.md Decision 2): bind a verdict to the SHA the role actually
+# reviewed. If the caller stated one explicitly, record it as `stated` — this
+# is the guarantee the whole check depends on, because the executor can
+# commit between the moment the role finished reading the diff and the
+# moment it emits, and an emit-time `rev-parse` would certify a commit the
+# role never saw. Only when no `head_sha` argument was given do we fall back
+# to inferring the current git HEAD, labelled `inferred` — a strictly weaker
+# guarantee, made visible rather than silently presented as equivalent. When
+# neither resolves, the event is written with no SHA at all; the emission
+# itself must never fail (same contract as every other telemetry write here).
+if [ "$KIND" = "verdict" ]; then
+  if [ -n "$HEAD_SHA" ]; then
+    FIELDS="${FIELDS},\"head_sha_source\":\"stated\""
+  else
+    INFERRED_SHA="$(git rev-parse HEAD 2>/dev/null)" || INFERRED_SHA=""
+    if [ -n "$INFERRED_SHA" ]; then
+      FIELDS="${FIELDS},\"head_sha\":$(json_value "$INFERRED_SHA"),\"head_sha_source\":\"inferred\""
+    fi
+  fi
+fi
 
 # A terminal event that cannot be ticket-tagged is the one telemetry loss the
 # dashboard can never recover from: "terminal" is defined as "has emitted

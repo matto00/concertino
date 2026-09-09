@@ -65,8 +65,12 @@ cleanup_fixture() {
 
 run_readiness() {
   # $1=WORKTREE_PATH $2=BRANCH $3=TICKET_ID; sets RC, OUT, ERR-file paths.
+  # CON-166: check-merge-readiness.sh now takes a required 4th ARCHIVE_PREFIX
+  # argument. This suite only exercises lease acquire/release around the
+  # script (Signal A), never condition 3's SHA-drift content, so any
+  # placeholder value is fine.
   RO="$(mktemp)"; RE="$(mktemp)"
-  "$READINESS" "$1" "$2" "$3" >"$RO" 2>"$RE"
+  "$READINESS" "$1" "$2" "$3" openspec >"$RO" 2>"$RE"
   RC=$?
   READY_OUT="$RO"; READY_ERR="$RE"
 }

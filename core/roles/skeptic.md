@@ -154,11 +154,19 @@ report path. Pass `--no-clobber`: this report's filename is already
 collision-safe by construction (the `next-report-number.sh` call above), so
 `--no-clobber` here is strictly a backstop in case that ever fails:
 
+Before emitting, capture the exact commit SHA you reviewed — the WORKTREE_PATH's
+current `git rev-parse HEAD`, at the moment you finish reading the diff, not
+at emit time. The executor can commit between those two moments; passing
+`head_sha` explicitly (CON-166) is what lets `check-merge-readiness.sh`
+refuse a merge on a commit you never actually saw, rather than certifying
+whatever HEAD happens to be when this line runs.
+
 ```bash
 scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/skeptic-<GATE>-<M>.md" --no-clobber
 # READY ref=<durable path>
 scripts/concertino/emit-event.sh verdict \
-  ticket=$TICKET_ID role=skeptic verdict=<CONFIRM|REFUTE|BLOCKER|ESCALATION> ref=<durable path from READY ref=>
+  ticket=$TICKET_ID role=skeptic verdict=<CONFIRM|REFUTE|BLOCKER|ESCALATION> ref=<durable path from READY ref=> \
+  head_sha=<the SHA you reviewed>
 ```
 
 If `persist-evidence.sh` prints `FAIL`, emit `verdict` with no `ref` field at

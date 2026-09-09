@@ -51,8 +51,15 @@ untouched, exactly as it was before you ran.
 ### 1–3: the machine-verifiable conditions — run the script
 
 ```bash
-scripts/concertino/check-merge-readiness.sh "$WORKTREE_PATH" "$BRANCH" "$TICKET_ID"
+scripts/concertino/check-merge-readiness.sh "$WORKTREE_PATH" "$BRANCH" "$TICKET_ID" "<change-dir-root>"
 ```
+
+The fourth argument (CON-166) is the planning-artifact prefix the SHA-drift
+check below excludes — the change-dir **root** (e.g. `openspec`, NOT
+`openspec/changes/<name>` — the archive step also writes to sibling paths
+like `openspec/specs/**` and `openspec/changes/archive/**`, outside the
+per-change directory), never hardcoded, so a project archiving under a
+different prefix is not refused on every delivery.
 
 **Invoke this with an extended timeout (10 minutes) on whatever tool you use
 to run it.** The script can now block for a while on its own (see below) —
@@ -110,6 +117,20 @@ prints one `FAIL <reason>` line per failed check to stderr.
   `BLOCKER`, not `ESCALATE`. Do not guess at the underlying state.
 - Any other `FAIL` reason is a real, expected finding — verdict `ESCALATE`,
   naming the reason(s) verbatim (there may be more than one line).
+- **Exit 4 (CON-166): reviewed source has moved — not mergeable, and NOT the
+  same thing as an `ESCALATE`.** The script prints one `STALE <role>
+  reviewed=<sha> head=<sha> changed=<paths>` line per stale role. This means
+  a commit landed on the branch after the evaluator's PASS or the skeptic's
+  CONFIRM was reviewed — the gate those verdicts certified is no longer
+  about the current head. You do **not** merge, and you do **not** treat
+  this as a human-actionable finding either: it clears by **re-review**, not
+  by escalation. Verdict `STALE`, naming the role(s) and reason(s) verbatim
+  from the script's output — the orchestrator re-runs the named gate(s)
+  against the current head and re-invokes you. (A script cannot spawn the
+  agent that does that re-review itself — that obligation lives with the
+  orchestrator.) If a `FAIL` and a `STALE` outcome are both present, the
+  script itself already resolves that in favor of exit 1 (`FAIL` dominates);
+  you will never see both.
 
 ### 4. Acceptance criteria — trace each one, cold
 
@@ -142,6 +163,14 @@ deliberately not taken) — not just a judgment for someone else to act on.
   unreachable, the script itself failed to run). Never retried as a code
   change — surfaced to the human exactly like every other `BLOCKER` in this
   system.
+- **STALE** (CON-166) — `check-merge-readiness.sh` exited 4: reviewed source
+  has moved since the evaluator's PASS or the skeptic's CONFIRM. Not
+  mergeable, and not an `ESCALATE` either — it resolves by the orchestrator
+  re-running the named gate(s) against the current head and re-invoking you,
+  never by human escalation or a permanent block. This outcome does **not**
+  release your script-owned auditor lease any differently from any other
+  verdict — emitting it is what releases the lease, exactly like every
+  other verdict kind (see `emit-event.sh`'s CON-171 release block).
 - **ESCALATION-RAISE** (CON-127) — additive to the three above, not merged
   into them, and deliberately **not** named bare `ESCALATION`: it would be a
   one-token-apart, LLM-unsafe pair with your own `ESCALATE` in this same
@@ -212,9 +241,9 @@ Write to `WORKTREE_PATH/<change-dir>/auditor-report.md`:
 ### Condition 4 (acceptance criteria, traced cold)
 - (each AC + the specific code/behavior that satisfies it, or "not traceable: ...")
 
-### Verdict: MERGE | ESCALATE | BLOCKER | ESCALATION-RAISE
+### Verdict: MERGE | ESCALATE | BLOCKER | STALE | ESCALATION-RAISE
 
-### Reason (only if ESCALATE or BLOCKER — specific, actionable)
+### Reason (only if ESCALATE, BLOCKER, or STALE — specific, actionable)
 - ...
 ```
 
@@ -230,7 +259,7 @@ report path:
 scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/auditor-report.md"
 # READY ref=<durable path>
 scripts/concertino/emit-event.sh verdict \
-  ticket=$TICKET_ID role=auditor verdict=<MERGE|ESCALATE|BLOCKER|ESCALATION-RAISE> ref=<durable path from READY ref=>
+  ticket=$TICKET_ID role=auditor verdict=<MERGE|ESCALATE|BLOCKER|STALE|ESCALATION-RAISE> ref=<durable path from READY ref=>
 ```
 
 If `persist-evidence.sh` prints `FAIL` instead, emit `verdict` with no `ref`
@@ -246,7 +275,7 @@ duplication.
 ### Step 2: Return
 
 ```
-Verdict: MERGE | ESCALATE | BLOCKER | ESCALATION-RAISE
+Verdict: MERGE | ESCALATE | BLOCKER | STALE | ESCALATION-RAISE
 Report: <path>
 ```
 

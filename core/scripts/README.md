@@ -71,6 +71,14 @@ file — so they stay generic and the config is the single source of truth.
   tool with its own shorter default timeout must raise that timeout
   explicitly, or a still-genuinely-pending CI run reads as a tool timeout
   instead of this script's own, more informative, `FAIL`.
+- `check-merge-readiness.sh` exits **4** with one `STALE <role> reviewed=<sha>
+  head=<sha> changed=<paths>` line per stale role when condition 3's
+  reviewed-source-has-moved check (CON-166) fires — distinct from `FAIL`
+  (exit 1, dominates when both are present) and the `PENDING` exit 3 above.
+  It means "re-run the named gate against the current head, then re-invoke";
+  it is never a permanent block. The 4th positional argument is the
+  planning-artifact prefix (e.g. `openspec`) this check excludes — supplied
+  by the caller, never hardcoded.
 
 ## Scripts
 
@@ -80,7 +88,7 @@ file — so they stay generic and the config is the single source of truth.
 | `resolve-speed.sh`  | (speed, harness) -> resolved budgets + per-role models + slow-only flags | `[SPEED] [HARNESS]`                          |
 | `start-servers.sh`  | Start backend/frontend dev servers, health-wait            | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]`     |
 | `assert-phase.sh`   | Postcondition gate per phase                               | `<setup\|servers\|delivery\|cleanup> <WORKTREE_PATH> [...] [TICKET_ID]` |
-| `check-merge-readiness.sh` | Deterministic pre-merge gate for the auditor (agent-merge): CI green (polling through pending), PR mergeable (auto-reconciling a BEHIND branch once), this run's gates passed | `<WORKTREE_PATH> <BRANCH> <TICKET_ID>` |
+| `check-merge-readiness.sh` | Deterministic pre-merge gate for the auditor (agent-merge): CI green (polling through pending), PR mergeable (auto-reconciling a BEHIND branch once), this run's gates passed, reviewed source not stale (CON-166) | `<WORKTREE_PATH> <BRANCH> <TICKET_ID> <ARCHIVE_PREFIX>` |
 | `cleanup.sh`        | Stop servers, remove worktree                              | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>`                 |
 | `emit-event.sh`     | Append a dashboard event; `--await` blocks for an answer   | `<kind> [--await] k=v ...`                                  |
 | `persist-evidence.sh` | Copy an artifact into the main checkout, print a durable ref | `<TICKET_ID> <SOURCE_PATH>`                               |

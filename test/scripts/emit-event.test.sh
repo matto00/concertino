@@ -609,3 +609,52 @@ rm -rf "$REPO" "$DIR"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
+
+# --- CON-166: verdict head_sha / head_sha_source binding --------------------
+
+# Stated head_sha: recorded verbatim, source marked "stated". This half
+# (recording head_sha itself) is precondition-guaranteed by the pre-existing
+# generic k=v passthrough and is NOT the assertion under test here — the
+# assertion is head_sha_source, which the pre-fix script never wrote at all.
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-40 role=evaluator verdict=PASS head_sha=deadbeef ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/HEL-40/events.jsonl"
+check "stated head_sha recorded" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).head_sha)' "$LOG")" \
+  "deadbeef"
+check "stated head_sha_source" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).head_sha_source)' "$LOG")" \
+  "stated"
+rm -rf "$REPO"
+
+# Omitted head_sha, inside a git worktree: infer HEAD, mark "inferred".
+REPO="$(new_repo)"
+REAL_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-41 role=skeptic verdict=CONFIRM ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/HEL-41/events.jsonl"
+check "inferred head_sha equals git HEAD" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).head_sha)' "$LOG")" \
+  "$REAL_HEAD"
+check "inferred head_sha_source" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).head_sha_source)' "$LOG")" \
+  "inferred"
+rm -rf "$REPO"
+
+# Neither stated nor resolvable: a real repo (so ROOT/RUN_DIR resolve) with no
+# commits yet, so `git rev-parse HEAD` fails (unborn HEAD). Event is still
+# written, carries no SHA/head_sha_source at all, and emission does not fail.
+DIR2="$(mktemp -d)"
+git -C "$DIR2" init -q
+( cd "$DIR2" && "$SCRIPT" verdict ticket=HEL-42 role=evaluator verdict=PASS ) >/dev/null 2>&1
+RC=$?
+LOG2="$DIR2/.concertino/runs/HEL-42/events.jsonl"
+check "unresolvable-HEAD case: emission still exits 0" "$RC" "0"
+check "unresolvable-HEAD case: event still written" \
+  "$([ -f "$LOG2" ] && echo yes || echo no)" "yes"
+check "unresolvable-HEAD case: no head_sha field" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log("head_sha" in JSON.parse(l)?"present":"absent")' "$LOG2")" \
+  "absent"
+rm -rf "$DIR2"
+
+echo "  $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]
