@@ -123,8 +123,9 @@ printf '%s' '{"statusCheckRollup":[{"name":"build","state":"PENDING"},{"name":"l
 printf '%s' "$CLEAN_MERGE" > "$GH_MOCK_DIR/merge.json"
 export GH_MOCK_DIR
 run_check "$REPO" branch-2 TEST-2
-check "2.1 pending CI fails (non-zero exit)" "$([ "$RC" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
-has "2.2 pending CI names the check as pending, not failed, with the timeout" "CI pending after 0s: build" "$ERR"
+# CON-159: pending is a resumable "not yet" (exit 3), NOT a failure (exit 1).
+check "2.1 pending CI exits 3, not 0 and not a FAIL's 1" "$RC" "3"
+has "2.2 pending CI names the check as pending, not failed" "PENDING build" "$ERR"
 rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
 
 # --- a failed CI check is reported distinctly from pending ------------------
@@ -375,7 +376,32 @@ printf '%s' '{"statusCheckRollup":[{"name":"build","state":"IN_PROGRESS"}]}' > "
 printf '%s' "$CLEAN_MERGE" > "$GH_MOCK_DIR/merge.json"
 export GH_MOCK_DIR
 run_check "$REPO" branch-15 TEST-15
-has "15.1 CI stuck pending past the timeout names it, after really waiting" "CI pending after 2s: build" "$ERR"
+# CON-159: a check that is still RUNNING is a resumable "not yet", not a
+# failure. Distinct wording, distinct exit code, and conditions 2-3 skipped.
+has "15.1 CI still running past the window reports PENDING, after really waiting" "PENDING build" "$ERR"
+has "15.2 the PENDING line says it is not a failure and is re-invokable" "not a failure; re-invoke" "$ERR"
+check "15.3 PENDING exits 3, distinguishable from a FAIL's 1" "$RC" "3"
+if grep -q "^FAIL" "$ERR"; then
+  bad "15.4 PENDING must not also emit a FAIL line" "found a FAIL line in $ERR"
+else
+  ok "15.4 PENDING must not also emit a FAIL line"
+fi
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- CON-159: a genuinely FAILED check is still a FAIL, not PENDING --------
+# The guard that keeps 15.x from swallowing real failures: same stuck-window
+# setup, but the check reports FAILURE rather than IN_PROGRESS.
+export CONCERTINO_CI_WAIT_TIMEOUT_SEC=2
+export CONCERTINO_CI_POLL_INTERVAL_SEC=1
+REPO="$(new_repo)"
+write_events "$REPO" TEST-152 "$EVAL_PASS" "$SKEPTIC_CONFIRM"
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' '{"statusCheckRollup":[{"name":"build","conclusion":"FAILURE"}]}' > "$GH_MOCK_DIR/rollup.json"
+printf '%s' "$CLEAN_MERGE" > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-152 TEST-152
+has "15.5 a failed check still FAILs rather than reporting PENDING" "CI failed: build" "$ERR"
+check "15.6 a failed check exits 1, not 3" "$RC" "1"
 rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
 export CONCERTINO_CI_WAIT_TIMEOUT_SEC=0
 export CONCERTINO_CI_POLL_INTERVAL_SEC=1

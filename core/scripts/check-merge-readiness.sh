@@ -60,7 +60,22 @@ set -uo pipefail
 #
 # Prints "PASS" and exits 0 only when conditions 1-3 hold. Otherwise prints
 # one "FAIL <reason>" line per failed condition to stderr and exits
-# non-zero — the same stdout/stderr contract assert-phase.sh already uses. A
+# non-zero — the same stdout/stderr contract assert-phase.sh already uses.
+#
+# CON-159: a check that is merely STILL RUNNING when the wait window expires
+# is reported distinctly — one "PENDING <names>" line, exit code 3 — and is
+# NOT a FAIL. The two states were previously indistinguishable, so a repo
+# whose slowest required check outruns the window (helio's Scala `backend`
+# job takes ~12m against a 7m default) escalated to a human on EVERY PR,
+# for a run that was simply not finished yet. The window cannot just be
+# raised past the slowest job: the caller's tool timeout (10m, see below)
+# bounds how long this script may block at all. So the script stays under
+# that ceiling and hands the caller a resumable "not yet" instead of a
+# verdict. The caller re-invokes; it does not escalate. Conditions 2-3 are
+# skipped in that case — they would be judging a HEAD whose CI is still
+# moving.
+#
+# A
 # failure whose reason begins "could not query ... via gh" is an
 # environmental failure (gh unauthenticated, GitHub unreachable) — the
 # auditor treats that shape of failure as BLOCKER, and every other failure
@@ -75,7 +90,7 @@ set -uo pipefail
 #
 # Tunables (env, not sourced from .concertino.env — override directly when
 # needed, e.g. in tests):
-#   CONCERTINO_CI_WAIT_TIMEOUT_SEC        (default 420 = 7m)
+#   CONCERTINO_CI_WAIT_TIMEOUT_SEC        (default 540 = 9m)
 #   CONCERTINO_CI_POLL_INTERVAL_SEC       (default 20)
 #   CONCERTINO_MERGE_RECHECK_TIMEOUT_SEC  (default 90 = 1.5m)
 #   CONCERTINO_MERGE_RECHECK_INTERVAL_SEC (default 10)
@@ -85,12 +100,14 @@ WORKTREE_PATH="${1:?usage: check-merge-readiness.sh <WORKTREE_PATH> <BRANCH> <TI
 BRANCH="${2:?usage: check-merge-readiness.sh <WORKTREE_PATH> <BRANCH> <TICKET_ID>}"
 TICKET_ID="${3:?usage: check-merge-readiness.sh <WORKTREE_PATH> <BRANCH> <TICKET_ID>}"
 
-CI_WAIT_TIMEOUT="${CONCERTINO_CI_WAIT_TIMEOUT_SEC:-420}"
+CI_WAIT_TIMEOUT="${CONCERTINO_CI_WAIT_TIMEOUT_SEC:-540}"
 CI_POLL_INTERVAL="${CONCERTINO_CI_POLL_INTERVAL_SEC:-20}"
 MERGE_RECHECK_TIMEOUT="${CONCERTINO_MERGE_RECHECK_TIMEOUT_SEC:-90}"
 MERGE_RECHECK_INTERVAL="${CONCERTINO_MERGE_RECHECK_INTERVAL_SEC:-10}"
 
 FAILED=0
+CI_PENDING=0
+CI_PENDING_NAMES=""
 fail() {
   echo "FAIL $*" >&2
   FAILED=1
@@ -193,7 +210,10 @@ if [ "$FAILED" -eq 0 ]; then
       break # every check SUCCESS, or an empty rollup — condition 1 passes
     fi
     if [ "$ci_elapsed" -ge "$CI_WAIT_TIMEOUT" ]; then
-      fail "CI pending after ${CI_WAIT_TIMEOUT}s: ${PENDING_NAMES}"
+      # NOT a fail: these checks are running, not broken. Report the state
+      # and let the caller come back to it. See CON-159 in the header.
+      CI_PENDING=1
+      CI_PENDING_NAMES="$PENDING_NAMES"
       break
     fi
     sleep "$CI_POLL_INTERVAL"
@@ -202,7 +222,10 @@ if [ "$FAILED" -eq 0 ]; then
 fi
 
 # --- 2: mergeable, polled only on the transient UNKNOWN state --------------
-if [ "$FAILED" -eq 0 ]; then
+# Skipped while CI is still pending: mergeability judged against a HEAD whose
+# checks are still moving is a reading with a shelf life, and reporting it
+# alongside a "come back later" would invite acting on it.
+if [ "$FAILED" -eq 0 ] && [ "$CI_PENDING" -eq 0 ]; then
   merge_elapsed=0
   while :; do
     MERGE_RAW="$(cd "$WORKTREE_PATH" && gh pr view "$BRANCH" --json mergeable,mergeStateStatus,reviewDecision 2>&1)"
@@ -249,6 +272,11 @@ if [ "$FAILED" -eq 0 ]; then
 fi
 
 # --- 3: this run's own gates passed -----------------------------------------
+if [ "$CI_PENDING" -ne 0 ]; then
+  echo "PENDING ${CI_PENDING_NAMES} (still running after ${CI_WAIT_TIMEOUT}s — not a failure; re-invoke)" >&2
+  exit 3
+fi
+
 ROOT="$(main_checkout)"
 if [ -z "${ROOT:-}" ]; then
   fail "could not resolve main checkout (not inside a git repo?)"

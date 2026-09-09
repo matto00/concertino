@@ -57,6 +57,10 @@ file — so they stay generic and the config is the single source of truth.
   `emit-event.sh`'s byte cap and does not persist anything itself — pass its
   output as `context=` on the `emit-event.sh escalation --await` call, which
   owns truncation/persistence for an oversized value.
+- `check-merge-readiness.sh` exits **3** with a `PENDING <names>` line when
+  required checks are still running at the end of its wait window — a
+  resumable "not yet", not a failure. Callers re-invoke; they must not treat
+  it as a verdict (CON-159). Conditions 2-3 are skipped in that case.
 - `check-merge-readiness.sh` can block for a while (bounded, a few minutes
   worst case) rather than failing on the first look: a pending/in-progress CI
   check and GitHub's transient post-push "still computing" mergeability state
