@@ -96,6 +96,10 @@ set -uo pipefail
 #   CONCERTINO_MERGE_RECHECK_INTERVAL_SEC (default 10)
 # ===========================================================================
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/auditor-lease.sh"
+
 WORKTREE_PATH="${1:?usage: check-merge-readiness.sh <WORKTREE_PATH> <BRANCH> <TICKET_ID>}"
 BRANCH="${2:?usage: check-merge-readiness.sh <WORKTREE_PATH> <BRANCH> <TICKET_ID>}"
 TICKET_ID="${3:?usage: check-merge-readiness.sh <WORKTREE_PATH> <BRANCH> <TICKET_ID>}"
@@ -127,6 +131,31 @@ fi
 if [ ! -d "$WORKTREE_PATH" ]; then
   echo "FAIL worktree dir missing: ${WORKTREE_PATH}" >&2
   exit 1
+fi
+
+# --- CON-171: acquire the auditor lease (Signal A) --------------------------
+# This is the auditor's first action and a hard precondition of merging, so
+# taking the lease here brackets the auditor's entire remaining lifetime.
+# Placed strictly after BOTH validations above (ticket-shape, worktree-dir)
+# so a lease is never created under a key emit-event.sh's release path could
+# not address, or for a worktree that was never confirmed to exist
+# (design.md Decision 2, "Acquisition happens after ticket-shape validation,
+# not before it" — corrected at design-gate round 4 non-blocking note 3 to
+# also sit after the worktree-dir-missing check). Acquisition is idempotent
+# by requirement, not merely defensively: this script re-runs up to three
+# times on a PENDING (exit 3) re-invoke (see header, CON-159), so a healthy
+# PR with slow CI re-acquires the same lease one to three times.
+#
+# Best-effort: an unresolvable root here does not fail this script's own
+# readiness checks (that would change unrelated behaviour this ticket does
+# not own) — it is cleanup.sh's query, not this acquire, that must fail
+# closed on an unresolvable root (design.md Decision 2).
+LEASE_ROOT="$(lease_resolve_root "$WORKTREE_PATH")" || LEASE_ROOT=""
+if [ -n "$LEASE_ROOT" ]; then
+  lease_acquire "$LEASE_ROOT" "$TICKET_ID" "$WORKTREE_PATH" "check-merge-readiness.sh" \
+    || echo "note: could not record auditor lease (non-fatal)" >&2
+else
+  echo "note: could not resolve run root — auditor lease not recorded (non-fatal)" >&2
 fi
 
 # Resolve the main checkout FROM WORKTREE_PATH. Duplicated from

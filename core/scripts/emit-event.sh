@@ -51,6 +51,18 @@ set -uo pipefail
 #
 # ALWAYS exits 0 in normal mode, including on internal error. Telemetry must
 # never fail a delivery run. (--await is the one exception; see below.)
+#
+# CON-171: NOT purely side-effect-free telemetry. A `verdict` invocation with
+# `role=auditor` also RELEASES the auditor's script-owned Phase-4 teardown
+# lease (see core/scripts/lib/auditor-lease.sh, taken by
+# check-merge-readiness.sh) — this is the auditor's one terminal action, and
+# every completing verdict path (MERGE, ESCALATE, BLOCKER, ESCALATION-RAISE)
+# goes through this call, so every completing path releases. The release
+# happens on RECOGNITION of the call shape, regardless of whether the event
+# write itself succeeds, is truncated, or is skipped by an early-exit /
+# validation path below — a silently-dropped telemetry line must never
+# strand a run behind a lease clearable only by `cleanup.sh --force-teardown`
+# (design.md Decision 4a). The release can never abort or fail this call.
 # ===========================================================================
 
 MAX_LINE=4000
@@ -59,6 +71,8 @@ MAX_LINE=4000
 # start-servers.sh already uses to invoke emit-event.sh) when an oversized
 # `context=` field on an escalation has to be persisted rather than inlined.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/auditor-lease.sh"
 
 # Millisecond epoch. GNU date supports %3N; BSD/macOS date does not, so fall
 # back to node (already a hard requirement for Concertino).
@@ -294,6 +308,21 @@ fi
 # was told the ticket id explicitly — a second, independent line of defense
 # under the explicit-argument fix in assert-phase.sh/start-servers.sh.
 TICKET="$(printf '%s' "$TICKET" | tr '[:lower:]' '[:upper:]')"
+
+# --- CON-171: release the auditor lease (Signal A) --------------------------
+# Placed here deliberately, not "upstream of :178's `ROOT=... || exit 0`" as
+# an earlier draft of design.md Decision 4a stated — TICKET and ROLE are only
+# known once the k=v argument loop above has run, and TICKET is only
+# validated/canonicalised by the block immediately above this one, both of
+# which are structurally below :178. This is the earliest point downstream of
+# :178 where both are settled (design-gate round 4 non-blocking note 1).
+# Reuses the already-resolved $ROOT from :178 rather than re-resolving it.
+# Every completing auditor verdict (MERGE/ESCALATE/BLOCKER/
+# ESCALATION-RAISE) reaches this line before any early-exit below, since none
+# of KIND/ROLE/TICKET-shape is auditor-verdict-specific past this point.
+if [ "$KIND" = "verdict" ] && [ "$ROLE" = "auditor" ]; then
+  lease_release "$ROOT" "$TICKET" || true
+fi
 
 RUN_DIR="${ROOT}/.concertino/runs/${TICKET}"
 mkdir -p "$RUN_DIR" 2>/dev/null || exit 0
