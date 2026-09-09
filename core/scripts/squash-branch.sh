@@ -128,8 +128,59 @@ fi
 CHANGE_DIR_NORM="${CHANGE_DIR%/}"
 
 FILES_MODIFIED_PATH="${WORKTREE_PATH%/}/${CHANGE_DIR_NORM}/files-modified.md"
-DECLARED_PATHS=""
+DECLARATION_INDEX_PATH="${CHANGE_DIR_NORM}/files-modified.md"
+
+# --- CON-162 D1/D2/D4/D4a: read the declaration from the STAGED BLOB, not the
+# worktree copy, so the bytes the guard validates are the bytes the prospective
+# commit will capture. The single on-disk-presence test below is the ONLY
+# `[ -f "$FILES_MODIFIED_PATH" ]` branch-routing control in this script (per
+# design.md D2/D7 -- on-disk presence is evaluated first and routes control;
+# everything downstream reuses this one boolean rather than re-testing).
+FILE_ON_DISK=0
 if [ -f "$FILES_MODIFIED_PATH" ]; then
+  FILE_ON_DISK=1
+fi
+
+STAGED_BLOB=""
+STAGED_BLOB_PRESENT=0
+if STAGED_BLOB="$(git_wt show ":${DECLARATION_INDEX_PATH}" 2>/dev/null)"; then
+  STAGED_BLOB_PRESENT=1
+fi
+
+if [ "$FILE_ON_DISK" -eq 1 ] && [ "$STAGED_BLOB_PRESENT" -eq 0 ]; then
+  # D4: on disk but not staged -- it will not be committed, so treating its
+  # contents as the declaration is the same defect in a different costume.
+  # This refusal is unconditional: neither ALLOW_EMPTY_DECLARATION nor any
+  # other flag suppresses it (D5).
+  echo "FAIL files-modified.md exists on disk at ${FILES_MODIFIED_PATH} but has no staged blob in the index (untracked, or staged for deletion)." >&2
+  echo "It will not be part of the prospective commit, so its on-disk content cannot be validated as the declaration." >&2
+  echo "Remedy: git add ${DECLARATION_INDEX_PATH}" >&2
+  echo "        then re-run." >&2
+  exit 1
+fi
+
+if [ "$FILE_ON_DISK" -eq 1 ] && [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
+  # D2/D7: divergence check, gated on FILE_ON_DISK (per D2's precondition --
+  # `git diff --quiet` exits 1 for a worktree deletion, so running this
+  # ungated would misfire on the D4a shape below). This refusal is also
+  # unconditional: ALLOW_EMPTY_DECLARATION does not suppress it (D5).
+  if ! git_wt diff --quiet -- "$DECLARATION_INDEX_PATH"; then
+    echo "FAIL files-modified.md differs between the staged index and the worktree copy." >&2
+    echo "The guard must validate the same bytes the commit will capture, and cannot silently pick a side (index or worktree) when they disagree." >&2
+    echo "Remedy: stage the corrected declaration (git add ${DECLARATION_INDEX_PATH}), or revert the worktree copy to match what is staged, then re-run." >&2
+    exit 1
+  fi
+fi
+
+if [ "$FILE_ON_DISK" -eq 0 ] && [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
+  # D4a: staged blob present, no worktree copy. Not a divergence -- parse and
+  # enforce the blob, exactly as D1 requires. Noted here (not silently) so the
+  # one exemption in this design is visible in a transcript.
+  echo "INFO files-modified.md declaration read from the index; no worktree copy is present."
+fi
+
+DECLARED_PATHS=""
+if [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
   # D2a: only lines starting (after leading whitespace) with a markdown
   # bullet immediately followed by a backtick-quoted path qualify. Prose
   # lines, and continuation lines carrying no bullet, are never scanned.
@@ -145,7 +196,8 @@ if [ -f "$FILES_MODIFIED_PATH" ]; then
   # filter below: a span counts only if it contains a `/` or a dotted
   # extension, so inline code spans on a bullet (`--allow-empty-declaration`,
   # `Option[T]`) cannot enter the allowlist.
-  DECLARED_PATHS="$(grep -E '^[[:space:]]*[-*][[:space:]]*`[^`]+`' "$FILES_MODIFIED_PATH" \
+  DECLARED_PATHS="$(printf '%s\n' "$STAGED_BLOB" \
+    | grep -E '^[[:space:]]*[-*][[:space:]]*`[^`]+`' \
     | grep -oE '`[^`]+`' \
     | tr -d '`' \
     | grep -E '(/|\.[A-Za-z0-9]+$)')"
@@ -197,12 +249,12 @@ fi
 if [ "$DECLARED_COUNT" -eq 0 ] && [ -n "$UNEXPECTED" ]; then
   if [ "$ALLOW_EMPTY_DECLARATION" -ne 1 ]; then
     echo "FAIL no usable declaration in files-modified.md while staged files remain outside the allowlist (${CHANGE_DIR_NORM}/**)." >&2
-    if [ -f "$FILES_MODIFIED_PATH" ]; then
-      echo "--- raw files-modified.md content ---" >&2
-      cat "$FILES_MODIFIED_PATH" >&2
-      echo "--------------------------------------" >&2
+    if [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
+      echo "--- raw files-modified.md content (staged) ---" >&2
+      printf '%s\n' "$STAGED_BLOB" >&2
+      echo "------------------------------------------------" >&2
     else
-      echo "(files-modified.md is missing at ${FILES_MODIFIED_PATH})" >&2
+      echo "(no staged declaration blob exists at ${DECLARATION_INDEX_PATH})" >&2
     fi
     echo "Staged paths outside the allowlist:" >&2
     printf '%s' "$UNEXPECTED" | sed 's/^/  /' >&2
@@ -217,7 +269,7 @@ else
   if [ -n "$UNEXPECTED" ]; then
     echo "FAIL staged file set exceeds the run's declared touched-file set. Unexpected file(s):" >&2
     printf '%s' "$UNEXPECTED" | sed 's/^/  /' >&2
-    echo "(allowed: ${CHANGE_DIR_NORM}/** plus paths declared in ${FILES_MODIFIED_PATH})" >&2
+    echo "(allowed: ${CHANGE_DIR_NORM}/** plus paths declared in the staged declaration at ${DECLARATION_INDEX_PATH})" >&2
     echo "Declaration format: each path must be a backtick-quoted, path-shaped span on a line" >&2
     echo "starting with a '-' or '*' bullet. A grouped bullet may declare several paths and all" >&2
     echo "of them count, but a continuation line carrying no bullet declares nothing -- if a file" >&2

@@ -1,0 +1,22 @@
+# Workflow State — CON-162
+TICKET_ID: CON-162
+PHASE: Delivery
+CHANGE_NAME: validate-committed-declaration-blob
+CYCLE: 1
+SKEPTIC_CYCLE: 0
+WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/bug/validate-committed-declaration-blob/CON-162
+BRANCH: bug/validate-committed-declaration-blob/CON-162
+DEV_PORT: 5409
+BACKEND_PORT: 8316
+AGENT_MERGE: true
+TICKET_TYPE: feature
+DESIGN_QUESTIONS: null
+SPEED: default
+EXECUTION_CYCLES: 3
+SKEPTIC_DESIGN_ROUNDS: 3
+SKEPTIC_FINAL_ROUNDS: 2
+DEBUG_ATTEMPTS: 2
+MODELS: {"orchestrator":"opus","executor":"sonnet","evaluator":"opus","skeptic":"opus","auditor":"sonnet"}
+SECOND_FINAL_GATE_SKEPTIC: false
+EVALUATOR_CLEAN_WORKTREE: false
+PENDING_ESCALATION: null

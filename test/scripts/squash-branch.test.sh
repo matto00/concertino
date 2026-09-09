@@ -547,6 +547,250 @@ else
 fi
 
 # ---------------------------------------------------------------------
+# Scenario 6 (CON-162, tasks 4.1-4.5, 4.4c): the guard must validate the
+# STAGED BLOB of files-modified.md, not the worktree copy, and an
+# index/worktree divergence of the declaration file itself must be a loud
+# refusal rather than silently resolved either way.
+# ---------------------------------------------------------------------
+echo "Scenario 6: CON-162 -- guard validates the staged declaration blob, not the worktree copy"
+
+BASE6="$(mktemp -d)"
+REMOTE6="$BASE6/remote.git"
+git init -q --bare "$REMOTE6"
+git clone -q "$REMOTE6" "$BASE6/primary" 2>/dev/null
+echo "root" > "$BASE6/primary/root.txt"
+commit_all "$BASE6/primary" "init"
+git -C "$BASE6/primary" branch -M main
+git -C "$BASE6/primary" push -q origin main
+CHANGE_DIR6="openspec/changes/con-162-demo"
+
+# --- 4.1: stage one declaration content, write DIFFERENT content to disk;
+# the script must refuse and commit nothing. ---
+BRANCH6A="$BASE6/branch-a"
+git clone -q "$REMOTE6" "$BRANCH6A" 2>/dev/null
+git -C "$BRANCH6A" checkout -q -b feature/con-162/CON-162-a origin/main
+mkdir -p "$BRANCH6A/$CHANGE_DIR6"
+cat > "$BRANCH6A/$CHANGE_DIR6/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work
+EOF
+echo "own work" > "$BRANCH6A/own-file.txt"
+commit_all "$BRANCH6A" "executor commit (declaration + own file)"
+# Executor keeps editing the declaration on disk AFTER committing it, without
+# re-staging -- the exact HEL-732 shape.
+cat > "$BRANCH6A/$CHANGE_DIR6/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work (corrected wording)
+EOF
+
+HEAD_BEFORE6A="$(git -C "$BRANCH6A" rev-parse HEAD)"
+COUNT_BEFORE6A="$(git -C "$BRANCH6A" rev-list --count HEAD)"
+OUT6A="$("$SCRIPT" "$BRANCH6A" origin main "CON-162 divergent declaration" "$CHANGE_DIR6" 2>&1)"
+RC6A=$?
+if [ "$RC6A" -ne 0 ]; then ok "4.1 divergent worktree declaration is refused"; else bad "4.1 divergent worktree declaration is refused" "exit=0 output=$OUT6A"; fi
+if echo "$OUT6A" | grep -qi "differs between the staged index and the worktree"; then
+  ok "4.1 refusal names the index/worktree divergence"
+else
+  bad "4.1 refusal names the index/worktree divergence" "output: $OUT6A"
+fi
+HEAD_AFTER6A="$(git -C "$BRANCH6A" rev-parse HEAD)"
+COUNT_AFTER6A="$(git -C "$BRANCH6A" rev-list --count HEAD)"
+if [ "$HEAD_AFTER6A" = "$HEAD_BEFORE6A" ] && [ "$COUNT_AFTER6A" = "$COUNT_BEFORE6A" ]; then
+  ok "4.1 no squash commit created; HEAD unchanged"
+else
+  bad "4.1 no squash commit created; HEAD unchanged" "before=$HEAD_BEFORE6A/$COUNT_BEFORE6A after=$HEAD_AFTER6A/$COUNT_AFTER6A"
+fi
+
+# --- 4.2: the divergent on-disk declaration must not be able to authorise a
+# staged file the STAGED declaration does not declare (the live-bypass
+# shape from the probe at fc88cd0). ---
+BRANCH6B="$BASE6/branch-b"
+git clone -q "$REMOTE6" "$BRANCH6B" 2>/dev/null
+git -C "$BRANCH6B" checkout -q -b feature/con-162/CON-162-b origin/main
+mkdir -p "$BRANCH6B/$CHANGE_DIR6"
+cat > "$BRANCH6B/$CHANGE_DIR6/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work
+EOF
+echo "own work" > "$BRANCH6B/own-file.txt"
+commit_all "$BRANCH6B" "executor commit (declaration + own file)"
+# Stage an UNDECLARED file (per the committed declaration).
+echo "sneaky" > "$BRANCH6B/sneaky.txt"
+git -C "$BRANCH6B" add sneaky.txt
+# Then "correct" the declaration ON DISK ONLY to permit it, without staging
+# that correction -- the committed blob still does not declare sneaky.txt.
+cat > "$BRANCH6B/$CHANGE_DIR6/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work
+- `sneaky.txt` — added later
+EOF
+
+HEAD_BEFORE6B="$(git -C "$BRANCH6B" rev-parse HEAD)"
+OUT6B="$("$SCRIPT" "$BRANCH6B" origin main "CON-162 bypass attempt" "$CHANGE_DIR6" 2>&1)"
+RC6B=$?
+# Pin WHICH refusal fired, not merely that the script exited non-zero --
+# a bare non-zero exit is also satisfied by an unrelated early failure (e.g.
+# a broken merge-base computation), which would not actually exercise the
+# divergence guard this scenario is named for.
+if [ "$RC6B" -ne 0 ] && echo "$OUT6B" | grep -qi "differs between the staged index and the worktree"; then
+  ok "4.2 divergent worktree declaration cannot authorise an undeclared staged file"
+else
+  bad "4.2 divergent worktree declaration cannot authorise an undeclared staged file" "exit=$RC6B (bypass succeeded, or wrong refusal fired) output=$OUT6B"
+fi
+HEAD_AFTER6B="$(git -C "$BRANCH6B" rev-parse HEAD)"
+if [ "$HEAD_AFTER6B" = "$HEAD_BEFORE6B" ]; then
+  ok "4.2 HEAD unchanged (sneaky.txt not committed)"
+else
+  bad "4.2 HEAD unchanged (sneaky.txt not committed)" "before=$HEAD_BEFORE6B after=$HEAD_AFTER6B"
+fi
+
+# --- 4.3 (D5, structural): the same divergence WITH
+# --allow-empty-declaration passed still refuses. ---
+BRANCH6C="$BASE6/branch-c"
+git clone -q "$REMOTE6" "$BRANCH6C" 2>/dev/null
+git -C "$BRANCH6C" checkout -q -b feature/con-162/CON-162-c origin/main
+mkdir -p "$BRANCH6C/$CHANGE_DIR6"
+cat > "$BRANCH6C/$CHANGE_DIR6/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work
+EOF
+echo "own work" > "$BRANCH6C/own-file.txt"
+commit_all "$BRANCH6C" "executor commit (declaration + own file)"
+cat > "$BRANCH6C/$CHANGE_DIR6/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work (corrected wording)
+EOF
+OUT6C="$("$SCRIPT" "$BRANCH6C" origin main "CON-162 divergence + flag" "$CHANGE_DIR6" --allow-empty-declaration 2>&1)"
+RC6C=$?
+# Pin the divergence refusal specifically -- see the 4.2 comment above for why
+# a bare non-zero exit is not sufficient evidence that this refusal fired.
+if [ "$RC6C" -ne 0 ] && echo "$OUT6C" | grep -qi "differs between the staged index and the worktree"; then
+  ok "4.3 --allow-empty-declaration does not suppress the divergence refusal"
+else
+  bad "4.3 --allow-empty-declaration does not suppress the divergence refusal" "exit=$RC6C output=$OUT6C"
+fi
+
+# --- 4.3b (D5, CR3): declaration on disk but NOT in the index, with
+# --allow-empty-declaration passed, still refuses and commits nothing. ---
+BRANCH6D="$BASE6/branch-d"
+git clone -q "$REMOTE6" "$BRANCH6D" 2>/dev/null
+git -C "$BRANCH6D" checkout -q -b feature/con-162/CON-162-d origin/main
+echo "own work" > "$BRANCH6D/own-file.txt"
+commit_all "$BRANCH6D" "executor commit (own file only)"
+mkdir -p "$BRANCH6D/$CHANGE_DIR6"
+cat > "$BRANCH6D/$CHANGE_DIR6/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work
+EOF
+# Deliberately never `git add` the declaration: untracked at squash time.
+HEAD_BEFORE6D="$(git -C "$BRANCH6D" rev-parse HEAD)"
+OUT6D="$("$SCRIPT" "$BRANCH6D" origin main "CON-162 untracked declaration + flag" "$CHANGE_DIR6" --allow-empty-declaration 2>&1)"
+RC6D=$?
+# Pin the D4 not-in-index refusal specifically (its distinguishing text is the
+# same "no staged blob in the index" diagnostic 4.4 asserts) -- see the 4.2
+# comment above for why a bare non-zero exit is not sufficient evidence.
+if [ "$RC6D" -ne 0 ] && echo "$OUT6D" | grep -qi "no staged blob in the index"; then
+  ok "4.3b --allow-empty-declaration does not suppress the not-in-index refusal"
+else
+  bad "4.3b --allow-empty-declaration does not suppress the not-in-index refusal" "exit=$RC6D output=$OUT6D"
+fi
+HEAD_AFTER6D="$(git -C "$BRANCH6D" rev-parse HEAD)"
+if [ "$HEAD_AFTER6D" = "$HEAD_BEFORE6D" ]; then
+  ok "4.3b HEAD unchanged"
+else
+  bad "4.3b HEAD unchanged" "before=$HEAD_BEFORE6D after=$HEAD_AFTER6D"
+fi
+
+# --- 4.4: declaration on disk but not in the index refuses with its own
+# diagnostic, and the remedy text (git add ...) is present. ---
+BRANCH6E="$BASE6/branch-e"
+git clone -q "$REMOTE6" "$BRANCH6E" 2>/dev/null
+git -C "$BRANCH6E" checkout -q -b feature/con-162/CON-162-e origin/main
+echo "own work" > "$BRANCH6E/own-file.txt"
+commit_all "$BRANCH6E" "executor commit (own file only)"
+mkdir -p "$BRANCH6E/$CHANGE_DIR6"
+cat > "$BRANCH6E/$CHANGE_DIR6/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work
+EOF
+OUT6E="$("$SCRIPT" "$BRANCH6E" origin main "CON-162 untracked declaration" "$CHANGE_DIR6" 2>&1)"
+RC6E=$?
+if [ "$RC6E" -ne 0 ]; then ok "4.4 declaration on disk but not staged is refused"; else bad "4.4 declaration on disk but not staged is refused" "exit=0 output=$OUT6E"; fi
+if echo "$OUT6E" | grep -qF "git add ${CHANGE_DIR6}/files-modified.md"; then
+  ok "4.4 refusal states the self-service remedy (git add ...)"
+else
+  bad "4.4 refusal states the self-service remedy (git add ...)" "output: $OUT6E"
+fi
+
+# --- 4.4b (D4a / 3.2): declaration absent on disk with a staged blob
+# present -- the blob must still be parsed and enforced, so an undeclared
+# staged file is still refused (the structural check that D4a's exemption
+# did not become a blanket amnesty). ---
+BRANCH6F="$BASE6/branch-f"
+git clone -q "$REMOTE6" "$BRANCH6F" 2>/dev/null
+git -C "$BRANCH6F" checkout -q -b feature/con-162/CON-162-f origin/main
+mkdir -p "$BRANCH6F/$CHANGE_DIR6"
+cat > "$BRANCH6F/$CHANGE_DIR6/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work
+EOF
+echo "own work" > "$BRANCH6F/own-file.txt"
+commit_all "$BRANCH6F" "executor commit (declaration + own file)"
+# Remove the declaration from the worktree WITHOUT staging the deletion --
+# the index still carries the committed blob.
+rm "$BRANCH6F/$CHANGE_DIR6/files-modified.md"
+# Stage an undeclared file: the enforced blob does not declare it.
+echo "sneaky" > "$BRANCH6F/sneaky.txt"
+git -C "$BRANCH6F" add sneaky.txt
+OUT6F="$("$SCRIPT" "$BRANCH6F" origin main "CON-162 D4a enforcement" "$CHANGE_DIR6" 2>&1)"
+RC6F=$?
+if [ "$RC6F" -ne 0 ]; then
+  ok "4.4b D4a still enforces the blob (undeclared staged file refused)"
+else
+  bad "4.4b D4a still enforces the blob (undeclared staged file refused)" "exit=0 output=$OUT6F"
+fi
+# Anchored to the "unexpected file" refusal reason, not merely to the
+# filename appearing anywhere (the routine "Staged files:" listing above the
+# refusal also contains sneaky.txt, so a bare grep for the filename would not
+# actually pin that the blob was enforced as the refusal's cause).
+if echo "$OUT6F" | grep -qi "exceeds the run's declared touched-file set" && echo "$OUT6F" | grep -qF "sneaky.txt"; then
+  ok "4.4b refusal names the undeclared file as the cause"
+else
+  bad "4.4b refusal names the undeclared file as the cause" "output: $OUT6F"
+fi
+
+# --- 4.4c (CR1, round 2): staged blob present, NO worktree file, blob
+# declares every staged path -- the script must COMMIT, proving the D7
+# divergence detector was never reached on this path. ---
+BRANCH6G="$BASE6/branch-g"
+git clone -q "$REMOTE6" "$BRANCH6G" 2>/dev/null
+git -C "$BRANCH6G" checkout -q -b feature/con-162/CON-162-g origin/main
+mkdir -p "$BRANCH6G/$CHANGE_DIR6"
+cat > "$BRANCH6G/$CHANGE_DIR6/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work
+EOF
+echo "own work" > "$BRANCH6G/own-file.txt"
+commit_all "$BRANCH6G" "executor commit (declaration + own file)"
+rm "$BRANCH6G/$CHANGE_DIR6/files-modified.md"
+OUT6G="$("$SCRIPT" "$BRANCH6G" origin main "CON-162 D4a clean pass" "$CHANGE_DIR6" 2>&1)"
+RC6G=$?
+if [ "$RC6G" -eq 0 ]; then
+  ok "4.4c D4a shape with a fully-declaring blob commits (divergence detector not reached)"
+else
+  bad "4.4c D4a shape with a fully-declaring blob commits (divergence detector not reached)" "exit=$RC6G output=$OUT6G"
+fi
+
+# --- 4.5 (regression): ordinary run, declaration identical in index and
+# worktree, still commits normally. ---
+BRANCH6H="$BASE6/branch-h"
+git clone -q "$REMOTE6" "$BRANCH6H" 2>/dev/null
+git -C "$BRANCH6H" checkout -q -b feature/con-162/CON-162-h origin/main
+mkdir -p "$BRANCH6H/$CHANGE_DIR6"
+cat > "$BRANCH6H/$CHANGE_DIR6/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work
+EOF
+echo "own work" > "$BRANCH6H/own-file.txt"
+commit_all "$BRANCH6H" "executor commit (declaration + own file, consistent)"
+OUT6H="$("$SCRIPT" "$BRANCH6H" origin main "CON-162 ordinary consistent run" "$CHANGE_DIR6" 2>&1)"
+RC6H=$?
+if [ "$RC6H" -eq 0 ]; then
+  ok "4.5 ordinary consistent-declaration run still commits"
+else
+  bad "4.5 ordinary consistent-declaration run still commits" "exit=$RC6H output=$OUT6H"
+fi
+
+# ---------------------------------------------------------------------
 echo ""
 echo "squash-branch.test.sh: ${PASS} passed, ${FAIL} failed"
 if [ "$FAIL" -gt 0 ]; then
