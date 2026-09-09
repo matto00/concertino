@@ -1,0 +1,5 @@
+- `core/scripts/persist-evidence.sh` — `cp -f` → `cp -fp` so the persisted copy preserves the source's mtime instead of stamping the copy time; header comment documents the new contract and the `--no-clobber` no-op exception.
+- `scripts/concertino/persist-evidence.sh` — mirrored byte-for-byte from `core/scripts/persist-evidence.sh` (direct `cp`, not `concertino sync`, per the CON-173 drift gate).
+- `test/scripts/persist-evidence.test.sh` — added a regression test that backdates a source file's mtime and asserts the persisted destination's mtime matches it; verified RED against the pre-fix `cp -f` and GREEN against the `cp -fp` fix.
+- `core/roles/evaluator.md` — added a "Persisting screenshot/measurement evidence (CON-160)" subsection to Phase 3 (UI Review): persist cited screenshots/measurements at capture time via `persist-evidence.sh`, prefer self-authenticating evidence over mtime/positional evidence, and record accepting disclosed-unsound mtime evidence at face value as a gate defect regardless of verdict.
+- `core/roles/skeptic.md` — mirrored the same subsection (adjusted for the skeptic's report-naming convention) into the design-judgment step.

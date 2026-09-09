@@ -37,6 +37,13 @@ set -uo pipefail
 # every existing caller's behavior, unchanged): re-persisting the same source
 # overwrites the previous copy with its current content unconditionally.
 #
+# Mtime preservation (CON-160): the copy preserves the source's mtime (`cp
+# -p`), not the copy time. Evidence review that cites "when was this
+# captured" from the persisted file's timestamp reflects the original
+# capture time, not whenever persist-evidence.sh happened to run. This does
+# NOT apply to the --no-clobber no-op-success path above, which never
+# touches the destination at all.
+#
 # `--no-clobber` (CON-81, opt-in, optional third argument): when the
 # destination already exists, compare its content to the source instead of
 # overwriting blindly. Identical content → proceed to the same `READY ref=`
@@ -137,7 +144,9 @@ DEST_PATH="${DEST_DIR}/${SRC_REL}"
 if [ "$NO_CLOBBER" = "--no-clobber" ] && [ -e "$DEST_PATH" ]; then
   if cmp -s "$SOURCE_PATH" "$DEST_PATH"; then
     # Identical content: this is a harmless retried call for the same
-    # artifact, not a collision — proceed as a no-op success below.
+    # artifact, not a collision — proceed as a no-op success below. Note
+    # this path never touches the destination, so its mtime is whatever
+    # the FIRST successful persist left behind, not the current source's.
     echo "READY ref=${DEST_PATH}"
     exit 0
   fi
@@ -150,7 +159,7 @@ if ! mkdir -p "$(dirname "$DEST_PATH")" 2>/dev/null; then
   exit 1
 fi
 
-if ! cp -f "$SOURCE_PATH" "$DEST_PATH" 2>/dev/null; then
+if ! cp -fp "$SOURCE_PATH" "$DEST_PATH" 2>/dev/null; then
   echo "FAIL could not copy ${SOURCE_PATH} to ${DEST_PATH}" >&2
   exit 1
 fi

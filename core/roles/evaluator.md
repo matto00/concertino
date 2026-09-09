@@ -164,6 +164,42 @@ intervention. Do not debug the dev environment as a code change request.
 - [ ] Interactive elements have accessible names and keyboard support
 - [ ] Supported breakpoints render without layout breakage{{var:_breakpointsNote}}
 
+### Persisting screenshot/measurement evidence (CON-160)
+
+When a check above depends on a raw artifact you capture during review — a
+Playwright before/after screenshot, a byte-size or content-hash measurement
+dump — and you cite that artifact in the report as load-bearing for a claim,
+persist it via `persist-evidence.sh` **at the moment you capture it**, not
+deferred to end-of-review:
+
+```bash
+scripts/concertino/persist-evidence.sh "$TICKET_ID" "<worktree-relative-path-to-artifact>"
+# READY ref=<durable path>
+```
+
+Cite the `ref=` path it returns in the report, not the artifact's original
+worktree-relative path — the same discipline this role already applies to
+its own report via `verdict.ref` (Step 2 below). Waiting until the end of
+the review risks the artifact never getting rescued before `cleanup.sh
+--phase4` destroys the worktree it lives in.
+
+Temporal and positional evidence (file mtime ordering, "this screenshot came
+before that one" inferred from directory placement) is fragile across
+relocation: copying or moving a file can rewrite its mtime, and a directory
+listing's order is not a content guarantee. Prefer self-authenticating
+evidence — content diffs, byte-size deltas, checksums, cited line numbers —
+wherever the underlying claim allows it. If a claim in the report genuinely
+has no self-authenticating substitute and must rest on mtime ordering, state
+that dependency explicitly rather than presenting it as self-evidently
+reliable.
+
+**Gate defect, independent of verdict:** if this report's evidence directory
+discloses that its mtimes are unsound (e.g. a prior relocation rewrote them),
+and this gate nonetheless accepts an mtime-ordering claim drawn from that
+same evidence at face value without independent corroboration, that
+acceptance is itself a recorded gate defect — regardless of whether the
+gate's own verdict is PASS or FAIL.
+
 ---
 
 ## Output
