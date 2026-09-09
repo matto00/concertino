@@ -85,6 +85,7 @@ new_pair() {
   cp "$EMIT" "$primary/scripts/concertino/emit-event.sh"
   cp "$ROOT/core/scripts/tui-attached.sh" "$primary/scripts/concertino/tui-attached.sh"
   cp "$ROOT/core/scripts/lib/git-child-env.sh" "$primary/scripts/concertino/lib/git-child-env.sh"
+  cp "$ROOT/core/scripts/lib/auditor-lease.sh" "$primary/scripts/concertino/lib/auditor-lease.sh"
   chmod +x "$primary/scripts/concertino/"*.sh
   # .concertino/ (the run log emit-event.sh --await writes to) must be
   # gitignored here exactly as it is in the real project — otherwise the

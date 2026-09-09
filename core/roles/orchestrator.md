@@ -1049,8 +1049,16 @@ Run directly (no subagent).
      instead of returning control, or escalate.
      - **`MERGE`** → the PR is already merged. Present the (now-merged) PR +
        summary to the human as before, but proceed **directly into Phase 4**
-       — the auditor's `MERGE` verdict *is* the confirmation that used to
-       require a human reply.
+       — the auditor's `MERGE` verdict, **consumed as this spawn call's own
+       return value**, *is* the confirmation that used to require a human
+       reply. That is the ONLY thing that satisfies this condition. Observing
+       the merge by any OTHER means — polling `gh pr view`, a GitHub
+       notification, a `merged` timestamp — is **not** a `MERGE` verdict and
+       does **not** license entering Phase 4 (CON-171): the merge becomes
+       observable strictly before the auditor has finished writing and
+       persisting its report, so acting on an out-of-band observation risks
+       tearing down the worktree while the auditor is still writing into it.
+       Wait for the spawn call to actually return.
      - **`ESCALATE` / `BLOCKER`** → read the auditor's report, surface the
        specific reason to the human, and **fall back to the existing
        wait-for-"merged" flow** exactly as the `AGENT_MERGE = false` path
@@ -1075,6 +1083,17 @@ for this ticket. A `design` ticket with at least one `fold-in` scope instead
 requires the ordinary merged-PR confirmation, unchanged, since real code
 exists for that scope. **This substitutes only the entry condition above —
 Phase 4's own internal step order below is unchanged either way:**
+
+**CON-171: `cleanup.sh --phase4` now refuses to remove the worktree while the
+auditor's script-owned lease is held, or while a live process holds the
+worktree as its working directory** — see step 1's exit-code handling below.
+That refusal is a `BLOCKER` under the existing non-zero-exit handling, exactly
+like any other Phase-4 failure — it is **not** a condition to clear
+unilaterally with `--force-teardown`. If the refusal is a few seconds of
+overlap with an auditor that has since finished and released, a **plain
+re-run of `cleanup.sh --phase4` with no flag** succeeds — try that first,
+before escalating to a human. `--force-teardown` is for a confirmed-stuck
+holder only.
 
 1. Stop servers and remove the worktree via the canonical script (reads
    ports/path from `workflow-state.md` if not in memory). `cleanup.sh` is a

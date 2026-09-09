@@ -18,8 +18,16 @@ set -euo pipefail
 #   - the environment sentinel `CONCERTINO_PHASE4=1` is set.
 # Without the opt-in it prints a refusal to stderr and exits 0 (safe no-op).
 #
-# Usage: cleanup.sh --phase4 <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]
-#    or: CONCERTINO_PHASE4=1 cleanup.sh <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]
+# Usage: cleanup.sh --phase4 [--force-teardown] <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]
+#    or: CONCERTINO_PHASE4=1 cleanup.sh [--force-teardown] <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]
+#
+# CON-171: before any destructive step, refuses to remove the worktree while
+# (Signal A) the auditor's script-owned lease is held, or (Signal B) a live
+# process holds the worktree as its cwd (after a bounded 250ms/3s settle
+# window, to tolerate a process this script has just killed). Signal A
+# refuses immediately — a held lease is not a race. `--force-teardown`
+# overrides both, loudly, and must be passed AFTER `--phase4`/instead of
+# nothing before the opt-in sentinel — see the parsing block below.
 #
 # Prints "READY cleaned worktree=<path>" and, on every exit path past the
 # --phase4 guard, a machine-parseable "RESULT ..." summary line (see
@@ -47,7 +55,28 @@ elif [ "${CONCERTINO_PHASE4:-}" != "1" ]; then
   exit 0
 fi
 
-WORKTREE_PATH="${1:?usage: cleanup.sh --phase4 <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]}"
+# --force-teardown (CON-171): consumed only AFTER the --phase4/
+# CONCERTINO_PHASE4 opt-in check above, per design.md Decision 4 — it never
+# precedes --phase4, because --phase4 must remain the first argument for that
+# guard to see it. Overrides the CON-171 lease/process-holder refusal below,
+# loudly (it always reports what it is overriding). No environment variable
+# or default can reach this — it is an explicit CLI flag only.
+FORCE_TEARDOWN=0
+if [ "${1:-}" = "--force-teardown" ]; then
+  FORCE_TEARDOWN=1
+  shift
+fi
+# A mistyped flag (still starting with `--`) must fail loudly rather than
+# silently bind as WORKTREE_PATH — without this, a typo like
+# `--force-teardwn` would become `WORKTREE_PATH="--force-teardwn"`.
+case "${1:-}" in
+  --*)
+    echo "cleanup.sh: unrecognized flag '${1}' — usage: cleanup.sh --phase4 [--force-teardown] <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]" >&2
+    exit 1
+    ;;
+esac
+
+WORKTREE_PATH="${1:?usage: cleanup.sh --phase4 [--force-teardown] <WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]}"
 DEV_PORT="${2:-}"
 BACKEND_PORT="${3:-}"
 TICKET_ID="${4:-}"
@@ -124,6 +153,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/git-child-env.sh"
 # shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/auditor-lease.sh"
+# shellcheck disable=SC1091
 [ -f "${SCRIPT_DIR}/.concertino.env" ] && source "${SCRIPT_DIR}/.concertino.env"
 
 REPO_ROOT="$(run_git "resolve repo root" -- git_child rev-parse --show-toplevel)"
@@ -151,6 +182,187 @@ T="${TICKET_ID:-${WORKTREE_PATH##*/}}"
 # Stop dev servers on this ticket's ports (no-op if already down).
 [ -n "$DEV_PORT" ]     && fuser -k "${DEV_PORT}/tcp"     2>/dev/null || true
 [ -n "$BACKEND_PORT" ] && fuser -k "${BACKEND_PORT}/tcp" 2>/dev/null || true
+
+# now_ms: millisecond epoch, for the Signal B settle-window deadline below.
+# GNU date supports `%3N`; BSD/macOS date does not (it silently returns a
+# literal "N" suffix), which would make the arithmetic in the settle loop
+# below hard-crash this WHOLE script under `set -e` on such a platform —
+# Signal B is Linux/`/proc`-only, but this script itself is not, so this
+# needs to degrade rather than abort. Falls back to `node` (already a hard
+# Concertino dependency — same fallback `emit-event.sh`'s own `now_ms()`
+# uses) when the `%3N` expansion didn't come back as pure digits.
+now_ms() {
+  local d
+  d="$(date +%s%3N 2>/dev/null)"
+  case "$d" in
+    ''|*[!0-9]*) node -e 'process.stdout.write(String(Date.now()))' 2>/dev/null || echo 0 ;;
+    *) printf '%s' "$d" ;;
+  esac
+}
+
+# --- Signal B helper (complementary, best-effort): live process cwd probe --
+# `/proc/<pid>/cwd` scan, Linux-only — degrades to "no holders found" (and
+# allows teardown) on any platform without /proc, restoring today's behavior
+# rather than inventing a new failure (design.md Decision 2). Excludes the
+# LITERAL ancestor pid chain only (self -> PPid -> ... -> 1), never siblings
+# or other descendants (design.md "Self-exclusion, specified narrowly").
+# Defined unconditionally (used both by the guard below and by the
+# --force-teardown override-reporting path) rather than nested inside either
+# branch.
+# worktree_holders TARGET
+#
+# Prints matching "pid cmdline" lines to stdout. Deliberately called by its
+# callers below with a plain `>` FILE REDIRECTION on the function call
+# itself — e.g. `worktree_holders "$WORKTREE_PATH" > "$tmp"` — never wrapped
+# in `$(...)` command substitution. `$(...)` capture forks a subshell to
+# read the pipe, and that subshell inherits the CALLER's cwd — which, at
+# every call site here, is WORKTREE_PATH itself or a directory beneath it.
+# That transient subshell is a live process holding the worktree as its cwd
+# for the scan's own duration, and it is a DESCENDANT of $$, never an
+# ancestor, so the ancestors-only exclusion (by design) does not exclude it
+# — the scan would self-refuse on its own machinery. A plain `>` redirection
+# on a function call, by contrast, does not fork: the function body runs in
+# the current shell process, so no extra transient holder is ever created.
+worktree_holders() {
+  [ -d /proc ] || return 0
+  local target="$1"
+  local -a exclude=()
+  local p="$$"
+  while [ -n "$p" ] && [ "$p" != "0" ]; do
+    exclude+=("$p")
+    [ "$p" = "1" ] && break
+    p="$(awk '{print $4}' "/proc/${p}/stat" 2>/dev/null || true)"
+  done
+  # A per-pid `readlink` (rather than one batched multi-argument call) is
+  # deliberate, not unoptimised — CON-171 final-gate skeptic review, round
+  # 1, CR-1. A batched `readlink "${targets[@]}"` was tried; it silently
+  # OMITS its output line not only for a pid that vanishes mid-scan but for
+  # ANY `/proc/<pid>/cwd` it cannot read, which in practice is every
+  # root-owned process — measured on a real host: 581 candidate pids, 252
+  # output lines. That made the line-count-mismatch fallback (this same
+  # per-pid loop) the path actually taken on essentially every scan, so the
+  # "fast path" was dead code carrying real complexity for no measured
+  # benefit. The wall-clock deadline (below, in the caller) is what actually
+  # bounds this — a full scan measures ~0.3s against the 3s bound (see
+  # design.md Decision 3) — so the per-pid form is kept for simplicity in
+  # the highest-blast-radius script in this repo, not replaced.
+  local pid cwd excluded e
+  local pid_dir
+  for pid_dir in /proc/[0-9]*; do
+    pid="${pid_dir#/proc/}"
+    excluded=0
+    for e in "${exclude[@]}"; do
+      if [ "$pid" = "$e" ]; then excluded=1; break; fi
+    done
+    [ "$excluded" -eq 1 ] && continue
+    # Tolerate the pid vanishing mid-scan, or its `cwd` being unreadable for
+    # any other reason (e.g. a root-owned process, see above) — skip rather
+    # than abort under set -e.
+    cwd="$(readlink "/proc/${pid}/cwd" 2>/dev/null)" || continue
+    [ -z "$cwd" ] && continue
+    case "$cwd" in
+      "$target"|"$target"/*)
+        local cmd
+        cmd="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
+        printf '%s %s\n' "$pid" "${cmd:-<unknown>}"
+        ;;
+    esac
+  done
+  return 0
+}
+
+# ===========================================================================
+# CON-171: Phase-4 teardown guard. Runs strictly BEFORE any destructive step
+# (worktree removal, branch deletion, base fast-forward — design.md
+# Decision 5), so a refusal leaves the run in exactly the state it was in,
+# fully retryable. `fail()` is reused for both refusals: exactly one RESULT
+# line is printed with the worktree reported as not removed, and the
+# orchestrator's existing non-zero-exit handling (a BLOCKER) applies with no
+# change.
+# ===========================================================================
+if [ "$FORCE_TEARDOWN" -ne 1 ]; then
+  # --- Signal A (load-bearing): the auditor's script-owned lease -----------
+  # Matched on the RECORDED WORKTREE PATH, never on `T` (design.md Decision
+  # 2) — `T` below is basename-inferred when TICKET_ID is omitted, which for
+  # a non-conforming branch name is not a ticket id at all. Refuses
+  # IMMEDIATELY, with no settle window: a held lease is not a race.
+  LEASE_ROOT="$(lease_resolve_root)" || LEASE_ROOT=""
+  if [ -z "$LEASE_ROOT" ]; then
+    # Fail CLOSED: an unresolvable root means the guard cannot answer its own
+    # question, and this is an irreversible operation (design.md Decision 2).
+    fail "could not resolve run root — cannot check for a held auditor lease (use --force-teardown to override)"
+  fi
+  if LEASE_FILE="$(lease_find_by_worktree "$LEASE_ROOT" "$WORKTREE_PATH")"; then
+    LEASE_SCRIPT="$(lease_field "$LEASE_FILE" script 2>/dev/null || true)"
+    LEASE_TICKET="$(lease_field "$LEASE_FILE" ticket 2>/dev/null || true)"
+    LEASE_PID="$(lease_field "$LEASE_FILE" pid 2>/dev/null || true)"
+    LEASE_TS="$(lease_field "$LEASE_FILE" ts 2>/dev/null || true)"
+    fail "refusing to remove worktree — auditor lease held: ${LEASE_FILE} (script=${LEASE_SCRIPT} ticket=${LEASE_TICKET} pid=${LEASE_PID} acquired=${LEASE_TS}). The auditor may still be writing into this worktree. A plain re-run of 'cleanup.sh --phase4' often succeeds once it finishes; use --force-teardown only if the holder is confirmed stuck."
+  fi
+
+  # --- Signal B: bounded settle-window probe, using worktree_holders above -
+  # Bounded settle window (design.md Decision 3): re-probe every 250ms up to
+  # 3s, refusing only if the holder set is non-empty at the moment the bound
+  # elapses. A holder seen early but gone by the bound does NOT refuse; the
+  # script never waits past the bound.
+  #
+  # The bound is a genuine WALL-CLOCK DEADLINE, captured ONCE up front —
+  # NOT a running sum of `sleep` durations. A sum-of-sleeps undercounts by
+  # exactly the cost of `worktree_holders` itself (a scan of every live
+  # pid), which is real and grows with the machine's own pid count/load —
+  # an earlier version of this loop measured ~9.5s wall time for a
+  # documented 3s bound on a moderately busy machine (CON-171 evaluation
+  # cycle 1, CR-1). Checked both right after the probe returns (so a probe
+  # that alone consumed the whole bound still breaks immediately, without
+  # sleeping past it) and there is nothing else to check before sleeping —
+  # the same comparison covers both, since the sleep is the very next
+  # statement.
+  SETTLE_BOUND_MS=3000
+  SETTLE_DEADLINE_MS=$(( $(now_ms) + SETTLE_BOUND_MS ))
+  HOLDERS=""
+  HOLDERS_TMP="$(mktemp)"
+  while :; do
+    worktree_holders "$WORKTREE_PATH" > "$HOLDERS_TMP"
+    # `$(<file)` is bash's builtin file-read form of command substitution —
+    # unlike `$(cat file)` it never forks a subshell (or an external `cat`)
+    # to do it, so this read itself can never register as another
+    # momentary, self-referential holder of WORKTREE_PATH.
+    HOLDERS="$(<"$HOLDERS_TMP")"
+    if [ -z "$HOLDERS" ]; then
+      break
+    fi
+    if [ "$(now_ms)" -ge "$SETTLE_DEADLINE_MS" ]; then
+      break
+    fi
+    sleep 0.25
+  done
+  rm -f "$HOLDERS_TMP"
+  if [ -n "$HOLDERS" ]; then
+    fail "refusing to remove worktree — live process(es) hold it as their working directory after a ${SETTLE_BOUND_MS}ms settle window:
+$(printf '%s' "$HOLDERS" | sed 's/^/  pid /')
+Use --force-teardown only if these are confirmed stuck (e.g. a server this script's own port-kill did not reach)."
+  fi
+fi
+
+if [ "$FORCE_TEARDOWN" -eq 1 ]; then
+  # Report what is being overridden, if anything, before proceeding — a
+  # silent override would destroy exactly the diagnostic information an
+  # operator needs (design.md Decision 4).
+  _FT_LEASE_ROOT="$(lease_resolve_root 2>/dev/null)" || _FT_LEASE_ROOT=""
+  if [ -n "$_FT_LEASE_ROOT" ]; then
+    if _FT_LEASE_FILE="$(lease_find_by_worktree "$_FT_LEASE_ROOT" "$WORKTREE_PATH" 2>/dev/null)"; then
+      echo "cleanup.sh: --force-teardown overriding held auditor lease: ${_FT_LEASE_FILE}" >&2
+    fi
+  fi
+  _FT_HOLDERS_TMP="$(mktemp)"
+  worktree_holders "$WORKTREE_PATH" > "$_FT_HOLDERS_TMP" 2>/dev/null || true
+  _FT_HOLDERS="$(<"$_FT_HOLDERS_TMP")"
+  rm -f "$_FT_HOLDERS_TMP"
+  if [ -n "$_FT_HOLDERS" ]; then
+    echo "cleanup.sh: --force-teardown overriding live worktree holder(s):" >&2
+    printf '%s' "$_FT_HOLDERS" | sed 's/^/  pid /' >&2
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # Resolve BRANCH, remove the worktree, and set WT_OK — all before any branch
