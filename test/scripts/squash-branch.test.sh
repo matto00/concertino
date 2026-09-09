@@ -1077,6 +1077,728 @@ fi
 rm -f "$CON164_TRANSCRIPT_TMP"
 
 # ---------------------------------------------------------------------
+# Scenario 8 (CON-170, tasks 3.1-3.3): a pre-commit hook rejection after the
+# guard passes must restore the branch, not strand it at the merge-base.
+# Also proves hooks still run (D1/D5's double-duty fixture).
+# ---------------------------------------------------------------------
+echo "Scenario 8: commit failure after a passing guard restores the branch"
+
+make_hook_rejecting_fixture() {
+  # $1 = dest dir for the fixture repo (already created), $2 = change dir,
+  # $3 = path (OUTSIDE the repo working tree) the hook marks to prove it
+  # ran. Installs a rejecting pre-commit hook and a declared, guard-passing
+  # commit. The marker lives outside the working tree so writing it never
+  # perturbs `git status --porcelain` inside the fixture -- the hook's own
+  # untracked-file side effect must not be conflated with the script's.
+  local branch_dir="$1" change_dir="$2" marker_path="$3"
+  mkdir -p "$branch_dir/$change_dir"
+  cat > "$branch_dir/$change_dir/files-modified.md" <<EOF
+- \`own-file.txt\` — feature work
+EOF
+  echo "own work" > "$branch_dir/own-file.txt"
+  commit_all "$branch_dir" "executor commit (declaration + own file, consistent)"
+  mkdir -p "$branch_dir/.git/hooks"
+  # The script's `git commit` invocation redirects the child's stdout/stderr
+  # to /dev/null, so proving the hook ran (D1/D5's second job for this
+  # fixture) is asserted via a marker FILE the hook writes, not via captured
+  # output.
+  cat > "$branch_dir/.git/hooks/pre-commit" <<EOF
+#!/bin/sh
+touch "${marker_path}"
+echo "pre-commit: rejecting on purpose (CON-170 fixture)" >&2
+exit 1
+EOF
+  chmod +x "$branch_dir/.git/hooks/pre-commit"
+}
+
+BASE8="$(mktemp -d)"
+REMOTE8="$BASE8/remote.git"
+git init -q --bare "$REMOTE8"
+git clone -q "$REMOTE8" "$BASE8/primary" 2>/dev/null
+echo "root" > "$BASE8/primary/root.txt"
+commit_all "$BASE8/primary" "init"
+git -C "$BASE8/primary" branch -M main
+git -C "$BASE8/primary" push -q origin main
+
+CHANGE_DIR8="openspec/changes/con-170-restore-demo"
+BRANCH8="$BASE8/branch-a"
+git clone -q "$REMOTE8" "$BRANCH8" 2>/dev/null
+git -C "$BRANCH8" checkout -q -b feature/con-170/CON-170-a origin/main
+HOOK_MARKER8="$BASE8/.hook-ran-marker"
+make_hook_rejecting_fixture "$BRANCH8" "$CHANGE_DIR8" "$HOOK_MARKER8"
+
+HEAD_BEFORE8="$(git -C "$BRANCH8" rev-parse HEAD)"
+TREE_BEFORE8="$(git -C "$BRANCH8" write-tree)"
+STATUS_BEFORE8="$(git -C "$BRANCH8" status --porcelain)"
+COUNT_BEFORE8="$(git -C "$BRANCH8" rev-list --count HEAD)"
+
+OUT8="$("$SCRIPT" "$BRANCH8" origin main "CON-170 commit should fail" "$CHANGE_DIR8" 2>&1)"
+RC8=$?
+
+HEAD_AFTER8="$(git -C "$BRANCH8" rev-parse HEAD)"
+TREE_AFTER8="$(git -C "$BRANCH8" write-tree)"
+STATUS_AFTER8="$(git -C "$BRANCH8" status --porcelain)"
+COUNT_AFTER8="$(git -C "$BRANCH8" rev-list --count HEAD)"
+
+if [ "$RC8" -ne 0 ]; then ok "3.2 hook-rejected commit exits non-zero"; else bad "3.2 hook-rejected commit exits non-zero" "exit=$RC8 output=$OUT8"; fi
+if [ "$HEAD_BEFORE8" = "$HEAD_AFTER8" ]; then
+  ok "3.2 hook-rejected commit leaves HEAD unchanged (before=$HEAD_BEFORE8)"
+else
+  bad "3.2 hook-rejected commit leaves HEAD unchanged" "before=$HEAD_BEFORE8 after=$HEAD_AFTER8"
+fi
+if [ "$TREE_BEFORE8" = "$TREE_AFTER8" ]; then
+  ok "3.2 hook-rejected commit leaves the staged tree hash unchanged"
+else
+  bad "3.2 hook-rejected commit leaves the staged tree hash unchanged" "before=$TREE_BEFORE8 after=$TREE_AFTER8"
+fi
+if [ "$STATUS_BEFORE8" = "$STATUS_AFTER8" ]; then
+  ok "3.2 hook-rejected commit leaves git status --porcelain unchanged"
+else
+  bad "3.2 hook-rejected commit leaves git status --porcelain unchanged" "before=[$STATUS_BEFORE8] after=[$STATUS_AFTER8]"
+fi
+if [ "$COUNT_BEFORE8" = "$COUNT_AFTER8" ]; then
+  ok "3.2 hook-rejected commit creates no new commit on the branch"
+else
+  bad "3.2 hook-rejected commit creates no new commit on the branch" "before=$COUNT_BEFORE8 after=$COUNT_AFTER8"
+fi
+if echo "$OUT8" | grep -qF "FAIL git commit failed after guard passed"; then
+  ok "3.2 output names the commit failure"
+else
+  bad "3.2 output names the commit failure" "output: $OUT8"
+fi
+if echo "$OUT8" | grep -qF "Branch restored to pre-squash HEAD"; then
+  ok "3.2 output names the restoration"
+else
+  bad "3.2 output names the restoration" "output: $OUT8"
+fi
+if [ -f "$HOOK_MARKER8" ]; then
+  ok "3.1/D5 the fixture's pre-commit hook actually ran (proves hooks still fire, D1's argument)"
+else
+  bad "3.1/D5 the fixture's pre-commit hook actually ran" "marker file not found at $HOOK_MARKER8"
+fi
+
+# --- 3.3: failability -- mutate the real script to delete the explicit
+# restore call, re-run the same fixture shape, assert HEAD IS the
+# merge-base (the exact stranding this change fixes), then restore. ---
+BRANCH8M="$BASE8/branch-mutation"
+git clone -q "$REMOTE8" "$BRANCH8M" 2>/dev/null
+git -C "$BRANCH8M" checkout -q -b feature/con-170/CON-170-mutation origin/main
+make_hook_rejecting_fixture "$BRANCH8M" "$CHANGE_DIR8" "$BASE8/.hook-ran-marker-mutation"
+MERGE_BASE8M="$(git -C "$BRANCH8M" merge-base HEAD origin/main)"
+
+cp "$SCRIPT" "$SCRIPT.bak.$$"
+python3 - "$SCRIPT" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+needle = (
+    '  echo "FAIL git commit failed after guard passed" >&2\n'
+    '  if restore_pre_squash_head; then\n'
+    '    echo "Branch restored to pre-squash HEAD ${PRE_SQUASH_HEAD}." >&2\n'
+    '  fi\n'
+    '  exit 1\n'
+)
+replacement = (
+    '  echo "FAIL git commit failed after guard passed" >&2\n'
+    '  exit 1\n'
+)
+assert needle in text, "restore call not found -- fixture is stale against the real script"
+text = text.replace(needle, replacement, 1)
+# Also disarm the EXIT trap so the abnormal-termination mechanism (D2's
+# second arming path) does not mask this mutation and produce a false pass.
+text = text.replace("trap 'restore_pre_squash_head' EXIT\n", "", 1)
+with open(path, "w") as f:
+    f.write(text)
+PYEOF
+chmod +x "$SCRIPT"
+
+OUT8M="$("$SCRIPT" "$BRANCH8M" origin main "CON-170 commit should fail (mutated)" "$CHANGE_DIR8" 2>&1)"
+RC8M=$?
+HEAD_AFTER8M="$(git -C "$BRANCH8M" rev-parse HEAD)"
+
+mv "$SCRIPT.bak.$$" "$SCRIPT"
+chmod +x "$SCRIPT"
+
+if [ "$RC8M" -ne 0 ] && [ "$HEAD_AFTER8M" = "$MERGE_BASE8M" ]; then
+  ok "3.3 restore is mutation-failable: deleting it reproduces the exact stranding at merge-base ($MERGE_BASE8M)"
+else
+  bad "3.3 restore is mutation-failable" "expected HEAD == merge-base ($MERGE_BASE8M) with non-zero exit; got exit=$RC8M head=$HEAD_AFTER8M output=$OUT8M"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 9 (CON-170 D4 / CON-164 D6, task 3.4): empty prospective staged
+# set -- guard passes, nothing staged, commit fails ("nothing to commit"),
+# branch restored, no empty commit created.
+#
+# evaluation-4.md / skeptic-final-1.md CR1: an earlier version of this
+# fixture had NO commits beyond origin/main, so merge-base == HEAD and the
+# forward reset was a no-op -- HEAD could never move, so "branch restored
+# (HEAD unchanged)" passed whether or not any restore existed (confirmed by
+# the skeptic's full-revert probe: 8 assertions went red, Scenario 9's three
+# stayed green). The fixture now genuinely diverges from the merge-base --
+# two commits, the second of which `git rm`s everything the first added --
+# so the tree is back to matching the merge-base (prospective staged set is
+# still empty) while HEAD itself is two commits ahead. The forward reset is
+# therefore a REAL, non-trivial ref movement, and the restore is load-bearing.
+# ---------------------------------------------------------------------
+echo "Scenario 9: empty staged set after guard passes restores the branch"
+
+BASE9="$(mktemp -d)"
+REMOTE9="$BASE9/remote.git"
+git init -q --bare "$REMOTE9"
+git clone -q "$REMOTE9" "$BASE9/primary" 2>/dev/null
+echo "root" > "$BASE9/primary/root.txt"
+commit_all "$BASE9/primary" "init"
+git -C "$BASE9/primary" branch -M main
+git -C "$BASE9/primary" push -q origin main
+
+CHANGE_DIR9="openspec/changes/con-170-empty-demo"
+BRANCH9="$BASE9/branch-a"
+git clone -q "$REMOTE9" "$BRANCH9" 2>/dev/null
+git -C "$BRANCH9" checkout -q -b feature/con-170/CON-170-empty origin/main
+mkdir -p "$BRANCH9/$CHANGE_DIR9"
+cat > "$BRANCH9/$CHANGE_DIR9/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work
+EOF
+echo "own work" > "$BRANCH9/own-file.txt"
+commit_all "$BRANCH9" "executor commit (declared file added)"
+git -C "$BRANCH9" rm -q "own-file.txt" "$CHANGE_DIR9/files-modified.md"
+commit_all "$BRANCH9" "executor commit (same files removed -- tree back to merge-base, HEAD is not)"
+
+MERGE_BASE9="$(git -C "$BRANCH9" merge-base HEAD origin/main)"
+HEAD_BEFORE9="$(git -C "$BRANCH9" rev-parse HEAD)"
+COUNT_BEFORE9="$(git -C "$BRANCH9" rev-list --count HEAD)"
+
+# Sanity-check the fixture's own premise before trusting any assertion built
+# on it: HEAD must genuinely differ from the merge-base, or the forward
+# reset is a no-op and every "HEAD unchanged" assertion below is vacuous
+# (exactly the defect this fixture is being rewritten to fix).
+if [ "$HEAD_BEFORE9" != "$MERGE_BASE9" ]; then
+  ok "3.4 fixture premise: HEAD genuinely differs from the merge-base (head=$HEAD_BEFORE9 merge-base=$MERGE_BASE9)"
+else
+  bad "3.4 fixture premise: HEAD genuinely differs from the merge-base" "head and merge-base are identical ($HEAD_BEFORE9) -- the forward reset would be a no-op and the assertions below would be vacuous"
+fi
+
+OUT9="$("$SCRIPT" "$BRANCH9" origin main "CON-170 empty staged set" "$CHANGE_DIR9" 2>&1)"
+RC9=$?
+
+HEAD_AFTER9="$(git -C "$BRANCH9" rev-parse HEAD)"
+COUNT_AFTER9="$(git -C "$BRANCH9" rev-list --count HEAD)"
+
+if [ "$RC9" -ne 0 ]; then ok "3.4 empty staged set commit failure exits non-zero"; else bad "3.4 empty staged set commit failure exits non-zero" "exit=$RC9 output=$OUT9"; fi
+if [ "$HEAD_BEFORE9" = "$HEAD_AFTER9" ]; then
+  ok "3.4 empty staged set: branch restored (HEAD unchanged, and genuinely could have moved: merge-base=$MERGE_BASE9)"
+else
+  bad "3.4 empty staged set: branch restored (HEAD unchanged)" "before=$HEAD_BEFORE9 after=$HEAD_AFTER9"
+fi
+if [ "$COUNT_BEFORE9" = "$COUNT_AFTER9" ]; then
+  ok "3.4 empty staged set: no empty commit created"
+else
+  bad "3.4 empty staged set: no empty commit created" "before=$COUNT_BEFORE9 after=$COUNT_AFTER9"
+fi
+
+# --- Failability arm (skeptic-final-1.md CR1: "add a mutation arm ... or
+# state which existing arm covers it" -- add one, matching 3.3/3.8's shape,
+# since the empty-staged-set path is otherwise the only D2/D2a-covered
+# no-strand assertion with no dedicated red). Reuse the same restore-deletion
+# mutation as Scenario 8's 3.3 arm (same code path is exercised), against
+# THIS fixture's genuinely-divergent branch. ---
+BRANCH9M="$BASE9/branch-mutation"
+git clone -q "$REMOTE9" "$BRANCH9M" 2>/dev/null
+git -C "$BRANCH9M" checkout -q -b feature/con-170/CON-170-empty-mutation origin/main
+mkdir -p "$BRANCH9M/$CHANGE_DIR9"
+cat > "$BRANCH9M/$CHANGE_DIR9/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work
+EOF
+echo "own work" > "$BRANCH9M/own-file.txt"
+commit_all "$BRANCH9M" "executor commit (declared file added)"
+git -C "$BRANCH9M" rm -q "own-file.txt" "$CHANGE_DIR9/files-modified.md"
+commit_all "$BRANCH9M" "executor commit (same files removed -- tree back to merge-base, HEAD is not)"
+MERGE_BASE9M="$(git -C "$BRANCH9M" merge-base HEAD origin/main)"
+
+cp "$SCRIPT" "$SCRIPT.bak.$$"
+python3 - "$SCRIPT" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+needle = (
+    '  echo "FAIL git commit failed after guard passed" >&2\n'
+    '  if restore_pre_squash_head; then\n'
+    '    echo "Branch restored to pre-squash HEAD ${PRE_SQUASH_HEAD}." >&2\n'
+    '  fi\n'
+    '  exit 1\n'
+)
+replacement = (
+    '  echo "FAIL git commit failed after guard passed" >&2\n'
+    '  exit 1\n'
+)
+assert needle in text, "restore call not found -- fixture is stale against the real script"
+text = text.replace(needle, replacement, 1)
+text = text.replace("trap 'restore_pre_squash_head' EXIT\n", "", 1)
+with open(path, "w") as f:
+    f.write(text)
+PYEOF
+MUTATED_HASH9="$(shasum -a 256 "$SCRIPT" 2>/dev/null | cut -d' ' -f1)"
+PRISTINE_HASH9="$(shasum -a 256 "$SCRIPT.bak.$$" 2>/dev/null | cut -d' ' -f1)"
+if [ -n "$MUTATED_HASH9" ] && [ "$MUTATED_HASH9" != "$PRISTINE_HASH9" ]; then
+  ok "3.4 mutation actually changed the script file (hash before != after)"
+else
+  bad "3.4 mutation actually changed the script file (hash before != after)" "mutation did not take effect -- needle likely stale (skeptic-final-1.md non-blocking note)"
+fi
+chmod +x "$SCRIPT"
+
+OUT9M="$("$SCRIPT" "$BRANCH9M" origin main "CON-170 empty staged set (mutated)" "$CHANGE_DIR9" 2>&1)"
+RC9M=$?
+HEAD_AFTER9M="$(git -C "$BRANCH9M" rev-parse HEAD)"
+
+mv "$SCRIPT.bak.$$" "$SCRIPT"
+chmod +x "$SCRIPT"
+
+if [ "$RC9M" -ne 0 ] && [ "$HEAD_AFTER9M" = "$MERGE_BASE9M" ]; then
+  ok "3.4 restore is mutation-failable on the empty-staged-set input: deleting it reproduces the exact stranding at merge-base ($MERGE_BASE9M)"
+else
+  bad "3.4 restore is mutation-failable on the empty-staged-set input" "expected HEAD == merge-base ($MERGE_BASE9M) with non-zero exit; got exit=$RC9M head=$HEAD_AFTER9M output=$OUT9M"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 10 (task 3.5): success path is unaffected -- the squash commit is
+# created and no restore/trap fires, guarding against a spurious misfire.
+# ---------------------------------------------------------------------
+echo "Scenario 10: successful squash is unaffected by the new restore machinery"
+
+BASE10="$(mktemp -d)"
+REMOTE10="$BASE10/remote.git"
+git init -q --bare "$REMOTE10"
+git clone -q "$REMOTE10" "$BASE10/primary" 2>/dev/null
+echo "root" > "$BASE10/primary/root.txt"
+commit_all "$BASE10/primary" "init"
+git -C "$BASE10/primary" branch -M main
+git -C "$BASE10/primary" push -q origin main
+
+CHANGE_DIR10="openspec/changes/con-170-success-demo"
+BRANCH10="$BASE10/branch-a"
+git clone -q "$REMOTE10" "$BRANCH10" 2>/dev/null
+git -C "$BRANCH10" checkout -q -b feature/con-170/CON-170-success origin/main
+mkdir -p "$BRANCH10/$CHANGE_DIR10"
+cat > "$BRANCH10/$CHANGE_DIR10/files-modified.md" <<'EOF'
+- `own-file.txt` — feature work
+EOF
+echo "own work" > "$BRANCH10/own-file.txt"
+commit_all "$BRANCH10" "executor commit (clean, no hook)"
+
+HEAD_BEFORE10="$(git -C "$BRANCH10" rev-parse HEAD)"
+OUT10="$("$SCRIPT" "$BRANCH10" origin main "CON-170 clean squash" "$CHANGE_DIR10" 2>&1)"
+RC10=$?
+HEAD_AFTER10="$(git -C "$BRANCH10" rev-parse HEAD)"
+
+if [ "$RC10" -eq 0 ]; then ok "3.5 successful squash exits 0"; else bad "3.5 successful squash exits 0" "exit=$RC10 output=$OUT10"; fi
+if [ "$HEAD_BEFORE10" != "$HEAD_AFTER10" ]; then
+  ok "3.5 successful squash moves HEAD to the new squash commit"
+else
+  bad "3.5 successful squash moves HEAD to the new squash commit" "head unchanged: $HEAD_AFTER10"
+fi
+if echo "$OUT10" | grep -qF "squash commit created"; then
+  ok "3.5 successful squash prints the READY confirmation"
+else
+  bad "3.5 successful squash prints the READY confirmation" "output: $OUT10"
+fi
+if echo "$OUT10" | grep -qF "Branch restored"; then
+  bad "3.5 successful squash does not print a restore message (trap/explicit restore misfired)" "output: $OUT10"
+else
+  ok "3.5 successful squash does not print a restore message (no misfire)"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 11 (task 3.6): DRY_RUN=1 still mutates nothing on a fixture whose
+# wet run would fail at the commit (hook rejection).
+# ---------------------------------------------------------------------
+echo "Scenario 11: DRY_RUN=1 still mutates nothing on a fixture that would fail wet"
+
+BASE11="$(mktemp -d)"
+REMOTE11="$BASE11/remote.git"
+git init -q --bare "$REMOTE11"
+git clone -q "$REMOTE11" "$BASE11/primary" 2>/dev/null
+echo "root" > "$BASE11/primary/root.txt"
+commit_all "$BASE11/primary" "init"
+git -C "$BASE11/primary" branch -M main
+git -C "$BASE11/primary" push -q origin main
+
+CHANGE_DIR11="openspec/changes/con-170-dry-run-fail-demo"
+BRANCH11="$BASE11/branch-a"
+git clone -q "$REMOTE11" "$BRANCH11" 2>/dev/null
+git -C "$BRANCH11" checkout -q -b feature/con-170/CON-170-dry origin/main
+make_hook_rejecting_fixture "$BRANCH11" "$CHANGE_DIR11" "$BASE11/.hook-ran-marker"
+
+HEAD_BEFORE11="$(git -C "$BRANCH11" rev-parse HEAD)"
+STATUS_BEFORE11="$(git -C "$BRANCH11" status --porcelain)"
+OUT11="$(DRY_RUN=1 "$SCRIPT" "$BRANCH11" origin main "CON-170 dry run over a would-fail commit" "$CHANGE_DIR11" 2>&1)"
+RC11=$?
+HEAD_AFTER11="$(git -C "$BRANCH11" rev-parse HEAD)"
+STATUS_AFTER11="$(git -C "$BRANCH11" status --porcelain)"
+
+if [ "$RC11" -eq 0 ]; then ok "3.6 DRY_RUN=1 exits 0 even though the wet commit would fail"; else bad "3.6 DRY_RUN=1 exits 0 even though the wet commit would fail" "exit=$RC11 output=$OUT11"; fi
+if [ "$HEAD_BEFORE11" = "$HEAD_AFTER11" ]; then
+  ok "3.6 DRY_RUN=1 leaves HEAD unchanged"
+else
+  bad "3.6 DRY_RUN=1 leaves HEAD unchanged" "before=$HEAD_BEFORE11 after=$HEAD_AFTER11"
+fi
+if [ "$STATUS_BEFORE11" = "$STATUS_AFTER11" ]; then
+  ok "3.6 DRY_RUN=1 leaves the index/worktree unchanged"
+else
+  bad "3.6 DRY_RUN=1 leaves the index/worktree unchanged" "before=[$STATUS_BEFORE11] after=[$STATUS_AFTER11]"
+fi
+if echo "$OUT11" | grep -qF "READY dry run: guard passed, nothing committed (DRY_RUN=1)"; then
+  ok "3.6 DRY_RUN=1 output contains the dry-run marker"
+else
+  bad "3.6 DRY_RUN=1 output contains the dry-run marker" "output: $OUT11"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 12 (task 3.7): the EXIT trap must be exercised actually firing --
+# kill the script with SIGTERM while it is parked inside a slow pre-commit
+# hook (after the forward reset, before the commit returns), and assert HEAD
+# is restored to the pre-run commit rather than left at the merge-base.
+# ---------------------------------------------------------------------
+echo "Scenario 12: EXIT trap restores HEAD when the step is killed mid-commit"
+
+make_slow_hook_fixture() {
+  # $1 = dest dir, $2 = change dir, $3 = sleep seconds, $4 = marker file path
+  # (OUTSIDE the repo working tree, same shape as Scenario 8's
+  # make_hook_rejecting_fixture). The hook writes its own PID and the
+  # sleep child's PID to sibling files, then touches the marker as its
+  # last setup action before sleeping -- so once the marker exists, both
+  # PID files are already populated and safe to read. The hook exits
+  # non-zero after sleeping, so an orphaned late completion (round-2
+  # skeptic note) can never accidentally commit and move HEAD on its own.
+  #
+  # evaluation-2.md CR1: an earlier version of this fixture embedded a
+  # sentinel as a trailing shell `#` comment on the `sleep` line
+  # (`sleep 20 # sentinel:...`). That comment is consumed by the hook's OWN
+  # shell before `exec`-ing anything; neither the hook shell's argv
+  # (`/bin/sh .git/hooks/pre-commit`, a RELATIVE path -- confirmed by direct
+  # measurement, so a later attempt to match on the fixture's absolute path
+  # would ALSO never match) nor the sleep child's argv (`sleep 20`) ever
+  # carries a sentinel or the branch's path, so neither `pgrep -f` approach
+  # can work here. Reaping is therefore done by exact PID, read from files
+  # the hook itself writes, not by any command-line pattern match.
+  local branch_dir="$1" change_dir="$2" sleep_secs="$3" marker_path="$4"
+  mkdir -p "$branch_dir/$change_dir"
+  cat > "$branch_dir/$change_dir/files-modified.md" <<EOF
+- \`own-file.txt\` — feature work
+EOF
+  echo "own work" > "$branch_dir/own-file.txt"
+  commit_all "$branch_dir" "executor commit (declaration + own file, consistent)"
+  mkdir -p "$branch_dir/.git/hooks"
+  cat > "$branch_dir/.git/hooks/pre-commit" <<EOF
+#!/bin/sh
+echo \$\$ > "${marker_path}.hookpid"
+sleep ${sleep_secs} &
+echo \$! > "${marker_path}.sleeppid"
+touch "${marker_path}"
+wait
+exit 1
+EOF
+  chmod +x "$branch_dir/.git/hooks/pre-commit"
+}
+
+pid_still_owned_by() {
+  # $1 = pid, $2 = substring expected in that pid's command line. Closes the
+  # theoretical PID-reuse window flagged in evaluation-3.md's non-blocking
+  # notes: the gap between a PID being recorded and this reap running is
+  # well under a second in practice, but a bare `kill -TERM $pid` has no way
+  # to tell "the process I recorded" from "an unrelated process the OS
+  # reassigned that PID to in the meantime". Reads /proc/<pid>/cmdline where
+  # available (Linux); falls back to `ps -o args=` elsewhere. A pid that is
+  # no longer alive at all is treated as "not owned" (nothing to kill), not
+  # an error.
+  local pid="$1" expect="$2" cmdline=""
+  if [ -r "/proc/$pid/cmdline" ]; then
+    cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  else
+    cmdline="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+  fi
+  case "$cmdline" in
+    *"$expect"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+reap_slow_hook_fixture() {
+  # $1 = marker path used for make_slow_hook_fixture. Kills the hook shell
+  # and its backgrounded sleep child by the exact PIDs the hook itself
+  # recorded, not by any command-line pattern -- see make_slow_hook_fixture
+  # for why a broad pattern match cannot work here. Each kill is additionally
+  # gated on pid_still_owned_by, so a reused PID is never signalled.
+  local marker_path="$1" hookpid sleeppid
+  hookpid="$(cat "${marker_path}.hookpid" 2>/dev/null || true)"
+  sleeppid="$(cat "${marker_path}.sleeppid" 2>/dev/null || true)"
+  if [ -n "$sleeppid" ] && pid_still_owned_by "$sleeppid" "sleep"; then
+    kill -TERM "$sleeppid" 2>/dev/null || true
+  fi
+  if [ -n "$hookpid" ] && pid_still_owned_by "$hookpid" "pre-commit"; then
+    kill -TERM "$hookpid" 2>/dev/null || true
+  fi
+}
+
+BASE12="$(mktemp -d)"
+REMOTE12="$BASE12/remote.git"
+git init -q --bare "$REMOTE12"
+git clone -q "$REMOTE12" "$BASE12/primary" 2>/dev/null
+echo "root" > "$BASE12/primary/root.txt"
+commit_all "$BASE12/primary" "init"
+git -C "$BASE12/primary" branch -M main
+git -C "$BASE12/primary" push -q origin main
+
+CHANGE_DIR12="openspec/changes/con-170-trap-demo"
+BRANCH12="$BASE12/branch-a"
+git clone -q "$REMOTE12" "$BRANCH12" 2>/dev/null
+git -C "$BRANCH12" checkout -q -b feature/con-170/CON-170-trap origin/main
+HOOK_MARKER12="$BASE12/.hook-started-marker"
+make_slow_hook_fixture "$BRANCH12" "$CHANGE_DIR12" 20 "$HOOK_MARKER12"
+
+HEAD_BEFORE12="$(git -C "$BRANCH12" rev-parse HEAD)"
+
+"$SCRIPT" "$BRANCH12" origin main "CON-170 kill mid-commit" "$CHANGE_DIR12" >/tmp/con170-scenario12-out.$$ 2>&1 &
+SCRIPT_PID12=$!
+
+# Poll for the hook to actually be running (the script is parked inside
+# `git commit`, blocked on the sleeping hook) rather than a fixed sleep, to
+# avoid a flake if hook startup is slow on a loaded machine. Polls on a
+# marker file the hook touches as its LAST setup action (after writing both
+# PID files -- see make_slow_hook_fixture), not a process-table match -- see
+# evaluation-2.md CR1 for why a command-line-embedded sentinel does not work
+# here. evaluation-3.md non-blocking note: this comment previously said
+# "first action", contradicting make_slow_hook_fixture's own comment; fixed
+# to match the actual order, which is also the order that matters (marker
+# present implies both PID files are already populated and safe to read).
+WAITED12=0
+while [ "$WAITED12" -lt 100 ]; do
+  if [ -f "$HOOK_MARKER12" ]; then
+    break
+  fi
+  sleep 0.1
+  WAITED12=$((WAITED12 + 1))
+done
+
+# The predicate must actually have matched (evaluation-2.md: "assert the
+# poll broke out early ... so that a future unmatchable predicate fails
+# loudly instead of silently costing ten seconds and testing nothing").
+# WAITED12 is in units of 0.1s; well under the 10s (100-iteration) timeout
+# bound confirms the poll broke out on the marker rather than exhausting.
+if [ -f "$HOOK_MARKER12" ] && [ "$WAITED12" -lt 90 ]; then
+  ok "3.7 poll observed the hook starting and broke out early (waited ${WAITED12}00ms, well under the 10s bound)"
+else
+  bad "3.7 poll observed the hook starting and broke out early" "marker present=$([ -f "$HOOK_MARKER12" ] && echo yes || echo no) waited=${WAITED12}00ms"
+fi
+
+kill -TERM "$SCRIPT_PID12" 2>/dev/null || true
+wait "$SCRIPT_PID12" 2>/dev/null
+RC12=$?
+
+# Round-2 skeptic note: killing the parent orphans the sleeping hook's `git
+# commit` child. Reap it by the exact PIDs it recorded (see
+# reap_slow_hook_fixture) so a late completion cannot commit after the
+# assertion and produce an intermittent flake.
+reap_slow_hook_fixture "$HOOK_MARKER12"
+
+HEAD_AFTER12="$(git -C "$BRANCH12" rev-parse HEAD)"
+rm -f "/tmp/con170-scenario12-out.$$"
+
+if [ "$HEAD_BEFORE12" = "$HEAD_AFTER12" ]; then
+  ok "3.7 EXIT trap restores HEAD when killed mid-commit (before=$HEAD_BEFORE12)"
+else
+  bad "3.7 EXIT trap restores HEAD when killed mid-commit" "before=$HEAD_BEFORE12 after=$HEAD_AFTER12 rc=$RC12"
+fi
+
+# --- 3.8: failability arm for the trap -- delete the trap installation
+# line via the PRISTINE_SCRIPT snapshot machinery, re-run, assert HEAD IS at
+# the merge-base, then restore. ---
+BRANCH12M="$BASE12/branch-mutation"
+git clone -q "$REMOTE12" "$BRANCH12M" 2>/dev/null
+git -C "$BRANCH12M" checkout -q -b feature/con-170/CON-170-trap-mutation origin/main
+HOOK_MARKER12M="$BASE12/.hook-started-marker-mutation"
+make_slow_hook_fixture "$BRANCH12M" "$CHANGE_DIR12" 20 "$HOOK_MARKER12M"
+MERGE_BASE12M="$(git -C "$BRANCH12M" merge-base HEAD origin/main)"
+
+cp "$SCRIPT" "$SCRIPT.bak.$$"
+python3 - "$SCRIPT" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+needle = "trap 'restore_pre_squash_head' EXIT\n"
+assert needle in text, "trap installation line not found -- fixture is stale against the real script"
+text = text.replace(needle, "", 1)
+with open(path, "w") as f:
+    f.write(text)
+PYEOF
+chmod +x "$SCRIPT"
+
+"$SCRIPT" "$BRANCH12M" origin main "CON-170 kill mid-commit (mutated, no trap)" "$CHANGE_DIR12" >/tmp/con170-scenario12m-out.$$ 2>&1 &
+SCRIPT_PID12M=$!
+
+WAITED12M=0
+while [ "$WAITED12M" -lt 100 ]; do
+  if [ -f "$HOOK_MARKER12M" ]; then
+    break
+  fi
+  sleep 0.1
+  WAITED12M=$((WAITED12M + 1))
+done
+
+if [ -f "$HOOK_MARKER12M" ] && [ "$WAITED12M" -lt 90 ]; then
+  ok "3.8 poll observed the hook starting and broke out early (waited ${WAITED12M}00ms, well under the 10s bound)"
+else
+  bad "3.8 poll observed the hook starting and broke out early" "marker present=$([ -f "$HOOK_MARKER12M" ] && echo yes || echo no) waited=${WAITED12M}00ms"
+fi
+
+kill -TERM "$SCRIPT_PID12M" 2>/dev/null || true
+wait "$SCRIPT_PID12M" 2>/dev/null
+
+reap_slow_hook_fixture "$HOOK_MARKER12M"
+
+HEAD_AFTER12M="$(git -C "$BRANCH12M" rev-parse HEAD)"
+rm -f "/tmp/con170-scenario12m-out.$$"
+
+mv "$SCRIPT.bak.$$" "$SCRIPT"
+chmod +x "$SCRIPT"
+
+if [ "$HEAD_AFTER12M" = "$MERGE_BASE12M" ]; then
+  ok "3.8 trap is mutation-failable: deleting the trap install reproduces the exact stranding at merge-base ($MERGE_BASE12M)"
+else
+  bad "3.8 trap is mutation-failable: deleting the trap install reproduces the exact stranding at merge-base" "expected HEAD == merge-base ($MERGE_BASE12M); got $HEAD_AFTER12M"
+fi
+
+# ---------------------------------------------------------------------
+# Task 3.9 (CON-170 evaluation-1.md CR2): "the restore itself fails" DOES
+# have a practical fixture -- the original claim that inducing a `git reset
+# --soft` failure is "genuinely awkward" was false, and settling for
+# grep-only verification is exactly what let CR1's false "Branch restored"
+# claim through undetected. A `pre-commit` hook that creates the branch's
+# own ref lock file before exiting 1 makes the forward `git commit` fail
+# AND makes the restoring `git reset --soft` unable to lock that same ref,
+# so the restore itself fails deterministically.
+# ---------------------------------------------------------------------
+echo "Scenario 13 / Task 3.9: restore-itself-fails is reported honestly, not as a false restoration"
+
+BASE13="$(mktemp -d)"
+REMOTE13="$BASE13/remote.git"
+git init -q --bare "$REMOTE13"
+git clone -q "$REMOTE13" "$BASE13/primary" 2>/dev/null
+echo "root" > "$BASE13/primary/root.txt"
+commit_all "$BASE13/primary" "init"
+git -C "$BASE13/primary" branch -M main
+git -C "$BASE13/primary" push -q origin main
+
+CHANGE_DIR13="openspec/changes/con-170-restore-fails-demo"
+
+make_restore_failure_fixture() {
+  # $1 = dest dir, $2 = change dir, $3 = branch name. The hook locks the
+  # branch's own ref (`refs/heads/<branch>.lock`) and then exits 1: the
+  # forward reset already succeeded (moving the ref away), so `git commit`
+  # fails on the lock, and the restoring `git reset --soft` back to
+  # PRE_SQUASH_HEAD then ALSO fails because it cannot acquire the same lock.
+  local branch_dir="$1" change_dir="$2" branch_name="$3"
+  mkdir -p "$branch_dir/$change_dir"
+  cat > "$branch_dir/$change_dir/files-modified.md" <<EOF
+- \`own-file.txt\` — feature work
+EOF
+  echo "own work" > "$branch_dir/own-file.txt"
+  commit_all "$branch_dir" "executor commit (declaration + own file, consistent)"
+  mkdir -p "$branch_dir/.git/hooks"
+  cat > "$branch_dir/.git/hooks/pre-commit" <<HOOK
+#!/bin/sh
+touch "\$(git rev-parse --git-dir)/refs/heads/${branch_name}.lock"
+exit 1
+HOOK
+  chmod +x "$branch_dir/.git/hooks/pre-commit"
+}
+
+BRANCH13_NAME="feature/con-170/CON-170-restore-fails"
+BRANCH13="$BASE13/branch-a"
+git clone -q "$REMOTE13" "$BRANCH13" 2>/dev/null
+git -C "$BRANCH13" checkout -q -b "$BRANCH13_NAME" origin/main
+make_restore_failure_fixture "$BRANCH13" "$CHANGE_DIR13" "$BRANCH13_NAME"
+
+HEAD_BEFORE13="$(git -C "$BRANCH13" rev-parse HEAD)"
+MERGE_BASE13="$(git -C "$BRANCH13" merge-base HEAD origin/main)"
+
+OUT13="$("$SCRIPT" "$BRANCH13" origin main "CON-170 restore itself fails" "$CHANGE_DIR13" 2>&1)"
+RC13=$?
+HEAD_AFTER13="$(git -C "$BRANCH13" rev-parse HEAD)"
+rm -f "$BRANCH13/.git/refs/heads/${BRANCH13_NAME}.lock" 2>/dev/null || true
+
+if [ "$RC13" -ne 0 ]; then ok "3.9 restore-itself-fails case exits non-zero"; else bad "3.9 restore-itself-fails case exits non-zero" "exit=$RC13 output=$OUT13"; fi
+if echo "$OUT13" | grep -qF "could not restore HEAD to"; then
+  ok "3.9 restore-itself-fails diagnostic reports the restore failure explicitly"
+else
+  bad "3.9 restore-itself-fails diagnostic reports the restore failure explicitly" "output: $OUT13"
+fi
+if echo "$OUT13" | grep -qF "Recover manually via the reflog"; then
+  ok "3.9 restore-itself-fails diagnostic points at the reflog"
+else
+  bad "3.9 restore-itself-fails diagnostic points at the reflog" "output: $OUT13"
+fi
+# This is CR1's exact bug: the step must NOT claim a restoration that did
+# not happen. HEAD is genuinely left at the merge-base here (the forward
+# reset succeeded and the restore could not undo it), so this is the
+# scenario the false-positive line was printing on.
+if echo "$OUT13" | grep -qF "Branch restored to pre-squash HEAD"; then
+  bad "3.9 restore-itself-fails does NOT claim a restoration that did not happen" "output: $OUT13"
+else
+  ok "3.9 restore-itself-fails does NOT claim a restoration that did not happen"
+fi
+if [ "$HEAD_AFTER13" = "$MERGE_BASE13" ]; then
+  ok "3.9 restore-itself-fails: HEAD is genuinely at the merge-base (confirms the fixture actually induces the failure it claims to)"
+else
+  bad "3.9 restore-itself-fails: HEAD is genuinely at the merge-base" "expected merge-base=$MERGE_BASE13, got $HEAD_AFTER13"
+fi
+
+# --- Failability arm: with CR1's fix reverted (unconditional confirmation
+# line restored), the "does NOT claim a restoration" assertion above must go
+# red on this same fixture. ---
+BRANCH13M="$BASE13/branch-mutation"
+git clone -q "$REMOTE13" "$BRANCH13M" 2>/dev/null
+git -C "$BRANCH13M" checkout -q -b "${BRANCH13_NAME}-mutation" origin/main
+make_restore_failure_fixture "$BRANCH13M" "$CHANGE_DIR13" "${BRANCH13_NAME}-mutation"
+
+cp "$SCRIPT" "$SCRIPT.bak.$$"
+python3 - "$SCRIPT" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+fixed = (
+    '  if restore_pre_squash_head; then\n'
+    '    echo "Branch restored to pre-squash HEAD ${PRE_SQUASH_HEAD}." >&2\n'
+    '  fi\n'
+)
+reverted = (
+    '  restore_pre_squash_head\n'
+    '  echo "Branch restored to pre-squash HEAD ${PRE_SQUASH_HEAD}." >&2\n'
+)
+assert fixed in text, "CR1's gated confirmation not found -- fixture is stale against the real script"
+text = text.replace(fixed, reverted, 1)
+with open(path, "w") as f:
+    f.write(text)
+PYEOF
+chmod +x "$SCRIPT"
+
+OUT13M="$("$SCRIPT" "$BRANCH13M" origin main "CON-170 restore itself fails (mutated, unconditional)" "$CHANGE_DIR13" 2>&1)"
+rm -f "$BRANCH13M/.git/refs/heads/${BRANCH13_NAME}-mutation.lock" 2>/dev/null || true
+
+mv "$SCRIPT.bak.$$" "$SCRIPT"
+chmod +x "$SCRIPT"
+
+if echo "$OUT13M" | grep -qF "Branch restored to pre-squash HEAD"; then
+  ok "3.9 CR1 regression is mutation-failable: reverting the gate reproduces the false restoration claim"
+else
+  bad "3.9 CR1 regression is mutation-failable: reverting the gate reproduces the false restoration claim" "expected the false claim to reappear; output: $OUT13M"
+fi
+
+# ---------------------------------------------------------------------
 echo ""
 echo "squash-branch.test.sh: ${PASS} passed, ${FAIL} failed"
 if [ "$FAIL" -gt 0 ]; then
