@@ -304,6 +304,41 @@ if [ "$DRY_RUN_MODE" = "1" ]; then
   exit 0
 fi
 
+# --- CON-170 D2: record the pre-reset HEAD so any non-success exit below
+# this point can restore the branch to exactly the state it held when the
+# script was invoked. Fail loudly if it cannot be read -- proceeding without
+# a restore point would silently reintroduce the stranding defect this
+# change exists to fix. ---
+if ! PRE_SQUASH_HEAD="$(git_wt rev-parse HEAD 2>/dev/null)" || [ -z "$PRE_SQUASH_HEAD" ]; then
+  echo "FAIL could not record pre-squash HEAD before resetting; refusing to proceed" >&2
+  exit 1
+fi
+
+# restore_pre_squash_head: `--soft` back to the recorded HEAD. `--soft` only
+# moves the ref -- it never touches the index or working tree -- so this is
+# always a safe, non-destructive undo of the forward `--soft` reset below
+# (D2). A hook that mutated the index before failing (e.g. `lint --fix` +
+# `git add`) is not undone by this -- the script performs no index mutation
+# of its own and restores the ref faithfully; it cannot unilaterally
+# guarantee a third party made none.
+restore_pre_squash_head() {
+  if ! git_wt reset --soft "$PRE_SQUASH_HEAD" >/dev/null 2>&1; then
+    CURRENT_HEAD="$(git_wt rev-parse HEAD 2>/dev/null || echo "<unreadable>")"
+    echo "FAIL could not restore HEAD to ${PRE_SQUASH_HEAD} (current HEAD: ${CURRENT_HEAD})." >&2
+    echo "The branch may be left at an intermediate state. Recover manually via the reflog (git reflog)." >&2
+    return 1
+  fi
+  return 0
+}
+
+# --- CON-170 D2: arm an EXIT trap covering the reset->commit interval, so an
+# abnormal, catchable termination (SIGTERM/SIGINT/SIGHUP; a harness kill or
+# window-reap) between the reset and the commit also restores the branch
+# rather than leaving it stranded at the merge-base. SIGKILL is uncatchable
+# and is outside this guarantee. Disarmed immediately after a successful
+# commit so it can never fire on the success path. ---
+trap 'restore_pre_squash_head' EXIT
+
 if ! git_wt reset --soft "$MERGE_BASE" >/dev/null 2>&1; then
   echo "FAIL git reset --soft ${MERGE_BASE} failed" >&2
   exit 1
@@ -311,8 +346,13 @@ fi
 
 if ! git_wt commit -q -m "$SUBJECT" >/dev/null 2>&1; then
   echo "FAIL git commit failed after guard passed" >&2
+  if restore_pre_squash_head; then
+    echo "Branch restored to pre-squash HEAD ${PRE_SQUASH_HEAD}." >&2
+  fi
   exit 1
 fi
+
+trap - EXIT
 
 echo "READY squash commit created on $(git_wt rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
 exit 0
