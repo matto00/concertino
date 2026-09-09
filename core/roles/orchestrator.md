@@ -475,6 +475,7 @@ Execute directly (no subagent).
    disagrees with a command documented here, trust `--help`, do not guess, and
    file a follow-up ticket rather than improvising a flag.
 
+   <!-- documented-as-broken:start -->
    One trap this has already produced: on 1.10.0 `openspec validate --change
    "<NAME>"` fails with `unknown option '--change' (Did you mean --changes?)`.
    **Do not accept that suggestion.** `--changes` is a real flag with different
@@ -483,6 +484,7 @@ Execute directly (no subagent).
    is `openspec validate "<NAME>" --type change`. Note the consuming repo may
    override this via `specPlanning.validateCmd` in its own config, so a wrong
    command can originate there rather than here.
+   <!-- documented-as-broken:end -->
 {{block:specArtifacts}}
 4. **Escalate if needed:** stop and present an `ESCALATION` block for new external
    dependencies, major architectural changes, breaking API changes, or scope

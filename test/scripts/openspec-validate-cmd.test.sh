@@ -40,7 +40,41 @@ ORCH_MD="$OUT/.claude/agents/concertino-orchestrator.md"
 [ -s "$ORCH_MD" ] && ok "a.2 rendered concertino-orchestrator.md exists and is non-empty" || bad "a.2 rendered concertino-orchestrator.md exists and is non-empty" "missing or empty: $ORCH_MD"
 
 has "a.3 rendered orchestrator contains the corrected invocation" 'openspec validate "<CHANGE_NAME>" --type change' "$ORCH_MD"
-hasnt "a.4 rendered orchestrator contains no broken 'validate --change' anywhere" "validate --change" "$ORCH_MD"
+
+# CON-168: a.4 forbids the broken form, but the role doc legitimately QUOTES it
+# in order to warn about it (CON-154). A plain substring assertion cannot tell
+# "uses the broken form" from "documents that the broken form is broken", so it
+# punished exactly the documentation we most want to keep -- and, because that
+# doc change reached main without a CI run, left main red until an unrelated PR
+# inherited the failure.
+#
+# The fix is a marker, not a looser assertion: a deliberate mention is wrapped in
+# <!-- documented-as-broken:start --> / <!-- documented-as-broken:end -->, those
+# regions are stripped, and the assertion runs against everything else. An
+# UNMARKED occurrence still fails, which is the property a.5/a.6 below prove by
+# mutation.
+strip_documented_as_broken() {
+  sed '/documented-as-broken:start/,/documented-as-broken:end/d' "$1"
+}
+
+ORCH_UNMARKED="$OUT/orchestrator-unmarked.md"
+strip_documented_as_broken "$ORCH_MD" > "$ORCH_UNMARKED"
+
+hasnt "a.4 no broken 'validate --change' outside a documented-as-broken block" "validate --change" "$ORCH_UNMARKED"
+
+# The marker must not become a blanket amnesty. a.5 proves the stripped region
+# was real (the doc does still carry the warning), and a.6 proves an unmarked
+# occurrence is still caught -- without which the marker would silently disable
+# the guard entirely.
+has "a.5 the documented-as-broken warning is still present in the rendered doc" "validate --change" "$ORCH_MD"
+
+MUTANT="$OUT/orchestrator-mutant.md"
+{ cat "$ORCH_UNMARKED"; printf '\nRun `openspec validate --change "<NAME>"` to check.\n'; } > "$MUTANT"
+if strip_documented_as_broken "$MUTANT" | grep -qF "validate --change"; then
+  ok "a.6 an UNMARKED broken usage is still caught (guard is failable)"
+else
+  bad "a.6 an UNMARKED broken usage is still caught (guard is failable)" "the marker made the guard vacuous"
+fi
 
 rm -rf "$OUT"
 
