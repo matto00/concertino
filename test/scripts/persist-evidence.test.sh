@@ -188,5 +188,21 @@ check "unknown third arg: FAIL on stderr" "$(grep -c '^FAIL' /tmp/persist-eviden
 rm -f /tmp/persist-evidence-test-err
 rm -rf "$REPO"
 
+# --- the persisted copy preserves the source's mtime, not the copy time ----
+# (CON-160: `cp -f` alone stamps the copy time, discarding the original
+# capture time that evidence review relies on.)
+REPO="$(new_repo)"
+printf 'captured earlier\n' > "$REPO/screenshot.png"
+touch -d "2020-01-01 00:00:00" "$REPO/screenshot.png"
+NOW_EPOCH="$(date +%s)"
+SRC_MTIME="$(stat -c %Y "$REPO/screenshot.png")"
+OUT="$(cd "$REPO" && "$SCRIPT" TICKET-12 "$REPO/screenshot.png")"
+REF="$(printf '%s' "$OUT" | sed -n 's/^READY ref=//p')"
+DEST_MTIME="$([ -f "$REF" ] && stat -c %Y "$REF" || echo "MISSING")"
+check "mtime preservation: source backdated well before the copy ran" \
+  "$([ "$SRC_MTIME" -lt "$NOW_EPOCH" ] && echo yes || echo no)" "yes"
+check "mtime preservation: destination mtime matches source mtime" "$DEST_MTIME" "$SRC_MTIME"
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

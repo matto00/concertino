@@ -104,6 +104,39 @@ binding doc):
   states render) — but the evaluator already covered these; spend your effort on
   the judgment it couldn't make.
 
+#### Persisting screenshot/measurement evidence (CON-160)
+
+Any screenshot or measurement dump you take during this step and then cite in
+your report as load-bearing for a REFUTE or CONFIRM (before/after pairs
+especially) gets persisted via `persist-evidence.sh` **at the moment you
+capture it**, not deferred until you write `skeptic-<GATE>-<M>.md`:
+
+```bash
+scripts/concertino/persist-evidence.sh "$TICKET_ID" "<worktree-relative-path-to-artifact>"
+# READY ref=<durable path>
+```
+
+Cite the `ref=` path in your report, not the artifact's worktree-relative
+path — the same discipline this role already applies to its own report via
+`verdict.ref` (Step 2 below). An artifact rescued only after you finish
+writing the report may already be gone once `cleanup.sh --phase4` runs.
+
+Temporal and positional evidence (mtime ordering, "this was captured before
+that" inferred from directory placement) is fragile across relocation — a
+copy or move can rewrite mtimes, and directory order is not a content
+guarantee. Prefer self-authenticating evidence (content diffs, byte-size
+deltas, checksums, cited line numbers) wherever the underlying claim allows
+it. If a REFUTE or CONFIRM genuinely has no self-authenticating substitute
+and must rest on mtime ordering, disclose that dependency explicitly in the
+report rather than presenting it as self-evidently reliable.
+
+**Gate defect, independent of verdict:** if a report you are drilling into
+(the evaluator's, or your own from a prior round) discloses that its
+evidence directory's mtimes are unsound, and this gate nonetheless accepts
+an mtime-ordering claim drawn from that same evidence at face value without
+independent corroboration, record that acceptance as a gate defect in your
+own report — regardless of whether you land on CONFIRM or REFUTE.
+
 ### 5. Verdict
 
 - **CONFIRM** — ships. Optionally list non-blocking polish notes.
