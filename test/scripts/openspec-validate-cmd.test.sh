@@ -40,7 +40,79 @@ ORCH_MD="$OUT/.claude/agents/concertino-orchestrator.md"
 [ -s "$ORCH_MD" ] && ok "a.2 rendered concertino-orchestrator.md exists and is non-empty" || bad "a.2 rendered concertino-orchestrator.md exists and is non-empty" "missing or empty: $ORCH_MD"
 
 has "a.3 rendered orchestrator contains the corrected invocation" 'openspec validate "<CHANGE_NAME>" --type change' "$ORCH_MD"
-hasnt "a.4 rendered orchestrator contains no broken 'validate --change' anywhere" "validate --change" "$ORCH_MD"
+
+# CON-168: a.4 forbids the broken form, but the role doc legitimately QUOTES it
+# in order to warn about it (CON-154). A plain substring assertion cannot tell
+# "uses the broken form" from "documents that the broken form is broken", so it
+# punished exactly the documentation we most want to keep -- and, because that
+# doc change reached main without a CI run, left main red until an unrelated PR
+# inherited the failure.
+#
+# The fix is a marker, not a looser assertion: a deliberate mention is wrapped in
+# <!-- documented-as-broken:start --> / <!-- documented-as-broken:end -->, those
+# regions are stripped, and the assertion runs against everything else. An
+# UNMARKED occurrence still fails, which is the property a.5/a.6 below prove by
+# mutation.
+strip_documented_as_broken() {
+  sed '/documented-as-broken:start/,/documented-as-broken:end/d' "$1"
+}
+
+# An UNBALANCED marker is the amnesty this whole mechanism exists to prevent:
+# `sed '/start/,/end/d'` with no matching end address deletes from the start
+# marker to END OF FILE, so one dropped end-marker line -- a merge conflict, a
+# copy-paste slip -- silently removes everything after it from the assertion and
+# the suite still reports green. That is strictly worse than the substring guard
+# it replaced. Balance must therefore be checked BEFORE any strip is trusted.
+markers_balanced() {
+  local starts ends
+  starts=$(grep -c 'documented-as-broken:start' "$1" || true)
+  ends=$(grep -c 'documented-as-broken:end' "$1" || true)
+  [ "$starts" = "$ends" ]
+}
+
+# Precondition on a.4: an unbalanced marker set makes the stripped text
+# meaningless, so refuse to draw any conclusion from it rather than reporting a
+# green that means nothing.
+if markers_balanced "$ORCH_MD"; then
+  ok "a.3b documented-as-broken markers are balanced in the rendered doc"
+else
+  bad "a.3b documented-as-broken markers are balanced in the rendered doc" \
+      "start/end counts differ -- the strip would delete to end of file"
+fi
+
+ORCH_UNMARKED="$OUT/orchestrator-unmarked.md"
+strip_documented_as_broken "$ORCH_MD" > "$ORCH_UNMARKED"
+
+hasnt "a.4 no broken 'validate --change' outside a documented-as-broken block" "validate --change" "$ORCH_UNMARKED"
+
+# The marker must not become a blanket amnesty. a.5 proves the stripped region
+# was real (the doc does still carry the warning), and a.6 proves an unmarked
+# occurrence is still caught -- without which the marker would silently disable
+# the guard entirely.
+has "a.5 the documented-as-broken warning is still present in the rendered doc" "validate --change" "$ORCH_MD"
+
+# a.7 proves a.3b is failable, and proves the specific hazard: an unclosed start
+# marker followed by a genuinely broken usage. Without the balance check this
+# case reports 8/8 green with the guard entirely disabled.
+UNBALANCED="$OUT/orchestrator-unbalanced.md"
+{ cat "$ORCH_MD"
+  printf '\n<!-- documented-as-broken:start -->\n'
+  printf 'Run `openspec validate --change "<NAME>"` to check.\n'
+} > "$UNBALANCED"
+if markers_balanced "$UNBALANCED"; then
+  bad "a.7 an unclosed start marker is detected (strip cannot silently swallow the rest)" \
+      "markers_balanced accepted a file with an unmatched start marker"
+else
+  ok "a.7 an unclosed start marker is detected (strip cannot silently swallow the rest)"
+fi
+
+MUTANT="$OUT/orchestrator-mutant.md"
+{ cat "$ORCH_UNMARKED"; printf '\nRun `openspec validate --change "<NAME>"` to check.\n'; } > "$MUTANT"
+if strip_documented_as_broken "$MUTANT" | grep -qF "validate --change"; then
+  ok "a.6 an UNMARKED broken usage is still caught (guard is failable)"
+else
+  bad "a.6 an UNMARKED broken usage is still caught (guard is failable)" "the marker made the guard vacuous"
+fi
 
 rm -rf "$OUT"
 
