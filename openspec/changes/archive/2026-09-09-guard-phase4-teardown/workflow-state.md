@@ -2,9 +2,9 @@
 
 TICKET_ID: CON-171
 CHANGE_NAME: guard-phase4-teardown
-PHASE: Evaluation
+PHASE: Delivery
 CYCLE: 2
-SKEPTIC_CYCLE: 1
+SKEPTIC_CYCLE: 2
 SKEPTIC_DESIGN_ROUNDS_USED: 4 (budget 3, extended once by recorded decision)
 BRANCH: bug/phase4-teardown-races-auditor/con-171
 WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/bug/phase4-teardown-races-auditor/con-171
