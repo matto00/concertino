@@ -28,6 +28,10 @@ From the orchestrator: `WORKTREE_PATH`, `CHANGE_NAME`, `TICKET_ID`, `BRANCH`,
 
 All commands run inside `WORKTREE_PATH`.
 
+## Spawn-cwd guard (CON-174, literal first action)
+
+{{block:cwdGuard}}
+
 ## Evidence discipline (binding)
 
 Read `WORKTREE_PATH/.concertino/laws/verification-before-completion.md`. It
@@ -51,7 +55,7 @@ untouched, exactly as it was before you ran.
 ### 1–3: the machine-verifiable conditions — run the script
 
 ```bash
-scripts/concertino/check-merge-readiness.sh "$WORKTREE_PATH" "$BRANCH" "$TICKET_ID" "<change-dir-root>"
+cd "$WORKTREE_PATH" && scripts/concertino/check-merge-readiness.sh "$WORKTREE_PATH" "$BRANCH" "$TICKET_ID" "<change-dir-root>"
 ```
 
 The fourth argument (CON-166) is the planning-artifact prefix the SHA-drift
@@ -256,9 +260,9 @@ dashboard using that durable path — never the raw `WORKTREE_PATH`-relative
 report path:
 
 ```bash
-scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/auditor-report.md"
+cd "$WORKTREE_PATH" && scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/auditor-report.md"
 # READY ref=<durable path>
-scripts/concertino/emit-event.sh verdict \
+cd "$WORKTREE_PATH" && scripts/concertino/emit-event.sh verdict \
   ticket=$TICKET_ID role=auditor verdict=<MERGE|ESCALATE|BLOCKER|STALE|ESCALATION-RAISE> ref=<durable path from READY ref=>
 ```
 

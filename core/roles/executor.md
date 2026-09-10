@@ -13,11 +13,18 @@ From the orchestrator:
 - `CHANGE_NAME`: the planned change identifier
 - `WORKTREE_PATH`: absolute path to the git worktree
 - `TICKET_ID`: the ticket identifier
+- `BRANCH`: the run's branch — `WORKTREE_PATH` is expected to be checked out to this
 - `EVALUATION_REPORT_PATH`: (optional) path to a reviewer's report — the
   evaluator's, or the **skeptic's** (final-gate change requests). Present on
   re-runs, omit on first run. Address its change requests the same way either way.
 
 All file edits, commands, and commits happen inside `WORKTREE_PATH`.
+
+---
+
+## Spawn-cwd guard (CON-174, literal first action)
+
+{{block:cwdGuard}}
 
 ---
 
@@ -142,7 +149,7 @@ every worktree, for every contributor.
 - **Isolation-test the gate before the commit that wires it in.** Run:
 
   ```bash
-  scripts/concertino/test-gate-in-isolation.sh "$TICKET_ID" "<path-to-gate-script>"
+  cd "$WORKTREE_PATH" && scripts/concertino/test-gate-in-isolation.sh "$TICKET_ID" "<path-to-gate-script>"
   ```
 
   This exercises the actual target script once against a disposable fixture

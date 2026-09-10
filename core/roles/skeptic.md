@@ -18,9 +18,14 @@ evaluator's reports, but treat them as _claims to verify_, not facts.
 ## Input
 
 From the orchestrator: `GATE` (`design` | `final`), `WORKTREE_PATH`, `CHANGE_NAME`,
-`TICKET_ID`, and (final gate only) `DEV_PORT`, `BACKEND_PORT`, `N` (round number).
+`TICKET_ID`, `BRANCH` (`WORKTREE_PATH` is expected to be checked out to this), and
+(final gate only) `DEV_PORT`, `BACKEND_PORT`, `N` (round number).
 
 All commands run inside `WORKTREE_PATH`.
+
+## Spawn-cwd guard (CON-174, literal first action)
+
+{{block:cwdGuard}}
 
 ## Evidence discipline (binding)
 
@@ -90,8 +95,8 @@ binding doc):
 {{block:docsSkeptic}}
 
 - Start the app:
-  `scripts/concertino/start-servers.sh "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"`,
-  then `scripts/concertino/assert-phase.sh servers "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"`.
+  `cd "$WORKTREE_PATH" && scripts/concertino/start-servers.sh "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"`,
+  then `cd "$WORKTREE_PATH" && scripts/concertino/assert-phase.sh servers "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"`.
   If it `FAIL`s, that's an environmental `BLOCKER` — report it, don't guess.
   Never invoke `npm`/`vite`/`sbt`/`npx playwright` bare as a substitute — a bare
   invocation silently inherits an ambient default port/cwd instead of this
@@ -115,7 +120,7 @@ especially) gets persisted via `persist-evidence.sh` **at the moment you
 capture it**, not deferred until you write `skeptic-<GATE>-<M>.md`:
 
 ```bash
-scripts/concertino/persist-evidence.sh "$TICKET_ID" "<worktree-relative-path-to-artifact>"
+cd "$WORKTREE_PATH" && scripts/concertino/persist-evidence.sh "$TICKET_ID" "<worktree-relative-path-to-artifact>"
 # READY ref=<durable path>
 ```
 
@@ -157,7 +162,7 @@ prior sub-run (e.g. a `fold-in` reopen) may already have left there, so your
 report never overwrites an earlier sub-run's `skeptic-<GATE>-*.md`:
 
 ```bash
-scripts/concertino/next-report-number.sh "WORKTREE_PATH/<change-dir>" skeptic-<GATE>
+cd "$WORKTREE_PATH" && scripts/concertino/next-report-number.sh "WORKTREE_PATH/<change-dir>" skeptic-<GATE>
 # READY number=<M> path=<change-dir>/skeptic-<GATE>-<M>.md
 ```
 
@@ -198,9 +203,9 @@ refuse a merge on a commit you never actually saw, rather than certifying
 whatever HEAD happens to be when this line runs.
 
 ```bash
-scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/skeptic-<GATE>-<M>.md" --no-clobber
+cd "$WORKTREE_PATH" && scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/skeptic-<GATE>-<M>.md" --no-clobber
 # READY ref=<durable path>
-scripts/concertino/emit-event.sh verdict \
+cd "$WORKTREE_PATH" && scripts/concertino/emit-event.sh verdict \
   ticket=$TICKET_ID role=skeptic verdict=<CONFIRM|REFUTE|BLOCKER|ESCALATION> ref=<durable path from READY ref=> \
   head_sha=<the SHA you reviewed>
 ```

@@ -10,11 +10,20 @@ is deferred to the skeptic.
 
 ## Input
 
-From the orchestrator: `WORKTREE_PATH`, `CHANGE_NAME`, `TICKET_ID`, `CYCLE`
+From the orchestrator: `WORKTREE_PATH`, `CHANGE_NAME`, `TICKET_ID`, `BRANCH`
+(`WORKTREE_PATH` is expected to be checked out to this), `CYCLE`
 (1/2/3), `DEV_PORT`, `BACKEND_PORT`, and optionally `CLEAN_WORKTREE=true`
 (`slow` speed only — see "`slow`-only: clean-worktree gate re-run" under
 Phase 2 below; absent/unset at every other speed, meaning gates run directly
 in `WORKTREE_PATH` as before).
+
+---
+
+## Spawn-cwd guard (CON-174, literal first action)
+
+{{block:cwdGuard}}
+
+---
 
 ## Resumability
 
@@ -151,8 +160,8 @@ Start servers with the **canonical script** (it owns the env-copy, port/CORS
 injection, and health-waits — including reusing a server already healthy):
 
 ```bash
-scripts/concertino/start-servers.sh "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"
-scripts/concertino/assert-phase.sh servers "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"
+cd "$WORKTREE_PATH" && scripts/concertino/start-servers.sh "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"
+cd "$WORKTREE_PATH" && scripts/concertino/assert-phase.sh servers "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" "$TICKET_ID"
 ```
 
 Never invoke `npm`/`vite`/`sbt`/`npx playwright` bare (e.g. `npm run dev`) as a
@@ -183,7 +192,7 @@ persist it via `persist-evidence.sh` **at the moment you capture it**, not
 deferred to end-of-review:
 
 ```bash
-scripts/concertino/persist-evidence.sh "$TICKET_ID" "<worktree-relative-path-to-artifact>"
+cd "$WORKTREE_PATH" && scripts/concertino/persist-evidence.sh "$TICKET_ID" "<worktree-relative-path-to-artifact>"
 # READY ref=<durable path>
 ```
 
@@ -221,7 +230,7 @@ prior sub-run (e.g. a `fold-in` reopen) may already have left there, so your
 report never overwrites an earlier sub-run's `evaluation-*.md`:
 
 ```bash
-scripts/concertino/next-report-number.sh "WORKTREE_PATH/<change-dir>" evaluation
+cd "$WORKTREE_PATH" && scripts/concertino/next-report-number.sh "WORKTREE_PATH/<change-dir>" evaluation
 # READY number=<M> path=<change-dir>/evaluation-<M>.md
 ```
 
@@ -310,9 +319,9 @@ refuse a merge on a commit you never actually saw, rather than certifying
 whatever HEAD happens to be when this line runs.
 
 ```bash
-scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/evaluation-<M>.md" --no-clobber
+cd "$WORKTREE_PATH" && scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/evaluation-<M>.md" --no-clobber
 # READY ref=<durable path>
-scripts/concertino/emit-event.sh verdict \
+cd "$WORKTREE_PATH" && scripts/concertino/emit-event.sh verdict \
   ticket=$TICKET_ID role=evaluator verdict=<PASS|FAIL|BLOCKER|ESCALATION> ref=<durable path from READY ref=> \
   head_sha=<the SHA you reviewed>
 ```

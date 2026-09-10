@@ -512,7 +512,7 @@ Execute directly (no subagent).
    gate (Phase 3) checks for mechanically. This is advisory only (the real
    diff doesn't exist until Execution) — the hard block is at Delivery.
 5. **Design-soundness gate (Skeptic).** Spawn the skeptic **fresh** (cold — never
-   resumed) with `GATE=design`, `WORKTREE_PATH`, `CHANGE_NAME`, `TICKET_ID`. On
+   resumed) with `GATE=design`, `WORKTREE_PATH`, `CHANGE_NAME`, `TICKET_ID`, `BRANCH`. On
    Claude Code, pass the skeptic's resolved model (`workflow-state.md`'s
    `MODELS.skeptic`) as this `Agent` call's own `model` parameter — see
    "Per-spawn model overrides" below for the full contract this relies on; on
@@ -668,10 +668,10 @@ result, poll for the executor's commit or the evaluator's report path
 instead of returning control, or escalate — never end the turn believing
 one is still on its way.
 
-1. Spawn the **executor**: `CHANGE_NAME`, `WORKTREE_PATH`, `TICKET_ID`. First run —
+1. Spawn the **executor**: `CHANGE_NAME`, `WORKTREE_PATH`, `TICKET_ID`, `BRANCH`. First run —
    implement the change.
 2. After it returns, spawn the **evaluator**: `WORKTREE_PATH`, `CHANGE_NAME`,
-   `TICKET_ID`, `CYCLE=1`, `DEV_PORT`, `BACKEND_PORT`. If `EVALUATOR_CLEAN_WORKTREE`
+   `TICKET_ID`, `BRANCH`, `CYCLE=1`, `DEV_PORT`, `BACKEND_PORT`. If `EVALUATOR_CLEAN_WORKTREE`
    (from `workflow-state.md`) is `true` — `slow` speed only — also pass
    `CLEAN_WORKTREE=true`; see "`slow`-only: evaluator clean-worktree" below for
    what the evaluator does with it.
@@ -685,7 +685,11 @@ Record agent IDs in `workflow-state.md` for resume.
 
 ### Cycles 2+ — resume (do NOT spawn fresh)
 
-Re-use the same ports. **The same rule applies to a resume as to a fresh
+Re-use the same ports. A warm `SendMessage` resume carries `WORKTREE_PATH`/`BRANCH`/
+`CHANGE_NAME`/`TICKET_ID` forward implicitly (already-bound in the resumed agent's
+own session) — no need to re-pass them. If `SendMessage` is unavailable, see
+"Harness resume model" above: the cold fallback spawn does **not** inherit them and
+must be given `WORKTREE_PATH`, `CHANGE_NAME`, `TICKET_ID`, and `BRANCH` explicitly. **The same rule applies to a resume as to a fresh
 spawn: the call you use to resume a sub-agent is a blocking call whose
 return value *is* the sub-agent's result** — issue it within this turn and
 consume what it returns; there is no notification to wait for afterward on
@@ -723,7 +727,7 @@ this gate.
 
 On evaluator **PASS**, spawn the skeptic **fresh** (cold — never resumed; a cold
 reviewer can't inherit the loop's blind spots): `GATE=final`, `WORKTREE_PATH`,
-`CHANGE_NAME`, `TICKET_ID`, `DEV_PORT`, `BACKEND_PORT`, `N=<skeptic_cycle>`. On
+`CHANGE_NAME`, `TICKET_ID`, `BRANCH`, `DEV_PORT`, `BACKEND_PORT`, `N=<skeptic_cycle>`. On
 Claude Code, pass the skeptic's resolved model (`workflow-state.md`'s
 `MODELS.skeptic`) as this `Agent` call's own `model` parameter — see
 "Per-spawn model overrides" below. **The spawn call blocks and its return
