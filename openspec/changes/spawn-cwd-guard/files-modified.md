@@ -1,0 +1,11 @@
+- `core/scripts/assert-cwd.sh` — new canonical script; detects ambient-cwd collision with a *different* ticket's worktree under the same base, plus an independent branch check on `WORKTREE_PATH` itself (design.md Decision 1)
+- `scripts/concertino/assert-cwd.sh` — byte-for-byte mirror of the above (CON-172/CON-173 drift gate)
+- `test/scripts/assert-cwd.test.sh` — new mutation-scoped test suite for `assert-cwd.sh` (5 cases: 1a/1b correct-spawn, 2 misdirected-spawn, 3 branch-mismatch, 4 worktree-missing, plus a boundary case for `AMB == BASE`)
+- `test/scripts/cwd-guard-render.test.sh` — new render test: confirms the `cwdGuard` block renders real content into all four role docs, and that an unrecognized `{{block:...}}` name renders as a visible literal placeholder rather than vanishing silently
+- `lib/cli/render.js` — added the `cwdGuard` block (design.md Decision 4): fixed prose instructing capture-`pwd -P`-then-`assert-cwd.sh`-then-BLOCKER-or-proceed
+- `core/roles/executor.md` — added `BRANCH` to Input; inserted `{{block:cwdGuard}}` as literal first action; made its one ambient-cwd-relative `scripts/concertino/test-gate-in-isolation.sh` call immune to ambient cwd
+- `core/roles/evaluator.md` — added `BRANCH` to Input; inserted `{{block:cwdGuard}}`; made all 6 ambient-cwd-relative call sites immune to ambient cwd
+- `core/roles/skeptic.md` — added `BRANCH` to Input; inserted `{{block:cwdGuard}}`; made all 6 ambient-cwd-relative call sites immune to ambient cwd
+- `core/roles/auditor.md` — inserted `{{block:cwdGuard}}` (already had `BRANCH`); made all 3 ambient-cwd-relative call sites immune to ambient cwd
+- `core/roles/orchestrator.md` — added `BRANCH` to the executor (Cycle 1), evaluator (Cycle 1), skeptic design-gate, and skeptic final-gate spawn input lists
+- `package.json` — wired `assert-cwd.test.sh` and `cwd-guard-render.test.sh` into the `test` script chain
