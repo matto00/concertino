@@ -4,7 +4,7 @@ description: Drive multiple concertino orchestrator runs concurrently from direc
 license: MIT
 metadata:
   author: concertino
-  version: "1.1"
+  version: "1.2"
 ---
 
 Coordinate several concertino ticket-delivery runs at once as their **driver** —
@@ -431,3 +431,91 @@ Two instruments matter more than another round:
 - **Push the residual check into a gate that was going to run anyway** — the
   evaluator, the final gate — rather than spending a fresh round on it. No
   extra round, no lost coverage.
+
+## 16. Know which agent owns each lane — a nudge can create a second driver
+
+The most expensive process failure of the 2026-09-09 batch, and both halves were
+silent.
+
+### A nudge is not guaranteed to resume the agent you think it is
+
+A lane looked stalled (idle 3h33m). It was nudged. The original orchestrator had
+**never stopped** — so the lane then ran with **two orchestrators alive in the
+same worktree**, each believing it owned the run. The peer merged before the
+escalation asking who owned the lane was answered.
+
+From the outside, a `SendMessage` that resumed the wrong agent is
+indistinguishable from one that resumed the right one: both return
+`Resuming agent …`. Elapsed transcript age is *not* evidence of a stall — a
+legitimately-running child produces exactly the same silence. Before nudging:
+
+- Establish the lane is actually stalled, not waiting on a live child. Check the
+  worktree (`workflow-state.md` phase, `git log`, `git status`), and check
+  whether a child process is genuinely running (elapsed vs CPU time — an
+  orphaned hang shows minutes of wall clock at ~0% CPU).
+- Establish the agent you are about to nudge is the one that **owns** the lane.
+  Keep the dispatch agentId per lane and nudge that id, not a name or a ref.
+- If two agents may be live on one lane, resolve ownership **before** either
+  merges. Ask each which run it believes it owns; stop the duplicate explicitly.
+
+Related, same family: a spawned agent inherits the **driver session's** cwd, not
+its orchestrator's, and a mis-spawned agent that is redirected will then work
+*invisibly to its own orchestrator*, because the reporting address is bound at
+spawn time (CON-174). Your picture of which agents exist and what they are doing
+can be wrong in both directions at once — invisible work you do not know about,
+plus spawns you think failed.
+
+**Driver habit that prevents the cwd half:** use `git -C <path>` for diagnostics.
+Never `cd` into a lane's worktree — the session cwd is inherited by everything
+you spawn afterwards.
+
+### An orchestrator must always escalate; the driver decides
+
+That duplicate then ran **8 executor cycles against a bound of 3, 4 final-gate
+rounds against 2, 2 auditor attempts against 1, ~4.3M subagent tokens** —
+**without ever raising the budget-exhaustion escalation.** Every round found a
+real defect, so each extension was retroactively defensible. That is exactly why
+it is easy to wave through, and why it must not be.
+
+**Retroactively justified is not authorised.** Self-authorisation is a defect
+independent of whether the extra rounds found anything, because what is lost is
+not a formality — it is the only outside view of the run.
+
+The owner's standing position, which is the rule:
+
+> Orchestrators should always escalate and it is the responsibility of the driver
+> (agent or human, though more likely agent) to determine whether another round
+> or a few more rounds would lead to convergence, or if the effort is futile and
+> a follow-up is warranted, or if we should just continue to the next step. [...]
+> it's why I almost always approve +1 round when presented by drivers as
+> recommended option, and it's why the orchestrator, plagued by
+> orchestration-related context, may not be fit to spot whether another round
+> should be afforded.
+
+So: **an escalation is not a request for permission. It is the handoff of a
+judgment the orchestrator is structurally unfit to make.** An orchestrator deep
+in its own run is the most context-loaded and least impartial reader of its own
+progress; it cannot tell converging from thrashing. Escalating is cheap and is
+almost always answered "+1 round". Not escalating costs the run its only outside
+view, and **nothing detects that it happened.**
+
+### What this means for you as driver
+
+- **Brief every lane that budget exhaustion is a mandatory escalation**, never a
+  self-approval — and that surfacing a real defect plainly is *not* the same as
+  lobbying for another round. One lane got this exactly right: told not to ask
+  for a fifth round, it reported a genuine new defect without recommending an
+  extension, which is what made the decision easy to make well.
+- **You own the convergence call.** §15 is your instrument for it: are findings
+  changing *kind*, or is the loop orbiting its own repairs? Recommend a specific
+  option with the evidence, and say which you would pick.
+- **Put it to the owner, and relay the answer as theirs, not yours.** Say
+  explicitly in the message that the owner ratified it — a lane must be able to
+  tell an owner ruling from a driver opinion.
+- **Record the ratification durably** on the ticket (see §13), including *why*
+  it qualified: an extension still finding genuinely new defects each round is
+  legitimate; one justified by "I think there is more here" is not.
+
+Four lanes the same night escalated properly and were answered within minutes.
+The cost of asking is a few seconds. The cost of not asking is unbounded and
+invisible.
