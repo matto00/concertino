@@ -80,6 +80,21 @@ file — so they stay generic and the config is the single source of truth.
   planning-artifact prefix (e.g. `openspec`) this check excludes — supplied
   by the caller, never hardcoded.
 
+- `watchdog.sh` is a driver's whenever-a-lane-is-dispatched tool, not
+  optional tooling for large batches only (CON-177) — it runs whenever any
+  lane is dispatched. It never reads transcript content (stat only, `-L`
+  followed — tasks-dir entries are symlinks), uses a lockfile singleton
+  (never pgrep-and-kill, which has matched and killed the wrapper shell
+  instead of a prior instance), and takes the set of lanes still in flight as
+  an explicit liveness input re-read on every poll rather than inferring
+  stall from silence — a lanes file with every line removed (all lanes
+  completed normally) makes it stand down silently, exit 0, no trip banner.
+  Both its FLEET (default 15 min, all transcripts quiet) and LANE (default
+  3 h minimum, one tracked lane's own transcript quiet) trips print a
+  diagnose-first message and never instruct or perform a kill of a tracked
+  lane. See its own header comment for the full contract and env overrides
+  used by its tests.
+
 ## Scripts
 
 | Script              | Purpose                                                    | Args                                                        |
@@ -96,6 +111,7 @@ file — so they stay generic and the config is the single source of truth.
 | `gather-escalation-context.sh` | Format a structured context block for an escalation kind | `<dependency\|api-change\|budget\|blocker\|contradiction\|ticket-ambiguity\|ticket-drift> k=v ...` |
 | `triage-followup.sh` | Classify a suggested follow-up as fold-in/standalone from file overlap + caller-supplied judgment | `description=... files=... ac_relevant=<yes\|no> effort=<small\|large> worktree=... [base=...]` |
 | `next-report-number.sh` | Collision-safe, disk-derived filename number for the evaluator's/skeptic's next review report | `<change-dir> <kind>`                    |
+| `watchdog.sh`        | Two-signal fleet staleness watchdog (CON-177): polls transcript mtimes and exits (nonzero, diagnose-first text) on a stall; stands down silently when no lane is tracked live | `<tasks-dir> <lanes-file>` |
 
 `resolve-speed.sh` reads `scripts/concertino/speeds.json` (rendered by
 `concertino sync` alongside `.concertino.env`, from the config's `budgets`/

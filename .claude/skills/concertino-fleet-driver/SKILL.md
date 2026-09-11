@@ -392,13 +392,28 @@ The tools you use to watch the fleet lie in specific, learnable ways.
   reports "already healthy, reusing" without checking what that process is
   serving. Confirm with `readlink /proc/<pid>/cwd` before anything is judged
   against it — including anything you put in front of the owner.
-- **Watchdog thresholds need two signals**: a tight fleet-wide one (no
-  transcript in the whole session written for ~15 min) and a much looser
-  per-lane backstop (~3h). One mtime is wrong, because children write their own
-  transcripts and a legitimate executor can run for hours.
-- **Update the lane map whenever the queue moves.** A watchdog pointed at
-  finished tickets is worse than none: it reports false positives on parked
-  lanes and misses the live ones.
+- **Use `scripts/concertino/watchdog.sh <tasks-dir> <lanes-file>` — do not
+  rebuild this from prose.** It was reconstructed from scratch at least three
+  times before CON-177 shipped it as a real, tested core script; every rebuild
+  reintroduced bugs the previous one had already found. It already implements
+  the two-signal design (a tight fleet-wide check, default 15 min, no
+  transcript anywhere written; and a much looser per-lane backstop, default
+  at least 3h — one mtime is wrong, because children write their own
+  transcripts and a legitimate executor can run for hours), the lockfile
+  singleton (never pgrep-and-kill, which has matched and killed the wrapper
+  shell instead of a prior instance), and stat-only `-L` reads (it never opens
+  a transcript's content).
+- **The lanes file is the watchdog's liveness input — keep it current.**
+  `<lanes-file>` is a plain "`<agentId> <label>`" list you maintain and the
+  script re-reads on every poll: remove a line the moment that lane completes
+  or is deliberately parked, and add a line the moment a new lane is
+  dispatched — the watchdog runs whenever any lane is dispatched, not only
+  for multi-lane batches. **Stop the watchdog process in the same turn you
+  remove the last live lane.** The script stands down silently (exit 0, no
+  trip) when the file is empty, but its own lifetime should still match the
+  lanes' lifetime rather than relying on that fallback — a watchdog pointed at
+  an empty lanes file for a batch that's actually still running is just as
+  wrong as one pointed at finished tickets it still thinks are live.
 
 ## 15. Knowing when to stop a review loop
 
