@@ -19,7 +19,22 @@ ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; echo "       $2"; }
 
 WORKDIR="$(mktemp -d)"
-cleanup() { rm -rf "$WORKDIR"; }
+# CON-178 cycle-2 review: restore-on-exit for the REAL script (Scenario 4
+# below mutates it in place, never a scratch copy), and unconditionally
+# reap any process this suite itself spawned and never joined -- belt and
+# braces alongside each scenario's own explicit kill, so a bug in one
+# scenario can never leave a straggler for the next test file to trip over.
+PRISTINE_SCRIPT="$(mktemp)"
+cp "$SCRIPT" "$PRISTINE_SCRIPT"
+SPAWNED_PIDS=""
+cleanup() {
+  cp "$PRISTINE_SCRIPT" "$SCRIPT" 2>/dev/null || true
+  rm -f "$PRISTINE_SCRIPT"
+  for p in $SPAWNED_PIDS; do
+    kill -9 "$p" 2>/dev/null || true
+  done
+  rm -rf "$WORKDIR"
+}
 trap cleanup EXIT
 
 pid_alive() {
@@ -52,6 +67,7 @@ echo "Scenario 1: baseline -- the old unbounded sentinel-poll idiom leaks"
 SENTINEL1="$WORKDIR/never-appears.sentinel"
 ( until [ -f "$SENTINEL1" ]; do sleep 1; done ) &
 OLD_IDIOM_PID=$!
+SPAWNED_PIDS="${SPAWNED_PIDS} ${OLD_IDIOM_PID}"
 sleep 0.3
 if pid_alive "$OLD_IDIOM_PID"; then
   ok "1.1 the old unbounded poller is alive shortly after being backgrounded"
@@ -78,6 +94,7 @@ echo "Scenario 2: await-sentinel.sh exits promptly once the sentinel appears"
 SENTINEL2="$WORKDIR/appears-soon.sentinel"
 "$SCRIPT" "$SENTINEL2" 30 1 >"$WORKDIR/out2.log" 2>&1 &
 AWAIT_PID=$!
+SPAWNED_PIDS="${SPAWNED_PIDS} ${AWAIT_PID}"
 sleep 0.3
 if pid_alive "$AWAIT_PID"; then
   ok "2.1 await-sentinel.sh is running while waiting"
@@ -113,6 +130,7 @@ echo "Scenario 3: await-sentinel.sh times out and exits on its own -- never wait
 SENTINEL3="$WORKDIR/never-appears-2.sentinel"
 "$SCRIPT" "$SENTINEL3" 1 1 >"$WORKDIR/out3.log" 2>&1 &
 TIMEOUT_PID=$!
+SPAWNED_PIDS="${SPAWNED_PIDS} ${TIMEOUT_PID}"
 if wait_for_death "$TIMEOUT_PID"; then
   ok "3.1 await-sentinel.sh exits on its own once TIMEOUT_SEC elapses, with no sentinel ever created"
 else
@@ -138,35 +156,70 @@ fi
 
 # ---------------------------------------------------------------------
 # Scenario 4: mutation proof -- reintroducing the old unbounded shape
-# (removing the timeout bound) makes the script fail to self-terminate,
-# so Scenario 3 is actually exercising the timeout logic and not a
-# coincidence.
+# (removing the timeout bound) makes THE REAL SHIPPED SCRIPT fail to
+# self-terminate, so Scenario 3 is actually exercising the timeout logic
+# and not a coincidence.
+#
+# CON-178 cycle-2 review: an earlier draft of this scenario mutated a
+# throwaway COPY of the script in a scratch dir, which proves nothing
+# about the file that actually ships (a bug introduced only in the real
+# file, or only in the copy, would go undetected either way). This
+# version edits $SCRIPT (the real core/scripts/await-sentinel.sh) in
+# place -- restored unconditionally by the file-level `trap cleanup EXIT`
+# above, which runs even if this scenario's own assertions fail or the
+# script exits early.
+#
+# It also bounds its own wait: `wait_for_death` has a hard ~5s poll cap
+# (never an unbounded `wait $pid`), and the mutated process is always
+# force-killed by its own recorded PID afterward -- so a mutation that
+# genuinely reintroduces the unbounded-wait bug cannot hang this test (or
+# CI) even transiently; SPAWNED_PIDS also carries it into the file-level
+# cleanup trap as a second line of defense.
 # ---------------------------------------------------------------------
-echo "Scenario 4: mutation proof -- an unbounded variant does not self-terminate"
+echo "Scenario 4: mutation proof -- an unbounded variant of the REAL script does not self-terminate"
 
-MUTATED="$WORKDIR/await-sentinel-unbounded.sh"
-cat > "$MUTATED" <<'EOF'
-#!/usr/bin/env bash
-set -uo pipefail
-SENTINEL="${1:?}"
-while [ ! -f "$SENTINEL" ]; do
-  sleep 1
-done
-echo "READY sentinel present: ${SENTINEL}"
-exit 0
-EOF
-chmod +x "$MUTATED"
+python3 - "$SCRIPT" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+old = (
+    'ELAPSED=0\n'
+    'while [ ! -f "$SENTINEL" ]; do\n'
+    '  if [ "$ELAPSED" -ge "$TIMEOUT_SEC" ]; then\n'
+    '    echo "TIMEOUT waiting for sentinel: ${SENTINEL} (waited ${ELAPSED}s, bound ${TIMEOUT_SEC}s)" >&2\n'
+    '    exit 1\n'
+    '  fi\n'
+    '  sleep "$POLL_INTERVAL_SEC"\n'
+    '  ELAPSED=$((ELAPSED + POLL_INTERVAL_SEC))\n'
+    'done\n'
+)
+new = (
+    'while [ ! -f "$SENTINEL" ]; do\n'
+    '  sleep "$POLL_INTERVAL_SEC"\n'
+    'done\n'
+)
+assert old in text, "await-sentinel.sh's timeout loop shape has changed -- this mutation fixture is stale"
+text = text.replace(old, new, 1)
+with open(path, "w") as f:
+    f.write(text)
+PYEOF
 
 SENTINEL4="$WORKDIR/never-appears-3.sentinel"
-"$MUTATED" "$SENTINEL4" >"$WORKDIR/out4.log" 2>&1 &
+"$SCRIPT" "$SENTINEL4" 1 1 >"$WORKDIR/out4.log" 2>&1 &
 MUTATED_PID=$!
+SPAWNED_PIDS="${SPAWNED_PIDS} ${MUTATED_PID}"
 if wait_for_death "$MUTATED_PID"; then
-  bad "4.1 mutation-proof: unbounded variant does NOT self-terminate (if this passes, the timeout test above is not exercising real behavior)" "pid $MUTATED_PID exited on its own -- mutation had no effect"
+  bad "4.1 mutation-proof: unbounded variant of the real script does NOT self-terminate (if this passes, the timeout test above is not exercising real behavior)" "pid $MUTATED_PID exited on its own -- mutation had no effect"
 else
-  ok "4.1 mutation-proof: unbounded variant does NOT self-terminate without a sentinel (confirms Scenario 3 exercises real timeout logic)"
+  ok "4.1 mutation-proof: unbounded variant of the real script does NOT self-terminate without a sentinel (confirms Scenario 3 exercises real timeout logic)"
 fi
-kill "$MUTATED_PID" 2>/dev/null || true
-wait "$MUTATED_PID" 2>/dev/null || true
+# Reap by recorded PID (bounded -- never an unbounded `wait`) and restore
+# the pristine script immediately, rather than relying solely on the
+# file-level exit trap, so later scenarios in this same file run against
+# the real, unmutated script.
+kill -9 "$MUTATED_PID" 2>/dev/null || true
+cp "$PRISTINE_SCRIPT" "$SCRIPT"
 
 # ---------------------------------------------------------------------
 # Scenario 5: usage errors are rejected loudly (exit 2), never silently
@@ -180,6 +233,54 @@ if [ "$RC5" -eq 2 ]; then
   ok "5.1 non-numeric TIMEOUT_SEC exits 2"
 else
   bad "5.1 non-numeric TIMEOUT_SEC exits 2" "exit=$RC5 output=$OUT5"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 6 (cold-review finding 6): TIMEOUT_SEC has a hard cap, so this
+# script's self-termination guarantee cannot be defeated by a caller (or a
+# mistake) passing an enormous bound like 86400.
+# ---------------------------------------------------------------------
+echo "Scenario 6: TIMEOUT_SEC is hard-capped, not merely 'a number the caller should pick sanely'"
+
+# CON-178 cycle-2 review discipline applied to this scenario too: even
+# though the cap-check itself should reject 86400 immediately, this call
+# is still backgrounded and bounded via wait_for_death rather than
+# captured in the foreground -- if a future mutation of the cap check
+# ever let a huge TIMEOUT_SEC through, a foreground `$(...)` capture here
+# would hang this test (and CI) for up to that TIMEOUT_SEC, exactly the
+# failure mode finding 5 flagged for Scenario 4.
+AWAIT_SENTINEL_MAX_TIMEOUT_SEC=5 "$SCRIPT" "$WORKDIR/never.sentinel" 86400 >"$WORKDIR/out6.log" 2>&1 &
+CAP_PID=$!
+SPAWNED_PIDS="${SPAWNED_PIDS} ${CAP_PID}"
+if wait_for_death "$CAP_PID"; then
+  ok "6.1a a TIMEOUT_SEC above the cap exits promptly rather than actually waiting 86400s"
+else
+  bad "6.1a a TIMEOUT_SEC above the cap exits promptly rather than actually waiting 86400s" "pid $CAP_PID still alive after ~5s"
+  kill -9 "$CAP_PID" 2>/dev/null || true
+fi
+wait "$CAP_PID" 2>/dev/null
+RC6=$?
+if [ "$RC6" -eq 2 ] && grep -qF "exceeds the hard cap" "$WORKDIR/out6.log"; then
+  ok "6.1b a TIMEOUT_SEC above the cap is refused loudly (exit 2), not silently allowed"
+else
+  bad "6.1b a TIMEOUT_SEC above the cap is refused loudly (exit 2), not silently allowed" "exit=$RC6 output=$(cat "$WORKDIR/out6.log")"
+fi
+
+AWAIT_SENTINEL_MAX_TIMEOUT_SEC=5 "$SCRIPT" "$WORKDIR/never.sentinel" 5 1 >"$WORKDIR/out6b.log" 2>&1 &
+AT_CAP_PID=$!
+SPAWNED_PIDS="${SPAWNED_PIDS} ${AT_CAP_PID}"
+if wait_for_death "$AT_CAP_PID"; then
+  ok "6.2a a TIMEOUT_SEC AT the cap runs to its own bounded completion (~5s), not refused"
+else
+  bad "6.2a a TIMEOUT_SEC AT the cap runs to its own bounded completion (~5s), not refused" "pid $AT_CAP_PID still alive"
+  kill -9 "$AT_CAP_PID" 2>/dev/null || true
+fi
+wait "$AT_CAP_PID" 2>/dev/null
+RC6B=$?
+if [ "$RC6B" -eq 1 ]; then
+  ok "6.2b a TIMEOUT_SEC at exactly the cap is accepted (only exceeding it is refused)"
+else
+  bad "6.2b a TIMEOUT_SEC at exactly the cap is accepted (only exceeding it is refused)" "exit=$RC6B output=$(cat "$WORKDIR/out6b.log")"
 fi
 
 echo ""

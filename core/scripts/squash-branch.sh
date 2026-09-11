@@ -198,52 +198,121 @@ if [ "$FILE_ON_DISK" -eq 0 ] && [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
 fi
 
 DECLARED_PATHS=""
+# ALL_RAW_SPANS_ANYWHERE: every backtick-quoted span in the ENTIRE staged
+# blob, regardless of line position -- kept ONLY for the diagnostic search
+# in the FAIL report below (never for declaring). Lets a refusal say
+# whether a file's basename appears somewhere in the declaration at all,
+# even on a line the parser does not treat as a valid declaration position.
+ALL_RAW_SPANS_ANYWHERE=""
 if [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
-  # D2a: a path is declared by a backtick-quoted span on a line starting
-  # (after leading whitespace) with a markdown bullet ('-'/'*'), OR on a
-  # line immediately following one whose trailing (whitespace-trimmed)
-  # character was a comma -- i.e. a comma-joined list that WRAPS onto a
-  # continuation line is read in full, for as long as the trailing-comma
-  # chain stays unbroken (CON-149). The moment a scanned line does not end
-  # in a comma, the list is closed: a genuine prose continuation line
-  # (CON-151's `sneaky.txt` case -- no trailing comma before it) still
-  # declares nothing, so this does not reopen the overshoot CON-151 closed.
+  ALL_RAW_SPANS_ANYWHERE="$(printf '%s\n' "$STAGED_BLOB" | grep -oE '`[^`]+`' | tr -d '`' || true)"
+
+  # D2a: a path is declared by a backtick-quoted span that comes
+  # IMMEDIATELY (after only whitespace) at the start of either (a) a
+  # bulleted line ('-'/'*' then the backtick), or (b) a continuation line,
+  # ONLY while chained to a preceding line by that preceding line's
+  # trailing (whitespace-trimmed) comma. Both anchors require the backtick
+  # to be the first non-whitespace content -- prose before it
+  # ("* Did not modify `lib/b.ts`", "- Deliberately did NOT touch
+  # `secret.ts`") never opens a declaration, and a prose continuation line
+  # ("  the unrelated `lib/b.ts` file (not touched).") never extends a
+  # chain even when the previous line ended in a comma. This is the fix
+  # for a cold-review finding against an earlier draft of this parser: it
+  # had loosened the bullet test to "bullet + backtick anywhere on the
+  # line" and opened the comma-chain on ANY trailing comma, both of which
+  # let prose mentioning an untouched file's name in backticks be read as
+  # a declaration. Restoring "backtick immediately, on either anchor" closes
+  # both false-accepts while still reading CON-149's real comma-joined,
+  # line-wrapped bullet in full.
   #
   # D2a-ii (CON-151): a qualifying line declares EVERY backtick-quoted span
   # on it, not just the first, so a grouped bullet declares all of its
   # paths.
   #
-  # Before classifying a span, a trailing `:<line>` or `:<line>,<line>...`
-  # annotation is stripped (CON-158) -- `file.ts:187` and
-  # `file.ts:111,184,220` both declare `file.ts`, matching this repo's own
-  # convention of annotating a path with a line number elsewhere.
+  # Before classifying a span, a trailing line-range annotation is
+  # stripped (CON-158): `:<line>`, `:<line>-<line>`, or a comma-list of
+  # either (`file.ts:111,184,220`, `file.ts:12-40,55`) all declare the
+  # bare path. This is the ONLY line-annotation grammar accepted --
+  # `#L12`-style GitHub anchors and a bare trailing `:` with no digits are
+  # deliberately NOT stripped (never seen in this repo's own convention;
+  # accepting them silently would make an actually-different suffix look
+  # declared). The FAIL diagnostic below names these specifically rather
+  # than lumping them into "no match".
   #
-  # A span left with no `/` after that stripping is kept as a literal
+  # Both the RAW span (exact, unstripped) and its STRIPPED form (if
+  # different) are added to DECLARED_PATHS -- so a staged path that
+  # happens to contain a literal `:<digits>` in its own filename (rare,
+  # but the stripping regex cannot tell it apart from a line annotation
+  # without this) still matches via its untouched raw form.
+  #
+  # A span left with no `/` after stripping is kept as a literal
   # (unchanged pre-CON-149 behavior -- a bare top-level filename that
   # equals a staged path outright still matches directly), AND, if it also
-  # ends in a dotted extension (path-shaped per D2a's original filter, so
+  # ends in a dotted extension (path-shaped, so
   # `--allow-empty-declaration`/`Option[T]` inline-code spans still never
-  # qualify), it is additionally resolved as a bare basename: matched
-  # against the union of every full-path span seen anywhere else in the
-  # declaration and the staged file set, ONLY when exactly one candidate
-  # ends in `/<basename>` or equals it outright (CON-149). An ambiguous or
-  # absent match is left unresolved rather than guessed at -- this can
-  # never cause over-declaring.
+  # qualify), it is additionally resolved by inheriting the directory of
+  # the NEAREST full-path span declared earlier in the SAME comma chain
+  # (CON-149) -- e.g. `` `scripts/concertino/a.sh`, `b.sh` `` resolves
+  # `b.sh` to `scripts/concertino/b.sh`. This is deterministic (last
+  # full-path span wins, never a fuzzy "search everywhere and hope for a
+  # unique match"), so there is no ambiguity heuristic to get wrong, and
+  # it NEVER consults the staged file set -- a second cold-review finding
+  # against an earlier draft did exactly that (matched a bare basename
+  # against $STAGED_FILES), which let a bullet like "Deliberately did NOT
+  # touch `secret.ts`" accidentally declare whatever staged file happened
+  # to share that basename. Resolution now depends only on text that is
+  # actually, unambiguously part of the declaration itself.
   LIST_OPEN=0
-  RAW_SPANS=""
+  CURRENT_DIR=""
+  DECLARED_LIST=""
+  strip_line_suffix() {
+    printf '%s' "$1" | sed -E 's/:[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$//'
+  }
   while IFS= read -r LINE; do
     TRIMMED="$(printf '%s' "$LINE" | sed -E 's/[[:space:]]+$//')"
+    IS_BULLET_OPEN=0
+    IS_CONT_OPEN=0
+    if printf '%s' "$LINE" | grep -qE '^[[:space:]]*[-*][[:space:]]*`[^`]+`'; then
+      IS_BULLET_OPEN=1
+    elif printf '%s' "$LINE" | grep -qE '^[[:space:]]*`[^`]+`'; then
+      IS_CONT_OPEN=1
+    fi
     SCAN=0
-    if printf '%s' "$LINE" | grep -qE '^[[:space:]]*[-*][[:space:]]'; then
+    if [ "$IS_BULLET_OPEN" -eq 1 ]; then
       SCAN=1
-    elif [ "$LIST_OPEN" -eq 1 ]; then
+      CURRENT_DIR=""
+    elif [ "$IS_CONT_OPEN" -eq 1 ] && [ "$LIST_OPEN" -eq 1 ]; then
       SCAN=1
     fi
     if [ "$SCAN" -eq 1 ]; then
       LINE_SPANS="$(printf '%s\n' "$LINE" | grep -oE '`[^`]+`' | tr -d '`')"
       if [ -n "$LINE_SPANS" ]; then
-        RAW_SPANS="${RAW_SPANS}${LINE_SPANS}
+        while IFS= read -r RAW; do
+          [ -z "$RAW" ] && continue
+          STRIPPED="$(strip_line_suffix "$RAW")"
+          case "$STRIPPED" in
+            */*)
+              # full path (possibly with a stripped line annotation)
+              DECLARED_LIST="${DECLARED_LIST}${RAW}
+${STRIPPED}
 "
+              CURRENT_DIR="$(dirname -- "$STRIPPED")"
+              ;;
+            *.[A-Za-z0-9]*)
+              # bare, path-shaped span
+              DECLARED_LIST="${DECLARED_LIST}${RAW}
+"
+              if [ -n "$CURRENT_DIR" ]; then
+                DECLARED_LIST="${DECLARED_LIST}${CURRENT_DIR}/${STRIPPED}
+"
+              fi
+              ;;
+            *)
+              # not path-shaped (e.g. an inline-code flag/type) -- never
+              # counts, regardless of position.
+              ;;
+          esac
+        done <<< "$LINE_SPANS"
       fi
       case "$TRIMMED" in
         *,) LIST_OPEN=1 ;;
@@ -254,38 +323,7 @@ if [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
     fi
   done <<< "$STAGED_BLOB"
 
-  STRIPPED_SPANS=""
-  if [ -n "$RAW_SPANS" ]; then
-    STRIPPED_SPANS="$(printf '%s\n' "$RAW_SPANS" | sed -E 's/:[0-9]+(,[0-9]+)*$//')"
-  fi
-
-  FULL_SPANS="$(printf '%s\n' "$STRIPPED_SPANS" | grep -E '/' || true)"
-  BARE_SPANS="$(printf '%s\n' "$STRIPPED_SPANS" | grep -vE '/' | grep -E '\.[A-Za-z0-9]+$' || true)"
-
-  RESOLVED_BARE=""
-  if [ -n "$BARE_SPANS" ]; then
-    CANDIDATES="$(printf '%s\n%s\n' "$FULL_SPANS" "$STAGED_FILES" | grep -E '.' | sort -u || true)"
-    while IFS= read -r BASE; do
-      [ -z "$BASE" ] && continue
-      MATCH=""
-      COUNT=0
-      if [ -n "$CANDIDATES" ]; then
-        while IFS= read -r CAND; do
-          [ -z "$CAND" ] && continue
-          case "$CAND" in
-            */"$BASE"|"$BASE") MATCH="$CAND"; COUNT=$((COUNT + 1)) ;;
-          esac
-        done <<< "$CANDIDATES"
-      fi
-      if [ "$COUNT" -eq 1 ]; then
-        RESOLVED_BARE="${RESOLVED_BARE}${MATCH}
-"
-      fi
-    done <<< "$BARE_SPANS"
-  fi
-
-  DECLARED_PATHS="$(printf '%s\n%s\n%s\n' "$FULL_SPANS" "$BARE_SPANS" "$RESOLVED_BARE" \
-    | grep -E '(/|\.[A-Za-z0-9]+$)')"
+  DECLARED_PATHS="$DECLARED_LIST"
 fi
 DECLARED_COUNT=0
 if [ -n "$DECLARED_PATHS" ]; then
@@ -330,6 +368,59 @@ else
   echo "Staged files: (none)"
 fi
 
+# describe_unexpected_span_issue: CON-158 -- name the SPECIFIC reason a raw
+# declaration span, if any, did not resolve to a given unexpected file,
+# rather than a fixed hypothesis or a wrongly-general "ambiguous match".
+# Echoes nothing (caller checks $? / captures stdout) when it finds no span
+# whose basename corresponds at all.
+describe_unexpected_span_issue() {
+  local ubase="$1" uf="$2" raw stripped core loose loose_core
+  if [ -z "$ALL_RAW_SPANS_ANYWHERE" ]; then
+    return 1
+  fi
+  while IFS= read -r raw; do
+    [ -z "$raw" ] && continue
+    stripped="$(strip_line_suffix "$raw")"
+    case "$stripped" in
+      */*) core="$(basename -- "$stripped")" ;;
+      *)   core="$stripped" ;;
+    esac
+    if [ "$core" = "$ubase" ]; then
+      # Same basename as the unexpected file, via the STRICT (accepted)
+      # grammar -- whether or not a line annotation was actually present,
+      # this names a genuinely different path (the different-directory
+      # case, or a different-line-annotated path of the same basename
+      # elsewhere). Reported this way regardless: it is never ambiguous,
+      # just a different file.
+      echo "declared as \`${stripped}\` (from raw span \`${raw}\`) -- a different file with the same basename, not this one. Not ambiguous: the two are simply different paths."
+      return 0
+    fi
+    # Strict grammar found no basename match. Try a LOOSE strip
+    # (also handles a bare trailing ':' with no digits, and a trailing
+    # '#L<n>' anchor) purely to detect a near-match for diagnostic
+    # purposes -- this never affects acceptance, only the message.
+    loose="$(printf '%s' "$raw" | sed -E 's/#L?[0-9]+(-[0-9]+)?$//; s/:[0-9]*(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$//')"
+    case "$loose" in
+      */*) loose_core="$(basename -- "$loose")" ;;
+      *)   loose_core="$loose" ;;
+    esac
+    if [ "$loose_core" != "$ubase" ]; then
+      continue
+    fi
+    if printf '%s' "$raw" | grep -qE ':$'; then
+      echo "found as \`${raw}\`, but a bare trailing ':' with no line number is not stripped by this parser (accepted: ':<line>', ':<line>-<line>', or a comma-list of either). If this is a line annotation, add the number; if ':' is part of the literal filename, the exact staged path must be written verbatim."
+      return 0
+    fi
+    if printf '%s' "$raw" | grep -qE '#L?[0-9]+(-[0-9]+)?$'; then
+      echo "found as \`${raw}\`, but a trailing '#L<n>'-style anchor is not a recognized line annotation here (accepted: ':<line>' / ':<line>-<line>', optionally comma-listed). Rewrite as \`<path>:<line>\` if this was meant to disambiguate a line."
+      return 0
+    fi
+    echo "found as \`${raw}\`, but not in a position this parser treats as a declaration: the backtick must be the first non-whitespace content of either a bulleted line, or a continuation line chained to one by a trailing comma on the line before it."
+    return 0
+  done <<< "$ALL_RAW_SPANS_ANYWHERE"
+  return 1
+}
+
 # --- D2a/D2b: unparseable/missing declaration while unexpected files remain ---
 if [ "$DECLARED_COUNT" -eq 0 ] && [ -n "$UNEXPECTED" ]; then
   if [ "$ALLOW_EMPTY_DECLARATION" -ne 1 ]; then
@@ -338,6 +429,12 @@ if [ "$DECLARED_COUNT" -eq 0 ] && [ -n "$UNEXPECTED" ]; then
       echo "--- raw files-modified.md content (staged) ---" >&2
       printf '%s\n' "$STAGED_BLOB" >&2
       echo "------------------------------------------------" >&2
+      if [ -n "$ALL_RAW_SPANS_ANYWHERE" ]; then
+        echo "Note: the file above DOES contain backtick-quoted, path-shaped spans -- none of" >&2
+        echo "them are in a position this parser recognizes as a declaration (a bulleted line, or" >&2
+        echo "a continuation line chained to one by a trailing comma). Check formatting before" >&2
+        echo "assuming this file declares nothing at all." >&2
+      fi
     else
       echo "(no staged declaration blob exists at ${DECLARATION_INDEX_PATH})" >&2
     fi
@@ -353,32 +450,25 @@ else
   # --- Any staged path outside the allowed union is a hard stop ---
   if [ -n "$UNEXPECTED" ]; then
     echo "FAIL staged file set exceeds the run's declared touched-file set. Unexpected file(s):" >&2
-    # CON-158: name the actual reason a file failed to match, rather than a
-    # single fixed hypothesis that may not apply. Search every raw
-    # backtick span in the staged declaration (colon/line-suffix stripped)
-    # for this file's basename, and report what was actually found there.
     while IFS= read -r UF; do
       [ -z "$UF" ] && continue
       UBASE="$(basename "$UF")"
-      HITS=""
-      if [ -n "$STRIPPED_SPANS" ]; then
-        HITS="$(printf '%s\n' "$STRIPPED_SPANS" | grep -F -- "$UBASE" || true)"
-      fi
       echo "  ${UF}" >&2
-      if [ -n "$HITS" ]; then
-        HITS_JOINED="$(printf '%s' "$HITS" | tr '\n' ',' | sed 's/,$//')"
-        echo "    basename '${UBASE}' appears in files-modified.md as: ${HITS_JOINED} -- but did not resolve to this exact staged path (ambiguous match, or the span is on a line the parser does not treat as part of a declaration)." >&2
+      REASON="$(describe_unexpected_span_issue "$UBASE" "$UF")"
+      if [ -n "$REASON" ]; then
+        echo "    ${REASON}" >&2
       else
         echo "    no span matching basename '${UBASE}' found anywhere in files-modified.md." >&2
       fi
     done <<< "$UNEXPECTED"
     echo "(allowed: ${CHANGE_DIR_NORM}/** plus paths declared in the staged declaration at ${DECLARATION_INDEX_PATH})" >&2
-    echo "Declaration format: a path is declared by a backtick-quoted span on a line starting" >&2
-    echo "with a '-' or '*' bullet, or on a continuation line chained to one by a trailing comma" >&2
-    echo "(the comma-chain breaks, and the list closes, the moment a scanned line does not end" >&2
-    echo "in one). An optional trailing ':<line>' or ':<line>,<line>...' is stripped before" >&2
-    echo "matching. A bare basename in a comma-joined list resolves only if it unambiguously" >&2
-    echo "matches exactly one other declared or staged path." >&2
+    echo "Declaration format: a path is declared by a backtick-quoted span whose backtick is the" >&2
+    echo "FIRST non-whitespace content of either a bulleted line ('-'/'*'), or a continuation line" >&2
+    echo "chained to one by a trailing comma on the line before it -- the chain breaks the moment a" >&2
+    echo "scanned line does not end in a comma. An optional trailing ':<line>' or ':<line>-<line>'" >&2
+    echo "(comma-listed combinations of either) is stripped before matching. A bare basename in a" >&2
+    echo "comma-joined list resolves only by inheriting the directory of the nearest full-path span" >&2
+    echo "declared earlier in the SAME chain -- never against the staged file set." >&2
     echo "Refusing to commit. Investigate before re-running." >&2
     exit 1
   fi

@@ -541,7 +541,7 @@ if [ "$RC5B" -ne 0 ] && echo "$OUT5B" | grep -qF "sneaky.txt"; then
 else
   bad "CON-151 a continuation-line path is still undeclared and still trips the guard" "exit=$RC5B output=$OUT5B"
 fi
-if echo "$OUT5B" | grep -q "the comma-chain breaks, and the list closes"; then
+if echo "$OUT5B" | grep -q "chained to one by a trailing comma"; then
   ok "CON-151 refusal explains the bullet/continuation format rule"
 else
   bad "CON-151 refusal explains the bullet/continuation format rule" "output: $OUT5B"
@@ -1931,6 +1931,218 @@ if [ "$RC15B" -ne 0 ] && echo "$OUT15B" | grep -qF "sneaky.txt"; then
   ok "CON-149 an un-chained continuation line still declares nothing (CON-151 not reopened)"
 else
   bad "CON-149 an un-chained continuation line still declares nothing (CON-151 not reopened)" "exit=$RC15B output=$OUT15B"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 16 (cold-review cycle 2 findings against 0601a331): four
+# concrete false-accept fixtures that an earlier draft of the CON-158/149
+# parser wrongly let through, plus the diagnostic-accuracy and line-range
+# fixtures from the same review. Every one of these mutation-checks
+# against the CURRENT (fixed) script by re-applying the exact regression
+# the review found and confirming it goes red again.
+# ---------------------------------------------------------------------
+echo "Scenario 16: cold-review false-accept and diagnostic-accuracy regressions"
+
+BASE16="$(mktemp -d)"
+REMOTE16="$BASE16/remote.git"
+git init -q --bare "$REMOTE16"
+git clone -q "$REMOTE16" "$BASE16/primary" 2>/dev/null
+echo "root" > "$BASE16/primary/root.txt"
+commit_all "$BASE16/primary" "init"
+git -C "$BASE16/primary" branch -M main
+git -C "$BASE16/primary" push -q origin main
+CHANGE_DIR16="spec/changes/con-review-demo"
+
+# 16a (finding 1): a bullet with PROSE between the bullet marker and the
+# backtick ("* Did not modify `lib/b.ts`") must NOT declare lib/b.ts --
+# the backtick must be the bullet's own first content.
+BRANCH16A="$BASE16/branch-a"
+git clone -q "$REMOTE16" "$BRANCH16A" 2>/dev/null
+git -C "$BRANCH16A" checkout -q -b feature/review/16a origin/main
+mkdir -p "$BRANCH16A/$CHANGE_DIR16/" "$BRANCH16A/lib"
+cat > "$BRANCH16A/$CHANGE_DIR16/files-modified.md" <<'EOF'
+* Did not modify `lib/b.ts`
+EOF
+echo "b" > "$BRANCH16A/lib/b.ts"
+commit_all "$BRANCH16A" "executor commit (prose-prefixed bullet)"
+OUT16A="$("$SCRIPT" "$BRANCH16A" origin main "review finding 1" "$CHANGE_DIR16" 2>&1)"
+RC16A=$?
+if [ "$RC16A" -ne 0 ] && echo "$OUT16A" | grep -qF "lib/b.ts"; then
+  ok "16a a prose-prefixed bullet ('* Did not modify \`lib/b.ts\`') does NOT declare lib/b.ts"
+else
+  bad "16a a prose-prefixed bullet ('* Did not modify \`lib/b.ts\`') does NOT declare lib/b.ts" "exit=$RC16A output=$OUT16A"
+fi
+
+# 16b (finding 2): a bullet mentioning an untouched file in backticks
+# ("- Deliberately did NOT touch `secret.ts`") must not declare it via any
+# staged-file fallback resolution.
+BRANCH16B="$BASE16/branch-b"
+git clone -q "$REMOTE16" "$BRANCH16B" 2>/dev/null
+git -C "$BRANCH16B" checkout -q -b feature/review/16b origin/main
+mkdir -p "$BRANCH16B/$CHANGE_DIR16/" "$BRANCH16B/src/deep"
+cat > "$BRANCH16B/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- Deliberately did NOT touch `secret.ts`
+EOF
+echo "s" > "$BRANCH16B/src/deep/secret.ts"
+commit_all "$BRANCH16B" "executor commit (untouched-file mention)"
+OUT16B="$("$SCRIPT" "$BRANCH16B" origin main "review finding 2" "$CHANGE_DIR16" 2>&1)"
+RC16B=$?
+if [ "$RC16B" -ne 0 ] && echo "$OUT16B" | grep -qF "src/deep/secret.ts"; then
+  ok "16b a bullet mentioning an untouched file in backticks does not declare it via the staged set"
+else
+  bad "16b a bullet mentioning an untouched file in backticks does not declare it via the staged set" "exit=$RC16B output=$OUT16B"
+fi
+
+# 16c (finding 3): a comma-chain must not extend onto a PROSE continuation
+# line even though the previous line ended in a trailing comma -- only a
+# continuation line that itself starts with a backtick extends the chain.
+BRANCH16C="$BASE16/branch-c"
+git clone -q "$REMOTE16" "$BRANCH16C" 2>/dev/null
+git -C "$BRANCH16C" checkout -q -b feature/review/16c origin/main
+mkdir -p "$BRANCH16C/$CHANGE_DIR16/" "$BRANCH16C/src" "$BRANCH16C/lib"
+cat > "$BRANCH16C/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- `src/a.ts` — see also,
+  the unrelated `lib/b.ts` file (not touched).
+EOF
+echo "a" > "$BRANCH16C/src/a.ts"
+echo "b" > "$BRANCH16C/lib/b.ts"
+commit_all "$BRANCH16C" "executor commit (prose continuation after trailing comma)"
+OUT16C="$("$SCRIPT" "$BRANCH16C" origin main "review finding 3" "$CHANGE_DIR16" 2>&1)"
+RC16C=$?
+if [ "$RC16C" -ne 0 ] && echo "$OUT16C" | grep -qF "lib/b.ts"; then
+  ok "16c a prose continuation line does not extend the comma-chain even after a trailing comma"
+else
+  bad "16c a prose continuation line does not extend the comma-chain even after a trailing comma" "exit=$RC16C output=$OUT16C"
+fi
+
+# 16d (finding 4, line-range acceptance): `:12-40` (a line RANGE, not a
+# single line or comma-list) must be accepted, matching the same
+# convention as `:187` and `:111,184,220`.
+BRANCH16D="$BASE16/branch-d"
+git clone -q "$REMOTE16" "$BRANCH16D" 2>/dev/null
+git -C "$BRANCH16D" checkout -q -b feature/review/16d origin/main
+mkdir -p "$BRANCH16D/$CHANGE_DIR16/" "$BRANCH16D/src"
+cat > "$BRANCH16D/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- `src/a.ts:12-40` — refactored this range
+EOF
+echo "a" > "$BRANCH16D/src/a.ts"
+commit_all "$BRANCH16D" "executor commit (line-range annotation)"
+OUT16D="$("$SCRIPT" "$BRANCH16D" origin main "review finding 4 (range accepted)" "$CHANGE_DIR16" 2>&1)"
+RC16D=$?
+if [ "$RC16D" -eq 0 ]; then
+  ok "16d a ':<line>-<line>' range annotation is accepted, same as ':<line>'"
+else
+  bad "16d a ':<line>-<line>' range annotation is accepted, same as ':<line>'" "exit=$RC16D output=$OUT16D"
+fi
+
+# 16e (finding 4/7, diagnostic accuracy): `src/a.ts:` (bare trailing colon,
+# no digits) is NOT accepted -- but the refusal must name that specific
+# reason, not a generic "ambiguous match" or "not found anywhere".
+BRANCH16E="$BASE16/branch-e"
+git clone -q "$REMOTE16" "$BRANCH16E" 2>/dev/null
+git -C "$BRANCH16E" checkout -q -b feature/review/16e origin/main
+mkdir -p "$BRANCH16E/$CHANGE_DIR16/" "$BRANCH16E/src"
+cat > "$BRANCH16E/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- `src/a.ts:` — trailing colon, no line number
+EOF
+echo "a" > "$BRANCH16E/src/a.ts"
+commit_all "$BRANCH16E" "executor commit (bare trailing colon)"
+OUT16E="$("$SCRIPT" "$BRANCH16E" origin main "review finding 4/7 (bare colon diagnostic)" "$CHANGE_DIR16" 2>&1)"
+RC16E=$?
+if [ "$RC16E" -ne 0 ] && echo "$OUT16E" | grep -qF "bare trailing ':' with no line number is not stripped"; then
+  ok "16e a bare trailing ':' with no digits is refused with the SPECIFIC reason, not a generic hypothesis"
+else
+  bad "16e a bare trailing ':' with no digits is refused with the SPECIFIC reason, not a generic hypothesis" "exit=$RC16E output=$OUT16E"
+fi
+
+# 16f (finding 4/7, diagnostic accuracy): `src/a.ts#L12` (GitHub-style
+# anchor) is NOT accepted -- the refusal must name it specifically as an
+# unrecognized anchor, not lump it into "no match" or "ambiguous".
+BRANCH16F="$BASE16/branch-f"
+git clone -q "$REMOTE16" "$BRANCH16F" 2>/dev/null
+git -C "$BRANCH16F" checkout -q -b feature/review/16f origin/main
+mkdir -p "$BRANCH16F/$CHANGE_DIR16/" "$BRANCH16F/src"
+cat > "$BRANCH16F/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- `src/a.ts#L12` — GitHub-style anchor, not this repo's convention
+EOF
+echo "a" > "$BRANCH16F/src/a.ts"
+commit_all "$BRANCH16F" "executor commit (GitHub-style anchor)"
+OUT16F="$("$SCRIPT" "$BRANCH16F" origin main "review finding 4/7 (github anchor diagnostic)" "$CHANGE_DIR16" 2>&1)"
+RC16F=$?
+if [ "$RC16F" -ne 0 ] && echo "$OUT16F" | grep -qF "is not a recognized line annotation here"; then
+  ok "16f a '#L12' GitHub-style anchor is refused with the SPECIFIC reason, not a generic hypothesis"
+else
+  bad "16f a '#L12' GitHub-style anchor is refused with the SPECIFIC reason, not a generic hypothesis" "exit=$RC16F output=$OUT16F"
+fi
+
+# 16g (finding 4, diagnostic accuracy -- "different file, not ambiguous"):
+# when `dup/foo.ts` is declared but the staged file is `a/foo.ts`, the
+# refusal must say these are two different files sharing a basename, not
+# claim a generic "ambiguous match".
+BRANCH16G="$BASE16/branch-g"
+git clone -q "$REMOTE16" "$BRANCH16G" 2>/dev/null
+git -C "$BRANCH16G" checkout -q -b feature/review/16g origin/main
+mkdir -p "$BRANCH16G/$CHANGE_DIR16/" "$BRANCH16G/dup" "$BRANCH16G/a"
+cat > "$BRANCH16G/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- `dup/foo.ts` — the one actually touched
+EOF
+echo "dup" > "$BRANCH16G/dup/foo.ts"
+echo "a" > "$BRANCH16G/a/foo.ts"
+commit_all "$BRANCH16G" "executor commit (same-basename different-dir undeclared file)"
+OUT16G="$("$SCRIPT" "$BRANCH16G" origin main "review finding 4 (different file not ambiguous)" "$CHANGE_DIR16" 2>&1)"
+RC16G=$?
+if [ "$RC16G" -ne 0 ] && echo "$OUT16G" | grep -qF "a different file with the same basename" && ! echo "$OUT16G" | grep -qiF "ambiguous match"; then
+  ok "16g a same-basename different-directory file is named as 'a different file', never as a generic 'ambiguous match'"
+else
+  bad "16g a same-basename different-directory file is named as 'a different file', never as a generic 'ambiguous match'" "exit=$RC16G output=$OUT16G"
+fi
+
+# 16h (finding 7): a staged file whose name literally CONTAINS a colon
+# suffix ("x/a:12", not a line annotation) is accepted when declared
+# verbatim -- the raw span is matched directly, before any line-suffix
+# stripping is even attempted.
+BRANCH16H="$BASE16/branch-h"
+git clone -q "$REMOTE16" "$BRANCH16H" 2>/dev/null
+git -C "$BRANCH16H" checkout -q -b feature/review/16h origin/main
+mkdir -p "$BRANCH16H/$CHANGE_DIR16/" "$BRANCH16H/x"
+cat > "$BRANCH16H/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- `x/a:12` — this really is the filename, not a line annotation
+EOF
+echo "a" > "$BRANCH16H/x/a:12"
+commit_all "$BRANCH16H" "executor commit (literal colon in filename)"
+OUT16H="$("$SCRIPT" "$BRANCH16H" origin main "review finding 7 (literal colon filename)" "$CHANGE_DIR16" 2>&1)"
+RC16H=$?
+if [ "$RC16H" -eq 0 ]; then
+  ok "16h a staged file whose name literally contains a colon suffix is accepted via its raw declared span"
+else
+  bad "16h a staged file whose name literally contains a colon suffix is accepted via its raw declared span" "exit=$RC16H output=$OUT16H"
+fi
+
+# 16i (finding 2, isolated from finding 1's fix): a LEGITIMATELY-opened
+# bullet ("- `src/a.ts` — not touching `secret.ts`") whose SAME line also
+# mentions a second, untouched file in backticks must not let that second
+# span leak in via a staged-file-set fallback. Unlike 16b, the bullet here
+# opens correctly (backtick immediately after the marker), so this
+# specifically isolates the staged-set-matching vector from finding 1's
+# "prose before the backtick" vector -- a mutation that reintroduces ONLY
+# the staged-fallback (leaving finding 1's fix intact) still passes 16b
+# but must still trip 16i.
+BRANCH16I="$BASE16/branch-i"
+git clone -q "$REMOTE16" "$BRANCH16I" 2>/dev/null
+git -C "$BRANCH16I" checkout -q -b feature/review/16i origin/main
+mkdir -p "$BRANCH16I/$CHANGE_DIR16/" "$BRANCH16I/src/deep"
+cat > "$BRANCH16I/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- `src/a.ts` — not touching `secret.ts`
+EOF
+echo "a" > "$BRANCH16I/src/a.ts"
+echo "s" > "$BRANCH16I/src/deep/secret.ts"
+commit_all "$BRANCH16I" "executor commit (legit bullet, second file mentioned same line)"
+OUT16I="$("$SCRIPT" "$BRANCH16I" origin main "review finding 2 isolated (same-line mention)" "$CHANGE_DIR16" 2>&1)"
+RC16I=$?
+if [ "$RC16I" -ne 0 ] && echo "$OUT16I" | grep -qF "src/deep/secret.ts"; then
+  ok "16i a second file mentioned on an otherwise-legitimate bullet's own line does not leak via staged-set matching"
+else
+  bad "16i a second file mentioned on an otherwise-legitimate bullet's own line does not leak via staged-set matching" "exit=$RC16I output=$OUT16I"
 fi
 
 # ---------------------------------------------------------------------

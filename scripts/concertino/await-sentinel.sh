@@ -38,11 +38,30 @@ set -uo pipefail
 # Usage: await-sentinel.sh <SENTINEL_PATH> <TIMEOUT_SEC> [POLL_INTERVAL_SEC]
 #   <SENTINEL_PATH>       file whose existence signals completion.
 #   <TIMEOUT_SEC>         hard bound in seconds; on expiry this script exits
-#                         1 -- it never waits unboundedly.
+#                         1 -- it never waits unboundedly. Clamped to
+#                         MAX_TIMEOUT_SEC (below) -- the script's own
+#                         self-termination guarantee would otherwise be
+#                         only nominal for a caller who (accidentally or
+#                         not) passes something like 86400.
 #   [POLL_INTERVAL_SEC]   seconds between existence checks (default: 2).
 #
-# Exit 0: sentinel appeared. Exit 1: timed out. Exit 2: usage error.
+# MAX_TIMEOUT_SEC: hard ceiling on TIMEOUT_SEC, 1800s (30 minutes) by
+# default -- long enough for any real sub-agent phase this repo's
+# orchestrator role waits on, short enough that a poller can never
+# meaningfully "leak" for the rest of a session even if a caller never
+# reaps it by PID. Override via the AWAIT_SENTINEL_MAX_TIMEOUT_SEC
+# environment variable for an unusual case; there is no way to disable
+# the cap entirely -- CON-178 exists because loose "just pick a big
+# number" bounds do not hold up in practice.
 # ===========================================================================
+
+MAX_TIMEOUT_SEC="${AWAIT_SENTINEL_MAX_TIMEOUT_SEC:-1800}"
+case "$MAX_TIMEOUT_SEC" in
+  ''|*[!0-9]*)
+    echo "FAIL AWAIT_SENTINEL_MAX_TIMEOUT_SEC must be a non-negative integer, got: ${MAX_TIMEOUT_SEC}" >&2
+    exit 2
+    ;;
+esac
 
 SENTINEL="${1:?usage: await-sentinel.sh <SENTINEL_PATH> <TIMEOUT_SEC> [POLL_INTERVAL_SEC]}"
 TIMEOUT_SEC="${2:?usage: await-sentinel.sh <SENTINEL_PATH> <TIMEOUT_SEC> [POLL_INTERVAL_SEC]}"
@@ -54,6 +73,10 @@ case "$TIMEOUT_SEC" in
     exit 2
     ;;
 esac
+if [ "$TIMEOUT_SEC" -gt "$MAX_TIMEOUT_SEC" ]; then
+  echo "FAIL TIMEOUT_SEC (${TIMEOUT_SEC}) exceeds the hard cap of ${MAX_TIMEOUT_SEC}s (override via AWAIT_SENTINEL_MAX_TIMEOUT_SEC if this is genuinely needed)." >&2
+  exit 2
+fi
 case "$POLL_INTERVAL_SEC" in
   ''|*[!0-9]*)
     echo "FAIL POLL_INTERVAL_SEC must be a non-negative integer, got: ${POLL_INTERVAL_SEC}" >&2

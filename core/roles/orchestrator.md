@@ -84,6 +84,34 @@ pattern-matching waiter can match its own command line and deadlock
 waiting on itself — two such shells were found deadlocked at ~21h in the
 wild.
 
+Concrete invocation, bounded to this repo's own Execution-cycle budget
+rather than an arbitrarily large number:
+
+```
+scripts/concertino/await-sentinel.sh /tmp/exec-cycle-2.sentinel 900
+```
+
+`await-sentinel.sh` itself hard-caps `TIMEOUT_SEC` at 1800s (30 minutes,
+`AWAIT_SENTINEL_MAX_TIMEOUT_SEC` overrides it) — pick a bound well under
+that for the phase you're actually waiting on, not the ceiling itself.
+
+**What this mechanically guarantees, versus what it relies on you to do:**
+`await-sentinel.sh`'s own bounded, self-terminating loop is a MECHANICAL
+guarantee — the process backing that one call cannot outlive
+`min(TIMEOUT_SEC, 1800s)` no matter what else happens, proven by a
+mutation test (`test/scripts/await-sentinel.test.sh`) that reintroduces an
+unbounded variant of the real script and confirms it fails to
+self-terminate. What is NOT mechanically enforced is *that you use this
+script instead of a bespoke loop* — no core script can stop you from
+writing `until [ -f ... ]; do sleep; done` directly, and no lint or gate
+in this repo scans your Bash tool calls for that shape. That half is
+INSTRUCTION ONLY: this paragraph, followed at the point you decide how to
+poll. Characterize it this way in any report of this fix — "zero
+stranded pollers, mechanically guaranteed" overclaims a guarantee this
+change does not provide; "a bounded helper script exists and orchestrator
+guidance tells you to use it, with the script's own timeout mechanically
+enforced once you do" is the accurate claim.
+
 **The only legitimate reasons to end your turn** are: (1) the run is
 genuinely finished, per Phase 4's "genuinely complete" definition; (2) a
 decision is needed from the coordinator/human, raised as an explicit
