@@ -122,3 +122,58 @@ test('a resolved config-shaped opts (dashboard.retentionDays) overrides the defa
   const eligible = retention.isEligible(root, 'HEL-41', { now: NOW, dashboard: { retentionDays: 5 } });
   assert.equal(eligible, true);
 });
+
+// --- CON-182: an escalated-then-resumed run's run.end is not terminal --------
+// A run.end with status "escalated" marks an orchestrator pausing on a
+// circuit-breaker escalation, not the run ending — the same run typically
+// resumes once the human answers, sometimes without ever writing a new
+// run.start (the HEL-1080 shape, replayed exactly below, trimmed to the
+// fields hasRunEnd()/isEligible() actually read). Before this fix,
+// hasRunEnd() treated the mere presence of ANY run.end as terminal, which
+// would have made a still-live, about-to-resume run pruneable purely by
+// mtime age.
+const HEL_1080_ESCALATED_RUN_END =
+  '{"t":1789145631658,"kind":"run.start","ticket":"HEL-1080"}\n' +
+  '{"t":1789155229076,"kind":"escalation.raised","ticket":"HEL-1080"}\n' +
+  '{"t":1789155229083,"kind":"escalation.answer_discarded","ticket":"HEL-1080"}\n' +
+  '{"t":1789155241354,"kind":"run.end","ticket":"HEL-1080","status":"escalated"}\n' +
+  '{"t":1789155343378,"kind":"escalation.answered","ticket":"HEL-1080"}\n';
+
+test('hasRunEnd: HEL-1080 replay (run.end status=escalated, later resumed) is NOT terminal', () => {
+  const root = tmpRoot();
+  writeRun(root, 'HEL-1080', HEL_1080_ESCALATED_RUN_END, 9999); // absurdly old mtime
+  assert.equal(retention.hasRunEnd(root, 'HEL-1080'), false);
+});
+
+test('isEligible: HEL-1080 replay is never eligible for pruning regardless of mtime age', () => {
+  const root = tmpRoot();
+  writeRun(root, 'HEL-1080', HEL_1080_ESCALATED_RUN_END, 9999);
+  const eligible = retention.isEligible(root, 'HEL-1080', { retentionDays: 30, now: NOW });
+  assert.equal(eligible, false);
+});
+
+test('hasRunEnd: a real (status=delivered) run.end is still terminal', () => {
+  const root = tmpRoot();
+  const lines = '{"t":1,"kind":"run.start","ticket":"X"}\n' +
+    '{"t":2,"kind":"run.end","ticket":"X","status":"delivered"}\n';
+  writeRun(root, 'HEL-50', lines, 1);
+  assert.equal(retention.hasRunEnd(root, 'HEL-50'), true);
+});
+
+test("hasRunEnd: CON-121's manual abandoned-stale marker is terminal", () => {
+  const root = tmpRoot();
+  const lines = '{"t":1,"kind":"run.start","ticket":"X"}\n' +
+    '{"t":2,"kind":"run.end","ticket":"X","status":"abandoned-stale"}\n';
+  writeRun(root, 'HEL-51', lines, 1);
+  assert.equal(retention.hasRunEnd(root, 'HEL-51'), true);
+});
+
+test('hasRunEnd: the LAST run.end wins — an escalated run.end followed by a later delivered one is terminal', () => {
+  const root = tmpRoot();
+  const lines = '{"t":1,"kind":"run.start","ticket":"X"}\n' +
+    '{"t":2,"kind":"run.end","ticket":"X","status":"escalated"}\n' +
+    '{"t":3,"kind":"escalation.answered","ticket":"X"}\n' +
+    '{"t":4,"kind":"run.end","ticket":"X","status":"delivered"}\n';
+  writeRun(root, 'HEL-52', lines, 1);
+  assert.equal(retention.hasRunEnd(root, 'HEL-52'), true);
+});

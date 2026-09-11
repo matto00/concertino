@@ -34,9 +34,10 @@
 #                LANE trip, and it doesn't count toward keeping the fleet
 #                "live" for FLEET purposes — the moment
 #                  <repo root>/.concertino/runs/<TICKET>/events.jsonl
-#                contains a `"kind":"run.end"` line (the same terminal-event
-#                marker cleanup.sh's other_runs_live() and
-#                lib/ui/retention.js's hasRunEnd() already use; TICKET is
+#                contains a run.end event with a TERMINAL status (any status
+#                except "escalated" — CON-182; see run_end_is_terminal()
+#                below) — the same definition cleanup.sh's other_runs_live()
+#                and lib/ui/retention.js's hasRunEnd() already use; TICKET is
 #                matched case-insensitively, uppercased the same way
 #                emit-event.sh normalises it before writing that path). This
 #                is a REAL completion signal, not driver discipline: a lane
@@ -218,12 +219,43 @@ warn_unresolved_root_once() {
   fi
 }
 
-# A tracked lane is "complete" when its ticket's run has emitted the terminal
+# CON-182: a run.end whose status is "escalated" is NOT terminal — it marks
+# an orchestrator pausing on a circuit-breaker escalation, and the same run
+# typically resumes once it's answered, sometimes without ever writing a new
+# run.start (observed on helio HEL-1080, 2026-09-11 — see cleanup.sh's
+# matching comment on last_run_end_status()/run_end_is_terminal() for the
+# full incident and the shared definition of "terminal" every run.end
+# consumer in this repo now applies: any status except "escalated"). As of
+# this ticket, orchestrator.md no longer emits run.end for an escalation
+# pause, but historic logs still contain such lines. Only the LAST run.end
+# line in the log is consulted, since a resumed run could in principle write
+# a second, later run.end with a terminal status.
+last_run_end_status() {
+  local log="$1" line status="" found=1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *'"kind":"run.end"'*)
+        found=0
+        status="$(printf '%s' "$line" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
+        ;;
+    esac
+  done < "$log"
+  [ "$found" -eq 0 ] || return 1
+  printf '%s' "$status"
+  return 0
+}
+
+# True iff $1's log has a run.end AND its last one is terminal (see
+# last_run_end_status() above for what "terminal" means here).
+run_end_is_terminal() {
+  local log="$1" status
+  status="$(last_run_end_status "$log")" || return 1
+  [ "$status" != "escalated" ]
+}
+
+# A tracked lane is "complete" when its ticket's run has emitted a TERMINAL
 # `run.end` event — the same marker cleanup.sh's other_runs_live() and
-# lib/ui/retention.js's hasRunEnd() already treat as authoritative. Plain
-# substring grep on the raw JSONL, exactly like cleanup.sh:656-657, rather
-# than parsing JSON — consistent with how the rest of this pipeline reads
-# events.jsonl cheaply.
+# lib/ui/retention.js's hasRunEnd() already treat as authoritative.
 #
 # $1 is the raw 3rd field from a lane's line: `TICKET` or `TICKET@/abs/root`
 # (cycle-3 fix — see the header comment's "repo root resolution order").
@@ -264,7 +296,7 @@ lane_is_complete() {
   # "not complete" (early in a run) — only an unresolvable/wrong ROOT
   # (above) warns.
   [ -f "$log" ] || return 1
-  grep -q '"kind":"run.end"' "$log" 2>/dev/null
+  run_end_is_terminal "$log"
 }
 
 # Lanes still meaningfully "live" for FLEET/stand-down purposes: every

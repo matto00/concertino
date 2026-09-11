@@ -347,6 +347,78 @@ test('run.end delivered is done', () => {
   assert.equal(run.elapsedMs, 8);
 });
 
+// --- CON-182: run.end status=escalated is not terminal --------------------
+// An escalated run.end marks an orchestrator pausing on a circuit-breaker
+// escalation, not the run ending — the same run typically resumes once the
+// human answers, sometimes without ever writing a new run.start. Before this
+// fix, deriveStatus() treated ANY endStatus as terminal (delivered -> done,
+// anything else -> failed), which reported a live, resuming run as FAILED
+// the moment its window looked dead. This replays the real (trimmed)
+// HEL-1080 sequence: escalation raised, an earlier answer discarded, run.end
+// status=escalated, then escalation.answered with no further run.end and no
+// window info at all (the exact "nothing is watching" incident shape).
+test('HEL-1080 replay: an escalated-then-answered run.end with no window info is unknown, not failed', () => {
+  const [run] = reduce(log('HEL-1080', [
+    { t: 1789145631658, kind: 'run.start', ticket: 'HEL-1080', role: 'script' },
+    { t: 1789155229076, kind: 'escalation.raised', ticket: 'HEL-1080', role: 'orchestrator', question: 'q' },
+    { t: 1789155229083, kind: 'escalation.answer_discarded', ticket: 'HEL-1080', role: 'orchestrator' },
+    { t: 1789155241354, kind: 'run.end', ticket: 'HEL-1080', role: 'orchestrator', status: 'escalated' },
+    { t: 1789155343378, kind: 'escalation.answered', ticket: 'HEL-1080', role: 'orchestrator' },
+  ]), [], NOW);
+  assert.notEqual(run.status, 'failed');
+  assert.notEqual(run.status, 'done');
+  assert.equal(run.status, 'unknown');
+});
+
+test('HEL-1080 replay: with a live window, the escalated-then-answered run reports running', () => {
+  const [run] = reduce(log('HEL-1080', [
+    { t: 1789145631658, kind: 'run.start', ticket: 'HEL-1080', role: 'script' },
+    { t: 1789155229076, kind: 'escalation.raised', ticket: 'HEL-1080', role: 'orchestrator', question: 'q' },
+    { t: 1789155241354, kind: 'run.end', ticket: 'HEL-1080', role: 'orchestrator', status: 'escalated' },
+    { t: 1789155343378, kind: 'escalation.answered', ticket: 'HEL-1080', role: 'orchestrator' },
+  ]), [{ ticket: 'HEL-1080', alive: true, idleMs: 0 }], NOW);
+  assert.notEqual(run.status, 'failed');
+  assert.equal(run.status, 'running');
+});
+
+test('a genuinely dead window after an escalated (unresumed) run.end still fails', () => {
+  const [run] = reduce(log('HEL-1080', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1080', role: 'script' },
+    { t: 2, kind: 'escalation.raised', ticket: 'HEL-1080', role: 'orchestrator', question: 'q' },
+    { t: 3, kind: 'run.end', ticket: 'HEL-1080', role: 'orchestrator', status: 'escalated' },
+  ]), [{ ticket: 'HEL-1080', alive: false, idleMs: 0 }], NOW);
+  // No window at all -> 'unknown' above; a CONFIRMED-dead window is a
+  // stronger, more actionable signal and still reports failed, same as the
+  // pre-existing "dead window with no run.end is failed" case.
+  assert.equal(run.status, 'failed');
+});
+
+test('a real (status=delivered) run.end is still terminal even with no window', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'delivered' },
+  ]), [], NOW);
+  assert.equal(run.status, 'done');
+});
+
+test("CON-121's manual abandoned-stale marker is still terminal (failed)", () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'script', status: 'abandoned-stale' },
+  ]), [], NOW);
+  assert.equal(run.status, 'failed');
+});
+
+test('the LAST run.end wins: escalated followed by a later delivered run.end reports done', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+    { t: 2, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'escalated' },
+    { t: 3, kind: 'escalation.answered', ticket: 'HEL-1', role: 'orchestrator' },
+    { t: 4, kind: 'run.end', ticket: 'HEL-1', role: 'script', status: 'delivered' },
+  ]), [], NOW);
+  assert.equal(run.status, 'done');
+});
+
 test('telemetry tier is full when semantic events are present', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
@@ -475,12 +547,18 @@ test('a dropped envelope-malformed line and a rejected-phase event both count to
   assert.equal(run.events[0].kind, 'phase.enter');
 });
 
+// CON-182: these tests below use status: 'aborted' as their generic
+// "some non-delivered terminal status" placeholder (previously 'escalated',
+// before that string got its own special, non-terminal meaning — see the
+// HEL-1080-replay tests above). 'aborted' isn't a status any current emitter
+// writes; it stands in for "any terminal status other than delivered",
+// which is all these CON-98 tests are actually about.
 test('runs sort attention-first', () => {
   const events = new Map([
     ['HEL-DONE', { events: [{ t: 1, kind: 'run.end', ticket: 'HEL-DONE', role: 'orchestrator', status: 'delivered' }], malformed: 0 }],
     ['HEL-RUN',  { events: [{ t: 2, kind: 'phase.enter', ticket: 'HEL-RUN', role: 'orchestrator', phase: 'Execution' }], malformed: 0 }],
     ['HEL-ESC',  { events: [{ t: 3, kind: 'escalation.raised', ticket: 'HEL-ESC', role: 'orchestrator', question: 'q' }], malformed: 0 }],
-    ['HEL-FAIL', { events: [{ t: 4, kind: 'run.end', ticket: 'HEL-FAIL', role: 'orchestrator', status: 'escalated' }], malformed: 0 }],
+    ['HEL-FAIL', { events: [{ t: 4, kind: 'run.end', ticket: 'HEL-FAIL', role: 'orchestrator', status: 'aborted' }], malformed: 0 }],
   ]);
   const windows = [
     { ticket: 'HEL-RUN', alive: true, idleMs: 0 },
@@ -502,7 +580,7 @@ test('runs sort attention-first', () => {
 test('a run.override event sets status regardless of endStatus/window (highest precedence)', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
-    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'escalated' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'aborted' },
     { t: 20, kind: 'run.override', ticket: 'HEL-1', role: 'dashboard', status: 'done' },
   ]), [], NOW);
   assert.equal(run.status, 'done');
@@ -520,7 +598,7 @@ test('a run.override wins even over a live escalation (mutually exclusive in pra
 test('a run with no run.override event is unaffected — status derives exactly as before', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
-    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'escalated' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'aborted' },
   ]), [], NOW);
   assert.equal(run.status, 'failed');
   assert.equal(run.override, null);
@@ -531,7 +609,7 @@ test('a run with no run.override event is unaffected — status derives exactly 
 test('a respawned FAILED run (run.end then a later run.spawn, window alive) reports running', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
-    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'escalated' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'aborted' },
     { t: 20, kind: 'run.spawn', ticket: 'HEL-1', role: 'dashboard' },
   ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
   assert.equal(run.status, 'running');
@@ -540,7 +618,7 @@ test('a respawned FAILED run (run.end then a later run.spawn, window alive) repo
 test('once the respawned window dies with no new run.end, the run reverts to failed', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
-    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'escalated' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'aborted' },
     { t: 20, kind: 'run.spawn', ticket: 'HEL-1', role: 'dashboard' },
   ]), [{ ticket: 'HEL-1', alive: false, idleMs: 0 }], NOW);
   assert.equal(run.status, 'failed');
@@ -549,7 +627,7 @@ test('once the respawned window dies with no new run.end, the run reverts to fai
 test('once the respawn concludes with a new run.end, the newest status wins', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
-    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'escalated' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'aborted' },
     { t: 20, kind: 'run.spawn', ticket: 'HEL-1', role: 'dashboard' },
     { t: 30, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'delivered' },
   ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
@@ -563,7 +641,7 @@ test('a run.spawn BEFORE the run.end it is respawning is not mistaken for a retr
   // retry-visibility refinement.
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.spawn', ticket: 'HEL-1', role: 'dashboard' },
-    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'escalated' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'aborted' },
   ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
   assert.equal(run.status, 'failed');
 });

@@ -639,6 +639,48 @@ fi
 # at `concertino sync`) is strictly safer than rewriting shared artifacts
 # under a run that really is live. Sets LIVE_RUN_TICKET to the first live
 # ticket found, for the note.
+#
+# CON-182: a run.end whose status is "escalated" is NOT terminal — it marks
+# an orchestrator pausing on a circuit-breaker escalation, and the same run
+# typically resumes once it's answered, sometimes without ever writing a new
+# run.start (observed on helio HEL-1080, 2026-09-11: the log's ONLY run.end
+# was `status:"escalated"`, followed later by `escalation.answered` and more
+# work, with the resumed session never emitting run.start again). As of this
+# ticket, orchestrator.md no longer emits run.end for an escalation pause —
+# `escalation.raised`/`escalation.answered` already record the pause without
+# it — but historic logs still contain such lines, so every consumer of the
+# run.end marker (this function, watchdog.sh's lane_is_complete(),
+# lib/ui/retention.js's hasRunEnd(), lib/ui/reducer.js's deriveStatus())
+# treats a run.end as terminal only when its status is not "escalated" — any
+# other status (delivered, the only one cleanup.sh itself ever writes;
+# abandoned-stale, the fleet-driver's manual marker for a confirmed-dead run
+# per .claude/skills/concertino-fleet-driver/SKILL.md; a missing status
+# field) counts as terminal, same as before this fix. Only the LAST run.end
+# line in the log is consulted, since a resumed run could in principle write
+# a second, later run.end with a terminal status.
+last_run_end_status() {
+  local log="$1" line status="" found=1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *'"kind":"run.end"'*)
+        found=0
+        status="$(printf '%s' "$line" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
+        ;;
+    esac
+  done < "$log"
+  [ "$found" -eq 0 ] || return 1
+  printf '%s' "$status"
+  return 0
+}
+
+# True iff $1's log has a run.end AND its last one is terminal (see
+# last_run_end_status() above for what "terminal" means here).
+run_end_is_terminal() {
+  local log="$1" status
+  status="$(last_run_end_status "$log")" || return 1
+  [ "$status" != "escalated" ]
+}
+
 other_runs_live() {
   local log t stale_hours stale_ms last_ts now_ms age_ms line i
   local -a lines
@@ -654,7 +696,7 @@ other_runs_live() {
     t="$(basename "$(dirname "$log")")"
     [ "$t" = "$T" ] && continue
     if grep -q '"kind":"run.start"' "$log" 2>/dev/null \
-       && ! grep -q '"kind":"run.end"' "$log" 2>/dev/null; then
+       && ! run_end_is_terminal "$log"; then
       # Scan backwards from the end of the file for the last line that
       # parses as a JSON object with a numeric "t" field — a blind `tail -1`
       # could land on a torn final line from a concurrent append (most

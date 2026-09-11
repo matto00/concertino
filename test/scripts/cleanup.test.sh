@@ -639,6 +639,53 @@ check "sync WAS invoked for a completed (run.end present) run regardless of its 
 hasnt "no skip note for a completed run" "skipping \`concertino sync\`" "$ERR"
 rm -rf "$BASE"
 
+# --- CON-182: a run.end with status "escalated" marks an orchestrator
+# --- PAUSING on a circuit-breaker escalation, not the run ending — it must
+# --- NOT be treated the same as a real (status=delivered) run.end here.
+# --- Without this fix, other_runs_live()'s `grep -q '"kind":"run.end"'`
+# --- treated the mere presence of the escalated run.end as "this other run
+# --- is done", letting `concertino sync` proceed and rewrite shared
+# --- rendered artifacts out from under a run that is still live and about
+# --- to resume (the HEL-1080 field incident, 2026-09-11: the fix in
+# --- watchdog.sh's test suite replays the actual event sequence; this test
+# --- exercises the same rule in cleanup.sh). Recent timestamp, so the
+# --- CON-121 staleness bound alone cannot be what makes this pass.
+BASE="$(mktemp -d)"; new_pair "$BASE"; new_fakebin "$BASE"
+git -C "$BASE/primary" checkout -q -b scratch
+advance_remote "$BASE/remote.git"
+fake_event "$BASE/primary" TICK-88 run.start
+mkdir -p "$BASE/primary/.concertino/runs/TICK-88"
+printf '{"t":%s,"kind":"run.end","project":"p","ticket":"TICK-88","role":"orchestrator","status":"escalated"}\n' \
+  "$(($(date +%s) * 1000))" >> "$BASE/primary/.concertino/runs/TICK-88/events.jsonl"
+WT="$BASE/TICK-36"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup_fakebin "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-36 "$BASE/fakebin"
+check "exits 0 (escalated-but-live run, sync still skipped)" "$?" "0"
+check "sync NOT invoked while the other run's run.end is only status=escalated" \
+  "$([ -e "$BASE/sync-invocations.txt" ] && echo invoked || echo not-invoked)" "not-invoked"
+has "stderr notes the skip and names the still-live (escalated) run" "skipping \`concertino sync\`: run TICK-88 is still live" "$ERR"
+rm -rf "$BASE"
+
+# Converse: once that same run later lands a REAL (status=delivered) run.end
+# after the escalated one, it is genuinely terminal and no longer blocks sync.
+BASE="$(mktemp -d)"; new_pair "$BASE"; new_fakebin "$BASE"
+git -C "$BASE/primary" checkout -q -b scratch
+advance_remote "$BASE/remote.git"
+fake_event "$BASE/primary" TICK-89 run.start
+mkdir -p "$BASE/primary/.concertino/runs/TICK-89"
+printf '{"t":%s,"kind":"run.end","project":"p","ticket":"TICK-89","role":"orchestrator","status":"escalated"}\n' \
+  "$(($(date +%s) * 1000))" >> "$BASE/primary/.concertino/runs/TICK-89/events.jsonl"
+printf '{"t":%s,"kind":"run.end","project":"p","ticket":"TICK-89","role":"script","status":"delivered"}\n' \
+  "$(($(date +%s) * 1000 + 1))" >> "$BASE/primary/.concertino/runs/TICK-89/events.jsonl"
+WT="$BASE/TICK-37"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup_fakebin "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-37 "$BASE/fakebin"
+check "exits 0 (resumed run later delivered, sync proceeds)" "$?" "0"
+check "sync WAS invoked once the LAST run.end for that ticket is status=delivered" \
+  "$([ -e "$BASE/sync-invocations.txt" ] && echo invoked || echo not-invoked)" "invoked"
+hasnt "no skip note once the other run's last run.end is terminal" "skipping \`concertino sync\`" "$ERR"
+rm -rf "$BASE"
+
 # --- CONCERTINO_LIVE_RUN_STALE_HOURS override is honoured: a run just
 # --- outside a shortened custom window is treated as not-live --------------
 BASE="$(mktemp -d)"; new_pair "$BASE"; new_fakebin "$BASE"

@@ -359,6 +359,84 @@ has "run.start-only lane: TRIP text present" "TRIP" "$UNFINISHED_OUT"
 rm -rf "$d" "$repo"
 
 # ---------------------------------------------------------------------------
+# CON-182: a run.end with status "escalated" marks an orchestrator PAUSING on
+# a circuit-breaker escalation, not the run actually ending -- the same run
+# resumes once the human answers, and this exact sequence (real, trimmed
+# lines from helio's HEL-1080 events.jsonl, 2026-09-11) shows it resuming
+# WITHOUT ever writing a new run.start: an escalation is raised, an earlier
+# answer is discarded, run.end status=escalated is written, and then
+# escalation.answered arrives with no run.end after it. Before this fix,
+# `lane_is_complete()` treated the mere PRESENCE of a `"kind":"run.end"` line
+# as terminal and this whole fixture stood the lane down while it was still
+# live -- the actual field incident (a fleet watchdog silently stood down for
+# the rest of that run). The fixed check must keep the lane live (still
+# trips on a stale transcript) despite the run.end line.
+#
+# Mutation to confirm failability: revert lane_is_complete() to the old bare
+# `grep -q '"kind":"run.end"'` check -- this test's "still trips" assertion
+# goes red (back to a false STAND-DOWN), reproducing the incident.
+repo="$(new_git_checkout)"
+d="$(new_scratch)"
+make_transcript "$d" a-escalated-lane
+touch_mtime_ago "$d/subagents/agent-a-escalated-lane.jsonl" 999999
+mkdir -p "$repo/.concertino/runs/HEL-1080"
+cat > "$repo/.concertino/runs/HEL-1080/events.jsonl" <<'EOF'
+{"t":1789145631658,"kind":"run.start","project":"helio","ticket":"HEL-1080","role":"script"}
+{"t":1789155229076,"kind":"escalation.raised","project":"helio","ticket":"HEL-1080","role":"orchestrator","question":"final gate exhausted its round budget","options":"extend-final-gate,proceed-with-scoped-fixes-no-new-gate-round,halt"}
+{"t":1789155229083,"kind":"escalation.answer_discarded","project":"helio","ticket":"HEL-1080","role":"orchestrator"}
+{"t":1789155241354,"kind":"run.end","project":"helio","ticket":"HEL-1080","role":"orchestrator","status":"escalated"}
+{"t":1789155343378,"kind":"escalation.answered","project":"helio","ticket":"HEL-1080","role":"orchestrator","answer":"extend-final-gate"}
+EOF
+printf 'a-escalated-lane a-escalated-lane HEL-1080\n' > "$d/lanes"
+ESCALATED_OUT="$(mktemp)"
+( cd "$repo" && WATCHDOG_POLL_SEC=1 WATCHDOG_FLEET_SEC=2 WATCHDOG_LANE_SEC=2 \
+    timeout 4 "$SCRIPT" "$d/tasks" "$d/lanes" >"$ESCALATED_OUT" 2>&1 )
+RC=$?
+check "HEL-1080 replay: escalated-then-resumed run.end does NOT stand the lane down, exit 1" "$RC" "1"
+has "HEL-1080 replay: TRIP text present (lane still live)" "TRIP" "$ESCALATED_OUT"
+hasnt "HEL-1080 replay: no false stand-down message" "STAND-DOWN" "$ESCALATED_OUT"
+rm -rf "$d" "$repo"
+
+# Converse of the above: a real terminal run.end (status=delivered, the only
+# status cleanup.sh itself ever writes) still stands the lane down normally.
+repo="$(new_git_checkout)"
+d="$(new_scratch)"
+make_transcript "$d" a-delivered-lane
+touch_mtime_ago "$d/subagents/agent-a-delivered-lane.jsonl" 999999
+mkdir -p "$repo/.concertino/runs/CON-996"
+printf '%s\n' '{"t":1,"kind":"run.start","ticket":"CON-996"}' \
+             '{"t":2,"kind":"run.end","ticket":"CON-996","status":"delivered"}' \
+  > "$repo/.concertino/runs/CON-996/events.jsonl"
+printf 'a-delivered-lane a-delivered-lane CON-996\n' > "$d/lanes"
+DELIVERED_OUT="$(mktemp)"
+( cd "$repo" && WATCHDOG_POLL_SEC=1 WATCHDOG_FLEET_SEC=2 WATCHDOG_LANE_SEC=2 \
+    timeout 4 "$SCRIPT" "$d/tasks" "$d/lanes" >"$DELIVERED_OUT" 2>&1 )
+RC=$?
+check "status=delivered run.end: stands down, exit 0" "$RC" "0"
+has "status=delivered run.end: stand-down message" "STAND-DOWN" "$DELIVERED_OUT"
+rm -rf "$d" "$repo"
+
+# CON-121's manual "abandoned-stale" marker (a driver hand-appends this for a
+# confirmed-dead run — see .claude/skills/concertino-fleet-driver/SKILL.md)
+# is also terminal: any status other than "escalated" counts.
+repo="$(new_git_checkout)"
+d="$(new_scratch)"
+make_transcript "$d" a-abandoned-lane
+touch_mtime_ago "$d/subagents/agent-a-abandoned-lane.jsonl" 999999
+mkdir -p "$repo/.concertino/runs/CON-995"
+printf '%s\n' '{"t":1,"kind":"run.start","ticket":"CON-995"}' \
+             '{"t":2,"kind":"run.end","ticket":"CON-995","status":"abandoned-stale"}' \
+  > "$repo/.concertino/runs/CON-995/events.jsonl"
+printf 'a-abandoned-lane a-abandoned-lane CON-995\n' > "$d/lanes"
+ABANDONED_OUT="$(mktemp)"
+( cd "$repo" && WATCHDOG_POLL_SEC=1 WATCHDOG_FLEET_SEC=2 WATCHDOG_LANE_SEC=2 \
+    timeout 4 "$SCRIPT" "$d/tasks" "$d/lanes" >"$ABANDONED_OUT" 2>&1 )
+RC=$?
+check "status=abandoned-stale run.end: stands down, exit 0" "$RC" "0"
+has "status=abandoned-stale run.end: stand-down message" "STAND-DOWN" "$ABANDONED_OUT"
+rm -rf "$d" "$repo"
+
+# ---------------------------------------------------------------------------
 # Cycle-3 fix 1: CWD-only repo-root resolution silently never detects
 # completion (and falls back to TRIP FLEET) when the watchdog is launched
 # from outside the ticket's own repo — a scratchpad, a driving session in a

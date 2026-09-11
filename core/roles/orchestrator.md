@@ -221,9 +221,30 @@ silently applied.
 Also emit:
 
 - `agent.spawn role=orchestrator agent=<executor|evaluator|skeptic|auditor>` when you spawn one,
-- `agent.resume role=orchestrator agent=<executor|evaluator> cycle=<n>` when you resume one,
-- `run.end ticket=$TICKET_ID role=orchestrator status=escalated` when a circuit
-  breaker sends the run to the human instead of to delivery.
+- `agent.resume role=orchestrator agent=<executor|evaluator> cycle=<n>` when you resume one.
+
+**Never emit `run.end` for a circuit breaker that sends the run to the human
+instead of to delivery (CON-182).** An earlier version of this document had
+you emit `run.end ticket=$TICKET_ID role=orchestrator status=escalated` here.
+That was wrong: the escalation you already raised via `escalation.raised`
+(and the `escalation.answered` that will follow it) fully records the pause
+on their own, and this run is not actually over — you resume the SAME run
+once the human answers, often without ever spawning a new agent or writing a
+new `run.start`. Every consumer that treats `run.end`'s presence as "this
+lane is finished" (`watchdog.sh`'s lane-completion check, `cleanup.sh`'s
+`other_runs_live()`, `lib/ui/retention.js`'s `hasRunEnd()`, and the
+dashboard's `lib/ui/reducer.js`) was silently standing down or pruning a
+still-live, about-to-resume run the moment this event landed — observed on
+helio HEL-1080, 2026-09-11, where a fleet watchdog stood down mid-run on
+exactly this event and nothing was watching for the rest of the delivery.
+`run.end` is now emitted from exactly one place in the whole system:
+`cleanup.sh`, at the very start of Phase 4, with `status=delivered` (see
+"Genuinely complete" below). If you need the human to know a run is
+genuinely abandoned rather than paused, that is `escalation.raised` plus
+whatever resolution the human gives — never a synthetic `run.end`. (Every
+consumer above is still defensive against `status=escalated` in logs written
+before this fix — see their own CON-182 comments — but do not rely on that
+tolerance for new runs; just don't emit it.)
 
 Never let telemetry block delivery: if a call fails, continue.
 
