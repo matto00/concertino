@@ -250,6 +250,46 @@ test('an escalation.answered clears run.escalation for a multi-part escalation e
   assert.equal(run.escalation, null);
 });
 
+// --- CON-156 (cycle 2, finding 2): escalation.malformed is advisory only,
+// never a resolution ---------------------------------------------------
+
+test('escalation.malformed sets run.escalation.malformedReason but does NOT clear the escalation', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator',
+      sub_questions: JSON.stringify([
+        { question: 'a?', options: ['y', 'n'] },
+        { question: 'b?', options: ['y', 'n'] },
+      ]) },
+    { t: 2, kind: 'escalation.malformed', ticket: 'HEL-1', role: 'script',
+      reason: 'subAnswers is missing or not an array (expected an array of 2 answers, one per sub-question)' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.notEqual(run.escalation, null);
+  assert.equal(run.escalation.malformedReason,
+    'subAnswers is missing or not an array (expected an array of 2 answers, one per sub-question)');
+  assert.equal(run.status, 'needs-you');
+});
+
+test('a fresh escalation.raised starts with no carried-over malformedReason', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator', question: 'q1' },
+    { t: 2, kind: 'escalation.malformed', ticket: 'HEL-1', role: 'script', reason: 'bad shape' },
+    { t: 3, kind: 'escalation.answered', ticket: 'HEL-1', role: 'human', answer: 'approve' },
+    { t: 4, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator', question: 'q2' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.equal(run.escalation.question, 'q2');
+  assert.equal(run.escalation.malformedReason, null);
+});
+
+test('escalation.malformed with no live escalation to attach to is dropped, never throws', () => {
+  assert.doesNotThrow(() => reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.malformed', ticket: 'HEL-1', role: 'script', reason: 'bad shape' },
+  ]), [], NOW));
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.malformed', ticket: 'HEL-1', role: 'script', reason: 'bad shape' },
+  ]), [], NOW);
+  assert.equal(run.escalation, null);
+});
+
 test('an answered escalation clears it', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator', question: 'q' },

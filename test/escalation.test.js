@@ -113,6 +113,35 @@ test('a notice (extra trailing rows) still grows to fill the budget', () => {
   assert.equal(lines.length, 29);
 });
 
+// --- CON-156 (cycle 2, finding 2): esc.malformedReason is surfaced on this ---
+// screen — a human/agent looking at a stuck escalation must see the same
+// diagnostic emit-event.sh wrote to escalation.malformed, not just infer
+// something is wrong from the wait never ending.
+
+test('a malformed answer.json reason is shown as a warning', () => {
+  const out = plain(renderEscalation(run({
+    escalation: Object.assign({}, run({}).escalation, {
+      malformedReason: 'subAnswers is missing or not an array (expected an array of 2 answers, one per sub-question)',
+    }),
+  }), OPTS));
+  assert.match(out, /answer\.json is malformed/);
+  assert.match(out, /subAnswers is missing or not an array/);
+});
+
+test('no malformedReason renders no such warning', () => {
+  const out = plain(renderEscalation(run({}), OPTS));
+  assert.doesNotMatch(out, /answer\.json is malformed/);
+});
+
+test('a malformedReason (extra trailing rows) still grows to fill the budget', () => {
+  const out = plain(renderEscalation(run({
+    escalation: Object.assign({}, run({}).escalation, { malformedReason: 'bad shape' }),
+  }), Object.assign({}, OPTS, { rows: 30 })));
+  const lines = out.split('\n');
+  assert.match(lines[lines.length - 1], /a approve   d deny   t reply   ↵ attach   esc back/);
+  assert.equal(lines.length, 29);
+});
+
 // --- staleness: visible, and not answerable -----------------------------
 
 test('a stale escalation is visibly stale', () => {

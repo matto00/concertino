@@ -243,8 +243,26 @@ check "CON-156: no escalation.answered was recorded for the malformed file" \
   "$(grep -c escalation.answered "$LOG" 2>/dev/null || true)" "0"
 check "CON-156: a diagnostic naming the problem was printed" \
   "$(grep -c 'malformed' "$REPO/err.txt" 2>/dev/null || echo 0)" "1"
+# CON-156 (cycle 2, finding 3): `grep -c '2'` was vacuous — it would still
+# pass even if the sub-question count were dropped from the message entirely,
+# since digit '2' can appear incidentally elsewhere (a PID, a byte count).
+# Match the exact phrase the node validator emits instead.
 check "CON-156: the diagnostic names the expected sub-question count" \
-  "$(grep -c '2' "$REPO/err.txt" 2>/dev/null || echo 0)" "1"
+  "$(grep -c 'expected an array of 2 answers, one per sub-question' "$REPO/err.txt" 2>/dev/null || echo 0)" "1"
+# CON-156 (cycle 2, finding 2): a non-terminal escalation.malformed event is
+# recorded in the log alongside the stderr diagnostic, so a dashboard viewer
+# (or anyone tailing events.jsonl, not just the blocked --await caller) also
+# learns something is wrong — and the escalation must stay open (NEEDS YOU),
+# never be treated as resolved by this event.
+check "CON-156: an escalation.malformed event was recorded" \
+  "$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)" "1"
+check "CON-156: escalation.malformed carries the same reason" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n");
+    const l = ls.find((x) => JSON.parse(x).kind === "escalation.malformed");
+    console.log(JSON.parse(l).reason);
+  ' "$LOG")" \
+  "subAnswers is missing or not an array (expected an array of 2 answers, one per sub-question)"
 
 # Now write a well-formed multi-part answer over it — the escalation must
 # still be resolvable once the file is fixed (non-destructive, self-correcting).
@@ -288,6 +306,73 @@ check "CON-156 arity: mismatched-arity file does not resolve — --await still r
   "$(kill -0 "$AWAIT_PID" 2>/dev/null && echo running || echo exited)" "running"
 check "CON-156 arity: no escalation.answered was recorded" \
   "$(grep -c escalation.answered "$LOG" 2>/dev/null || true)" "0"
+check "CON-156 arity: an escalation.malformed event names the arity mismatch" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n");
+    const l = ls.find((x) => JSON.parse(x).kind === "escalation.malformed");
+    console.log(l ? JSON.parse(l).reason : "NONE");
+  ' "$LOG")" \
+  "subAnswers has 1 entries, expected 3 (one per sub-question) — arity mismatch"
+
+kill "$AWAIT_PID" 2>/dev/null
+wait "$AWAIT_PID" 2>/dev/null
+rm -rf "$REPO"
+
+# --- CON-156 (cycle 2, finding 4): the malformed-content dedupe marker must ---
+# not survive past the escalation it warned about — a byte-identical
+# malformed file raised again in a LATER escalation on the SAME ticket must
+# still warn (the marker's whole job is de-duplicating repeats of the SAME
+# still-open escalation, never suppressing a warning across escalations).
+REPO="$(new_repo)"
+TICKET=HEL-976
+LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
+ANSWER_FILE="$REPO/.concertino/runs/$TICKET/answer.json"
+MALFORMED_JSON='{"answer": "x", "complete": true}'
+
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator \
+    sub_questions='[{"question":"a?","options":["y","n"]},{"question":"b?","options":["y","n"]}]' \
+  ) > "$REPO/out1.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+mkdir -p "$(dirname "$ANSWER_FILE")"
+printf '%s' "$MALFORMED_JSON" > "$ANSWER_FILE"
+sleep 2
+check "CON-156 marker: first escalation logs one escalation.malformed" \
+  "$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)" "1"
+check "CON-156 marker: malformed-warned marker file exists after the first escalation" \
+  "$([ -f "$ANSWER_FILE.malformed-warned" ] && echo yes || echo no)" "yes"
+
+# Resolve the first escalation properly, then discard_stale_answer's next run
+# (triggered by raising a SECOND escalation on the same ticket) must clear the
+# marker file — this simulates the run's next escalation, not a poll of the
+# same one.
+write_sub_answer "$REPO" "$TICKET" 0 y 2 >/dev/null
+write_sub_answer "$REPO" "$TICKET" 1 n 2 >/dev/null
+wait "$AWAIT_PID" 2>/dev/null
+
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator \
+    sub_questions='[{"question":"c?","options":["y","n"]},{"question":"d?","options":["y","n"]}]' \
+  ) > "$REPO/out2.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ "$(grep -c escalation.raised "$LOG" 2>/dev/null || echo 0)" -ge 2 ] && break
+  sleep 0.1
+done
+check "CON-156 marker: cleared by the second escalation's raise" \
+  "$([ -f "$ANSWER_FILE.malformed-warned" ] && echo yes || echo no)" "no"
+
+# The exact same malformed content, on the second escalation, must warn AGAIN
+# (a second escalation.malformed event) — not be silently suppressed by a
+# marker left over from the first.
+printf '%s' "$MALFORMED_JSON" > "$ANSWER_FILE"
+sleep 2
+check "CON-156 marker: the second escalation ALSO logs its own escalation.malformed" \
+  "$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)" "2"
 
 kill "$AWAIT_PID" 2>/dev/null
 wait "$AWAIT_PID" 2>/dev/null

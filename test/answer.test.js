@@ -52,6 +52,17 @@ function readEvents(root, ticket) {
   return fs.readFileSync(p, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
 
+// CON-156 (cycle 2, finding 1): raises a REAL escalation.raised event through
+// the actual script — not a hand-built fixture line — so the CLI's
+// readEscalationShape() has real ground truth to check `--sub`/`--total`
+// against, exactly as it would for a real orchestrator-raised escalation.
+// --raise-only never blocks, so this is safe to call synchronously.
+function raiseEscalation(root, ticket, args) {
+  const script = path.join(root, 'scripts', 'concertino', 'emit-event.sh');
+  execFileSync(script, ['escalation', '--raise-only', 'ticket=' + ticket, 'role=orchestrator'].concat(args),
+    { cwd: root });
+}
+
 test('a fresh single-question answer succeeds, matches the dashboard writer\'s shape, and records escalation.answered', () => {
   const root = newRoot();
   try {
@@ -212,6 +223,136 @@ test('--sub <total+1> is out of range (1-based) and is rejected before writing a
     assert.notEqual(status, 0);
     assert.match(out, /out of range/i);
     assert.equal(fs.existsSync(path.join(root, '.concertino', 'runs', 'CON-151-d', 'answer.json')), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// --- CON-156 (cycle 2, finding 1): the CLI validates --sub/--total against --
+// the ticket's REAL escalation.raised shape, never trusting the caller's
+// claim alone. Reproduces the review's "most likely real trigger" first.
+
+test('reproduced: `concertino answer T "..."` with no --sub on a REAL multi-part escalation is refused, not silently recorded', () => {
+  const root = newRoot();
+  const ticket = 'CON-1561';
+  raiseEscalation(root, ticket, [
+    'sub_questions=' + JSON.stringify([
+      { question: 'Fold in toast?', options: ['fold-in', 'standalone'] },
+      { question: 'Follow-up severity?', options: ['High', 'Medium'] },
+    ]),
+  ]);
+  try {
+    const { out, status } = runAnswer(root, [ticket, 'both yes']);
+    assert.notEqual(status, 0, 'must be refused, not exit 0');
+    assert.match(out, /multi-part/i);
+    assert.match(out, /--sub/);
+    assert.equal(readEvents(root, ticket).filter((e) => e.kind === 'escalation.answered').length, 0,
+      'no escalation.answered — the "silent hang" this exists to prevent');
+    assert.equal(fs.existsSync(path.join(root, '.concertino', 'runs', ticket, 'answer.json')), false,
+      'nothing should have been written at all');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('--sub/--total on a REAL single-question escalation is refused', () => {
+  const root = newRoot();
+  const ticket = 'CON-1562';
+  raiseEscalation(root, ticket, ['question=q', 'options=approve,deny']);
+  try {
+    const { out, status } = runAnswer(root, [ticket, 'approve', '--sub', '1', '--total', '1']);
+    assert.notEqual(status, 0);
+    assert.match(out, /single-question/i);
+    assert.equal(fs.existsSync(path.join(root, '.concertino', 'runs', ticket, 'answer.json')), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a --total mismatched against the REAL sub-question count is refused, not silently resized', () => {
+  const root = newRoot();
+  const ticket = 'CON-1563';
+  raiseEscalation(root, ticket, [
+    'sub_questions=' + JSON.stringify([
+      { question: 'a?', options: ['y', 'n'] },
+      { question: 'b?', options: ['y', 'n'] },
+      { question: 'c?', options: ['y', 'n'] },
+    ]),
+  ]);
+  try {
+    // Two genuine answers recorded first, against the real total of 3.
+    const r1 = runAnswer(root, [ticket, 'y', '--sub', '1', '--total', '3']);
+    assert.equal(r1.status, 0, r1.out);
+    const r2 = runAnswer(root, [ticket, 'n', '--sub', '2', '--total', '3']);
+    assert.equal(r2.status, 0, r2.out);
+
+    // A caller now (mistakenly) claims --total 2 instead of the real 3.
+    const bad = runAnswer(root, [ticket, 'z', '--sub', '3', '--total', '2']);
+    assert.notEqual(bad.status, 0, 'a mismatched --total must be refused outright');
+    assert.match(bad.out, /does not match/i);
+    assert.match(bad.out, /3/, 'error should name the real count');
+
+    // The two already-recorded answers must survive untouched — this is the
+    // "recovery silently discards existing answers" failure mode the review
+    // found (store.writeSubAnswer's read-modify-write resets on a length
+    // mismatch).
+    const state = readAnswerJson(root, ticket);
+    assert.deepEqual(state.subAnswers, ['y', 'n', null]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('--sub with no --total on a REAL multi-part escalation derives --total automatically', () => {
+  const root = newRoot();
+  const ticket = 'CON-1564';
+  raiseEscalation(root, ticket, [
+    'sub_questions=' + JSON.stringify([
+      { question: 'a?', options: ['y', 'n'] },
+      { question: 'b?', options: ['y', 'n'] },
+    ]),
+  ]);
+  try {
+    const r1 = runAnswer(root, [ticket, 'y', '--sub', '1']);
+    assert.equal(r1.status, 0, r1.out);
+    assert.match(r1.out, /sub 1\/2/);
+    const r2 = runAnswer(root, [ticket, 'n', '--sub', '2']);
+    assert.equal(r2.status, 0, r2.out);
+    assert.match(r2.out, /sub 2\/2/);
+
+    const state = readAnswerJson(root, ticket);
+    assert.deepEqual(state.subAnswers, ['y', 'n']);
+    assert.equal(state.complete, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a --total matching the REAL sub-question count is still accepted (no behaviour change for a correct caller)', () => {
+  const root = newRoot();
+  const ticket = 'CON-1565';
+  raiseEscalation(root, ticket, [
+    'sub_questions=' + JSON.stringify([{ question: 'a?', options: ['y', 'n'] }]),
+  ]);
+  try {
+    const { out, status } = runAnswer(root, [ticket, 'y', '--sub', '1', '--total', '1']);
+    assert.equal(status, 0, out);
+    const events = readEvents(root, ticket);
+    assert.equal(events.filter((e) => e.kind === 'escalation.answered').length, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('with no escalation.raised event at all, --sub/--total still requires an explicit, internally-consistent pair (unchanged legacy behaviour)', () => {
+  const root = newRoot();
+  try {
+    // No raiseEscalation() call — mirrors every pre-existing test above that
+    // never raised a real escalation. shape.found is false, so this can only
+    // fall back to trusting the caller's own explicit pair.
+    const { out, status } = runAnswer(root, ['CON-1566', 'y', '--sub', '1']);
+    assert.notEqual(status, 0, 'no --total and no ground truth to derive it from must be refused');
+    assert.match(out, /--total/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

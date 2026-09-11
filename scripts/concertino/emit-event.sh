@@ -552,6 +552,14 @@ discard_stale_answer() {
     write_line escalation.answer_discarded || true
   fi
   rm -f "$ANSWER_FILE" 2>/dev/null || true
+  # CON-156 (cycle 2, finding 4): the malformed-content dedupe marker
+  # (try_resolve's MALFORMED case, below) is scoped to this run directory's
+  # answer.json, not to a single escalation's lifetime — without clearing it
+  # here, a byte-identical malformed file raised again in a LATER escalation
+  # on the same ticket would silently warn zero times (the marker would still
+  # match), exactly the "operator gets no diagnostic" failure mode this whole
+  # fix exists to close.
+  rm -f "$ANSWER_FILE.malformed-warned" 2>/dev/null || true
 }
 
 # Shared by --await's and --wait-only's poll loops (CON-76): checks
@@ -606,16 +614,36 @@ try_resolve() {
       MALFORMED:*)
         reason="${result#MALFORMED:}"
         # Non-destructive and self-correcting (preferred option in the
-        # ticket): warn loudly on stderr, naming the file and the expected
-        # shape, but keep polling exactly as if nothing had been written yet
-        # — never write escalation.answered for a malformed file. Guarded so
-        # a human watching the terminal sees this once per malformed write,
-        # not once per second of the poll loop.
+        # ticket): keep polling exactly as if nothing had been written yet —
+        # never write escalation.answered for a malformed file. Guarded so a
+        # human/agent sees this once per distinct malformed CONTENT, not once
+        # per second of the poll loop, but re-warns if the file changes again
+        # (e.g. a second, differently-wrong attempt).
+        #
+        # CON-156 (cycle 2, finding 2): the stderr line alone is not enough —
+        # under --await, stderr is buffered inside the agent's own blocked
+        # Bash call and never reaches anyone until that call returns (by
+        # which point the escalation may already be long past due); under
+        # --wait-only the marker file below means only the FIRST of many
+        # short-lived polling processes ever prints it, so a human/dashboard
+        # attached only after that first poll sees nothing. Recording a
+        # dedicated, NON-TERMINAL `escalation.malformed` event fixes both: the
+        # event log — and therefore the dashboard, which is always watching it
+        # — carries the diagnostic regardless of which process happened to be
+        # polling when the bad file landed. "Non-terminal" here means exactly
+        # what it means for `escalation.answer_discarded` elsewhere in this
+        # script: reducer.js must NOT treat it as clearing `run.escalation`
+        # the way `escalation.answered`/`escalation.timeout` do (see
+        # lib/ui/reducer.js's `escalation.malformed` case) — the escalation
+        # stays open and NEEDS YOU, exactly as it should while its own
+        # answer.json remains malformed.
         local warn_marker="$ANSWER_FILE.malformed-warned"
         local content_hash
         content_hash="$(cksum "$ANSWER_FILE" 2>/dev/null)"
         if [ ! -f "$warn_marker" ] || [ "$(cat "$warn_marker" 2>/dev/null)" != "$content_hash" ]; then
           echo "concertino: $ANSWER_FILE is malformed and was NOT recorded as an answer — $reason" >&2
+          FIELDS=",\"reason\":$(json_value "$reason")"
+          write_line escalation.malformed || true
           printf '%s' "$content_hash" > "$warn_marker" 2>/dev/null || true
         fi
         return 1
