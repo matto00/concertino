@@ -155,6 +155,8 @@ source "${SCRIPT_DIR}/lib/git-child-env.sh"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/auditor-lease.sh"
 # shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/run-end-status.sh"
+# shellcheck disable=SC1091
 [ -f "${SCRIPT_DIR}/.concertino.env" ] && source "${SCRIPT_DIR}/.concertino.env"
 
 REPO_ROOT="$(run_git "resolve repo root" -- git_child rev-parse --show-toplevel)"
@@ -639,6 +641,17 @@ fi
 # at `concertino sync`) is strictly safer than rewriting shared artifacts
 # under a run that really is live. Sets LIVE_RUN_TICKET to the first live
 # ticket found, for the note.
+#
+# CON-182: "live" here now means run_is_complete() (lib/run-end-status.sh,
+# shared with watchdog.sh's lane_is_complete() — see its header comment for
+# the full HEL-1080 incident and rationale) says NOT complete — a run.end
+# whose LAST status is "escalated" does not count as terminal (an
+# orchestrator pausing on a circuit-breaker escalation, not the run ending),
+# and neither does a genuinely terminal run.end followed by a later
+# run.start (the ticket was re-run — cold-review cycle-2 addition: treating
+# it as permanently complete from its first delivery would let this
+# function's caller run `concertino sync` out from under a second,
+# currently-active delivery of the same ticket).
 other_runs_live() {
   local log t stale_hours stale_ms last_ts now_ms age_ms line i
   local -a lines
@@ -654,7 +667,7 @@ other_runs_live() {
     t="$(basename "$(dirname "$log")")"
     [ "$t" = "$T" ] && continue
     if grep -q '"kind":"run.start"' "$log" 2>/dev/null \
-       && ! grep -q '"kind":"run.end"' "$log" 2>/dev/null; then
+       && ! run_is_complete "$log"; then
       # Scan backwards from the end of the file for the last line that
       # parses as a JSON object with a numeric "t" field — a blind `tail -1`
       # could land on a torn final line from a concurrent append (most

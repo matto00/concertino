@@ -34,8 +34,10 @@
 #                LANE trip, and it doesn't count toward keeping the fleet
 #                "live" for FLEET purposes — the moment
 #                  <repo root>/.concertino/runs/<TICKET>/events.jsonl
-#                contains a `"kind":"run.end"` line (the same terminal-event
-#                marker cleanup.sh's other_runs_live() and
+#                is complete per lib/run-end-status.sh's run_is_complete()
+#                (CON-182: a TERMINAL run.end — any status except
+#                "escalated" — with no later run.start) — the same
+#                definition cleanup.sh's other_runs_live() and
 #                lib/ui/retention.js's hasRunEnd() already use; TICKET is
 #                matched case-insensitively, uppercased the same way
 #                emit-event.sh normalises it before writing that path). This
@@ -85,6 +87,10 @@
 #
 # Exit codes: 0 stood down / superseded, 1 TRIP (FLEET or LANE), 2 usage error.
 set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/run-end-status.sh
+source "${SCRIPT_DIR}/lib/run-end-status.sh"
 
 if [ "$#" -lt 2 ]; then
   echo "usage: watchdog.sh <tasks-dir> <lanes-file>" >&2
@@ -218,12 +224,11 @@ warn_unresolved_root_once() {
   fi
 }
 
-# A tracked lane is "complete" when its ticket's run has emitted the terminal
-# `run.end` event — the same marker cleanup.sh's other_runs_live() and
-# lib/ui/retention.js's hasRunEnd() already treat as authoritative. Plain
-# substring grep on the raw JSONL, exactly like cleanup.sh:656-657, rather
-# than parsing JSON — consistent with how the rest of this pipeline reads
-# events.jsonl cheaply.
+# A tracked lane is "complete" when its ticket's run has emitted a TERMINAL
+# `run.end` event with no later `run.start` — see lib/run-end-status.sh's
+# run_is_complete() (shared with cleanup.sh's other_runs_live(); the same
+# definition applies to lib/ui/retention.js's hasRunEnd() and
+# lib/ui/reducer.js in JS, CON-182).
 #
 # $1 is the raw 3rd field from a lane's line: `TICKET` or `TICKET@/abs/root`
 # (cycle-3 fix — see the header comment's "repo root resolution order").
@@ -264,7 +269,7 @@ lane_is_complete() {
   # "not complete" (early in a run) — only an unresolvable/wrong ROOT
   # (above) warns.
   [ -f "$log" ] || return 1
-  grep -q '"kind":"run.end"' "$log" 2>/dev/null
+  run_is_complete "$log"
 }
 
 # Lanes still meaningfully "live" for FLEET/stand-down purposes: every

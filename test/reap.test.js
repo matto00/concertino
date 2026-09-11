@@ -252,6 +252,50 @@ test('selectReapable: a zero grace disables the idle path rather than reaping in
   assert.deepEqual(reap.selectReapable(runs, 1000, 0), ['CON-71']);
 });
 
+// ---------------------------------------------------------------------------
+// CON-182 (cold review, cycle 2): a REAL escalated-then-resumed run, folded
+// through the actual reducer.js#reduce() (not a hand-built `run` fixture),
+// must never be selected for idle-reaping. Before this ticket's fix,
+// selectReapable() reads `run.endStatus == null` directly and never went
+// through deriveStatus() at all — reducer.js recorded endStatus='escalated'
+// (a truthy, non-null value) for this exact sequence, so a LIVE, resumed
+// orchestrator was captured and killed 10 minutes after the escalated
+// run.end, on helio HEL-1080's real shape (2026-09-11). The fix (reducer.js
+// no longer records endedAt/endStatus for an escalated run.end at all) must
+// hold end-to-end through reduce(), not just in an isolated deriveStatus
+// unit test.
+//
+// Mutation to confirm failability: reintroduce the pre-fix `run.end` case
+// (`run.endedAt = ev.t; run.endStatus = ev.status || 'failed';` with no
+// isTerminalRunEnd() guard) — this test's "not reaped" assertion goes red
+// (CON-71-shaped: 'HEL-1080' gets selected).
+function helio1080Log() {
+  return new Map([['HEL-1080', { events: [
+    { t: 1789145631658, kind: 'run.start', ticket: 'HEL-1080', role: 'script' },
+    { t: 1789155229076, kind: 'escalation.raised', ticket: 'HEL-1080', role: 'orchestrator', question: 'q' },
+    { t: 1789155229083, kind: 'escalation.answer_discarded', ticket: 'HEL-1080', role: 'orchestrator' },
+    { t: 1789155241354, kind: 'run.end', ticket: 'HEL-1080', role: 'orchestrator', status: 'escalated' },
+    { t: 1789155343378, kind: 'escalation.answered', ticket: 'HEL-1080', role: 'orchestrator' },
+  ], malformed: 0 }]]);
+}
+
+test('HEL-1080 replay through reduce(): a live, resumed orchestrator is never idle-reaped', () => {
+  const NOW = 1789155343378 + 60 * MIN; // an hour after the escalation was answered
+  const runs = reduce(helio1080Log(), [{ ticket: 'HEL-1080', alive: true, idleMs: 0 }], NOW);
+  const run = runs.find((r) => r.ticket === 'HEL-1080');
+  assert.equal(run.status, 'running');
+  assert.equal(run.endStatus, null);
+  assert.deepEqual(reap.selectReapable(runs, NOW, 10 * MIN), []);
+});
+
+test('HEL-1080 replay through reduce(): still never reaped even with no window liveness info at all', () => {
+  const NOW = 1789155343378 + 60 * MIN;
+  const runs = reduce(helio1080Log(), [], NOW);
+  const run = runs.find((r) => r.ticket === 'HEL-1080');
+  assert.equal(run.endStatus, null);
+  assert.deepEqual(reap.selectReapable(runs, NOW, 10 * MIN), []);
+});
+
 test('reapFinished captures scrollback before killing an idle delivered window', () => {
   const fs = require('node:fs');
   const os = require('node:os');
