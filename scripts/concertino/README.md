@@ -80,6 +80,65 @@ file — so they stay generic and the config is the single source of truth.
   planning-artifact prefix (e.g. `openspec`) this check excludes — supplied
   by the caller, never hardcoded.
 
+- `watchdog.sh` is a driver's whenever-a-lane-is-dispatched tool, not
+  optional tooling for large batches only (CON-177) — it runs whenever any
+  lane is dispatched. It never reads transcript content (stat only, `-L`
+  followed — tasks-dir entries are symlinks), validates both arguments at
+  startup (a missing tasks-dir or lanes-file is a usage error, exit 2 — never
+  a silent stand-down), and warns once (stderr) rather than either failing or
+  polling forever silent when a tracked lane has no transcript at all.
+  It takes the set of lanes still in flight as an explicit liveness input
+  re-read on every poll rather than inferring stall from silence — a lanes
+  file with every line removed (all lanes completed normally) makes it stand
+  down silently, exit 0, no trip banner. A lane's line may also carry a
+  ticket id (`<agentId> <label> [<TICKET>]` or `<agentId> <label>
+  <TICKET>@/abs/repo/root`); once that ticket's
+  `.concertino/runs/<TICKET>/events.jsonl` records a terminal `run.end`
+  (ticket matched case-insensitively, same as `emit-event.sh`'s own
+  uppercasing), the lane counts as complete automatically — so a forgotten
+  lane line for a ticket that actually finished can no longer produce a
+  false FLEET trip, which is what happened in the field on 2026-09-10. That
+  repo root is resolved per lane, in order: (1) the inline `@/abs/path` on
+  that lane's own line, (2) `$CONCERTINO_REPO_ROOT` if set, (3) `git
+  rev-parse --git-common-dir` from the watchdog's own CWD (same as
+  `emit-event.sh`'s `main_checkout()`) — the inline form exists because a
+  single driving session commonly tracks lanes across more than one repo at
+  once (e.g. helio and concertino tickets in the same batch), for which one
+  global root is insufficient, and because the watchdog is often launched
+  from outside the ticket's own repo altogether (a scratchpad, a different
+  repo, a worktree a later `cleanup.sh` deletes) where CWD-based resolution
+  finds nothing at all. A ticket whose root can't be resolved by any of the
+  three warns once (stderr) rather than silently misjudging it either way.
+  The lanes file should be edited atomically (write a temp file in the same
+  directory, then `mv` over the original) — a plain truncate-then-rewrite
+  caught mid-poll briefly reads as empty, which is otherwise indistinguishable
+  from "no lanes in flight".
+  Its lock lives at `<lanes-file's directory>/watchdog.pid.d/` — a
+  *directory*, not a plain file, so acquiring it is a single atomic `mkdir`
+  rather than a separate read-then-write that a second instance could race.
+  Before ever signalling a PID recorded there, it confirms (via
+  `/proc/<pid>/cmdline` or `ps`) that the PID's command line contains this
+  script's own resolved absolute path (not merely the substring
+  `watchdog.sh`, which a same-named but unrelated script would also match) —
+  a stale lock's PID can be reused by an unrelated process after a crash,
+  and this never signals a process it hasn't identified this way. A genuine
+  prior instance launched by a RELATIVE path (`./watchdog.sh`,
+  `scripts/concertino/watchdog.sh`) still verifies correctly: its cmdline
+  entry, relative to ITS OWN cwd, is resolved against `/proc/<pid>/cwd`
+  before the comparison rather than only compared as a raw substring. A
+  prior instance that doesn't honour repeated TERM signals within 50
+  attempts is given up on (exit 2) rather than retried forever. A resolved
+  root that isn't a real Concertino checkout (a mistyped inline `@/abs/path`,
+  or a stale `$CONCERTINO_REPO_ROOT`) is distinguished from "root is fine,
+  this ticket's run just hasn't started yet" by checking for a `.concertino/`
+  directory under it — the former warns once, the latter stays silent. Both
+  its FLEET (default 15 min, all transcripts quiet) and LANE (default 3 h
+  minimum, one tracked lane's own transcript quiet) trips print a
+  diagnose-first message and never instruct or perform a kill of a tracked
+  lane; a superseded instance exits 0 quietly rather than surfacing SIGTERM's
+  raw 143 to whatever coordinator is watching it. See its own header comment
+  for the full contract and env overrides used by its tests.
+
 ## Scripts
 
 | Script              | Purpose                                                    | Args                                                        |
@@ -96,6 +155,7 @@ file — so they stay generic and the config is the single source of truth.
 | `gather-escalation-context.sh` | Format a structured context block for an escalation kind | `<dependency\|api-change\|budget\|blocker\|contradiction\|ticket-ambiguity\|ticket-drift> k=v ...` |
 | `triage-followup.sh` | Classify a suggested follow-up as fold-in/standalone from file overlap + caller-supplied judgment | `description=... files=... ac_relevant=<yes\|no> effort=<small\|large> worktree=... [base=...]` |
 | `next-report-number.sh` | Collision-safe, disk-derived filename number for the evaluator's/skeptic's next review report | `<change-dir> <kind>`                    |
+| `watchdog.sh`        | Two-signal fleet staleness watchdog (CON-177): polls transcript mtimes and exits (nonzero, diagnose-first text) on a stall; stands down silently when no lane is tracked live | `<tasks-dir> <lanes-file>` |
 
 `resolve-speed.sh` reads `scripts/concertino/speeds.json` (rendered by
 `concertino sync` alongside `.concertino.env`, from the config's `budgets`/
