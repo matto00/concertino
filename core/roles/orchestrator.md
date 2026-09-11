@@ -1398,7 +1398,9 @@ itself, or a non-root run silently loses its only path to the human (CON-76).
 
     ```bash
     concertino answer $TICKET_ID "<their decision>"
-    # or, for one step of a multi-part escalation:
+    # or, for one step of a multi-part escalation (--sub is 1-based: the
+    # first sub-question is --sub 1, matching the dashboard wizard's own
+    # "sub-question N of total" display and this command's confirmation):
     concertino answer $TICKET_ID "<their decision>" --sub <index> --total <n>
     ```
 
@@ -1604,7 +1606,7 @@ child):
 
    ```bash
    concertino answer $TICKET_ID "<their decision>"
-   # or, for one step of a multi-part escalation:
+   # or, for one step of a multi-part escalation (--sub is 1-based, see above):
    concertino answer $TICKET_ID "<their decision>" --sub <index> --total <n>
    ```
 

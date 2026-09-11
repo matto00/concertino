@@ -569,16 +569,61 @@ try_resolve() {
     # parseable file with `complete: false` (or missing/malformed) is treated
     # identically to the file not existing yet: keep polling.
     [ -f "$ANSWER_FILE" ] || return 1
-    local sub_answers_json
-    sub_answers_json="$(node -e '
+    # CON-156: `complete === true` is necessary but not sufficient — it must
+    # ALSO carry a `subAnswers` array whose length matches this escalation's
+    # own `$TOTAL` (learned from the escalation.raised event, never from the
+    # answer file itself). A `complete: true` file that fails this shape
+    # check is malformed, not resolved — e.g. the single-question `{answer,
+    # complete}` shape mistakenly used to answer a multi-part escalation.
+    # `node` reports which of the three outcomes it found via a one-word
+    # prefix on stdout (nothing at all still means "not resolved yet", the
+    # pre-existing signal every other path here relies on):
+    #   "OK:<json array>"     — well-formed, resolved
+    #   "MALFORMED:<message>" — complete:true but the shape is wrong
+    local result reason sub_answers_json
+    result="$(node -e '
       try {
         const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+        const total = Number(process.argv[2]);
         if (a && a.complete === true) {
-          process.stdout.write(JSON.stringify(Array.isArray(a.subAnswers) ? a.subAnswers : []));
+          const arr = a.subAnswers;
+          if (!Array.isArray(arr)) {
+            process.stdout.write("MALFORMED:subAnswers is missing or not an array (expected an array of "
+              + total + " answers, one per sub-question)");
+          } else if (arr.length !== total) {
+            process.stdout.write("MALFORMED:subAnswers has " + arr.length + " entries, expected " + total
+              + " (one per sub-question) — arity mismatch");
+          } else {
+            process.stdout.write("OK:" + JSON.stringify(arr));
+          }
         }
       } catch { /* not resolved yet — keep polling */ }
-    ' "$ANSWER_FILE" 2>/dev/null)"
-    [ -n "$sub_answers_json" ] || return 1
+    ' "$ANSWER_FILE" "$TOTAL" 2>/dev/null)"
+    case "$result" in
+      OK:*)
+        sub_answers_json="${result#OK:}"
+        ;;
+      MALFORMED:*)
+        reason="${result#MALFORMED:}"
+        # Non-destructive and self-correcting (preferred option in the
+        # ticket): warn loudly on stderr, naming the file and the expected
+        # shape, but keep polling exactly as if nothing had been written yet
+        # — never write escalation.answered for a malformed file. Guarded so
+        # a human watching the terminal sees this once per malformed write,
+        # not once per second of the poll loop.
+        local warn_marker="$ANSWER_FILE.malformed-warned"
+        local content_hash
+        content_hash="$(cksum "$ANSWER_FILE" 2>/dev/null)"
+        if [ ! -f "$warn_marker" ] || [ "$(cat "$warn_marker" 2>/dev/null)" != "$content_hash" ]; then
+          echo "concertino: $ANSWER_FILE is malformed and was NOT recorded as an answer — $reason" >&2
+          printf '%s' "$content_hash" > "$warn_marker" 2>/dev/null || true
+        fi
+        return 1
+        ;;
+      *)
+        return 1
+        ;;
+    esac
     # Disarm before the final write — same reasoning as the single-question
     # path just below.
     trap - TERM INT

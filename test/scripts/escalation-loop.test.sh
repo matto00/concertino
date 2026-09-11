@@ -207,5 +207,112 @@ check "oversized sub_questions with small context: no escalation.raised line wri
   "$([ -f "$LOG" ] && grep -c escalation.raised "$LOG" 2>/dev/null || echo 0)" "0"
 rm -rf "$REPO"
 
+
+# --- CON-156: a malformed answer file (single-question shape on a --------
+# multi-part escalation) must NOT resolve the wait with zero sub-answers.
+# This is the exact file from the ticket: `{"answer": "...", "complete":
+# true}`, missing `subAnswers` entirely, written to a two-question escalation.
+REPO="$(new_repo)"
+TICKET=HEL-973
+LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
+ANSWER_FILE="$REPO/.concertino/runs/$TICKET/answer.json"
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator \
+    sub_questions='[{"question":"Fold in toast?","options":["fold-in","standalone"]},{"question":"Follow-up severity?","options":["High","Medium"]}]' \
+  ) > "$REPO/out.txt" 2> "$REPO/err.txt" &
+AWAIT_PID=$!
+
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+check "CON-156: escalation.raised landed" \
+  "$(grep -c escalation.raised "$LOG" 2>/dev/null || echo 0)" "1"
+
+# Write the malformed single-question-shaped file directly — this is what a
+# human handed the wrong answer format actually produces, per the ticket.
+mkdir -p "$(dirname "$ANSWER_FILE")"
+printf '%s' '{"answer": "fold-in-toast-only; follow-up-1 standalone High", "complete": true}' > "$ANSWER_FILE"
+
+# Give --await several poll ticks to prove the malformed file never resolves
+# the wait — it must be treated exactly like no file / an incomplete file.
+sleep 3
+check "CON-156: malformed file does not resolve — --await is still running" \
+  "$(kill -0 "$AWAIT_PID" 2>/dev/null && echo running || echo exited)" "running"
+check "CON-156: no escalation.answered was recorded for the malformed file" \
+  "$(grep -c escalation.answered "$LOG" 2>/dev/null || true)" "0"
+check "CON-156: a diagnostic naming the problem was printed" \
+  "$(grep -c 'malformed' "$REPO/err.txt" 2>/dev/null || echo 0)" "1"
+check "CON-156: the diagnostic names the expected sub-question count" \
+  "$(grep -c '2' "$REPO/err.txt" 2>/dev/null || echo 0)" "1"
+
+# Now write a well-formed multi-part answer over it — the escalation must
+# still be resolvable once the file is fixed (non-destructive, self-correcting).
+write_sub_answer "$REPO" "$TICKET" 0 fold-in 2 >/dev/null
+write_sub_answer "$REPO" "$TICKET" 1 High 2 >/dev/null
+
+wait "$AWAIT_PID"; AWAIT_RC=$?
+check "CON-156: --await exits 0 once a well-formed file replaces the malformed one" "$AWAIT_RC" "0"
+check "CON-156: exactly one escalation.answered, from the well-formed write" \
+  "$(grep -c escalation.answered "$LOG")" "1"
+check "CON-156: recorded sub_answers are the real ones, not empty" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n");
+    const l = ls.find((x) => JSON.parse(x).kind === "escalation.answered");
+    console.log(JSON.parse(JSON.parse(l).sub_answers).join(","));
+  ' "$LOG")" \
+  "fold-in,High"
+rm -rf "$REPO"
+
+# --- CON-156: arity mismatch (fewer subAnswers than sub_questions) is --------
+# handled the same way as a missing subAnswers array — treated as malformed,
+# never resolved with a short/padded array.
+REPO="$(new_repo)"
+TICKET=HEL-974
+LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
+ANSWER_FILE="$REPO/.concertino/runs/$TICKET/answer.json"
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator \
+    sub_questions='[{"question":"a?","options":["y","n"]},{"question":"b?","options":["y","n"]},{"question":"c?","options":["y","n"]}]' \
+  ) > "$REPO/out.txt" 2> "$REPO/err.txt" &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+
+mkdir -p "$(dirname "$ANSWER_FILE")"
+printf '%s' '{"subAnswers": ["y"], "total": 3, "complete": true}' > "$ANSWER_FILE"
+sleep 3
+check "CON-156 arity: mismatched-arity file does not resolve — --await still running" \
+  "$(kill -0 "$AWAIT_PID" 2>/dev/null && echo running || echo exited)" "running"
+check "CON-156 arity: no escalation.answered was recorded" \
+  "$(grep -c escalation.answered "$LOG" 2>/dev/null || true)" "0"
+
+kill "$AWAIT_PID" 2>/dev/null
+wait "$AWAIT_PID" 2>/dev/null
+rm -rf "$REPO"
+
+# --- CON-156: the single-question path is unaffected -----------------------
+REPO="$(new_repo)"
+TICKET=HEL-975
+LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator question=q options=approve,deny ) \
+  > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+RESULT="$(write_answer "$REPO" "$TICKET" approve)"
+check "CON-156 regression: single-question writer still reports success" \
+  "$(node -e "console.log(JSON.parse(process.argv[1]).ok)" "$RESULT")" "true"
+wait "$AWAIT_PID"; AWAIT_RC=$?
+check "CON-156 regression: single-question --await still exits 0" "$AWAIT_RC" "0"
+check "CON-156 regression: single-question --await still prints the answer" \
+  "$(tr -d '\n' < "$REPO/out.txt")" "approve"
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

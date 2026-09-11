@@ -89,10 +89,10 @@ test('a second answer to an already-answered escalation is refused and reported,
 test('--sub/--total writes through writeSubAnswer, including its own already-answered-at-this-index refusal', () => {
   const root = newRoot();
   try {
-    const first = runAnswer(root, ['CON-3', 'yes', '--sub', '0', '--total', '2']);
+    const first = runAnswer(root, ['CON-3', 'yes', '--sub', '1', '--total', '2']);
     assert.equal(first.status, 0, first.out);
 
-    const replay = runAnswer(root, ['CON-3', 'no', '--sub', '0', '--total', '2']);
+    const replay = runAnswer(root, ['CON-3', 'no', '--sub', '1', '--total', '2']);
     assert.notEqual(replay.status, 0);
     assert.match(replay.out, /already answered/i);
 
@@ -106,12 +106,12 @@ test('--sub/--total writes through writeSubAnswer, including its own already-ans
 test('a completing multi-part sub-answer records escalation.answered with the full sub_answers array', () => {
   const root = newRoot();
   try {
-    const r1 = runAnswer(root, ['CON-4', 'yes', '--sub', '0', '--total', '2']);
+    const r1 = runAnswer(root, ['CON-4', 'yes', '--sub', '1', '--total', '2']);
     assert.equal(r1.status, 0, r1.out);
     assert.equal(readEvents(root, 'CON-4').filter((e) => e.kind === 'escalation.answered').length, 0,
       'a partial sub-answer must not record escalation.answered');
 
-    const r2 = runAnswer(root, ['CON-4', 'rename', '--sub', '1', '--total', '2']);
+    const r2 = runAnswer(root, ['CON-4', 'rename', '--sub', '2', '--total', '2']);
     assert.equal(r2.status, 0, r2.out);
 
     const events = readEvents(root, 'CON-4');
@@ -130,7 +130,7 @@ test('a completing multi-part sub-answer records escalation.answered with the fu
 test('a partial (non-completing) multi-part sub-answer succeeds but records no event', () => {
   const root = newRoot();
   try {
-    const { out, status } = runAnswer(root, ['CON-5', 'yes', '--sub', '0', '--total', '3']);
+    const { out, status } = runAnswer(root, ['CON-5', 'yes', '--sub', '1', '--total', '3']);
     assert.equal(status, 0, out);
     assert.match(out, /still open/i);
     assert.equal(readEvents(root, 'CON-5').filter((e) => e.kind === 'escalation.answered').length, 0);
@@ -146,10 +146,72 @@ test('a partial (non-completing) multi-part sub-answer succeeds but records no e
 test('accepts the --sub=<n> --total=<n> equals form too', () => {
   const root = newRoot();
   try {
-    const { out, status } = runAnswer(root, ['CON-6', 'yes', '--sub=0', '--total=1']);
+    const { out, status } = runAnswer(root, ['CON-6', 'yes', '--sub=1', '--total=1']);
     assert.equal(status, 0, out);
     const events = readEvents(root, 'CON-6');
     assert.equal(events.filter((e) => e.kind === 'escalation.answered').length, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// CON-151: `--sub` is documented/confirmed in 1-based human terms (the
+// confirmation message has always printed "sub N/total" as 1-based) but was
+// silently applied 0-based to the underlying array write. `--sub 1` on a
+// 3-part escalation must land in the FIRST slot (array index 0), and the
+// confirmation must name the same sub-question it just wrote — not one off
+// in either direction.
+test('--sub 1 (first sub-question, 1-based) writes to subAnswers[0] and confirms "sub 1/N"', () => {
+  const root = newRoot();
+  try {
+    const { out, status } = runAnswer(root, ['CON-151-a', 'first-answer', '--sub', '1', '--total', '3']);
+    assert.equal(status, 0, out);
+    assert.match(out, /sub 1\/3/, 'confirmation must name the sub-question actually written, 1-based');
+    const state = readAnswerJson(root, 'CON-151-a');
+    assert.deepEqual(state.subAnswers, ['first-answer', null, null],
+      '--sub 1 must land in the first slot, not the second');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('--sub <total> (last sub-question, 1-based) writes to the last slot and completes the escalation', () => {
+  const root = newRoot();
+  try {
+    runAnswer(root, ['CON-151-b', 'a', '--sub', '1', '--total', '3']);
+    runAnswer(root, ['CON-151-b', 'b', '--sub', '2', '--total', '3']);
+    const { out, status } = runAnswer(root, ['CON-151-b', 'c', '--sub', '3', '--total', '3']);
+    assert.equal(status, 0, out);
+    assert.match(out, /sub 3\/3/);
+    const state = readAnswerJson(root, 'CON-151-b');
+    assert.deepEqual(state.subAnswers, ['a', 'b', 'c']);
+    assert.equal(state.complete, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('--sub 0 is out of range (1-based) and is rejected before writing anything', () => {
+  const root = newRoot();
+  try {
+    const { out, status } = runAnswer(root, ['CON-151-c', 'x', '--sub', '0', '--total', '3']);
+    assert.notEqual(status, 0);
+    assert.match(out, /out of range/i);
+    assert.match(out, /\(valid range: 1-3\)/, 'error should name the valid 1-based range, in 1-based terms (not leak the 0-based slot, e.g. "-1")');
+    assert.equal(fs.existsSync(path.join(root, '.concertino', 'runs', 'CON-151-c', 'answer.json')), false,
+      'an out-of-range --sub must not write anything');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('--sub <total+1> is out of range (1-based) and is rejected before writing anything', () => {
+  const root = newRoot();
+  try {
+    const { out, status } = runAnswer(root, ['CON-151-d', 'x', '--sub', '4', '--total', '3']);
+    assert.notEqual(status, 0);
+    assert.match(out, /out of range/i);
+    assert.equal(fs.existsSync(path.join(root, '.concertino', 'runs', 'CON-151-d', 'answer.json')), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
