@@ -448,37 +448,47 @@ check "CON-156 marker: cleared by the second escalation's raise" \
 # (a second escalation.malformed event) — not be silently suppressed by a
 # marker left over from the first.
 #
-# CI investigation (cycle 2, finding 9): this assertion failed twice on
-# GitHub Actions (PR #135 runs test(16)/test(22)) with count=3 instead of
-# 2, but 5/5 local reproductions under deliberately heavy concurrent load
-# (parallel watchdog.test.sh/squash-branch.test.sh runs) never produced
-# more than 1 malformed event at the equivalent point, and emit-event.sh's
-# own poll loop (`try_resolve` then `sleep 1`, core/scripts/emit-event.sh)
-# is strictly serial within one process — there is no code path where a
-# single process's own check-then-write of `$ANSWER_FILE.malformed-warned`
-# can double up. That rules out a logic bug reachable from this test's own
-# shape and points at CI-runner-specific slowness (this repo's own
-# MISTAKES.md already documents "gates run on one machine" — GitHub's
-# shared runners are slower and more variable than this dev machine) rather
-# than a confirmed root cause in the script. Absent a reproducible
-# mechanism, the responsible fix is to stop asserting against a fixed
-# `sleep 2` snapshot and instead poll for the count to actually reach 2 and
-# then stay there through one more full poll interval before checking — long
-# enough on a slow runner without weakening what's asserted: if the count
-# is ever GENUINELY still wrong (3, indicating a real double-write) this
-# still fails, now with real signal instead of a timing artifact.
+# CI investigation (cycle 2, finding 9 / cycle 3, finding 1): this
+# assertion failed on GitHub Actions (PR #135, test(16)/test(22)) with
+# count=3 instead of 2, at both 358d2dc and 2bfda46 (the latter already had
+# the marker-absence poll above). Cycle 2's own local reproduction attempt
+# (5x under heavy load) never produced more than 1 event, but the cycle-3
+# reviewer reproduced a genuinely different race (43/96) in the discard
+# ordering when the answer is written before discard_stale_answer runs, and
+# separately ran 0/96 standalone, 0/30 parallel-full-suite, and 0/16
+# single-core reproductions of THIS specific count=3 symptom, ruling out
+# byte-identical dedupe-marker collision, torn reads, cksum mismatch,
+# writeSubAnswer, write_line double-writing, and an orphaned poller as
+# causes. THE GOT-[3] CAUSE REMAINS UNCONFIRMED — this comment makes no
+# claim to have found it; do not read the fix below as a root-cause claim.
+#
+# Cycle 2's own "fix" here was itself a bug: it broke out of its
+# stabilization loop after just ONE unchanged 0.2s sample once the count
+# reached 2, which is a FAR shorter window than emit-event.sh's own poll
+# period (`try_resolve` then `sleep 1`) — so a genuine regression (e.g. a
+# mutant that never writes `$ANSWER_FILE.malformed-warned` at all, which
+# re-warns on every ~1s poll and would eventually reach count=4) could still
+# land on a transient, unchanged count=2 or 3 reading inside a single 0.2s
+# window and PASS. Fixed by waiting for the count to first reach >= 2, then
+# observing across a FULL fixed window of at least two of emit-event.sh's
+# own poll intervals (>= 2s) before taking the final reading — long enough
+# that a same-process re-warn on the very next poll tick would show up, and
+# NOT adaptively short-circuited the moment two consecutive samples happen
+# to agree. On a mismatch, dump the run's own event log to help diagnose
+# the still-open got-[3] question rather than requiring a re-run to see it.
 printf '%s' "$MALFORMED_JSON" > "$ANSWER_FILE"
-PREV_COUNT=-1
-for _ in $(seq 1 50); do
-  CUR_COUNT="$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)"
-  if [ "$CUR_COUNT" -ge 2 ] && [ "$CUR_COUNT" = "$PREV_COUNT" ]; then
-    break
-  fi
-  PREV_COUNT="$CUR_COUNT"
-  sleep 0.2
+for _ in $(seq 1 100); do
+  [ "$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)" -ge 2 ] && break
+  sleep 0.1
 done
+sleep 2.5 # >= 2 full emit-event.sh poll intervals (1s each), fixed, not adaptive
+FINAL_MALFORMED_COUNT="$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)"
+if [ "$FINAL_MALFORMED_COUNT" != "2" ]; then
+  echo "CON-156 marker assertion about to fail — dumping $LOG for diagnosis:" >&2
+  cat "$LOG" >&2 2>/dev/null || true
+fi
 check "CON-156 marker: the second escalation ALSO logs its own escalation.malformed" \
-  "$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)" "2"
+  "$FINAL_MALFORMED_COUNT" "2"
 
 kill "$AWAIT_PID" 2>/dev/null
 wait "$AWAIT_PID" 2>/dev/null
