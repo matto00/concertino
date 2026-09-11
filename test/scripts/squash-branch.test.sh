@@ -541,7 +541,7 @@ if [ "$RC5B" -ne 0 ] && echo "$OUT5B" | grep -qF "sneaky.txt"; then
 else
   bad "CON-151 a continuation-line path is still undeclared and still trips the guard" "exit=$RC5B output=$OUT5B"
 fi
-if echo "$OUT5B" | grep -q "continuation line carrying no bullet declares nothing"; then
+if echo "$OUT5B" | grep -q "chained to one by a trailing comma"; then
   ok "CON-151 refusal explains the bullet/continuation format rule"
 else
   bad "CON-151 refusal explains the bullet/continuation format rule" "output: $OUT5B"
@@ -1796,6 +1796,670 @@ if echo "$OUT13M" | grep -qF "Branch restored to pre-squash HEAD"; then
   ok "3.9 CR1 regression is mutation-failable: reverting the gate reproduces the false restoration claim"
 else
   bad "3.9 CR1 regression is mutation-failable: reverting the gate reproduces the false restoration claim" "expected the false claim to reappear; output: $OUT13M"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 14 (CON-158): a `path:line` / `path:line,line,line` annotation on
+# an otherwise well-formed bullet must be read as a declaration of the bare
+# path, not rejected as "not path-shaped". A genuinely undeclared file must
+# still trip the guard, and its refusal must name the actual reason rather
+# than a single fixed hypothesis.
+# ---------------------------------------------------------------------
+echo "Scenario 14: CON-158 -- path:line / path:line,line annotations are accepted"
+
+BASE14="$(mktemp -d)"
+REMOTE14="$BASE14/remote.git"
+git init -q --bare "$REMOTE14"
+git clone -q "$REMOTE14" "$BASE14/primary" 2>/dev/null
+echo "root" > "$BASE14/primary/root.txt"
+commit_all "$BASE14/primary" "init"
+git -C "$BASE14/primary" branch -M main
+git -C "$BASE14/primary" push -q origin main
+CHANGE_DIR14="spec/changes/con-158-demo"
+
+# 14a: single :<line> and comma-joined :<line>,<line>,<line> annotations.
+BRANCH14A="$BASE14/branch-a"
+git clone -q "$REMOTE14" "$BRANCH14A" 2>/dev/null
+git -C "$BRANCH14A" checkout -q -b feature/con-158/CON-158-a origin/main
+mkdir -p "$BRANCH14A/$CHANGE_DIR14" "$BRANCH14A/e2e"
+cat > "$BRANCH14A/$CHANGE_DIR14/files-modified.md" <<'EOF'
+- `e2e/hel910-pipeline-to-dashboard-flow.spec.ts:187` — disambiguated
+- `e2e/hel909-output-picker-panel-sheet.spec.ts:111,184,220` — same
+EOF
+echo "a" > "$BRANCH14A/e2e/hel910-pipeline-to-dashboard-flow.spec.ts"
+echo "b" > "$BRANCH14A/e2e/hel909-output-picker-panel-sheet.spec.ts"
+commit_all "$BRANCH14A" "executor commit (line-annotated declarations)"
+OUT14A="$("$SCRIPT" "$BRANCH14A" origin main "CON-158 line-annotated declarations" "$CHANGE_DIR14" 2>&1)"
+RC14A=$?
+if [ "$RC14A" -eq 0 ]; then
+  ok "CON-158 a :<line> and a :<line>,<line>,<line> annotation both declare the bare path"
+else
+  bad "CON-158 a :<line> and a :<line>,<line>,<line> annotation both declare the bare path" "exit=$RC14A output=$OUT14A"
+fi
+
+# 14b: guards the guard -- a genuinely undeclared file must still trip, and
+# the refusal must name the SPECIFIC reason (basename absent entirely),
+# never the fixed "check the bullet" hypothesis alone.
+BRANCH14B="$BASE14/branch-b"
+git clone -q "$REMOTE14" "$BRANCH14B" 2>/dev/null
+git -C "$BRANCH14B" checkout -q -b feature/con-158/CON-158-b origin/main
+mkdir -p "$BRANCH14B/$CHANGE_DIR14" "$BRANCH14B/e2e"
+cat > "$BRANCH14B/$CHANGE_DIR14/files-modified.md" <<'EOF'
+- `e2e/hel910-pipeline-to-dashboard-flow.spec.ts:187` — disambiguated
+EOF
+echo "a" > "$BRANCH14B/e2e/hel910-pipeline-to-dashboard-flow.spec.ts"
+echo "stray" > "$BRANCH14B/e2e/undeclared-stray.spec.ts"
+commit_all "$BRANCH14B" "executor commit (one declared, one stray)"
+OUT14B="$("$SCRIPT" "$BRANCH14B" origin main "CON-158 stray file still trips" "$CHANGE_DIR14" 2>&1)"
+RC14B=$?
+if [ "$RC14B" -ne 0 ] && echo "$OUT14B" | grep -qF "e2e/undeclared-stray.spec.ts"; then
+  ok "CON-158 a genuinely undeclared file still trips the guard"
+else
+  bad "CON-158 a genuinely undeclared file still trips the guard" "exit=$RC14B output=$OUT14B"
+fi
+if echo "$OUT14B" | grep -qF "no span matching basename 'undeclared-stray.spec.ts'"; then
+  ok "CON-158 refusal names the specific reason (basename absent) rather than a fixed hypothesis"
+else
+  bad "CON-158 refusal names the specific reason (basename absent) rather than a fixed hypothesis" "output: $OUT14B"
+fi
+if echo "$OUT14B" | grep -qF -- "--allow-empty-declaration"; then
+  bad "CON-158 the bypass flag is not suggested on this path" "output: $OUT14B"
+else
+  ok "CON-158 the bypass flag is not suggested on this path"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 15 (CON-149): a single bullet's comma-joined path list, wrapped
+# across several continuation lines with a trailing comma chaining each
+# line to the next, must declare every path on it -- not merely the first
+# full path on the bullet's own first line. This must NOT reopen CON-151's
+# overshoot: a continuation line that is not chained by a trailing comma
+# still declares nothing (Scenario 5b, re-asserted here against the new
+# parser).
+# ---------------------------------------------------------------------
+echo "Scenario 15: CON-149 -- comma-joined bullet wrapped across continuation lines"
+
+BASE15="$(mktemp -d)"
+REMOTE15="$BASE15/remote.git"
+git init -q --bare "$REMOTE15"
+git clone -q "$REMOTE15" "$BASE15/primary" 2>/dev/null
+echo "root" > "$BASE15/primary/root.txt"
+commit_all "$BASE15/primary" "init"
+git -C "$BASE15/primary" branch -M main
+git -C "$BASE15/primary" push -q origin main
+CHANGE_DIR15="spec/changes/con-149-demo"
+
+# 15a: the real HEL-812 shape -- one full path, fourteen-ish bare basenames,
+# comma-chained across wrapped lines.
+BRANCH15A="$BASE15/branch-a"
+git clone -q "$REMOTE15" "$BRANCH15A" 2>/dev/null
+git -C "$BRANCH15A" checkout -q -b feature/con-149/CON-149-a origin/main
+mkdir -p "$BRANCH15A/$CHANGE_DIR15" "$BRANCH15A/scripts/concertino"
+cat > "$BRANCH15A/$CHANGE_DIR15/files-modified.md" <<'EOF'
+- `scripts/concertino/check-agent-merge-permission.sh`, `check-gate-chain-change.sh`,
+  `check-merge-readiness.sh`, `emit-event.sh`, `gather-escalation-context.sh`,
+  `next-report-number.sh`
+  — newly tracked delivery scripts.
+EOF
+for f in check-agent-merge-permission check-gate-chain-change check-merge-readiness emit-event gather-escalation-context next-report-number; do
+  echo "$f" > "$BRANCH15A/scripts/concertino/$f.sh"
+done
+commit_all "$BRANCH15A" "executor commit (wrapped comma list)"
+OUT15A="$("$SCRIPT" "$BRANCH15A" origin main "CON-149 wrapped comma list" "$CHANGE_DIR15" 2>&1)"
+RC15A=$?
+if [ "$RC15A" -eq 0 ]; then
+  ok "CON-149 a comma-joined bullet wrapped onto continuation lines declares every path"
+else
+  bad "CON-149 a comma-joined bullet wrapped onto continuation lines declares every path" "exit=$RC15A output=$OUT15A"
+fi
+
+# 15b: re-assert CON-151 -- a continuation line NOT chained by a trailing
+# comma still declares nothing, even under the new comma-chain parser.
+BRANCH15B="$BASE15/branch-b"
+git clone -q "$REMOTE15" "$BRANCH15B" 2>/dev/null
+git -C "$BRANCH15B" checkout -q -b feature/con-149/CON-149-b origin/main
+mkdir -p "$BRANCH15B/$CHANGE_DIR15"
+cat > "$BRANCH15B/$CHANGE_DIR15/files-modified.md" <<'EOF'
+- `alpha.txt`, `beta.txt` — declared pair; pass `--allow-empty-declaration` to skip
+  `sneaky.txt` — continuation line, carries no bullet, declares nothing
+EOF
+for f in alpha beta sneaky; do echo "$f" > "$BRANCH15B/$f.txt"; done
+commit_all "$BRANCH15B" "executor commit (unchained continuation line)"
+OUT15B="$("$SCRIPT" "$BRANCH15B" origin main "CON-149 unchained continuation still undeclared" "$CHANGE_DIR15" 2>&1)"
+RC15B=$?
+if [ "$RC15B" -ne 0 ] && echo "$OUT15B" | grep -qF "sneaky.txt"; then
+  ok "CON-149 an un-chained continuation line still declares nothing (CON-151 not reopened)"
+else
+  bad "CON-149 an un-chained continuation line still declares nothing (CON-151 not reopened)" "exit=$RC15B output=$OUT15B"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 16 (cold-review cycle 2 findings against 0601a331): four
+# concrete false-accept fixtures that an earlier draft of the CON-158/149
+# parser wrongly let through, plus the diagnostic-accuracy and line-range
+# fixtures from the same review. Every one of these mutation-checks
+# against the CURRENT (fixed) script by re-applying the exact regression
+# the review found and confirming it goes red again.
+# ---------------------------------------------------------------------
+echo "Scenario 16: cold-review false-accept and diagnostic-accuracy regressions"
+
+BASE16="$(mktemp -d)"
+REMOTE16="$BASE16/remote.git"
+git init -q --bare "$REMOTE16"
+git clone -q "$REMOTE16" "$BASE16/primary" 2>/dev/null
+echo "root" > "$BASE16/primary/root.txt"
+commit_all "$BASE16/primary" "init"
+git -C "$BASE16/primary" branch -M main
+git -C "$BASE16/primary" push -q origin main
+CHANGE_DIR16="spec/changes/con-review-demo"
+
+# 16a (finding 1): a bullet with PROSE between the bullet marker and the
+# backtick ("* Did not modify `lib/b.ts`") must NOT declare lib/b.ts --
+# the backtick must be the bullet's own first content.
+BRANCH16A="$BASE16/branch-a"
+git clone -q "$REMOTE16" "$BRANCH16A" 2>/dev/null
+git -C "$BRANCH16A" checkout -q -b feature/review/16a origin/main
+mkdir -p "$BRANCH16A/$CHANGE_DIR16/" "$BRANCH16A/lib"
+cat > "$BRANCH16A/$CHANGE_DIR16/files-modified.md" <<'EOF'
+* Did not modify `lib/b.ts`
+EOF
+echo "b" > "$BRANCH16A/lib/b.ts"
+commit_all "$BRANCH16A" "executor commit (prose-prefixed bullet)"
+OUT16A="$("$SCRIPT" "$BRANCH16A" origin main "review finding 1" "$CHANGE_DIR16" 2>&1)"
+RC16A=$?
+if [ "$RC16A" -ne 0 ] && echo "$OUT16A" | grep -qF "lib/b.ts"; then
+  ok "16a a prose-prefixed bullet ('* Did not modify \`lib/b.ts\`') does NOT declare lib/b.ts"
+else
+  bad "16a a prose-prefixed bullet ('* Did not modify \`lib/b.ts\`') does NOT declare lib/b.ts" "exit=$RC16A output=$OUT16A"
+fi
+
+# 16b (finding 2): a bullet mentioning an untouched file in backticks
+# ("- Deliberately did NOT touch `secret.ts`") must not declare it via any
+# staged-file fallback resolution.
+BRANCH16B="$BASE16/branch-b"
+git clone -q "$REMOTE16" "$BRANCH16B" 2>/dev/null
+git -C "$BRANCH16B" checkout -q -b feature/review/16b origin/main
+mkdir -p "$BRANCH16B/$CHANGE_DIR16/" "$BRANCH16B/src/deep"
+cat > "$BRANCH16B/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- Deliberately did NOT touch `secret.ts`
+EOF
+echo "s" > "$BRANCH16B/src/deep/secret.ts"
+commit_all "$BRANCH16B" "executor commit (untouched-file mention)"
+OUT16B="$("$SCRIPT" "$BRANCH16B" origin main "review finding 2" "$CHANGE_DIR16" 2>&1)"
+RC16B=$?
+if [ "$RC16B" -ne 0 ] && echo "$OUT16B" | grep -qF "src/deep/secret.ts"; then
+  ok "16b a bullet mentioning an untouched file in backticks does not declare it via the staged set"
+else
+  bad "16b a bullet mentioning an untouched file in backticks does not declare it via the staged set" "exit=$RC16B output=$OUT16B"
+fi
+
+# 16c (finding 3): a comma-chain must not extend onto a PROSE continuation
+# line even though the previous line ended in a trailing comma -- only a
+# continuation line that itself starts with a backtick extends the chain.
+BRANCH16C="$BASE16/branch-c"
+git clone -q "$REMOTE16" "$BRANCH16C" 2>/dev/null
+git -C "$BRANCH16C" checkout -q -b feature/review/16c origin/main
+mkdir -p "$BRANCH16C/$CHANGE_DIR16/" "$BRANCH16C/src" "$BRANCH16C/lib"
+cat > "$BRANCH16C/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- `src/a.ts` — see also,
+  the unrelated `lib/b.ts` file (not touched).
+EOF
+echo "a" > "$BRANCH16C/src/a.ts"
+echo "b" > "$BRANCH16C/lib/b.ts"
+commit_all "$BRANCH16C" "executor commit (prose continuation after trailing comma)"
+OUT16C="$("$SCRIPT" "$BRANCH16C" origin main "review finding 3" "$CHANGE_DIR16" 2>&1)"
+RC16C=$?
+if [ "$RC16C" -ne 0 ] && echo "$OUT16C" | grep -qF "lib/b.ts"; then
+  ok "16c a prose continuation line does not extend the comma-chain even after a trailing comma"
+else
+  bad "16c a prose continuation line does not extend the comma-chain even after a trailing comma" "exit=$RC16C output=$OUT16C"
+fi
+
+# 16d (finding 4, line-range acceptance): `:12-40` (a line RANGE, not a
+# single line or comma-list) must be accepted, matching the same
+# convention as `:187` and `:111,184,220`.
+BRANCH16D="$BASE16/branch-d"
+git clone -q "$REMOTE16" "$BRANCH16D" 2>/dev/null
+git -C "$BRANCH16D" checkout -q -b feature/review/16d origin/main
+mkdir -p "$BRANCH16D/$CHANGE_DIR16/" "$BRANCH16D/src"
+cat > "$BRANCH16D/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- `src/a.ts:12-40` — refactored this range
+EOF
+echo "a" > "$BRANCH16D/src/a.ts"
+commit_all "$BRANCH16D" "executor commit (line-range annotation)"
+OUT16D="$("$SCRIPT" "$BRANCH16D" origin main "review finding 4 (range accepted)" "$CHANGE_DIR16" 2>&1)"
+RC16D=$?
+if [ "$RC16D" -eq 0 ]; then
+  ok "16d a ':<line>-<line>' range annotation is accepted, same as ':<line>'"
+else
+  bad "16d a ':<line>-<line>' range annotation is accepted, same as ':<line>'" "exit=$RC16D output=$OUT16D"
+fi
+
+# 16e (finding 4/7, diagnostic accuracy): `src/a.ts:` (bare trailing colon,
+# no digits) is NOT accepted -- but the refusal must name that specific
+# reason, not a generic "ambiguous match" or "not found anywhere".
+BRANCH16E="$BASE16/branch-e"
+git clone -q "$REMOTE16" "$BRANCH16E" 2>/dev/null
+git -C "$BRANCH16E" checkout -q -b feature/review/16e origin/main
+mkdir -p "$BRANCH16E/$CHANGE_DIR16/" "$BRANCH16E/src"
+cat > "$BRANCH16E/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- `src/a.ts:` — trailing colon, no line number
+EOF
+echo "a" > "$BRANCH16E/src/a.ts"
+commit_all "$BRANCH16E" "executor commit (bare trailing colon)"
+OUT16E="$("$SCRIPT" "$BRANCH16E" origin main "review finding 4/7 (bare colon diagnostic)" "$CHANGE_DIR16" 2>&1)"
+RC16E=$?
+if [ "$RC16E" -ne 0 ] && echo "$OUT16E" | grep -qF "bare trailing ':' with no line number is not stripped"; then
+  ok "16e a bare trailing ':' with no digits is refused with the SPECIFIC reason, not a generic hypothesis"
+else
+  bad "16e a bare trailing ':' with no digits is refused with the SPECIFIC reason, not a generic hypothesis" "exit=$RC16E output=$OUT16E"
+fi
+
+# 16f (finding 4/7, diagnostic accuracy): `src/a.ts#L12` (GitHub-style
+# anchor) is NOT accepted -- the refusal must name it specifically as an
+# unrecognized anchor, not lump it into "no match" or "ambiguous".
+BRANCH16F="$BASE16/branch-f"
+git clone -q "$REMOTE16" "$BRANCH16F" 2>/dev/null
+git -C "$BRANCH16F" checkout -q -b feature/review/16f origin/main
+mkdir -p "$BRANCH16F/$CHANGE_DIR16/" "$BRANCH16F/src"
+cat > "$BRANCH16F/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- `src/a.ts#L12` — GitHub-style anchor, not this repo's convention
+EOF
+echo "a" > "$BRANCH16F/src/a.ts"
+commit_all "$BRANCH16F" "executor commit (GitHub-style anchor)"
+OUT16F="$("$SCRIPT" "$BRANCH16F" origin main "review finding 4/7 (github anchor diagnostic)" "$CHANGE_DIR16" 2>&1)"
+RC16F=$?
+if [ "$RC16F" -ne 0 ] && echo "$OUT16F" | grep -qF "is not a recognized line annotation here"; then
+  ok "16f a '#L12' GitHub-style anchor is refused with the SPECIFIC reason, not a generic hypothesis"
+else
+  bad "16f a '#L12' GitHub-style anchor is refused with the SPECIFIC reason, not a generic hypothesis" "exit=$RC16F output=$OUT16F"
+fi
+
+# 16g (finding 4, diagnostic accuracy -- "different file, not ambiguous"):
+# when `dup/foo.ts` is declared but the staged file is `a/foo.ts`, the
+# refusal must say these are two different files sharing a basename, not
+# claim a generic "ambiguous match".
+BRANCH16G="$BASE16/branch-g"
+git clone -q "$REMOTE16" "$BRANCH16G" 2>/dev/null
+git -C "$BRANCH16G" checkout -q -b feature/review/16g origin/main
+mkdir -p "$BRANCH16G/$CHANGE_DIR16/" "$BRANCH16G/dup" "$BRANCH16G/a"
+cat > "$BRANCH16G/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- `dup/foo.ts` — the one actually touched
+EOF
+echo "dup" > "$BRANCH16G/dup/foo.ts"
+echo "a" > "$BRANCH16G/a/foo.ts"
+commit_all "$BRANCH16G" "executor commit (same-basename different-dir undeclared file)"
+OUT16G="$("$SCRIPT" "$BRANCH16G" origin main "review finding 4 (different file not ambiguous)" "$CHANGE_DIR16" 2>&1)"
+RC16G=$?
+if [ "$RC16G" -ne 0 ] && echo "$OUT16G" | grep -qF "a different file with the same basename" && ! echo "$OUT16G" | grep -qiF "ambiguous match"; then
+  ok "16g a same-basename different-directory file is named as 'a different file', never as a generic 'ambiguous match'"
+else
+  bad "16g a same-basename different-directory file is named as 'a different file', never as a generic 'ambiguous match'" "exit=$RC16G output=$OUT16G"
+fi
+
+# 16h (finding 7): a staged file whose name literally CONTAINS a colon
+# suffix ("x/a:12", not a line annotation) is accepted when declared
+# verbatim -- the raw span is matched directly, before any line-suffix
+# stripping is even attempted.
+BRANCH16H="$BASE16/branch-h"
+git clone -q "$REMOTE16" "$BRANCH16H" 2>/dev/null
+git -C "$BRANCH16H" checkout -q -b feature/review/16h origin/main
+mkdir -p "$BRANCH16H/$CHANGE_DIR16/" "$BRANCH16H/x"
+cat > "$BRANCH16H/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- `x/a:12` — this really is the filename, not a line annotation
+EOF
+echo "a" > "$BRANCH16H/x/a:12"
+commit_all "$BRANCH16H" "executor commit (literal colon in filename)"
+OUT16H="$("$SCRIPT" "$BRANCH16H" origin main "review finding 7 (literal colon filename)" "$CHANGE_DIR16" 2>&1)"
+RC16H=$?
+if [ "$RC16H" -eq 0 ]; then
+  ok "16h a staged file whose name literally contains a colon suffix is accepted via its raw declared span"
+else
+  bad "16h a staged file whose name literally contains a colon suffix is accepted via its raw declared span" "exit=$RC16H output=$OUT16H"
+fi
+
+# 16i (finding 2, isolated from finding 1's fix): a LEGITIMATELY-opened
+# bullet ("- `src/a.ts` — not touching `secret.ts`") whose SAME line also
+# mentions a second, untouched file in backticks must not let that second
+# span leak in via a staged-file-set fallback. Unlike 16b, the bullet here
+# opens correctly (backtick immediately after the marker), so this
+# specifically isolates the staged-set-matching vector from finding 1's
+# "prose before the backtick" vector -- a mutation that reintroduces ONLY
+# the staged-fallback (leaving finding 1's fix intact) still passes 16b
+# but must still trip 16i.
+BRANCH16I="$BASE16/branch-i"
+git clone -q "$REMOTE16" "$BRANCH16I" 2>/dev/null
+git -C "$BRANCH16I" checkout -q -b feature/review/16i origin/main
+mkdir -p "$BRANCH16I/$CHANGE_DIR16/" "$BRANCH16I/src/deep"
+cat > "$BRANCH16I/$CHANGE_DIR16/files-modified.md" <<'EOF'
+- `src/a.ts` — not touching `secret.ts`
+EOF
+echo "a" > "$BRANCH16I/src/a.ts"
+echo "s" > "$BRANCH16I/src/deep/secret.ts"
+commit_all "$BRANCH16I" "executor commit (legit bullet, second file mentioned same line)"
+OUT16I="$("$SCRIPT" "$BRANCH16I" origin main "review finding 2 isolated (same-line mention)" "$CHANGE_DIR16" 2>&1)"
+RC16I=$?
+if [ "$RC16I" -ne 0 ] && echo "$OUT16I" | grep -qF "src/deep/secret.ts"; then
+  ok "16i a second file mentioned on an otherwise-legitimate bullet's own line does not leak via staged-set matching"
+else
+  bad "16i a second file mentioned on an otherwise-legitimate bullet's own line does not leak via staged-set matching" "exit=$RC16I output=$OUT16I"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 17 (cold-review cycle 3, finding 1): the SAME-DIRECTORY variant
+# of 16i's vector -- 16i used a nested subdirectory (src/deep/secret.ts)
+# so a wrongly-inherited "src/secret.ts" candidate never happened to equal
+# the real staged path by coincidence. These fixtures put the mentioned
+# file in the SAME directory as the anchor, so directory-inheritance alone
+# (without the connector-cleanliness gate) would construct an EXACT match
+# and falsely accept it.
+# ---------------------------------------------------------------------
+echo "Scenario 17: cold-review cycle 3 -- same-directory false-accept via directory inheritance"
+
+BASE17="$(mktemp -d)"
+REMOTE17="$BASE17/remote.git"
+git init -q --bare "$REMOTE17"
+git clone -q "$REMOTE17" "$BASE17/primary" 2>/dev/null
+echo "root" > "$BASE17/primary/root.txt"
+commit_all "$BASE17/primary" "init"
+git -C "$BASE17/primary" branch -M main
+git -C "$BASE17/primary" push -q origin main
+CHANGE_DIR17="spec/changes/con-review-cycle3-demo"
+
+# 17a (repro 1): same-line mention, same directory as the anchor.
+BRANCH17A="$BASE17/branch-a"
+git clone -q "$REMOTE17" "$BRANCH17A" 2>/dev/null
+git -C "$BRANCH17A" checkout -q -b feature/review3/17a origin/main
+mkdir -p "$BRANCH17A/$CHANGE_DIR17/" "$BRANCH17A/src"
+cat > "$BRANCH17A/$CHANGE_DIR17/files-modified.md" <<'EOF'
+- `src/a.ts` — did NOT touch `helper.ts`
+EOF
+echo "a" > "$BRANCH17A/src/a.ts"
+echo "h" > "$BRANCH17A/src/helper.ts"
+commit_all "$BRANCH17A" "executor commit (same-dir same-line mention)"
+OUT17A="$("$SCRIPT" "$BRANCH17A" origin main "review3 finding 1 repro 1" "$CHANGE_DIR17" 2>&1)"
+RC17A=$?
+if [ "$RC17A" -ne 0 ] && echo "$OUT17A" | grep -qF "src/helper.ts"; then
+  ok "17a same-directory same-line mention ('did NOT touch \`helper.ts\`') does not inherit and declare src/helper.ts"
+else
+  bad "17a same-directory same-line mention ('did NOT touch \`helper.ts\`') does not inherit and declare src/helper.ts" "exit=$RC17A output=$OUT17A"
+fi
+
+# 17b (repro 2): trailing-comma-then-prose continuation line, same directory.
+BRANCH17B="$BASE17/branch-b"
+git clone -q "$REMOTE17" "$BRANCH17B" 2>/dev/null
+git -C "$BRANCH17B" checkout -q -b feature/review3/17b origin/main
+mkdir -p "$BRANCH17B/$CHANGE_DIR17/" "$BRANCH17B/src"
+cat > "$BRANCH17B/$CHANGE_DIR17/files-modified.md" <<'EOF'
+- `src/a.ts`,
+  `helper.ts` untouched (reverted)
+EOF
+echo "a" > "$BRANCH17B/src/a.ts"
+echo "h" > "$BRANCH17B/src/helper.ts"
+commit_all "$BRANCH17B" "executor commit (same-dir trailing-comma-then-prose continuation)"
+OUT17B="$("$SCRIPT" "$BRANCH17B" origin main "review3 finding 1 repro 2" "$CHANGE_DIR17" 2>&1)"
+RC17B=$?
+if [ "$RC17B" -ne 0 ] && echo "$OUT17B" | grep -qF "src/helper.ts"; then
+  ok "17b same-directory trailing-comma continuation with prose ('helper.ts untouched (reverted)') does not inherit and declare src/helper.ts"
+else
+  bad "17b same-directory trailing-comma continuation with prose ('helper.ts untouched (reverted)') does not inherit and declare src/helper.ts" "exit=$RC17B output=$OUT17B"
+fi
+
+# 17c (repro 3, realistic): a same-directory sibling test file mentioned
+# in descriptive prose on the anchor's own line.
+BRANCH17C="$BASE17/branch-c"
+git clone -q "$REMOTE17" "$BRANCH17C" 2>/dev/null
+git -C "$BRANCH17C" checkout -q -b feature/review3/17c origin/main
+mkdir -p "$BRANCH17C/$CHANGE_DIR17/" "$BRANCH17C/frontend/src"
+cat > "$BRANCH17C/$CHANGE_DIR17/files-modified.md" <<'EOF'
+- `frontend/src/Panel.tsx` — mirrors the approach in `Panel.test.tsx` (unchanged)
+EOF
+echo "p" > "$BRANCH17C/frontend/src/Panel.tsx"
+echo "t" > "$BRANCH17C/frontend/src/Panel.test.tsx"
+commit_all "$BRANCH17C" "executor commit (realistic same-dir sibling mention)"
+OUT17C="$("$SCRIPT" "$BRANCH17C" origin main "review3 finding 1 repro 3 (realistic)" "$CHANGE_DIR17" 2>&1)"
+RC17C=$?
+if [ "$RC17C" -ne 0 ] && echo "$OUT17C" | grep -qF "frontend/src/Panel.test.tsx"; then
+  ok "17c realistic same-dir sibling mention ('mirrors the approach in \`Panel.test.tsx\` (unchanged)') does not declare it"
+else
+  bad "17c realistic same-dir sibling mention ('mirrors the approach in \`Panel.test.tsx\` (unchanged)') does not declare it" "exit=$RC17C output=$OUT17C"
+fi
+
+# 17d: positive control -- Scenario 5a's grouped "and"-joined bullet, and
+# CON-149's real wrapped comma-chain (Scenario 15a), must still pass under
+# the new connector-cleanliness gate. Re-run both here as an explicit,
+# named regression guard co-located with the fix that could have broken
+# them (both already run above as Scenarios 5 and 15; re-asserting here
+# documents the intent to keep them green together).
+if [ "$RC5A" -eq 0 ] && [ "$RC15A" -eq 0 ]; then
+  ok "17d positive controls: the 'and'-joined bullet (5a) and the real wrapped comma-chain (15a) are unaffected by the connector-cleanliness gate"
+else
+  bad "17d positive controls: the 'and'-joined bullet (5a) and the real wrapped comma-chain (15a) are unaffected by the connector-cleanliness gate" "RC5A=$RC5A RC15A=$RC15A"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 18 (cold-review cycle 3, finding 2): dedicated diagnostic-
+# message assertions for the five scenarios the review named, each
+# checking the EXACT, ACCURATE message rather than just "refused". The
+# defect being tested: describe_unexpected_span_issue's first branch used
+# to fire whenever ANY span in the file shared a basename with the
+# unexpected file, without checking whether that span was the identical
+# path (just mentioned in prose) or a genuinely different file -- so a
+# prose mention of the exact staged path was reported as "declared as X
+# ... a different file", which is false twice over.
+# ---------------------------------------------------------------------
+echo "Scenario 18: cold-review cycle 3, finding 2 -- exact diagnostic message per scenario"
+
+BASE18="$(mktemp -d)"
+REMOTE18="$BASE18/remote.git"
+git init -q --bare "$REMOTE18"
+git clone -q "$REMOTE18" "$BASE18/primary" 2>/dev/null
+echo "root" > "$BASE18/primary/root.txt"
+commit_all "$BASE18/primary" "init"
+git -C "$BASE18/primary" branch -M main
+git -C "$BASE18/primary" push -q origin main
+CHANGE_DIR18="spec/changes/con-review-cycle3-diag-demo"
+
+# 18-1 (revised, cold-review cycle 4): a FULL path (has a slash) mentioned
+# anywhere in a qualifying bullet's own text is ACCEPTED, matching main's
+# original, always-true CON-151 design ("every backtick-quoted, path-
+# shaped span on a qualifying bullet counts") -- verified directly against
+# origin/main's own pristine squash-branch.sh on this exact fixture before
+# writing this assertion (main: RC=0, accepts). Cycle 3's version of this
+# test wrongly expected a REFUSAL here; that was an over-narrowing beyond
+# CON-158/149's actual scope, and is exactly what cycle 4's KeyCap.tsx /
+# KeyCap.css finding (Scenario 19 below) forced reverting for full paths.
+# Only BARE spans (no slash -- 18-2/18-3/18-4 below) keep the
+# connector-cleanliness protection, since only they carry a real
+# directory-inheritance risk.
+BRANCH18_1="$BASE18/branch-1"
+git clone -q "$REMOTE18" "$BRANCH18_1" 2>/dev/null
+git -C "$BRANCH18_1" checkout -q -b feature/review3/18-1 origin/main
+mkdir -p "$BRANCH18_1/$CHANGE_DIR18/" "$BRANCH18_1/lib" "$BRANCH18_1/src"
+cat > "$BRANCH18_1/$CHANGE_DIR18/files-modified.md" <<'EOF'
+- `src/a.ts` — did not touch `lib/helper.ts` in this change
+EOF
+echo "a" > "$BRANCH18_1/src/a.ts"
+echo "h" > "$BRANCH18_1/lib/helper.ts"
+commit_all "$BRANCH18_1" "executor commit (prose mention of exact full path)"
+OUT18_1="$("$SCRIPT" "$BRANCH18_1" origin main "review3 diag scenario 1" "$CHANGE_DIR18" 2>&1)"
+RC18_1=$?
+if [ "$RC18_1" -eq 0 ]; then
+  ok "18-1 (revised) a full path mentioned anywhere in a qualifying bullet is accepted, matching main's original design"
+else
+  bad "18-1 (revised) a full path mentioned anywhere in a qualifying bullet is accepted, matching main's original design" "exit=$RC18_1 output=$OUT18_1"
+fi
+
+# 18-2: negation bullet, same directory (repro 1's shape) -- message must
+# reference the exact same path, not claim a different file.
+BRANCH18_2="$BASE18/branch-2"
+git clone -q "$REMOTE18" "$BRANCH18_2" 2>/dev/null
+git -C "$BRANCH18_2" checkout -q -b feature/review3/18-2 origin/main
+mkdir -p "$BRANCH18_2/$CHANGE_DIR18/" "$BRANCH18_2/src"
+cat > "$BRANCH18_2/$CHANGE_DIR18/files-modified.md" <<'EOF'
+- `src/a.ts` — did NOT touch `helper.ts`
+EOF
+echo "a" > "$BRANCH18_2/src/a.ts"
+echo "h" > "$BRANCH18_2/src/helper.ts"
+commit_all "$BRANCH18_2" "executor commit (negation bullet, same dir)"
+OUT18_2="$("$SCRIPT" "$BRANCH18_2" origin main "review3 diag scenario 2" "$CHANGE_DIR18" 2>&1)"
+if echo "$OUT18_2" | grep -qF "found \`helper.ts\` (the exact same path)" && ! echo "$OUT18_2" | grep -qF "a different file"; then
+  ok "18-2 negation bullet ('did NOT touch') is reported as found-but-dirty-connector, never as 'a different file'"
+else
+  bad "18-2 negation bullet ('did NOT touch') is reported as found-but-dirty-connector, never as 'a different file'" "output=$OUT18_2"
+fi
+
+# 18-3: trailing-comma-then-prose continuation (repro 2's shape).
+BRANCH18_3="$BASE18/branch-3"
+git clone -q "$REMOTE18" "$BRANCH18_3" 2>/dev/null
+git -C "$BRANCH18_3" checkout -q -b feature/review3/18-3 origin/main
+mkdir -p "$BRANCH18_3/$CHANGE_DIR18/" "$BRANCH18_3/src"
+cat > "$BRANCH18_3/$CHANGE_DIR18/files-modified.md" <<'EOF'
+- `src/a.ts`,
+  `helper.ts` untouched (reverted)
+EOF
+echo "a" > "$BRANCH18_3/src/a.ts"
+echo "h" > "$BRANCH18_3/src/helper.ts"
+commit_all "$BRANCH18_3" "executor commit (trailing-comma-then-prose)"
+OUT18_3="$("$SCRIPT" "$BRANCH18_3" origin main "review3 diag scenario 3" "$CHANGE_DIR18" 2>&1)"
+if echo "$OUT18_3" | grep -qF "found \`helper.ts\` (the exact same path)" && ! echo "$OUT18_3" | grep -qF "a different file"; then
+  ok "18-3 trailing-comma-then-prose continuation is reported as found-but-dirty-connector, never as 'a different file'"
+else
+  bad "18-3 trailing-comma-then-prose continuation is reported as found-but-dirty-connector, never as 'a different file'" "output=$OUT18_3"
+fi
+
+# 18-4: a prose-only bare basename mention with NO preceding full path at
+# all in the bullet (so it's never scan-position-eligible in the first
+# place -- the "not in a position" branch, not the dirty-connector one).
+# A second, legitimately declared file is included so DECLARED_COUNT > 0
+# and this routes through the per-file describe_unexpected_span_issue
+# diagnostic rather than the separate "no usable declaration at all"
+# branch (which has its own, already-tested wording).
+BRANCH18_4="$BASE18/branch-4"
+git clone -q "$REMOTE18" "$BRANCH18_4" 2>/dev/null
+git -C "$BRANCH18_4" checkout -q -b feature/review3/18-4 origin/main
+mkdir -p "$BRANCH18_4/$CHANGE_DIR18/"
+cat > "$BRANCH18_4/$CHANGE_DIR18/files-modified.md" <<'EOF'
+- `real.txt` — the actual change
+Note: `orphan.txt` is mentioned here only in prose, never declared.
+EOF
+echo "r" > "$BRANCH18_4/real.txt"
+echo "o" > "$BRANCH18_4/orphan.txt"
+commit_all "$BRANCH18_4" "executor commit (prose-only bare mention, no bullet at all)"
+OUT18_4="$("$SCRIPT" "$BRANCH18_4" origin main "review3 diag scenario 4" "$CHANGE_DIR18" 2>&1)"
+if echo "$OUT18_4" | grep -qF "found \`orphan.txt\` (the exact same path)" && echo "$OUT18_4" | grep -qF "not treat as a declaration position" && ! echo "$OUT18_4" | grep -qF "a different file"; then
+  ok "18-4 a prose-only bare mention with no bullet at all is reported as a position issue, never as 'a different file'"
+else
+  bad "18-4 a prose-only bare mention with no bullet at all is reported as a position issue, never as 'a different file'" "output=$OUT18_4"
+fi
+
+# 18-5 (re-assertion of 16g, named per the review's own five-scenario
+# list): bare `foo.ts` vs. actually-staged `a/foo.ts` -- genuinely a
+# different file, correctly still reported that way.
+if echo "$OUT16G" | grep -qF "a different file with the same basename" && ! echo "$OUT16G" | grep -qiF "ambiguous match"; then
+  ok "18-5 (= 16g) bare foo.ts vs. actually-staged a/foo.ts is correctly reported as 'a different file'"
+else
+  bad "18-5 (= 16g) bare foo.ts vs. actually-staged a/foo.ts is correctly reported as 'a different file'" "output=$OUT16G"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 19 (cold-review cycle 4): the real helio commit d847fd31
+# (openspec/changes/keyboard-shortcut-help-overlay/files-modified.md,
+# line 57) declared two full paths on one bullet separated by " / ", not
+# a comma or "and":
+#   `frontend/src/shared/ui/KeyCap.tsx` / `frontend/src/shared/ui/KeyCap.css`
+# Verified directly against origin/main's own pristine squash-branch.sh
+# (RC=0, both files declared) before writing this test -- main has always
+# accepted every full path on a qualifying bullet regardless of
+# separator. Cycle 3's connector-cleanliness gate, applied uniformly to
+# ALL spans rather than bare ones only, wrongly narrowed that to
+# comma/"and" and started refusing this real commit.
+# ---------------------------------------------------------------------
+echo "Scenario 19: cold-review cycle 4 -- real commit d847fd31's '/'-separated full-path pair"
+
+BASE19="$(mktemp -d)"
+REMOTE19="$BASE19/remote.git"
+git init -q --bare "$REMOTE19"
+git clone -q "$REMOTE19" "$BASE19/primary" 2>/dev/null
+echo "root" > "$BASE19/primary/root.txt"
+commit_all "$BASE19/primary" "init"
+git -C "$BASE19/primary" branch -M main
+git -C "$BASE19/primary" push -q origin main
+CHANGE_DIR19="spec/changes/con-review-cycle4-keycap-demo"
+
+BRANCH19="$BASE19/branch-a"
+git clone -q "$REMOTE19" "$BRANCH19" 2>/dev/null
+git -C "$BRANCH19" checkout -q -b feature/review4/19 origin/main
+mkdir -p "$BRANCH19/$CHANGE_DIR19/" "$BRANCH19/frontend/src/shared/ui"
+cat > "$BRANCH19/$CHANGE_DIR19/files-modified.md" <<'EOF'
+- `frontend/src/shared/ui/KeyCap.tsx` / `frontend/src/shared/ui/KeyCap.css` — NEW shared primitive (design.md Decision 5)
+EOF
+echo "t" > "$BRANCH19/frontend/src/shared/ui/KeyCap.tsx"
+echo "c" > "$BRANCH19/frontend/src/shared/ui/KeyCap.css"
+commit_all "$BRANCH19" "executor commit (real d847fd31 shape)"
+OUT19="$("$SCRIPT" "$BRANCH19" origin main "review4 KeyCap.tsx / KeyCap.css" "$CHANGE_DIR19" 2>&1)"
+RC19=$?
+if [ "$RC19" -eq 0 ]; then
+  ok "19 a '/'-separated pair of full paths (real commit d847fd31) is accepted, both declared"
+else
+  bad "19 a '/'-separated pair of full paths (real commit d847fd31) is accepted, both declared" "exit=$RC19 output=$OUT19"
+fi
+
+# 19b: re-assert Scenario 17's same-directory BARE repros still refuse --
+# this is the critical regression check the review demanded: the fix for
+# 19 (full paths always eligible) must not reopen 17a/17b/17c (all BARE
+# spans, which still require a clean connector).
+if [ "$RC17A" -ne 0 ] && [ "$RC17B" -ne 0 ] && [ "$RC17C" -ne 0 ]; then
+  ok "19b re-assert: 17a/17b/17c (bare-span same-directory false-accepts) still correctly refuse after the full-path eligibility fix"
+else
+  bad "19b re-assert: 17a/17b/17c (bare-span same-directory false-accepts) still correctly refuse after the full-path eligibility fix" "RC17A=$RC17A RC17B=$RC17B RC17C=$RC17C"
+fi
+
+# 19c (clerical fix): a bare span that was ineligible, AND whose
+# constructed (prospective) directory genuinely differs from the real
+# staged file's directory -- landing it in the PASS-2 "different file"
+# branch rather than PASS-1's exact-path branch -- must never be reported
+# as "declared as X". It was never actually accepted as a declaration of
+# anything, so the message must say "would resolve to X" instead.
+BRANCH19C="$BASE19/branch-c"
+git clone -q "$REMOTE19" "$BRANCH19C" 2>/dev/null
+git -C "$BRANCH19C" checkout -q -b feature/review4/19c origin/main
+mkdir -p "$BRANCH19C/$CHANGE_DIR19/" "$BRANCH19C/other" "$BRANCH19C/lib"
+cat > "$BRANCH19C/$CHANGE_DIR19/files-modified.md" <<'EOF'
+- `other/a.ts` — mentions `helper.ts` in passing
+EOF
+echo "a" > "$BRANCH19C/other/a.ts"
+echo "h" > "$BRANCH19C/lib/helper.ts"
+commit_all "$BRANCH19C" "executor commit (ineligible bare span, wrong-directory prospective)"
+OUT19C="$("$SCRIPT" "$BRANCH19C" origin main "review4 clerical wording" "$CHANGE_DIR19" 2>&1)"
+if echo "$OUT19C" | grep -qF "would resolve to \`other/helper.ts\`" && ! echo "$OUT19C" | grep -qF "declared as \`other/helper.ts\`"; then
+  ok "19c clerical: an ineligible bare span's message says 'would resolve to', never 'declared as'"
+else
+  bad "19c clerical: an ineligible bare span's message says 'would resolve to', never 'declared as'" "output=$OUT19C"
+fi
+
+# 19d: a SECOND full-path pair test using a separator that is NEITHER a
+# comma, "and", NOR "/" (an em-dash) -- isolates the "full paths are
+# ALWAYS eligible, unconditionally" rule from the separate "/ is also an
+# accepted connector" change (19 alone could pass on the "/" acceptance
+# by coincidence without the unconditional-full-path rule actually being
+# in effect; this cannot).
+BRANCH19D="$BASE19/branch-d"
+git clone -q "$REMOTE19" "$BRANCH19D" 2>/dev/null
+git -C "$BRANCH19D" checkout -q -b feature/review4/19d origin/main
+mkdir -p "$BRANCH19D/$CHANGE_DIR19/" "$BRANCH19D/pkg"
+cat > "$BRANCH19D/$CHANGE_DIR19/files-modified.md" <<'EOF'
+- `pkg/one.ts` — paired with `pkg/two.ts` as a matched set
+EOF
+echo "1" > "$BRANCH19D/pkg/one.ts"
+echo "2" > "$BRANCH19D/pkg/two.ts"
+commit_all "$BRANCH19D" "executor commit (two full paths, em-dash-prose separator)"
+OUT19D="$("$SCRIPT" "$BRANCH19D" origin main "review4 two full paths, non-slash separator" "$CHANGE_DIR19" 2>&1)"
+RC19D=$?
+if [ "$RC19D" -eq 0 ]; then
+  ok "19d two full paths separated by prose (not comma/and/slash) are BOTH accepted -- the unconditional-full-path rule, isolated from the '/' acceptance"
+else
+  bad "19d two full paths separated by prose (not comma/and/slash) are BOTH accepted -- the unconditional-full-path rule, isolated from the '/' acceptance" "exit=$RC19D output=$OUT19D"
 fi
 
 # ---------------------------------------------------------------------
