@@ -207,5 +207,261 @@ check "oversized sub_questions with small context: no escalation.raised line wri
   "$([ -f "$LOG" ] && grep -c escalation.raised "$LOG" 2>/dev/null || echo 0)" "0"
 rm -rf "$REPO"
 
+
+# --- CON-156: a malformed answer file (single-question shape on a --------
+# multi-part escalation) must NOT resolve the wait with zero sub-answers.
+# This is the exact file from the ticket: `{"answer": "...", "complete":
+# true}`, missing `subAnswers` entirely, written to a two-question escalation.
+REPO="$(new_repo)"
+TICKET=HEL-973
+LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
+ANSWER_FILE="$REPO/.concertino/runs/$TICKET/answer.json"
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator \
+    sub_questions='[{"question":"Fold in toast?","options":["fold-in","standalone"]},{"question":"Follow-up severity?","options":["High","Medium"]}]' \
+  ) > "$REPO/out.txt" 2> "$REPO/err.txt" &
+AWAIT_PID=$!
+
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+check "CON-156: escalation.raised landed" \
+  "$(grep -c escalation.raised "$LOG" 2>/dev/null || echo 0)" "1"
+
+# Write the malformed single-question-shaped file directly — this is what a
+# human handed the wrong answer format actually produces, per the ticket.
+mkdir -p "$(dirname "$ANSWER_FILE")"
+printf '%s' '{"answer": "fold-in-toast-only; follow-up-1 standalone High", "complete": true}' > "$ANSWER_FILE"
+
+# Give --await several poll ticks to prove the malformed file never resolves
+# the wait — it must be treated exactly like no file / an incomplete file.
+sleep 3
+check "CON-156: malformed file does not resolve — --await is still running" \
+  "$(kill -0 "$AWAIT_PID" 2>/dev/null && echo running || echo exited)" "running"
+check "CON-156: no escalation.answered was recorded for the malformed file" \
+  "$(grep -c escalation.answered "$LOG" 2>/dev/null || true)" "0"
+check "CON-156: a diagnostic naming the problem was printed" \
+  "$(grep -c 'malformed' "$REPO/err.txt" 2>/dev/null || echo 0)" "1"
+# CON-156 (cycle 2, finding 3): `grep -c '2'` was vacuous — it would still
+# pass even if the sub-question count were dropped from the message entirely,
+# since digit '2' can appear incidentally elsewhere (a PID, a byte count).
+# Match the exact phrase the node validator emits instead.
+check "CON-156: the diagnostic names the expected sub-question count" \
+  "$(grep -c 'expected an array of 2 answers, one per sub-question' "$REPO/err.txt" 2>/dev/null || echo 0)" "1"
+# CON-156 (cycle 2, finding 2): a non-terminal escalation.malformed event is
+# recorded in the log alongside the stderr diagnostic, so a dashboard viewer
+# (or anyone tailing events.jsonl, not just the blocked --await caller) also
+# learns something is wrong — and the escalation must stay open (NEEDS YOU),
+# never be treated as resolved by this event.
+check "CON-156: an escalation.malformed event was recorded" \
+  "$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)" "1"
+check "CON-156: escalation.malformed carries the same reason" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n");
+    const l = ls.find((x) => JSON.parse(x).kind === "escalation.malformed");
+    console.log(JSON.parse(l).reason);
+  ' "$LOG")" \
+  "subAnswers is missing or not an array (expected an array of 2 answers, one per sub-question)"
+
+# Now write a well-formed multi-part answer over it — the escalation must
+# still be resolvable once the file is fixed (non-destructive, self-correcting).
+write_sub_answer "$REPO" "$TICKET" 0 fold-in 2 >/dev/null
+write_sub_answer "$REPO" "$TICKET" 1 High 2 >/dev/null
+
+wait "$AWAIT_PID"; AWAIT_RC=$?
+check "CON-156: --await exits 0 once a well-formed file replaces the malformed one" "$AWAIT_RC" "0"
+check "CON-156: exactly one escalation.answered, from the well-formed write" \
+  "$(grep -c escalation.answered "$LOG")" "1"
+check "CON-156: recorded sub_answers are the real ones, not empty" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n");
+    const l = ls.find((x) => JSON.parse(x).kind === "escalation.answered");
+    console.log(JSON.parse(JSON.parse(l).sub_answers).join(","));
+  ' "$LOG")" \
+  "fold-in,High"
+rm -rf "$REPO"
+
+# --- CON-156: arity mismatch (fewer subAnswers than sub_questions) is --------
+# handled the same way as a missing subAnswers array — treated as malformed,
+# never resolved with a short/padded array.
+REPO="$(new_repo)"
+TICKET=HEL-974
+LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
+ANSWER_FILE="$REPO/.concertino/runs/$TICKET/answer.json"
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator \
+    sub_questions='[{"question":"a?","options":["y","n"]},{"question":"b?","options":["y","n"]},{"question":"c?","options":["y","n"]}]' \
+  ) > "$REPO/out.txt" 2> "$REPO/err.txt" &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+
+mkdir -p "$(dirname "$ANSWER_FILE")"
+printf '%s' '{"subAnswers": ["y"], "total": 3, "complete": true}' > "$ANSWER_FILE"
+sleep 3
+check "CON-156 arity: mismatched-arity file does not resolve — --await still running" \
+  "$(kill -0 "$AWAIT_PID" 2>/dev/null && echo running || echo exited)" "running"
+check "CON-156 arity: no escalation.answered was recorded" \
+  "$(grep -c escalation.answered "$LOG" 2>/dev/null || true)" "0"
+check "CON-156 arity: an escalation.malformed event names the arity mismatch" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n");
+    const l = ls.find((x) => JSON.parse(x).kind === "escalation.malformed");
+    console.log(l ? JSON.parse(l).reason : "NONE");
+  ' "$LOG")" \
+  "subAnswers has 1 entries, expected 3 (one per sub-question) — arity mismatch"
+
+kill "$AWAIT_PID" 2>/dev/null
+wait "$AWAIT_PID" 2>/dev/null
+rm -rf "$REPO"
+
+# --- CON-156 (cycle 3, finding 2): right-length but null/empty entries ------
+# under complete:true is the same class of lie as a wrong-length array (a
+# hand-edited or partially-clobbered answer.json) — must be rejected, never
+# resolved with an empty answer for the null'd sub-question.
+REPO="$(new_repo)"
+TICKET=HEL-977
+LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
+ANSWER_FILE="$REPO/.concertino/runs/$TICKET/answer.json"
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator \
+    sub_questions='[{"question":"a?","options":["y","n"]},{"question":"b?","options":["y","n"]}]' \
+  ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+
+mkdir -p "$(dirname "$ANSWER_FILE")"
+printf '%s' '{"subAnswers": ["x", null], "complete": true}' > "$ANSWER_FILE"
+sleep 3
+check "CON-156 null-entry: right-length-but-null file does not resolve — --await still running" \
+  "$(kill -0 "$AWAIT_PID" 2>/dev/null && echo running || echo exited)" "running"
+check "CON-156 null-entry: no escalation.answered was recorded" \
+  "$(grep -c escalation.answered "$LOG" 2>/dev/null || true)" "0"
+check "CON-156 null-entry: an escalation.malformed event names the null slot" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n");
+    const l = ls.find((x) => JSON.parse(x).kind === "escalation.malformed");
+    console.log(l ? JSON.parse(l).reason : "NONE");
+  ' "$LOG")" \
+  "subAnswers has a null/empty entry at index 1 while complete=true (every slot must be filled)"
+
+# The escalation must still be resolvable once a genuinely complete file
+# replaces the bad one — non-destructive, self-correcting, same as every
+# other malformed case above.
+write_sub_answer "$REPO" "$TICKET" 1 n 2 >/dev/null
+wait "$AWAIT_PID"; AWAIT_RC=$?
+check "CON-156 null-entry: --await exits 0 once the null slot is genuinely filled" "$AWAIT_RC" "0"
+rm -rf "$REPO"
+
+# An empty-string entry is the same class of lie as null.
+REPO="$(new_repo)"
+TICKET=HEL-978
+LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
+ANSWER_FILE="$REPO/.concertino/runs/$TICKET/answer.json"
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator \
+    sub_questions='[{"question":"a?","options":["y","n"]}]' \
+  ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+mkdir -p "$(dirname "$ANSWER_FILE")"
+printf '%s' '{"subAnswers": [""], "complete": true}' > "$ANSWER_FILE"
+sleep 2
+check "CON-156 empty-string entry: does not resolve" \
+  "$(kill -0 "$AWAIT_PID" 2>/dev/null && echo running || echo exited)" "running"
+kill "$AWAIT_PID" 2>/dev/null
+wait "$AWAIT_PID" 2>/dev/null
+rm -rf "$REPO"
+
+# --- CON-156 (cycle 2, finding 4): the malformed-content dedupe marker must ---
+# not survive past the escalation it warned about — a byte-identical
+# malformed file raised again in a LATER escalation on the SAME ticket must
+# still warn (the marker's whole job is de-duplicating repeats of the SAME
+# still-open escalation, never suppressing a warning across escalations).
+REPO="$(new_repo)"
+TICKET=HEL-976
+LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
+ANSWER_FILE="$REPO/.concertino/runs/$TICKET/answer.json"
+MALFORMED_JSON='{"answer": "x", "complete": true}'
+
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator \
+    sub_questions='[{"question":"a?","options":["y","n"]},{"question":"b?","options":["y","n"]}]' \
+  ) > "$REPO/out1.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+mkdir -p "$(dirname "$ANSWER_FILE")"
+printf '%s' "$MALFORMED_JSON" > "$ANSWER_FILE"
+sleep 2
+check "CON-156 marker: first escalation logs one escalation.malformed" \
+  "$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)" "1"
+check "CON-156 marker: malformed-warned marker file exists after the first escalation" \
+  "$([ -f "$ANSWER_FILE.malformed-warned" ] && echo yes || echo no)" "yes"
+
+# Resolve the first escalation properly, then discard_stale_answer's next run
+# (triggered by raising a SECOND escalation on the same ticket) must clear the
+# marker file — this simulates the run's next escalation, not a poll of the
+# same one.
+write_sub_answer "$REPO" "$TICKET" 0 y 2 >/dev/null
+write_sub_answer "$REPO" "$TICKET" 1 n 2 >/dev/null
+wait "$AWAIT_PID" 2>/dev/null
+
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator \
+    sub_questions='[{"question":"c?","options":["y","n"]},{"question":"d?","options":["y","n"]}]' \
+  ) > "$REPO/out2.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ "$(grep -c escalation.raised "$LOG" 2>/dev/null || echo 0)" -ge 2 ] && break
+  sleep 0.1
+done
+check "CON-156 marker: cleared by the second escalation's raise" \
+  "$([ -f "$ANSWER_FILE.malformed-warned" ] && echo yes || echo no)" "no"
+
+# The exact same malformed content, on the second escalation, must warn AGAIN
+# (a second escalation.malformed event) — not be silently suppressed by a
+# marker left over from the first.
+printf '%s' "$MALFORMED_JSON" > "$ANSWER_FILE"
+sleep 2
+check "CON-156 marker: the second escalation ALSO logs its own escalation.malformed" \
+  "$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)" "2"
+
+kill "$AWAIT_PID" 2>/dev/null
+wait "$AWAIT_PID" 2>/dev/null
+rm -rf "$REPO"
+
+# --- CON-156: the single-question path is unaffected -----------------------
+REPO="$(new_repo)"
+TICKET=HEL-975
+LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator question=q options=approve,deny ) \
+  > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+RESULT="$(write_answer "$REPO" "$TICKET" approve)"
+check "CON-156 regression: single-question writer still reports success" \
+  "$(node -e "console.log(JSON.parse(process.argv[1]).ok)" "$RESULT")" "true"
+wait "$AWAIT_PID"; AWAIT_RC=$?
+check "CON-156 regression: single-question --await still exits 0" "$AWAIT_RC" "0"
+check "CON-156 regression: single-question --await still prints the answer" \
+  "$(tr -d '\n' < "$REPO/out.txt")" "approve"
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

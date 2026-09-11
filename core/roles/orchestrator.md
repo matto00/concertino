@@ -1398,7 +1398,9 @@ itself, or a non-root run silently loses its only path to the human (CON-76).
 
     ```bash
     concertino answer $TICKET_ID "<their decision>"
-    # or, for one step of a multi-part escalation:
+    # or, for one step of a multi-part escalation (--sub is 1-based: the
+    # first sub-question is --sub 1, matching the dashboard wizard's own
+    # "sub-question N of total" display and this command's confirmation):
     concertino answer $TICKET_ID "<their decision>" --sub <index> --total <n>
     ```
 
@@ -1599,12 +1601,23 @@ child):
    keep waiting there for the human's reply and record it per step 3 below —
    nothing stops a late dashboard answer from still landing and winning the
    race the normal way.
+
+   **If this call's stderr contains the word `malformed`** (CON-156): the
+   dashboard's own answer.json write for this escalation is shaped wrong —
+   e.g. a two-part escalation answered with the single-question `{answer,
+   complete}` shape — and `--wait-only` deliberately did NOT resolve on it
+   (a malformed file is never treated as an answer). Relay that stderr line
+   to the human **verbatim** in your own chat transcript before your next
+   `--wait-only` call, so they see the same diagnostic a dashboard viewer
+   would see on the escalation screen, then keep polling exactly as if this
+   call had returned exit 2 — this is not a new terminal outcome, only an
+   added notice on top of "still open."
 3. The moment the human replies directly in chat, write their answer through
    `concertino answer` rather than acting on it directly:
 
    ```bash
    concertino answer $TICKET_ID "<their decision>"
-   # or, for one step of a multi-part escalation:
+   # or, for one step of a multi-part escalation (--sub is 1-based, see above):
    concertino answer $TICKET_ID "<their decision>" --sub <index> --total <n>
    ```
 
