@@ -9,6 +9,11 @@
 # read anything, and runs died mid-stream. These assertions pin the shape
 # that fixed it; the token budget is the reason they exist.
 set -uo pipefail
+
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+trap con181_cleanup_scratch EXIT
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0
 ok()  { echo "  ok   $1"; PASS=$((PASS+1)); }

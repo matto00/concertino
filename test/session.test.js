@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { hasTmux, createSession, attachTarget, killTarget, writeOverrideEvent } = require('../lib/ui/session');
+const { mkTmpDir } = require('./support/tmp');
 
 const SESSION = 'concertino-test-' + process.pid;
 const skip = !hasTmux() ? { skip: 'tmux not installed' } : {};
@@ -179,7 +180,7 @@ test('spawn with an empty env map behaves exactly like no env', skip, () => {
 // --- CON-77: spawn writes a run.spawn event when a root is supplied ---------
 
 function tmpRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-session-'));
+  return mkTmpDir('concertino-session-');
 }
 
 test('spawn writes a run.spawn event to <root>/.concertino/runs/<ticket>/events.jsonl', skip, () => {

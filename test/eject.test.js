@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { mkTmpDir } = require('./support/tmp');
 
 // CON-84 unify-harness-flag-semantics — eject's --harness now accepts (and
 // meaningfully acts on) a comma-separated list, identical in parsing to
@@ -27,7 +28,7 @@ function run(args) {
 }
 
 function newRoot() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-eject-'));
+  const dir = mkTmpDir('concertino-eject-');
   fs.copyFileSync(EXAMPLE_CONFIG, path.join(dir, 'concertino.config.json'));
   return dir;
 }

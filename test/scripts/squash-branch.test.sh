@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh. This file
+# already installs its own EXIT trap below (restore_script), so
+# restore_script() also calls con181_cleanup_scratch instead of a second
+# `trap ... EXIT`.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+
 # ===========================================================================
 # squash-branch.test.sh (CON-129) — throwaway-repo acceptance test for the
 # guarded Delivery squash step.
@@ -28,6 +35,7 @@ bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; echo "       $2"; }
 PRISTINE_SCRIPT="$(mktemp)"
 cp "$ROOT/core/scripts/squash-branch.sh" "$PRISTINE_SCRIPT"
 restore_script() {
+  con181_cleanup_scratch
   cp "$PRISTINE_SCRIPT" "$ROOT/core/scripts/squash-branch.sh" 2>/dev/null || true
   rm -f "$PRISTINE_SCRIPT" "$ROOT/core/scripts/squash-branch.sh".bak.* \
         "$ROOT/core/scripts/squash-branch.sh".bak2.* \

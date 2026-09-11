@@ -9,9 +9,10 @@ const reap = require('../lib/ui/reap');
 const store = require('../lib/ui/store');
 const { reduce } = require('../lib/ui/reducer');
 const { hasTmux, createSession } = require('../lib/ui/session');
+const { mkTmpDir } = require('./support/tmp');
 
 function tmpRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-reap-'));
+  return mkTmpDir('concertino-reap-');
 }
 
 function run(over) {
@@ -255,7 +256,7 @@ test('reapFinished captures scrollback before killing an idle delivered window',
   const fs = require('node:fs');
   const os = require('node:os');
   const path = require('node:path');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-reap-idle-'));
+  const root = mkTmpDir('concertino-reap-idle-');
   const order = [];
   const session = {
     captureFull(t) { order.push('capture:' + t); return 'the tail'; },

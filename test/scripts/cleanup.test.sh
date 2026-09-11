@@ -18,6 +18,11 @@
 # as before when none are.
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+trap con181_cleanup_scratch EXIT
+
 # See escalation-loop.test.sh's identical note: some shells export
 # FORCE_COLOR, which makes node wrap bare output in ANSI codes even off a TTY.
 export NO_COLOR=1

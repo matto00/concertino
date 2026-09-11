@@ -8,6 +8,7 @@ const {
   renderEscalation, handleKey, render, optionKeys, resumeSubIndex,
 } = require('../lib/ui/screens/escalation');
 const store = require('../lib/ui/store');
+const { mkTmpDir } = require('./support/tmp');
 
 // eslint-disable-next-line no-control-regex
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
@@ -399,7 +400,7 @@ test('render(state, opts) picks the run out by ticket', () => {
 // =====================================================================
 
 function tmpRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-escalation-'));
+  return mkTmpDir('concertino-escalation-');
 }
 
 function wizardRun(over) {

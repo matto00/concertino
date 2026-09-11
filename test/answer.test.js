@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { mkTmpDir } = require('./support/tmp');
 
 // CON-76 escalation-answer-cli: exercises `bin/concertino answer` as a real
 // subprocess (the same way the root orchestrator's Bash tool would call it),
@@ -23,7 +24,7 @@ const REAL_EMIT_EVENT = path.resolve(__dirname, '..', 'core', 'scripts', 'emit-e
 // own `main_checkout()`), so a non-repo fixture would make every
 // escalation.answered assertion below false-negative rather than fail loudly.
 function newRoot() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-answer-'));
+  const dir = mkTmpDir('concertino-answer-');
   const scriptsDir = path.join(dir, 'scripts', 'concertino');
   fs.mkdirSync(scriptsDir, { recursive: true });
   fs.copyFileSync(REAL_EMIT_EVENT, path.join(scriptsDir, 'emit-event.sh'));

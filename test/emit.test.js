@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { emitClaude, emitCodex, emitOpencode, copyAssets, mergeCostHookSettings } = require('../lib/cli/emit');
 const { withDefaults } = require('../lib/config');
+const { mkTmpDir } = require('./support/tmp');
 
 // CON-98, design.md Decision 4/6, tasks.md 7.4: `concertino-address-failure.md`
 // is written for claude-code and NOT for codex/opencode — the equivalent unit
@@ -22,7 +23,7 @@ function baseConfig(over) {
 }
 
 function tmpOut() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-emit-'));
+  return mkTmpDir('concertino-emit-');
 }
 
 // write() (lib/cli/shared.js) logs every file it writes to console — silence

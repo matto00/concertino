@@ -6,9 +6,10 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { diffStat, fileDiff, parseStatLines, MAX_DIFF_LINES } = require('../lib/ui/git-diff');
+const { mkTmpDir } = require('./support/tmp');
 
 function tmpRepo() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-git-diff-'));
+  const dir = mkTmpDir('concertino-git-diff-');
   execFileSync('git', ['init', '-q'], { cwd: dir });
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
   execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
@@ -64,7 +65,7 @@ test('diffStat returns an empty (not null) stat array for a real repo with no ch
 });
 
 test('diffStat degrades to { stat: null, error } rather than throwing, for a non-repo directory', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-git-diff-norepo-'));
+  const dir = mkTmpDir('concertino-git-diff-norepo-');
   assert.doesNotThrow(() => diffStat(dir));
   const result = diffStat(dir);
   assert.equal(result.stat, null);
@@ -132,7 +133,7 @@ test('fileDiff on a binary file returns git\'s own short summary, with no trunca
 });
 
 test('fileDiff degrades to { lines: null, error } rather than throwing, for a non-repo directory', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-git-diff-norepo-file-'));
+  const dir = mkTmpDir('concertino-git-diff-norepo-file-');
   assert.doesNotThrow(() => fileDiff(dir, 'whatever.txt'));
   const result = fileDiff(dir, 'whatever.txt');
   assert.equal(result.lines, null);

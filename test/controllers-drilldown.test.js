@@ -63,9 +63,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { mkTmpDir } = require('./support/tmp');
 
 function tmpRepo() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-ctl-drilldown-'));
+  const dir = mkTmpDir('concertino-ctl-drilldown-');
   execFileSync('git', ['init', '-q'], { cwd: dir });
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
   execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
@@ -105,7 +106,7 @@ test('open-diff-doc: S.docTitle falls back to action.file, then "(untitled)", th
 });
 
 test('open-diff-doc: a failing git call degrades to a visible "diff unavailable" body, still transitioning to docview', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-ctl-drilldown-norepo-'));
+  const dir = mkTmpDir('concertino-ctl-drilldown-norepo-');
   const ctx = session();
   drilldownCtl.handle({ type: 'open-diff-doc', worktree: dir, file: 'whatever.txt', label: 'whatever.txt' }, ctx);
   assert.equal(ctx.S.mode, 'docview');
@@ -126,7 +127,7 @@ test('back-to-drilldown-from-doc: drillFocus/drillChangesIndex survive the round
       docTitle: null, docBody: null, docScroll: 0,
     },
   };
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-ctl-drilldown-roundtrip-'));
+  const dir = mkTmpDir('concertino-ctl-drilldown-roundtrip-');
   drilldownCtl.handle({ type: 'open-diff-doc', worktree: dir, file: 'x.txt', label: 'x.txt' }, ctx);
   assert.equal(ctx.S.mode, 'docview');
   assert.ok(ctx.S.docTitle);

@@ -4,6 +4,11 @@
 # Run: bash test/scripts/local-provider-render.test.sh
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+trap con181_cleanup_scratch EXIT
+
 export NO_COLOR=1
 unset FORCE_COLOR
 

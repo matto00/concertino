@@ -3,6 +3,11 @@
 # Run: bash test/scripts/next-ticket-id.test.sh
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+trap con181_cleanup_scratch EXIT
+
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/next-ticket-id.sh"
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok   $1"; }

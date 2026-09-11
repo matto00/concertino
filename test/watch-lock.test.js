@@ -6,9 +6,10 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const watchLock = require('../lib/ui/watch-lock');
+const { mkTmpDir } = require('./support/tmp');
 
 function tmpRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-lock-'));
+  return mkTmpDir('concertino-lock-');
 }
 
 test('acquire on a clean repo succeeds and writes the lock', () => {

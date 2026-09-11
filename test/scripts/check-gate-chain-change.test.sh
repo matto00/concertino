@@ -5,6 +5,11 @@
 # throwaway `mktemp -d` fixture repo, never a reimplementation.
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+trap con181_cleanup_scratch EXIT
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="$ROOT/core/scripts/check-gate-chain-change.sh"
 PASS=0; FAIL=0

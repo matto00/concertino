@@ -11,6 +11,12 @@
 # lines are.
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh. This file
+# already installs its own EXIT trap(s) below (for $WORK/$MAIN), so those
+# traps are extended to also remove $CON181_SCRATCH_TMPDIR.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok   $1"; }
@@ -44,7 +50,7 @@ new_main() {
 echo "concertino doctor (rendered artifacts)"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK" "$CON181_SCRATCH_TMPDIR"' EXIT
 OUT="$WORK/doctor.txt"
 
 # Stub the harness CLIs generic.json declares (currently just claude-code) so
@@ -106,7 +112,7 @@ hasnt "sync clears the warnings" "concertino sync" "$OUT"
 # divergence note. Uses throwaway copy to ensure clean isolation, following
 # the pattern in sync-core-resolution.test.sh.
 MAIN="$(new_main)"
-trap 'rm -rf "$WORK" "$MAIN"' EXIT
+trap 'rm -rf "$WORK" "$MAIN" "$CON181_SCRATCH_TMPDIR"' EXIT
 git -C "$MAIN" worktree add -q "$MAIN/wt" -b feat-roles || { bad "CON-36 worktree setup"; exit 1; }
 WT="$MAIN/wt"
 

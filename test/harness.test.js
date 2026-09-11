@@ -376,7 +376,7 @@ test('resolveModelsForPlan passes the provider through as CONCERTINO_PROVIDER', 
   // A stub resolve-speed.sh that simply echoes what it was given, so this
   // pins the SEAM (env reaches the script) without depending on jq or on a
   // rendered speeds.json.
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-rsp-'));
+  const root = mkTmpDir('concertino-rsp-');
   const dir = path.join(root, 'scripts', 'concertino');
   fs.mkdirSync(dir, { recursive: true });
   const script = path.join(dir, 'resolve-speed.sh');
@@ -399,6 +399,7 @@ test('resolveModelsForPlan passes the provider through as CONCERTINO_PROVIDER', 
 // unreadable on a phone — the surface RC exists to serve.
 
 const { sessionNameFor, withSessionName, SESSION_NAME_MAX } = require('../lib/ui/harness');
+const { mkTmpDir } = require('./support/tmp');
 
 test('sessionNameFor combines the ticket id and title', () => {
   assert.equal(sessionNameFor('CON-79', 'Codex prompt not expanded'),

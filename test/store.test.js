@@ -6,9 +6,10 @@ const os = require('node:os');
 const path = require('node:path');
 
 const store = require('../lib/ui/store');
+const { mkTmpDir } = require('./support/tmp');
 
 function tmpRoot(files) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-store-'));
+  const root = mkTmpDir('concertino-store-');
   for (const [ticket, lines] of Object.entries(files || {})) {
     const dir = path.join(root, '.concertino', 'runs', ticket);
     fs.mkdirSync(dir, { recursive: true });
@@ -61,7 +62,7 @@ test('listTickets lists run directories', () => {
 });
 
 test('listTickets on a repo with no runs is empty', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-store-'));
+  const root = mkTmpDir('concertino-store-');
   assert.deepEqual(store.listTickets(root), []);
 });
 
@@ -95,7 +96,7 @@ test('readAll(root, cache): unchanged file returns the SAME events array on a se
 });
 
 test('readAll(root, cache): appended complete lines are picked up incrementally, in order, with correct malformed accounting', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-store-'));
+  const dir = mkTmpDir('concertino-store-');
   const root = dir;
   const runDir = path.join(root, '.concertino', 'runs', 'HEL-51');
   fs.mkdirSync(runDir, { recursive: true });
@@ -116,7 +117,7 @@ test('readAll(root, cache): appended complete lines are picked up incrementally,
 });
 
 test('readAll(root, cache): a truncated/rewritten file is read fresh, without throwing', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-store-'));
+  const dir = mkTmpDir('concertino-store-');
   const root = dir;
   const runDir = path.join(root, '.concertino', 'runs', 'HEL-52');
   fs.mkdirSync(runDir, { recursive: true });
@@ -160,7 +161,7 @@ test('readAll(root, cache): a ticket removed from disk is absent from the next r
 });
 
 test('readAll(root) with no cache argument behaves exactly as it does today: a full read, no cross-call persistence', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-store-'));
+  const dir = mkTmpDir('concertino-store-');
   const root = dir;
   const runDir = path.join(root, '.concertino', 'runs', 'HEL-55');
   fs.mkdirSync(runDir, { recursive: true });
@@ -191,7 +192,7 @@ test('writes the decision as { answer: <value> }', () => {
 });
 
 test('creates the run directory if it does not already exist', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-store-'));
+  const root = mkTmpDir('concertino-store-');
   const result = store.writeAnswer(root, 'HEL-21', 'deny');
   assert.equal(result.ok, true);
   assert.equal(fs.existsSync(store.answerPath(root, 'HEL-21')), true);

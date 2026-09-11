@@ -6,12 +6,13 @@ const os = require('node:os');
 const path = require('node:path');
 
 const retention = require('../lib/ui/retention');
+const { mkTmpDir } = require('./support/tmp');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = Date.parse('2026-07-28T00:00:00Z');
 
 function tmpRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-retention-'));
+  return mkTmpDir('concertino-retention-');
 }
 
 // Writes a run's log with the given lines, then backdates the file's mtime

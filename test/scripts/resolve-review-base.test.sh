@@ -8,6 +8,12 @@
 # repo with a real bare "origin" remote, never a reimplementation.
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh. This
+# file already installs its own EXIT trap below, so cleanup() calls
+# con181_cleanup_scratch instead of a second `trap ... EXIT`.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="$ROOT/core/scripts/resolve-review-base.sh"
 PASS=0; FAIL=0
@@ -21,7 +27,7 @@ is_sha(){ if printf '%s' "$2" | grep -qE '^[0-9a-f]{40}$'; then ok "$1"; else ba
 echo "resolve-review-base.sh (CON-152)"
 
 CLEANUP_DIRS=()
-cleanup() { local d; for d in "${CLEANUP_DIRS[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done; }
+cleanup() { con181_cleanup_scratch; local d; for d in "${CLEANUP_DIRS[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done; }
 trap cleanup EXIT
 
 # --- Fixture: a bare "origin" + a worktree-like clone branched off it -------

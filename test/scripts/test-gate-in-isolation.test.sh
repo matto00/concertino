@@ -12,6 +12,11 @@
 # run later exercises — see design.md Decision 5 / the Risks section.
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+trap con181_cleanup_scratch EXIT
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="$ROOT/core/scripts/test-gate-in-isolation.sh"
 FIXTURES_DIR="$ROOT/test/scripts/fixtures/gate-in-isolation"

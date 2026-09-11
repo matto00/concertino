@@ -1,6 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
+const { mkTmpDir } = require('./support/tmp');
 const {
   createQueue, tick, isIdle, shouldTick, reconcileRestored, createRestoredQueue, forceStart,
   enqueueOne, clearPending,
@@ -613,7 +614,7 @@ test('queue-cache round-trips perTicket and drops malformed entries', () => {
   const path = require('node:path');
   const queue = require('../lib/ui/queue');
   const queueCache = require('../lib/ui/queue-cache');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-qc-pt-'));
+  const root = mkTmpDir('concertino-qc-pt-');
   const spec = { command: 'opencode --prompt "/concertino-deliver {{TICKET}}"', env: { CONCERTINO_PROVIDER: 'ollama' } };
   const q = queue.createQueue(['CON-9'], 1, 'claude "x {{TICKET}}"', true, { 'CON-9': spec });
   queueCache.write(root, q, 'sess-1', Date.now());

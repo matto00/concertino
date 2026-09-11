@@ -15,6 +15,12 @@
 # test/watch.test.js's own CON-112 tests.
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh. This
+# file already installs its own EXIT trap below, so cleanup() calls
+# con181_cleanup_scratch instead of a second `trap ... EXIT`.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok   $1"; }
@@ -79,6 +85,7 @@ KR_WORK="$(mktemp -d)"
 printf '{"dashboard":{"tmuxSession":"%s","launchCommand":"sleep 60 # {{TICKET}}"}}' "$KR_SESSION" \
   > "$KR_WORK/concertino.config.json"
 cleanup() {
+  con181_cleanup_scratch
   tmux kill-session -t "$SESSION" 2>/dev/null
   tmux kill-session -t "$KR_SESSION" 2>/dev/null
   # Defined further down (nounset-safe): a timeout/interrupt hitting this trap

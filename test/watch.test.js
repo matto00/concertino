@@ -13,6 +13,7 @@ const {
 } = require('../lib/ui/watch');
 const { splitKeys } = require('../lib/ui/frame');
 const { padTo, visibleLength } = require('../lib/ui/format');
+const { mkTmpDir } = require('./support/tmp');
 
 // CON-17: the flicker was a blank frame between an \x1b[2J full clear and the
 // repaint. buildFrame() is the steady-state redraw path's entire escape-
@@ -538,7 +539,7 @@ test('reap.reapFinished runs once per draw(), against the runs snapshot reduce()
   const path = require('node:path');
   const { EventEmitter } = require('node:events');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-reap-'));
+  const root = mkTmpDir('concertino-watch-reap-');
   // A real, on-disk terminal run — reduce() reads this file for real; only
   // tmux itself (session.listWindows()) is faked.
   const runDir = path.join(root, '.concertino', 'runs', 'HEL-99');
@@ -649,7 +650,7 @@ test('canonicalHarness passes codex and claude-code through unchanged', () => {
 // invoked it with, without depending on the real script's own resolution
 // logic (already covered by test/scripts/resolve-speed.test.sh).
 function fakeProjectRoot() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-test-'));
+  const root = mkTmpDir('concertino-watch-test-');
   const scriptsDir = path.join(root, 'scripts', 'concertino');
   fs.mkdirSync(scriptsDir, { recursive: true });
   const scriptPath = path.join(scriptsDir, 'resolve-speed.sh');
@@ -680,7 +681,7 @@ test('resolveModelsForPlan is called with the CANONICAL harness id, never the CL
 });
 
 test('resolveModelsForPlan returns null (never throws) when the script is missing', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-test-'));
+  const root = mkTmpDir('concertino-watch-test-');
   try {
     assert.doesNotThrow(() => resolveModelsForPlan(root, 'fast', 'claude-code'));
     assert.equal(resolveModelsForPlan(root, 'fast', 'claude-code'), null);
@@ -690,7 +691,7 @@ test('resolveModelsForPlan returns null (never throws) when the script is missin
 });
 
 test('resolveModelsForPlan returns null (never throws) when the script exits non-zero', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-test-'));
+  const root = mkTmpDir('concertino-watch-test-');
   const scriptsDir = path.join(root, 'scripts', 'concertino');
   fs.mkdirSync(scriptsDir, { recursive: true });
   const scriptPath = path.join(scriptsDir, 'resolve-speed.sh');
@@ -705,7 +706,7 @@ test('resolveModelsForPlan returns null (never throws) when the script exits non
 });
 
 test('resolveModelsForPlan returns null (never throws) on malformed JSON output', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-test-'));
+  const root = mkTmpDir('concertino-watch-test-');
   const scriptsDir = path.join(root, 'scripts', 'concertino');
   fs.mkdirSync(scriptsDir, { recursive: true });
   const scriptPath = path.join(scriptsDir, 'resolve-speed.sh');
@@ -756,7 +757,7 @@ test('sessionsAutoRefreshDue is false for any other mode, even on a multiple-of-
 test('v opens the sessions screen from the fleet, populated with a fresh discovery pass; Escape returns to the fleet', async () => {
   const { EventEmitter } = require('node:events');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-sessions-'));
+  const root = mkTmpDir('concertino-watch-sessions-');
 
   const watchPath = require.resolve('../lib/ui/watch');
   const sessionPath = require.resolve('../lib/ui/session');
@@ -849,7 +850,7 @@ test('ticket-text.resolve runs once per draw() while mode is drilldown, and not 
   const path = require('node:path');
   const { EventEmitter } = require('node:events');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-tickettext-'));
+  const root = mkTmpDir('concertino-watch-tickettext-');
   const runDir = path.join(root, '.concertino', 'runs', 'HEL-99');
   fs.mkdirSync(runDir, { recursive: true });
   // A live (not finished) run: only run.start, no run.end — so reap.js's
@@ -962,8 +963,8 @@ test('CHANGES: a worktree with real changes shows the diff-stat on screen; a rem
   const { execFileSync } = require('node:child_process');
   const { EventEmitter } = require('node:events');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-changes-'));
-  const worktree = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-changes-wt-'));
+  const root = mkTmpDir('concertino-watch-changes-');
+  const worktree = mkTmpDir('concertino-watch-changes-wt-');
   execFileSync('git', ['init', '-q'], { cwd: worktree });
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: worktree });
   execFileSync('git', ['config', 'user.name', 'Test'], { cwd: worktree });
@@ -1063,7 +1064,7 @@ test('CHANGES: a worktree with real changes shows the diff-stat on screen; a rem
 test('repeated j past the visible window scrolls the fleet view and keeps the marker on the right run', async () => {
   const { EventEmitter } = require('node:events');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-scroll-'));
+  const root = mkTmpDir('concertino-watch-scroll-');
   // 8 delivered runs — more than one page of DONE (MAX_FINISHED = 5).
   // `t` decreases as `i` increases, so lastActivity (reducer.js) sorts them
   // HEL-200..HEL-207 in that exact order — index k in the rendered fleet is
@@ -1172,7 +1173,7 @@ test('repeated j past the visible window scrolls the fleet view and keeps the ma
 test('scrolling back up with k brings a short RUNNING section back into view when the selection reaches it', async () => {
   const { EventEmitter } = require('node:events');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-scroll-up-'));
+  const root = mkTmpDir('concertino-watch-scroll-up-');
 
   // One NEEDS YOU run (index 0), one RUNNING run (index 1, no run.end — a
   // live window, per the fake session below), and 10 DONE runs (indices
@@ -1288,7 +1289,7 @@ test('scrolling back up with k brings a short RUNNING section back into view whe
 test('a digit press jumps directly to a scrolled-past section and scrolls it back into view', async () => {
   const { EventEmitter } = require('node:events');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-jump-'));
+  const root = mkTmpDir('concertino-watch-jump-');
 
   const needsYouDir = path.join(root, '.concertino', 'runs', 'HEL-1');
   fs.mkdirSync(needsYouDir, { recursive: true });
@@ -1389,7 +1390,7 @@ test('a digit press jumps directly to a scrolled-past section and scrolls it bac
 test("'/' + typing + enter jumps directly to a scrolled-past section's matching row, like a digit press does", async () => {
   const { EventEmitter } = require('node:events');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-search-jump-'));
+  const root = mkTmpDir('concertino-watch-search-jump-');
 
   const needsYouDir = path.join(root, '.concertino', 'runs', 'HEL-1');
   fs.mkdirSync(needsYouDir, { recursive: true });
@@ -1493,7 +1494,7 @@ test("'/' + typing + enter jumps directly to a scrolled-past section's matching 
 test('esc cancels the search prompt with no state change — selected/scrollOffset/focus are exactly as before `/` was pressed', async () => {
   const { EventEmitter } = require('node:events');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-search-cancel-'));
+  const root = mkTmpDir('concertino-watch-search-cancel-');
   for (const ticket of ['HEL-1', 'HEL-2', 'HEL-3']) {
     const runDir = path.join(root, '.concertino', 'runs', ticket);
     fs.mkdirSync(runDir, { recursive: true });
@@ -1561,7 +1562,7 @@ test('esc cancels the search prompt with no state change — selected/scrollOffs
 test('enter with no match leaves the search prompt open, value unchanged — a no-op, not a cancel', async () => {
   const { EventEmitter } = require('node:events');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-search-nomatch-'));
+  const root = mkTmpDir('concertino-watch-search-nomatch-');
   const runDir = path.join(root, '.concertino', 'runs', 'HEL-1');
   fs.mkdirSync(runDir, { recursive: true });
   fs.writeFileSync(path.join(runDir, 'events.jsonl'), JSON.stringify({ t: 1000, kind: 'run.start' }) + '\n');
@@ -1624,7 +1625,7 @@ test('jumping into QUEUED focus, moving the cursor, and exiting leaves the run s
   const { EventEmitter } = require('node:events');
   const queueCache = require('../lib/ui/queue-cache');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-queuefocus-'));
+  const root = mkTmpDir('concertino-watch-queuefocus-');
 
   for (const ticket of ['HEL-1', 'HEL-2']) {
     const runDir = path.join(root, '.concertino', 'runs', ticket);
@@ -1729,7 +1730,7 @@ test('a mouse click on a run row while QUEUED-focused clears S.multiSelect.queue
   const { EventEmitter } = require('node:events');
   const queueCache = require('../lib/ui/queue-cache');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-queueclick-'));
+  const root = mkTmpDir('concertino-watch-queueclick-');
 
   for (const ticket of ['HEL-1', 'HEL-2']) {
     const runDir = path.join(root, '.concertino', 'runs', ticket);
@@ -1851,7 +1852,7 @@ test('force-start: f opens a confirmation, any key cancels, y actually starts th
   const { EventEmitter } = require('node:events');
   const queueCache = require('../lib/ui/queue-cache');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-forcestart-'));
+  const root = mkTmpDir('concertino-watch-forcestart-');
 
   queueCache.write(root, {
     pending: ['CON-90'], inFlight: new Set(), maxConcurrent: 1, launchCommand: null,
@@ -1948,7 +1949,7 @@ test('Clear Queue: C opens a confirmation, any key cancels, y drops pending and 
   const { EventEmitter } = require('node:events');
   const queueCache = require('../lib/ui/queue-cache');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-clearqueue-'));
+  const root = mkTmpDir('concertino-watch-clearqueue-');
 
   queueCache.write(root, {
     pending: ['CON-90', 'CON-91'], inFlight: new Set(), maxConcurrent: 1, launchCommand: null,
@@ -2036,7 +2037,7 @@ test('Clear Queue: C opens a confirmation, any key cancels, y drops pending and 
 
 test('every frame begins with the persistent top bar naming the project and current screen', async () => {
   const { EventEmitter } = require('node:events');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-topbar-'));
+  const root = mkTmpDir('concertino-watch-topbar-');
   const runDir = path.join(root, '.concertino', 'runs', 'HEL-1');
   fs.mkdirSync(runDir, { recursive: true });
   fs.writeFileSync(path.join(runDir, 'events.jsonl'),
@@ -2118,7 +2119,7 @@ test('every frame begins with the persistent top bar naming the project and curr
 // exercise the shrink path at all — measured before writing this).
 function withWatchHarness({ tickets, rows, cols, attach }, body) {
   const { EventEmitter } = require('node:events');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-cache-'));
+  const root = mkTmpDir('concertino-watch-cache-');
   for (let i = 0; i < tickets; i++) {
     const runDir = path.join(root, '.concertino', 'runs', 'HEL-' + (200 + i));
     fs.mkdirSync(runDir, { recursive: true });
@@ -2429,7 +2430,7 @@ test('CON-112 task 1.7: quit() removes the uncaughtException handler — no leak
 test('CON-112 task 1.5/1.7: an uncaught exception restores the FULL terminal state (raw mode, alt-screen, ' +
   'mouse mode, cursor) exactly once, surfaces the error, and exits — a second exception cannot double-write', async () => {
   const { EventEmitter } = require('node:events');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-crash-'));
+  const root = mkTmpDir('concertino-watch-crash-');
   const runDir = path.join(root, '.concertino', 'runs', 'HEL-1');
   fs.mkdirSync(runDir, { recursive: true });
   fs.writeFileSync(path.join(runDir, 'events.jsonl'), JSON.stringify({ t: 1000, kind: 'run.start' }) + '\n');
@@ -2575,7 +2576,7 @@ test('the first redraw after an attach that THREW also repaints every row', asyn
 // itself only ever writes a bare run.start).
 function withEscalationHistoryHarness({ rows, cols, runs }, body) {
   const { EventEmitter } = require('node:events');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-escalation-history-'));
+  const root = mkTmpDir('concertino-watch-escalation-history-');
   for (const r of runs) {
     const runDir = path.join(root, '.concertino', 'runs', r.ticket);
     fs.mkdirSync(runDir, { recursive: true });
@@ -2740,7 +2741,7 @@ test('CON-107: open a resolved historical entry, Escape, then open a still-live 
 function setupQuickStartHarness(tickets, over) {
   const { EventEmitter } = require('node:events');
   const cacheModule = require('../lib/ui/cache');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-quickstart-'));
+  const root = mkTmpDir('concertino-watch-quickstart-');
   cacheModule.write(root, { tickets, epics: [] }, Date.now());
 
   const watchPath = require.resolve('../lib/ui/watch');
@@ -3303,7 +3304,7 @@ test('t on a DONE row opens the ticket detail view (view-ticket), and esc return
 function setupLaunchPadHarness(tickets, epics, over) {
   const { EventEmitter } = require('node:events');
   const cacheModule = require('../lib/ui/cache');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-launchpad-'));
+  const root = mkTmpDir('concertino-watch-launchpad-');
   cacheModule.write(root, { tickets, epics }, Date.now());
 
   const watchPath = require.resolve('../lib/ui/watch');
@@ -3888,7 +3889,7 @@ test('a project still configured "manual" gets the local launch pad it was promi
 // production.
 function setupLaunchPadRefreshHarness(linearOverrides) {
   const { EventEmitter } = require('node:events');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-launchpad-refresh-'));
+  const root = mkTmpDir('concertino-watch-launchpad-refresh-');
 
   const watchPath = require.resolve('../lib/ui/watch');
   const sessionPath = require.resolve('../lib/ui/session');
@@ -4181,7 +4182,7 @@ test('a cold cache performs no ticket fetch and no team-resolution lookup until 
 
 function setupTicketDraftHarness(overrides) {
   const { EventEmitter } = require('node:events');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-ticketdraft-'));
+  const root = mkTmpDir('concertino-watch-ticketdraft-');
 
   const watchPath = require.resolve('../lib/ui/watch');
   const sessionPath = require.resolve('../lib/ui/session');
@@ -4557,7 +4558,7 @@ test('the scrollOffset re-clamp forwards every tail-lengthening opt to gridModeE
   const { EventEmitter } = require('node:events');
   const fleetScreen = require('../lib/ui/screens/fleet');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-gridsync-'));
+  const root = mkTmpDir('concertino-watch-gridsync-');
 
   // The exact fixture fleet.test.js's own "gridModeEligible matches
   // renderFleet's own grid-mode decision" test uses (needs-you/failed/
@@ -4752,7 +4753,7 @@ test('scrollToShow forwards every tail-lengthening opt (including forceStartConf
   const { EventEmitter } = require('node:events');
   const fleetScreen = require('../lib/ui/screens/fleet');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-scrollshow-'));
+  const root = mkTmpDir('concertino-watch-scrollshow-');
   for (let i = 0; i < 3; i++) {
     const runDir = path.join(root, '.concertino', 'runs', 'HEL-' + (400 + i));
     fs.mkdirSync(runDir, { recursive: true });
@@ -4853,7 +4854,7 @@ test('the scrollOffset re-clamp\'s heightOpts carries bulkConfirm/bulkResult (mi
   const { EventEmitter } = require('node:events');
   const fleetScreen = require('../lib/ui/screens/fleet');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-heightopts-'));
+  const root = mkTmpDir('concertino-watch-heightopts-');
   const runDir = path.join(root, '.concertino', 'runs', 'HEL-500');
   fs.mkdirSync(runDir, { recursive: true });
   fs.writeFileSync(path.join(runDir, 'events.jsonl'), JSON.stringify({ t: 1000, kind: 'run.start' }) + '\n');
@@ -4933,7 +4934,7 @@ test('the scrollOffset re-clamp\'s heightOpts carries bulkConfirm/bulkResult (mi
 test('pressing j while S.bulkResult is set both clears the result list AND moves the cursor, in the same keypress (tasks.md 9.5)', async () => {
   const { EventEmitter } = require('node:events');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-bulkresult-'));
+  const root = mkTmpDir('concertino-watch-bulkresult-');
   // Two FAILED runs, HEL-100 (t:1000, more recent -> index 0) and HEL-101
   // (t:990 -> index 1) — verified against the real store/reduce pipeline:
   // marking HEL-100 done re-sorts the flat `runs` array to
@@ -5045,7 +5046,7 @@ test('pressing j while S.bulkResult is set both clears the result list AND moves
 
 function setupSettingsHarness(config) {
   const { EventEmitter } = require('node:events');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-settings-'));
+  const root = mkTmpDir('concertino-watch-settings-');
   const cfgPath = path.join(root, 'concertino.config.json');
   fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2) + '\n');
 
@@ -5308,7 +5309,7 @@ function configLibForOrder() {
 // `execFileSync('xdg-open', ...)` lookup itself.
 const SHELL = fs.existsSync('/bin/sh') ? '/bin/sh' : '/usr/bin/bash';
 function fakeXdgOpenDir({ exitCode, missing }) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-xdg-open-'));
+  const dir = mkTmpDir('concertino-xdg-open-');
   if (!missing) {
     const bin = path.join(dir, 'xdg-open');
     fs.writeFileSync(bin, '#!' + SHELL + '\nexit ' + exitCode + '\n');
@@ -5359,7 +5360,7 @@ test('openInBrowser throws when xdg-open is not on PATH at all', () => {
 // stdout via require.cache, no real tmux).
 function setupPrEvidenceHarness() {
   const { EventEmitter } = require('node:events');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-pr-'));
+  const root = mkTmpDir('concertino-watch-pr-');
   const runDir = path.join(root, '.concertino', 'runs', 'HEL-77');
   fs.mkdirSync(runDir, { recursive: true });
   const events = [
@@ -5523,7 +5524,7 @@ test('watch() refuses to start when a live dashboard already owns the repo', asy
   const path = require('node:path');
   const { EventEmitter } = require('node:events');
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-watch-lock-'));
+  const root = mkTmpDir('concertino-watch-lock-');
   const watchLock = require('../lib/ui/watch-lock');
   // A live holder: this very process's pid, planted as if another dashboard
   // owned the repo (acquire() only ever refuses on a pid that is not the
