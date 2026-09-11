@@ -404,16 +404,31 @@ The tools you use to watch the fleet lie in specific, learnable ways.
   shell instead of a prior instance), and stat-only `-L` reads (it never opens
   a transcript's content).
 - **The lanes file is the watchdog's liveness input — keep it current.**
-  `<lanes-file>` is a plain "`<agentId> <label>`" list you maintain and the
-  script re-reads on every poll: remove a line the moment that lane completes
-  or is deliberately parked, and add a line the moment a new lane is
-  dispatched — the watchdog runs whenever any lane is dispatched, not only
-  for multi-lane batches. **Stop the watchdog process in the same turn you
-  remove the last live lane.** The script stands down silently (exit 0, no
-  trip) when the file is empty, but its own lifetime should still match the
-  lanes' lifetime rather than relying on that fallback — a watchdog pointed at
-  an empty lanes file for a batch that's actually still running is just as
-  wrong as one pointed at finished tickets it still thinks are live.
+  `<lanes-file>` is a plain "`<agentId> <label> [<TICKET>]`" list you
+  maintain and the script re-reads on every poll: remove a line the moment
+  that lane completes or is deliberately parked, and add a line the moment a
+  new lane is dispatched — the watchdog runs whenever any lane is dispatched,
+  not only for multi-lane batches. Edit it atomically (write a temp file,
+  then `mv` over the original) rather than truncating and rewriting in place
+  — a mid-poll read of a truncated-but-not-yet-rewritten file is
+  indistinguishable from "no lanes live" and will read as an unintended
+  stand-down for that one poll.
+  **Stop the watchdog process in the same turn you remove the last live
+  lane.** The script stands down silently (exit 0, no trip) when the file is
+  empty, but its own lifetime should still match the lanes' lifetime rather
+  than relying on that fallback — a watchdog pointed at an empty lanes file
+  for a batch that's actually still running is just as wrong as one pointed
+  at finished tickets it still thinks are live.
+- **Add the ticket id when you have one — it makes "forgot to remove a
+  finished line" survivable.** The optional 3rd field on a lane's line names
+  the Linear ticket that lane is delivering. The watchdog then checks that
+  ticket's own `events.jsonl` for a terminal `run.end` and treats the lane as
+  complete the moment that appears, independent of whether you ever edited
+  the lanes file — this is the actual fix for the 2026-09-10 incident (a
+  watchdog that tripped FLEET 15 minutes after a ticket had already merged,
+  because the operator forgot to stop it and the file still named a finished
+  lane). Removing the line remains the primary mechanism; the ticket id is a
+  second, independent line of defense against forgetting to.
 
 ## 15. Knowing when to stop a review loop
 

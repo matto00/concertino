@@ -83,17 +83,36 @@ file — so they stay generic and the config is the single source of truth.
 - `watchdog.sh` is a driver's whenever-a-lane-is-dispatched tool, not
   optional tooling for large batches only (CON-177) — it runs whenever any
   lane is dispatched. It never reads transcript content (stat only, `-L`
-  followed — tasks-dir entries are symlinks), uses a lockfile singleton
-  (never pgrep-and-kill, which has matched and killed the wrapper shell
-  instead of a prior instance), and takes the set of lanes still in flight as
-  an explicit liveness input re-read on every poll rather than inferring
-  stall from silence — a lanes file with every line removed (all lanes
-  completed normally) makes it stand down silently, exit 0, no trip banner.
-  Both its FLEET (default 15 min, all transcripts quiet) and LANE (default
-  3 h minimum, one tracked lane's own transcript quiet) trips print a
+  followed — tasks-dir entries are symlinks), validates both arguments at
+  startup (a missing tasks-dir or lanes-file is a usage error, exit 2 — never
+  a silent stand-down), and warns once (stderr) rather than either failing or
+  polling forever silent when a tracked lane has no transcript at all.
+  It takes the set of lanes still in flight as an explicit liveness input
+  re-read on every poll rather than inferring stall from silence — a lanes
+  file with every line removed (all lanes completed normally) makes it stand
+  down silently, exit 0, no trip banner. A lane's line may also carry a
+  ticket id (`<agentId> <label> [<TICKET>]`); once that ticket's
+  `.concertino/runs/<TICKET>/events.jsonl` (resolved against the main
+  checkout, same as `emit-event.sh`) records a terminal `run.end`, the lane
+  counts as complete automatically — so a forgotten lane line for a ticket
+  that actually finished can no longer produce a false FLEET trip, which is
+  what happened in the field on 2026-09-10. The lanes file should be edited
+  atomically (write a temp file in the same directory, then `mv` over the
+  original) — a plain truncate-then-rewrite caught mid-poll briefly reads as
+  empty, which is otherwise indistinguishable from "no lanes in flight".
+  Its lock lives at `<lanes-file's directory>/watchdog.pid.d/` — a
+  *directory*, not a plain file, so acquiring it is a single atomic `mkdir`
+  rather than a separate read-then-write that a second instance could race.
+  Before ever signalling a PID recorded there, it confirms (via
+  `/proc/<pid>/cmdline` or `ps`) that the PID is actually a `watchdog.sh`
+  process — a stale lock's PID can be reused by an unrelated process after a
+  crash, and this never signals a process it hasn't identified. Both its
+  FLEET (default 15 min, all transcripts quiet) and LANE (default 3 h
+  minimum, one tracked lane's own transcript quiet) trips print a
   diagnose-first message and never instruct or perform a kill of a tracked
-  lane. See its own header comment for the full contract and env overrides
-  used by its tests.
+  lane; a superseded instance exits 0 quietly rather than surfacing SIGTERM's
+  raw 143 to whatever coordinator is watching it. See its own header comment
+  for the full contract and env overrides used by its tests.
 
 ## Scripts
 
