@@ -277,7 +277,13 @@ if [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
   # in") means the text is prose, not a list separator.
   is_clean_connector() {
     local stripped
-    stripped="$(printf '%s' "$1" | sed -E 's/,//g; s/\band\b//g; s/[[:space:]]//g')"
+    # cold-review cycle 4: '/' accepted alongside comma/"and" as a clean
+    # list separator for a BARE span's before/after context (this
+    # function is no longer consulted for full-path spans at all -- see
+    # ELIGIBLE below -- but a bare basename following a full path via
+    # "`a.tsx` / `b.css`"-style separation should read the same way a
+    # comma would).
+    stripped="$(printf '%s' "$1" | sed -E 's/[,/]//g; s/\band\b//g; s/[[:space:]]//g')"
     [ -z "$stripped" ]
   }
   # ELIGIBLE model (cold-review cycles 2-3): which spans count as declared
@@ -350,11 +356,38 @@ if [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
         if [ "$((SPAN_I + 1))" -lt "$PARTS_COUNT" ]; then
           AFTER_CTX="${PARTS[$((SPAN_I + 1))]}"
         fi
+        # DIAG_STRIPPED/IS_FULL computed FIRST (cold-review cycle 4): the
+        # eligibility decision itself now branches on full-vs-bare, so this
+        # can no longer be deferred to the "if ELIGIBLE" block below.
+        DIAG_STRIPPED="$(strip_line_suffix "$RAW")"
+        IS_FULL_SPAN=0
+        case "$DIAG_STRIPPED" in
+          */*) IS_FULL_SPAN=1 ;;
+        esac
+        # ELIGIBLE (cold-review cycle 4, fixing an over-narrowing from
+        # cycle 3): a FULL path (already contains "/") is ALWAYS eligible
+        # on any scanned line, regardless of what surrounds it or how many
+        # other spans share the line -- this restores CON-151's original,
+        # always-true design ("every backtick-quoted, path-shaped span on
+        # a qualifying bullet counts") for the one span shape that carries
+        # no inheritance risk. A real helio commit (d847fd31) declared
+        # `` `a.tsx` / `a.css` `` -- two full paths separated by " / ",
+        # neither a comma nor "and" -- and main has always accepted both;
+        # cycle 3's connector-cleanliness gate, applied uniformly to every
+        # span, wrongly narrowed that to exactly comma/"and" separators
+        # and started refusing it.
+        #
+        # The connector-cleanliness gate remains, UNCHANGED, for BARE
+        # spans only -- those are the only ones needing directory
+        # inheritance, so they are the only ones where a dirty separator
+        # (prose, a negation, an em-dash) is actually unsafe to trust (the
+        # cycle-2/3 false-accepts were all bare-span cases).
         ELIGIBLE=0
         if [ "$SCAN" -eq 1 ]; then
-          if [ "$UNIT_FIRST_SPAN_SEEN" -eq 0 ]; then
+          if [ "$IS_FULL_SPAN" -eq 1 ]; then
             ELIGIBLE=1
-            UNIT_FIRST_SPAN_SEEN=1
+          elif [ "$UNIT_FIRST_SPAN_SEEN" -eq 0 ]; then
+            ELIGIBLE=1
           elif [ "$IS_CONT_OPEN" -eq 1 ] && [ "$LINE_SPAN_INDEX" -eq 0 ]; then
             if is_clean_connector "$BEFORE_CTX" && is_clean_connector "$AFTER_CTX"; then
               ELIGIBLE=1
@@ -364,6 +397,13 @@ if [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
               ELIGIBLE=1
             fi
           fi
+          # UNIT_FIRST_SPAN_SEEN tracks "has any span in this unit been
+          # processed yet", regardless of which branch granted eligibility
+          # above -- it must be set unconditionally here (not only in the
+          # bare/anchor branch), or a bullet whose very first span happens
+          # to be a full path would never mark the unit as started, and a
+          # later BARE span could wrongly treat itself as the anchor too.
+          UNIT_FIRST_SPAN_SEEN=1
         fi
         # PROSPECTIVE_FULL: what this span would resolve to if it WERE
         # eligible -- itself, if already a full path; otherwise CURRENT_DIR
@@ -374,17 +414,13 @@ if [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
         # apart from "this really is a different file that happens to
         # share a basename" -- a bare span's raw text alone can never
         # answer that on its own.
-        DIAG_STRIPPED="$(strip_line_suffix "$RAW")"
-        case "$DIAG_STRIPPED" in
-          */*) PROSPECTIVE_FULL="$DIAG_STRIPPED" ;;
-          *)
-            if [ -n "$CURRENT_DIR" ]; then
-              PROSPECTIVE_FULL="${CURRENT_DIR}/${DIAG_STRIPPED}"
-            else
-              PROSPECTIVE_FULL="$DIAG_STRIPPED"
-            fi
-            ;;
-        esac
+        if [ "$IS_FULL_SPAN" -eq 1 ]; then
+          PROSPECTIVE_FULL="$DIAG_STRIPPED"
+        elif [ -n "$CURRENT_DIR" ]; then
+          PROSPECTIVE_FULL="${CURRENT_DIR}/${DIAG_STRIPPED}"
+        else
+          PROSPECTIVE_FULL="$DIAG_STRIPPED"
+        fi
         # DIAG_RECORDS (cold-review cycle 3, finding 2): one record per
         # backtick span EVERYWHERE in the file, tab-separated
         # RAW\tSCAN\tELIGIBLE\tBEFORE\tAFTER\tPROSPECTIVE_FULL -- used ONLY
@@ -532,7 +568,17 @@ describe_unexpected_span_issue() {
       *)   core="$stripped" ;;
     esac
     if [ "$core" = "$ubase" ]; then
-      echo "declared as \`${prospective}\` (from raw span \`${raw}\`) -- a different file with the same basename, not this one. Not ambiguous: the two are simply different paths."
+      # cold-review cycle 4 (clerical): a BARE span that was itself
+      # ineligible (blocked by a dirty connector) was never actually
+      # accepted as declaring ANYTHING -- "declared as X" would be false
+      # for it even though X (its prospective, constructed-if-eligible
+      # path) is a genuinely different file from the unexpected one.
+      # Only claim "declared" for a span the parser actually accepted.
+      if [ "$eligible" -eq 1 ]; then
+        echo "declared as \`${prospective}\` (from raw span \`${raw}\`) -- a different file with the same basename, not this one. Not ambiguous: the two are simply different paths."
+      else
+        echo "would resolve to \`${prospective}\` (from raw span \`${raw}\`) if it had been eligible, but it was not accepted as a declaration at all -- and that prospective path is a different file from this one regardless. Not ambiguous: the two are simply different paths."
+      fi
       return 0
     fi
     # Strict grammar found no basename match. Try a LOOSE strip

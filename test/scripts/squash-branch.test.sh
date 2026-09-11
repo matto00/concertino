@@ -2260,8 +2260,18 @@ git -C "$BASE18/primary" branch -M main
 git -C "$BASE18/primary" push -q origin main
 CHANGE_DIR18="spec/changes/con-review-cycle3-diag-demo"
 
-# 18-1: prose-only mention of the EXACT staged path (lib/helper.ts, a
-# full path with a slash), inside a bullet's own descriptive text.
+# 18-1 (revised, cold-review cycle 4): a FULL path (has a slash) mentioned
+# anywhere in a qualifying bullet's own text is ACCEPTED, matching main's
+# original, always-true CON-151 design ("every backtick-quoted, path-
+# shaped span on a qualifying bullet counts") -- verified directly against
+# origin/main's own pristine squash-branch.sh on this exact fixture before
+# writing this assertion (main: RC=0, accepts). Cycle 3's version of this
+# test wrongly expected a REFUSAL here; that was an over-narrowing beyond
+# CON-158/149's actual scope, and is exactly what cycle 4's KeyCap.tsx /
+# KeyCap.css finding (Scenario 19 below) forced reverting for full paths.
+# Only BARE spans (no slash -- 18-2/18-3/18-4 below) keep the
+# connector-cleanliness protection, since only they carry a real
+# directory-inheritance risk.
 BRANCH18_1="$BASE18/branch-1"
 git clone -q "$REMOTE18" "$BRANCH18_1" 2>/dev/null
 git -C "$BRANCH18_1" checkout -q -b feature/review3/18-1 origin/main
@@ -2273,10 +2283,11 @@ echo "a" > "$BRANCH18_1/src/a.ts"
 echo "h" > "$BRANCH18_1/lib/helper.ts"
 commit_all "$BRANCH18_1" "executor commit (prose mention of exact full path)"
 OUT18_1="$("$SCRIPT" "$BRANCH18_1" origin main "review3 diag scenario 1" "$CHANGE_DIR18" 2>&1)"
-if echo "$OUT18_1" | grep -qF "found \`lib/helper.ts\` (the exact same path)" && ! echo "$OUT18_1" | grep -qF "a different file"; then
-  ok "18-1 prose mention of the exact full staged path is reported as found-but-not-declaring, never as 'a different file'"
+RC18_1=$?
+if [ "$RC18_1" -eq 0 ]; then
+  ok "18-1 (revised) a full path mentioned anywhere in a qualifying bullet is accepted, matching main's original design"
 else
-  bad "18-1 prose mention of the exact full staged path is reported as found-but-not-declaring, never as 'a different file'" "output=$OUT18_1"
+  bad "18-1 (revised) a full path mentioned anywhere in a qualifying bullet is accepted, matching main's original design" "exit=$RC18_1 output=$OUT18_1"
 fi
 
 # 18-2: negation bullet, same directory (repro 1's shape) -- message must
@@ -2349,6 +2360,106 @@ if echo "$OUT16G" | grep -qF "a different file with the same basename" && ! echo
   ok "18-5 (= 16g) bare foo.ts vs. actually-staged a/foo.ts is correctly reported as 'a different file'"
 else
   bad "18-5 (= 16g) bare foo.ts vs. actually-staged a/foo.ts is correctly reported as 'a different file'" "output=$OUT16G"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 19 (cold-review cycle 4): the real helio commit d847fd31
+# (openspec/changes/keyboard-shortcut-help-overlay/files-modified.md,
+# line 57) declared two full paths on one bullet separated by " / ", not
+# a comma or "and":
+#   `frontend/src/shared/ui/KeyCap.tsx` / `frontend/src/shared/ui/KeyCap.css`
+# Verified directly against origin/main's own pristine squash-branch.sh
+# (RC=0, both files declared) before writing this test -- main has always
+# accepted every full path on a qualifying bullet regardless of
+# separator. Cycle 3's connector-cleanliness gate, applied uniformly to
+# ALL spans rather than bare ones only, wrongly narrowed that to
+# comma/"and" and started refusing this real commit.
+# ---------------------------------------------------------------------
+echo "Scenario 19: cold-review cycle 4 -- real commit d847fd31's '/'-separated full-path pair"
+
+BASE19="$(mktemp -d)"
+REMOTE19="$BASE19/remote.git"
+git init -q --bare "$REMOTE19"
+git clone -q "$REMOTE19" "$BASE19/primary" 2>/dev/null
+echo "root" > "$BASE19/primary/root.txt"
+commit_all "$BASE19/primary" "init"
+git -C "$BASE19/primary" branch -M main
+git -C "$BASE19/primary" push -q origin main
+CHANGE_DIR19="spec/changes/con-review-cycle4-keycap-demo"
+
+BRANCH19="$BASE19/branch-a"
+git clone -q "$REMOTE19" "$BRANCH19" 2>/dev/null
+git -C "$BRANCH19" checkout -q -b feature/review4/19 origin/main
+mkdir -p "$BRANCH19/$CHANGE_DIR19/" "$BRANCH19/frontend/src/shared/ui"
+cat > "$BRANCH19/$CHANGE_DIR19/files-modified.md" <<'EOF'
+- `frontend/src/shared/ui/KeyCap.tsx` / `frontend/src/shared/ui/KeyCap.css` — NEW shared primitive (design.md Decision 5)
+EOF
+echo "t" > "$BRANCH19/frontend/src/shared/ui/KeyCap.tsx"
+echo "c" > "$BRANCH19/frontend/src/shared/ui/KeyCap.css"
+commit_all "$BRANCH19" "executor commit (real d847fd31 shape)"
+OUT19="$("$SCRIPT" "$BRANCH19" origin main "review4 KeyCap.tsx / KeyCap.css" "$CHANGE_DIR19" 2>&1)"
+RC19=$?
+if [ "$RC19" -eq 0 ]; then
+  ok "19 a '/'-separated pair of full paths (real commit d847fd31) is accepted, both declared"
+else
+  bad "19 a '/'-separated pair of full paths (real commit d847fd31) is accepted, both declared" "exit=$RC19 output=$OUT19"
+fi
+
+# 19b: re-assert Scenario 17's same-directory BARE repros still refuse --
+# this is the critical regression check the review demanded: the fix for
+# 19 (full paths always eligible) must not reopen 17a/17b/17c (all BARE
+# spans, which still require a clean connector).
+if [ "$RC17A" -ne 0 ] && [ "$RC17B" -ne 0 ] && [ "$RC17C" -ne 0 ]; then
+  ok "19b re-assert: 17a/17b/17c (bare-span same-directory false-accepts) still correctly refuse after the full-path eligibility fix"
+else
+  bad "19b re-assert: 17a/17b/17c (bare-span same-directory false-accepts) still correctly refuse after the full-path eligibility fix" "RC17A=$RC17A RC17B=$RC17B RC17C=$RC17C"
+fi
+
+# 19c (clerical fix): a bare span that was ineligible, AND whose
+# constructed (prospective) directory genuinely differs from the real
+# staged file's directory -- landing it in the PASS-2 "different file"
+# branch rather than PASS-1's exact-path branch -- must never be reported
+# as "declared as X". It was never actually accepted as a declaration of
+# anything, so the message must say "would resolve to X" instead.
+BRANCH19C="$BASE19/branch-c"
+git clone -q "$REMOTE19" "$BRANCH19C" 2>/dev/null
+git -C "$BRANCH19C" checkout -q -b feature/review4/19c origin/main
+mkdir -p "$BRANCH19C/$CHANGE_DIR19/" "$BRANCH19C/other" "$BRANCH19C/lib"
+cat > "$BRANCH19C/$CHANGE_DIR19/files-modified.md" <<'EOF'
+- `other/a.ts` — mentions `helper.ts` in passing
+EOF
+echo "a" > "$BRANCH19C/other/a.ts"
+echo "h" > "$BRANCH19C/lib/helper.ts"
+commit_all "$BRANCH19C" "executor commit (ineligible bare span, wrong-directory prospective)"
+OUT19C="$("$SCRIPT" "$BRANCH19C" origin main "review4 clerical wording" "$CHANGE_DIR19" 2>&1)"
+if echo "$OUT19C" | grep -qF "would resolve to \`other/helper.ts\`" && ! echo "$OUT19C" | grep -qF "declared as \`other/helper.ts\`"; then
+  ok "19c clerical: an ineligible bare span's message says 'would resolve to', never 'declared as'"
+else
+  bad "19c clerical: an ineligible bare span's message says 'would resolve to', never 'declared as'" "output=$OUT19C"
+fi
+
+# 19d: a SECOND full-path pair test using a separator that is NEITHER a
+# comma, "and", NOR "/" (an em-dash) -- isolates the "full paths are
+# ALWAYS eligible, unconditionally" rule from the separate "/ is also an
+# accepted connector" change (19 alone could pass on the "/" acceptance
+# by coincidence without the unconditional-full-path rule actually being
+# in effect; this cannot).
+BRANCH19D="$BASE19/branch-d"
+git clone -q "$REMOTE19" "$BRANCH19D" 2>/dev/null
+git -C "$BRANCH19D" checkout -q -b feature/review4/19d origin/main
+mkdir -p "$BRANCH19D/$CHANGE_DIR19/" "$BRANCH19D/pkg"
+cat > "$BRANCH19D/$CHANGE_DIR19/files-modified.md" <<'EOF'
+- `pkg/one.ts` — paired with `pkg/two.ts` as a matched set
+EOF
+echo "1" > "$BRANCH19D/pkg/one.ts"
+echo "2" > "$BRANCH19D/pkg/two.ts"
+commit_all "$BRANCH19D" "executor commit (two full paths, em-dash-prose separator)"
+OUT19D="$("$SCRIPT" "$BRANCH19D" origin main "review4 two full paths, non-slash separator" "$CHANGE_DIR19" 2>&1)"
+RC19D=$?
+if [ "$RC19D" -eq 0 ]; then
+  ok "19d two full paths separated by prose (not comma/and/slash) are BOTH accepted -- the unconditional-full-path rule, isolated from the '/' acceptance"
+else
+  bad "19d two full paths separated by prose (not comma/and/slash) are BOTH accepted -- the unconditional-full-path rule, isolated from the '/' acceptance" "exit=$RC19D output=$OUT19D"
 fi
 
 # ---------------------------------------------------------------------
