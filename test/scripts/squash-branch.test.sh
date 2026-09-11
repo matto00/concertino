@@ -541,7 +541,7 @@ if [ "$RC5B" -ne 0 ] && echo "$OUT5B" | grep -qF "sneaky.txt"; then
 else
   bad "CON-151 a continuation-line path is still undeclared and still trips the guard" "exit=$RC5B output=$OUT5B"
 fi
-if echo "$OUT5B" | grep -q "continuation line carrying no bullet declares nothing"; then
+if echo "$OUT5B" | grep -q "the comma-chain breaks, and the list closes"; then
   ok "CON-151 refusal explains the bullet/continuation format rule"
 else
   bad "CON-151 refusal explains the bullet/continuation format rule" "output: $OUT5B"
@@ -1796,6 +1796,141 @@ if echo "$OUT13M" | grep -qF "Branch restored to pre-squash HEAD"; then
   ok "3.9 CR1 regression is mutation-failable: reverting the gate reproduces the false restoration claim"
 else
   bad "3.9 CR1 regression is mutation-failable: reverting the gate reproduces the false restoration claim" "expected the false claim to reappear; output: $OUT13M"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 14 (CON-158): a `path:line` / `path:line,line,line` annotation on
+# an otherwise well-formed bullet must be read as a declaration of the bare
+# path, not rejected as "not path-shaped". A genuinely undeclared file must
+# still trip the guard, and its refusal must name the actual reason rather
+# than a single fixed hypothesis.
+# ---------------------------------------------------------------------
+echo "Scenario 14: CON-158 -- path:line / path:line,line annotations are accepted"
+
+BASE14="$(mktemp -d)"
+REMOTE14="$BASE14/remote.git"
+git init -q --bare "$REMOTE14"
+git clone -q "$REMOTE14" "$BASE14/primary" 2>/dev/null
+echo "root" > "$BASE14/primary/root.txt"
+commit_all "$BASE14/primary" "init"
+git -C "$BASE14/primary" branch -M main
+git -C "$BASE14/primary" push -q origin main
+CHANGE_DIR14="spec/changes/con-158-demo"
+
+# 14a: single :<line> and comma-joined :<line>,<line>,<line> annotations.
+BRANCH14A="$BASE14/branch-a"
+git clone -q "$REMOTE14" "$BRANCH14A" 2>/dev/null
+git -C "$BRANCH14A" checkout -q -b feature/con-158/CON-158-a origin/main
+mkdir -p "$BRANCH14A/$CHANGE_DIR14" "$BRANCH14A/e2e"
+cat > "$BRANCH14A/$CHANGE_DIR14/files-modified.md" <<'EOF'
+- `e2e/hel910-pipeline-to-dashboard-flow.spec.ts:187` — disambiguated
+- `e2e/hel909-output-picker-panel-sheet.spec.ts:111,184,220` — same
+EOF
+echo "a" > "$BRANCH14A/e2e/hel910-pipeline-to-dashboard-flow.spec.ts"
+echo "b" > "$BRANCH14A/e2e/hel909-output-picker-panel-sheet.spec.ts"
+commit_all "$BRANCH14A" "executor commit (line-annotated declarations)"
+OUT14A="$("$SCRIPT" "$BRANCH14A" origin main "CON-158 line-annotated declarations" "$CHANGE_DIR14" 2>&1)"
+RC14A=$?
+if [ "$RC14A" -eq 0 ]; then
+  ok "CON-158 a :<line> and a :<line>,<line>,<line> annotation both declare the bare path"
+else
+  bad "CON-158 a :<line> and a :<line>,<line>,<line> annotation both declare the bare path" "exit=$RC14A output=$OUT14A"
+fi
+
+# 14b: guards the guard -- a genuinely undeclared file must still trip, and
+# the refusal must name the SPECIFIC reason (basename absent entirely),
+# never the fixed "check the bullet" hypothesis alone.
+BRANCH14B="$BASE14/branch-b"
+git clone -q "$REMOTE14" "$BRANCH14B" 2>/dev/null
+git -C "$BRANCH14B" checkout -q -b feature/con-158/CON-158-b origin/main
+mkdir -p "$BRANCH14B/$CHANGE_DIR14" "$BRANCH14B/e2e"
+cat > "$BRANCH14B/$CHANGE_DIR14/files-modified.md" <<'EOF'
+- `e2e/hel910-pipeline-to-dashboard-flow.spec.ts:187` — disambiguated
+EOF
+echo "a" > "$BRANCH14B/e2e/hel910-pipeline-to-dashboard-flow.spec.ts"
+echo "stray" > "$BRANCH14B/e2e/undeclared-stray.spec.ts"
+commit_all "$BRANCH14B" "executor commit (one declared, one stray)"
+OUT14B="$("$SCRIPT" "$BRANCH14B" origin main "CON-158 stray file still trips" "$CHANGE_DIR14" 2>&1)"
+RC14B=$?
+if [ "$RC14B" -ne 0 ] && echo "$OUT14B" | grep -qF "e2e/undeclared-stray.spec.ts"; then
+  ok "CON-158 a genuinely undeclared file still trips the guard"
+else
+  bad "CON-158 a genuinely undeclared file still trips the guard" "exit=$RC14B output=$OUT14B"
+fi
+if echo "$OUT14B" | grep -qF "no span matching basename 'undeclared-stray.spec.ts'"; then
+  ok "CON-158 refusal names the specific reason (basename absent) rather than a fixed hypothesis"
+else
+  bad "CON-158 refusal names the specific reason (basename absent) rather than a fixed hypothesis" "output: $OUT14B"
+fi
+if echo "$OUT14B" | grep -qF -- "--allow-empty-declaration"; then
+  bad "CON-158 the bypass flag is not suggested on this path" "output: $OUT14B"
+else
+  ok "CON-158 the bypass flag is not suggested on this path"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 15 (CON-149): a single bullet's comma-joined path list, wrapped
+# across several continuation lines with a trailing comma chaining each
+# line to the next, must declare every path on it -- not merely the first
+# full path on the bullet's own first line. This must NOT reopen CON-151's
+# overshoot: a continuation line that is not chained by a trailing comma
+# still declares nothing (Scenario 5b, re-asserted here against the new
+# parser).
+# ---------------------------------------------------------------------
+echo "Scenario 15: CON-149 -- comma-joined bullet wrapped across continuation lines"
+
+BASE15="$(mktemp -d)"
+REMOTE15="$BASE15/remote.git"
+git init -q --bare "$REMOTE15"
+git clone -q "$REMOTE15" "$BASE15/primary" 2>/dev/null
+echo "root" > "$BASE15/primary/root.txt"
+commit_all "$BASE15/primary" "init"
+git -C "$BASE15/primary" branch -M main
+git -C "$BASE15/primary" push -q origin main
+CHANGE_DIR15="spec/changes/con-149-demo"
+
+# 15a: the real HEL-812 shape -- one full path, fourteen-ish bare basenames,
+# comma-chained across wrapped lines.
+BRANCH15A="$BASE15/branch-a"
+git clone -q "$REMOTE15" "$BRANCH15A" 2>/dev/null
+git -C "$BRANCH15A" checkout -q -b feature/con-149/CON-149-a origin/main
+mkdir -p "$BRANCH15A/$CHANGE_DIR15" "$BRANCH15A/scripts/concertino"
+cat > "$BRANCH15A/$CHANGE_DIR15/files-modified.md" <<'EOF'
+- `scripts/concertino/check-agent-merge-permission.sh`, `check-gate-chain-change.sh`,
+  `check-merge-readiness.sh`, `emit-event.sh`, `gather-escalation-context.sh`,
+  `next-report-number.sh`
+  — newly tracked delivery scripts.
+EOF
+for f in check-agent-merge-permission check-gate-chain-change check-merge-readiness emit-event gather-escalation-context next-report-number; do
+  echo "$f" > "$BRANCH15A/scripts/concertino/$f.sh"
+done
+commit_all "$BRANCH15A" "executor commit (wrapped comma list)"
+OUT15A="$("$SCRIPT" "$BRANCH15A" origin main "CON-149 wrapped comma list" "$CHANGE_DIR15" 2>&1)"
+RC15A=$?
+if [ "$RC15A" -eq 0 ]; then
+  ok "CON-149 a comma-joined bullet wrapped onto continuation lines declares every path"
+else
+  bad "CON-149 a comma-joined bullet wrapped onto continuation lines declares every path" "exit=$RC15A output=$OUT15A"
+fi
+
+# 15b: re-assert CON-151 -- a continuation line NOT chained by a trailing
+# comma still declares nothing, even under the new comma-chain parser.
+BRANCH15B="$BASE15/branch-b"
+git clone -q "$REMOTE15" "$BRANCH15B" 2>/dev/null
+git -C "$BRANCH15B" checkout -q -b feature/con-149/CON-149-b origin/main
+mkdir -p "$BRANCH15B/$CHANGE_DIR15"
+cat > "$BRANCH15B/$CHANGE_DIR15/files-modified.md" <<'EOF'
+- `alpha.txt`, `beta.txt` — declared pair; pass `--allow-empty-declaration` to skip
+  `sneaky.txt` — continuation line, carries no bullet, declares nothing
+EOF
+for f in alpha beta sneaky; do echo "$f" > "$BRANCH15B/$f.txt"; done
+commit_all "$BRANCH15B" "executor commit (unchained continuation line)"
+OUT15B="$("$SCRIPT" "$BRANCH15B" origin main "CON-149 unchained continuation still undeclared" "$CHANGE_DIR15" 2>&1)"
+RC15B=$?
+if [ "$RC15B" -ne 0 ] && echo "$OUT15B" | grep -qF "sneaky.txt"; then
+  ok "CON-149 an un-chained continuation line still declares nothing (CON-151 not reopened)"
+else
+  bad "CON-149 an un-chained continuation line still declares nothing (CON-151 not reopened)" "exit=$RC15B output=$OUT15B"
 fi
 
 # ---------------------------------------------------------------------

@@ -62,6 +62,28 @@ escalate. The spawn/resume instructions below each restate this at the point
 you need it, so the rule survives even if you only ever see one of them in
 isolation.
 
+**Never poll with an open-ended, self-written backgrounded loop (CON-178).**
+An ad-hoc `until [ -f "$SENTINEL" ]; do sleep N; done` shell, launched in the
+background because a single tool call's own timeout is shorter than the
+wait could take, keeps sleeping forever once its result arrives through the
+call-return path above instead — which is the ordinary case, not the
+exception. One real run leaked 18 such idle shells this way (HEL-533,
+2026-09-10), and every one of them pollutes the next `ps`/`pgrep` a driver
+session runs to answer "is anything still running?" — the single most
+common question when a lane looks stalled. If you must poll via a
+backgrounded shell rather than a foreground blocking call, use
+`scripts/concertino/await-sentinel.sh <SENTINEL_PATH> <TIMEOUT_SEC>` (never
+a bespoke loop): it is itself bounded and self-terminating, so it never
+outlives its own timeout regardless of what else happens. And if you obtain
+the sub-agent's result through the ordinary call-return path *first*, while
+a background poll for the same event is still outstanding, kill that
+poll's PID yourself before ending the turn — do not just let it run out its
+timeout unattended. Never wait by matching a process pattern (`pgrep -f
+"<pattern>"` or similar) instead of a sentinel file or a recorded PID: a
+pattern-matching waiter can match its own command line and deadlock
+waiting on itself — two such shells were found deadlocked at ~21h in the
+wild.
+
 **The only legitimate reasons to end your turn** are: (1) the run is
 genuinely finished, per Phase 4's "genuinely complete" definition; (2) a
 decision is needed from the coordinator/human, raised as an explicit
