@@ -601,6 +601,16 @@ try_resolve() {
           } else if (arr.length !== total) {
             process.stdout.write("MALFORMED:subAnswers has " + arr.length + " entries, expected " + total
               + " (one per sub-question) — arity mismatch");
+          } else if (arr.some((x) => x == null || x === "")) {
+            // CON-156 (cycle 3, finding 2): `complete: true` asserts every
+            // sub-question was answered — a null/empty slot inside an
+            // otherwise-right-length array is the same class of lie as a
+            // wrong-length array (a hand-edited or partially-clobbered
+            // answer.json), and must be rejected the same way, not silently
+            // resolved with an empty answer for that sub-question.
+            const emptyAt = arr.map((x, i) => (x == null || x === "" ? i : -1)).filter((i) => i !== -1);
+            process.stdout.write("MALFORMED:subAnswers has a null/empty entry at index "
+              + emptyAt.join(",") + " while complete=true (every slot must be filled)");
           } else {
             process.stdout.write("OK:" + JSON.stringify(arr));
           }

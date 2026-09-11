@@ -318,6 +318,70 @@ kill "$AWAIT_PID" 2>/dev/null
 wait "$AWAIT_PID" 2>/dev/null
 rm -rf "$REPO"
 
+# --- CON-156 (cycle 3, finding 2): right-length but null/empty entries ------
+# under complete:true is the same class of lie as a wrong-length array (a
+# hand-edited or partially-clobbered answer.json) — must be rejected, never
+# resolved with an empty answer for the null'd sub-question.
+REPO="$(new_repo)"
+TICKET=HEL-977
+LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
+ANSWER_FILE="$REPO/.concertino/runs/$TICKET/answer.json"
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator \
+    sub_questions='[{"question":"a?","options":["y","n"]},{"question":"b?","options":["y","n"]}]' \
+  ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+
+mkdir -p "$(dirname "$ANSWER_FILE")"
+printf '%s' '{"subAnswers": ["x", null], "complete": true}' > "$ANSWER_FILE"
+sleep 3
+check "CON-156 null-entry: right-length-but-null file does not resolve — --await still running" \
+  "$(kill -0 "$AWAIT_PID" 2>/dev/null && echo running || echo exited)" "running"
+check "CON-156 null-entry: no escalation.answered was recorded" \
+  "$(grep -c escalation.answered "$LOG" 2>/dev/null || true)" "0"
+check "CON-156 null-entry: an escalation.malformed event names the null slot" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n");
+    const l = ls.find((x) => JSON.parse(x).kind === "escalation.malformed");
+    console.log(l ? JSON.parse(l).reason : "NONE");
+  ' "$LOG")" \
+  "subAnswers has a null/empty entry at index 1 while complete=true (every slot must be filled)"
+
+# The escalation must still be resolvable once a genuinely complete file
+# replaces the bad one — non-destructive, self-correcting, same as every
+# other malformed case above.
+write_sub_answer "$REPO" "$TICKET" 1 n 2 >/dev/null
+wait "$AWAIT_PID"; AWAIT_RC=$?
+check "CON-156 null-entry: --await exits 0 once the null slot is genuinely filled" "$AWAIT_RC" "0"
+rm -rf "$REPO"
+
+# An empty-string entry is the same class of lie as null.
+REPO="$(new_repo)"
+TICKET=HEL-978
+LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
+ANSWER_FILE="$REPO/.concertino/runs/$TICKET/answer.json"
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator \
+    sub_questions='[{"question":"a?","options":["y","n"]}]' \
+  ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+mkdir -p "$(dirname "$ANSWER_FILE")"
+printf '%s' '{"subAnswers": [""], "complete": true}' > "$ANSWER_FILE"
+sleep 2
+check "CON-156 empty-string entry: does not resolve" \
+  "$(kill -0 "$AWAIT_PID" 2>/dev/null && echo running || echo exited)" "running"
+kill "$AWAIT_PID" 2>/dev/null
+wait "$AWAIT_PID" 2>/dev/null
+rm -rf "$REPO"
+
 # --- CON-156 (cycle 2, finding 4): the malformed-content dedupe marker must ---
 # not survive past the escalation it warned about — a byte-identical
 # malformed file raised again in a LATER escalation on the SAME ticket must

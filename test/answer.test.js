@@ -357,3 +357,53 @@ test('with no escalation.raised event at all, --sub/--total still requires an ex
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// --- CON-156 (cycle 3, finding 1): the CLI must read the LATEST ------------
+// escalation.raised for the ticket, not the first — a ticket can raise more
+// than one escalation over its lifetime (this one resolves, then a later,
+// differently-shaped one is raised). A reviewer's mutation ("use the first
+// match instead of the last") survived cycle 2's test suite; these two tests
+// close that gap by re-raising on the SAME ticket in both directions.
+
+test('reads the LATEST escalation.raised: multi-part then single-question — --sub/--total is refused against the CURRENT (single-question) shape', () => {
+  const root = newRoot();
+  const ticket = 'CON1567';
+  raiseEscalation(root, ticket, [
+    'sub_questions=' + JSON.stringify([
+      { question: 'a?', options: ['y', 'n'] },
+      { question: 'b?', options: ['y', 'n'] },
+    ]),
+  ]);
+  // A second, later, single-question escalation on the SAME ticket — e.g.
+  // the first resolved and a fresh one was raised afterward.
+  raiseEscalation(root, ticket, ['question=q2', 'options=approve,deny']);
+  try {
+    const { out, status } = runAnswer(root, [ticket, 'approve', '--sub', '1', '--total', '2']);
+    assert.notEqual(status, 0,
+      'using the FIRST (multi-part) raise\'s shape here would wrongly accept this — the LATEST raise is single-question');
+    assert.match(out, /single-question/i);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('reads the LATEST escalation.raised: single-question then multi-part — no --sub is refused against the CURRENT (multi-part) shape', () => {
+  const root = newRoot();
+  const ticket = 'CON1568';
+  raiseEscalation(root, ticket, ['question=q1', 'options=approve,deny']);
+  // A second, later, multi-part escalation on the SAME ticket.
+  raiseEscalation(root, ticket, [
+    'sub_questions=' + JSON.stringify([
+      { question: 'a?', options: ['y', 'n'] },
+      { question: 'b?', options: ['y', 'n'] },
+    ]),
+  ]);
+  try {
+    const { out, status } = runAnswer(root, [ticket, 'approve']);
+    assert.notEqual(status, 0,
+      'using the FIRST (single-question) raise\'s shape here would wrongly accept this — the LATEST raise is multi-part');
+    assert.match(out, /multi-part/i);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
