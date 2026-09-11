@@ -41,11 +41,19 @@ rendered version of your agent role lists the concrete gates for this project.
 Run only the gates whose `when` matches your changed files, enumerated via
 the LIVE-resolved review base (CON-152 — never a hand-typed
 `main`/`<base>` ref, which never moves for the life of the worktree):
-`git diff --name-only "$BASE_SHA"...HEAD`, where `BASE_SHA` comes from
-`scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH"
-"$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE"` (fields from
-`workflow-state.md`; the script falls back to its own config defaults when
-they're absent).
+
+```bash
+BASE_SHA="$(scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE")" \
+  || { echo "BLOCKER: could not resolve the review diff base — see resolve-review-base.sh's stderr above"; exit 1; }
+git diff --name-only "$BASE_SHA"...HEAD
+```
+
+(fields from `workflow-state.md`; the script falls back to its own config
+defaults when they're absent.) **Check the exit status, always**: the
+script prints exactly the SHA on success and nothing on failure — never
+pipe through `sed`/`awk` or ignore a non-zero exit, either of which leaves
+`BASE_SHA` empty and turns this into a silent no-op diff instead of a loud
+error.
 
 ## Evidence rules
 

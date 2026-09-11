@@ -54,14 +54,23 @@ Every run (including resume):
    the branch against its base mid-run):
 
    ```bash
-   BASE_SHA="$(scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE" | sed -n 's/^BASE_SHA //p')"
+   BASE_SHA="$(scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE")" \
+     || { echo "BLOCKER: could not resolve the review diff base — see resolve-review-base.sh's stderr above"; exit 1; }
    git diff "$BASE_SHA"...HEAD
    ```
 
-   (`REVIEW_BASE_BRANCH`/`REVIEW_BASE_REMOTE` come from `workflow-state.md`;
-   omit them and the script falls back to its own config defaults if
-   they're absent on an older/resumed run.) This is your primary review
-   surface — read full source files only where the diff lacks context.
+   **Check the exit status, always** (CON-152 cycle 3, finding 2): the
+   script prints EXACTLY the resolved SHA on success and nothing at all on
+   failure (a "FAIL ..." line goes to stderr, never stdout) — a caller that
+   piped its output through `sed`/`awk` to strip a prefix, or that ignored
+   a non-zero exit, would see an EMPTY `BASE_SHA`, making `git diff
+   ...HEAD` a no-op `HEAD...HEAD` (an empty diff) instead of a loud error —
+   i.e. exactly the failure this whole fix exists to prevent, silently
+   reintroduced one layer up. The `||` above is not optional. (Omit
+   `REVIEW_BASE_BRANCH`/`REVIEW_BASE_REMOTE` and the script falls back to
+   its own config defaults if they're absent on an older/resumed run.)
+   This is your primary review surface — read full source files only where
+   the diff lacks context.
 
 ---
 

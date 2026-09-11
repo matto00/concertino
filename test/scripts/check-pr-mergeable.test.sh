@@ -48,6 +48,12 @@ new_repo() {
 }
 
 # $1=mergeable $2=mergeStateStatus $3=reviewDecision("null" or a string)
+# `headRefOid` is deliberately NOT baked in here — the mock's `gh` stub
+# overlays the WORKTREE's actual live HEAD onto every mergeable-query
+# response by default (see below), since a real `gh pr view` always
+# reflects the PR's true current head. A test that specifically wants a
+# STALE/mismatched headRefOid (case 11) writes $GH_MOCK_DIR/head-override
+# instead of relying on this default.
 merge_json() {
   local rd="$3"
   if [ "$rd" != "null" ]; then rd="\"$rd\""; fi
@@ -93,10 +99,31 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
       n=$((n+1))
       echo "$n" > "$n_file"
       if [ -f "$GH_MOCK_DIR/merge-$n.json" ]; then
-        cat "$GH_MOCK_DIR/merge-$n.json"
+        FILE="$GH_MOCK_DIR/merge-$n.json"
       else
-        cat "$GH_MOCK_DIR/merge.json"
+        FILE="$GH_MOCK_DIR/merge.json"
       fi
+      # Overlay a headRefOid: an explicit override file wins (case 11's
+      # stale-head test); otherwise reflect the worktree's ACTUAL live HEAD,
+      # exactly like a real `gh pr view` would after this script's own
+      # reconcile push (cases 1/9/10 all rely on this default so CLEAN
+      # keeps passing without each test having to predict a commit SHA).
+      if [ -f "$GH_MOCK_DIR/head-override" ]; then
+        HEAD_VAL="$(cat "$GH_MOCK_DIR/head-override")"
+      else
+        HEAD_VAL="$(git rev-parse HEAD 2>/dev/null)"
+      fi
+      jq --arg h "$HEAD_VAL" '.headRefOid = $h' "$FILE"
+      exit 0
+      ;;
+    *headRefOid*)
+      # pr_verify_head's own re-query (--json headRefOid only)
+      if [ -f "$GH_MOCK_DIR/head-override" ]; then
+        HEAD_VAL="$(cat "$GH_MOCK_DIR/head-override")"
+      else
+        HEAD_VAL="$(git rev-parse HEAD 2>/dev/null)"
+      fi
+      printf '{"headRefOid":"%s"}' "$HEAD_VAL"
       exit 0
       ;;
     *mergeStateStatus*baseRefName*)
@@ -233,6 +260,42 @@ check "BEHIND is actually reconciled then passes" "$RC10" "0"
 has "reconcile result prints PASS" "$OUT10" "PASS"
 MERGED_LOG="$(git -C "$REPO10" log --oneline -3)"
 has "the branch actually contains the sibling's merge after reconcile" "$MERGED_LOG" "sibling merge"
+
+# --- Case 11 (CON-122 cycle 3, MEDIUM finding 4): a CLEAN mergeable read for
+# a head that ISN'T actually local HEAD (e.g. GitHub's read-after-push lag
+# right after this script's own reconcile push in condition 0, still
+# reflecting the PRE-push head) must NOT be trusted — this is exactly the
+# gap check-merge-readiness.sh's condition 2b already closes for the
+# agent-merge path via lib/pr-reconcile.sh's pr_verify_head.
+REPO11="$(new_repo)"
+GH_MOCK_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$GH_MOCK_DIR"); export GH_MOCK_DIR
+printf '{"mergeStateStatus":"CLEAN","baseRefName":"main"}' > "$GH_MOCK_DIR/pre.json"
+empty_rollup > "$GH_MOCK_DIR/rollup.json"
+merge_json "MERGEABLE" "CLEAN" "null" > "$GH_MOCK_DIR/merge.json"
+# Force every headRefOid query (both the mergeable query and pr_verify_head's
+# own re-query) to report a SHA that is NOT this worktree's real HEAD —
+# simulating GitHub still reporting the pre-push head.
+echo "0000000000000000000000000000000000000000" > "$GH_MOCK_DIR/head-override"
+OUT11="$("$SCRIPT" "$REPO11" "some-branch" 2>&1)"; RC11=$?
+check "stale headRefOid (never matches local HEAD) exits 1, never a false PASS" "$RC11" "1"
+has "stale headRefOid names the mismatch" "$OUT11" "does not match the pull request's head"
+
+# --- Case 12 (CON-122 cycle 3, LOW finding 5): UNKNOWN mergeability
+# resolves to CLEAN across a REAL poll (a nonzero recheck timeout/interval,
+# using the mock's merge-N.json per-call sequencing) — case "UNKNOWN
+# timeout" above only proves the timeout path with
+# CONCERTINO_MERGE_RECHECK_TIMEOUT_SEC=0 (a single shot), which cannot
+# distinguish "polls and recovers" from "never actually polls at all".
+REPO12="$(new_repo)"
+GH_MOCK_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$GH_MOCK_DIR"); export GH_MOCK_DIR
+printf '{"mergeStateStatus":"CLEAN","baseRefName":"main"}' > "$GH_MOCK_DIR/pre.json"
+empty_rollup > "$GH_MOCK_DIR/rollup.json"
+merge_json "UNKNOWN" "UNKNOWN" "null" > "$GH_MOCK_DIR/merge-1.json"
+merge_json "MERGEABLE" "CLEAN" "null" > "$GH_MOCK_DIR/merge.json"
+CONCERTINO_MERGE_RECHECK_TIMEOUT_SEC=30 CONCERTINO_MERGE_RECHECK_INTERVAL_SEC=1 \
+  OUT12="$("$SCRIPT" "$REPO12" "some-branch" 2>&1)"; RC12=$?
+check "UNKNOWN resolves to CLEAN across a real poll -> exits 0" "$RC12" "0"
+has "UNKNOWN resolves to CLEAN across a real poll -> PASS" "$OUT12" "PASS"
 
 echo "check-pr-mergeable.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

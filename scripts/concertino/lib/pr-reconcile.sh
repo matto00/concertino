@@ -53,3 +53,44 @@ pr_reconcile_behind_once() {
 
   return 0
 }
+
+# pr_verify_head <WORKTREE_PATH> <BRANCH> <HEAD_REF_OID_FROM_CALLER_QUERY>
+#
+# Verifies local HEAD is actually the commit GitHub would merge (`gh pr
+# merge` merges the PR's `headRefOid`, not local HEAD) — CON-122 cycle 3,
+# finding 4: without this, a caller that just pushed (this run's own BEHIND
+# reconcile push) can query mergeability again immediately and get back a
+# ROLLUP/mergeable state that GitHub computed for the PRE-push head, before
+# GitHub has caught up to the new push — a stale-but-CLEAN read that would
+# otherwise be trusted as "this exact commit is safe to merge" when it
+# never actually went through CI. Extracted from check-merge-readiness.sh's
+# own condition 2b (design.md Decision 5) so check-pr-mergeable.sh shares
+# the identical guard rather than reimplementing it.
+#
+# GitHub's read-after-push lag gets exactly one re-query before refusing.
+# On success, prints the verified head SHA to stdout and returns 0. On
+# failure (a surviving mismatch, or a failed re-query), prints nothing and
+# returns 1 — the caller decides how to report that (a `fail`/`BLOCKER`
+# line naming both SHAs), since the two callers word it slightly
+# differently.
+pr_verify_head() {
+  local worktree="$1" branch="$2" head_ref_oid="$3"
+  local local_head recheck_raw
+
+  local_head="$(cd "$worktree" && git rev-parse HEAD 2>/dev/null)"
+  if [ -z "$head_ref_oid" ] || [ "$local_head" != "$head_ref_oid" ]; then
+    recheck_raw="$(cd "$worktree" && gh pr view "$branch" --json headRefOid 2>&1)"
+    if [ $? -eq 0 ]; then
+      head_ref_oid="$(printf '%s' "$recheck_raw" | jq -r '.headRefOid // ""' 2>/dev/null)"
+    else
+      head_ref_oid=""
+    fi
+  fi
+
+  if [ -z "$head_ref_oid" ] || [ -z "$local_head" ] || [ "$local_head" != "$head_ref_oid" ]; then
+    return 1
+  fi
+
+  printf '%s' "$local_head"
+  return 0
+}

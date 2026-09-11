@@ -363,23 +363,35 @@ Never let telemetry block delivery: if a call fails, continue.
    hand-rolled, and never by reading a cached SHA):
 
    ```bash
-   scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE"
+   BASE_SHA="$(scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE")" \
+     || { echo "BLOCKER: could not resolve the review diff base — see resolve-review-base.sh's stderr above"; exit 1; }
    ```
 
    which fetches `$REVIEW_BASE_REMOTE/$REVIEW_BASE_BRANCH` fresh and prints
-   `BASE_SHA <sha>` — the true merge-base AT THE MOMENT OF THE CALL. This is
-   what actually closes CON-152: every role sees a base that reflects
-   whatever has really landed on the remote base branch and whatever this
-   branch has really absorbed, right up to the instant it reviews, instead
-   of a value that was only ever correct at Setup. A `FAIL` line from the
-   script is a `BLOCKER` for whichever role hit it — surface it rather than
-   falling back to a guessed base. **Fallback for a resumed/older run with
-   no `REVIEW_BASE_BRANCH`/`REVIEW_BASE_REMOTE` in `workflow-state.md`:**
-   the script's own defaults (`CONCERTINO_BASE_BRANCH`/`CONCERTINO_BASE_REMOTE`,
-   else `main`/`origin`) apply automatically when a role omits the
-   arguments — this degrades to the same config default `setup-worktree.sh`
-   itself would have used, never to an unresolved `<base>` a role has to
-   improvise.
+   EXACTLY the resolved SHA on stdout (nothing else — no prefix, no other
+   output) — the true merge-base AT THE MOMENT OF THE CALL. This is what
+   actually closes CON-152: every role sees a base that reflects whatever
+   has really landed on the remote base branch and whatever this branch has
+   really absorbed, right up to the instant it reviews, instead of a value
+   that was only ever correct at Setup. **Check the exit status, always**
+   (CON-152 cycle 3, finding 2): on failure the script prints one "FAIL
+   ..." line to stderr and NOTHING to stdout, and exits non-zero — a caller
+   that piped its output through `sed`/`awk` to extract a value, or that
+   ignored the exit code, would see an empty `BASE_SHA` and turn a
+   subsequent `git diff "$BASE_SHA"...HEAD` into a silent empty diff
+   (`HEAD...HEAD`) instead of a loud failure. The `|| { ...; exit 1; }`
+   above is load-bearing, not decorative — treat it as a `BLOCKER` for
+   whichever role hit it, surfaced rather than silently reviewing nothing.
+   **Fallback for a resumed/older run with no `REVIEW_BASE_BRANCH`/
+   `REVIEW_BASE_REMOTE` in `workflow-state.md`:** `resolve-review-base.sh`
+   itself sources the SAME co-located `.concertino.env` `setup-worktree.sh`
+   sources (CON-152 cycle 3, finding 3 — a project whose base branch isn't
+   `main` must not silently fall back to a hardcoded, wrong `main`/`origin`
+   default) before falling back further to a literal `main`/`origin` only
+   when even that file doesn't define `CONCERTINO_BASE_BRANCH`/
+   `CONCERTINO_BASE_REMOTE` — this degrades to the same config resolution
+   `setup-worktree.sh` itself uses, never to an unresolved `<base>` a role
+   has to improvise.
 6. **Resolve `AGENT_MERGE` once, for the whole run.** `AGENT_MERGE_OVERRIDE`
    takes precedence when it is `true` or `false`; otherwise fall back to the
    config default `{{var:agentMerge.enabled}}`. This resolution happens
@@ -1162,6 +1174,18 @@ Run directly (no subagent).
      already attempted its own one-shot reconcile inside the script itself,
      so a `FAIL` here means that either didn't apply or didn't succeed and
      needs a human.
+
+   **Note on the BEHIND auto-reconcile and squashing:** this script's own
+   condition-0 reconcile (and `check-merge-readiness.sh`'s identical one)
+   merges the base into the branch with an ordinary `git merge`, adding a
+   merge commit — it never rebases or re-squashes. Phase 3 step 2 above
+   already squashed this branch's own commits before the PR was created, so
+   a reconcile that fires AFTER that point leaves the branch as one squashed
+   ticket commit plus one merge commit, not a single flat commit. The human
+   (or `gh pr merge`) should still use a **squash merge** when actually
+   merging the PR — squashing at merge time collapses both into the one
+   commit landing on the base branch, so this is cosmetic to the branch's
+   own history, never a reason to re-run `squash-branch.sh`.
 7a. **Post the PR link back to the ticket** (only after step 7 above returns
    `PASS`).
 8. **Branch on `AGENT_MERGE`** (resolved once at Setup — see above):

@@ -338,22 +338,17 @@ fi
 # from GitHub above — not local HEAD. GitHub's read-after-push lag gets one
 # re-query before refusing. A surviving mismatch, or a failed re-query, is
 # EXIT 1 (not the exit-4 STALE outcome): it is not a stale review, and no
-# amount of re-review fixes a diverged push.
+# amount of re-review fixes a diverged push. Shared with
+# check-pr-mergeable.sh via lib/pr-reconcile.sh's pr_verify_head (CON-122
+# cycle 3) — one implementation, not two independently-maintained copies.
 VERIFIED_HEAD=""
 if [ "$FAILED" -eq 0 ] && [ "$CI_PENDING" -eq 0 ]; then
   LOCAL_HEAD="$(cd "$WORKTREE_PATH" && git rev-parse HEAD 2>/dev/null)"
-  if [ -z "$HEAD_REF_OID" ] || [ "$LOCAL_HEAD" != "$HEAD_REF_OID" ]; then
-    RECHECK_RAW="$(cd "$WORKTREE_PATH" && gh pr view "$BRANCH" --json headRefOid 2>&1)"
-    if [ $? -eq 0 ]; then
-      HEAD_REF_OID="$(printf '%s' "$RECHECK_RAW" | jq -r '.headRefOid // ""' 2>/dev/null)"
-    else
-      HEAD_REF_OID=""
-    fi
-  fi
-  if [ -z "$HEAD_REF_OID" ] || [ -z "$LOCAL_HEAD" ] || [ "$LOCAL_HEAD" != "$HEAD_REF_OID" ]; then
-    fail "local HEAD (${LOCAL_HEAD:-unknown}) does not match the pull request's head (${HEAD_REF_OID:-unresolvable}) — refusing to verify a state that is not the one being merged"
+  if VERIFIED_HEAD="$(pr_verify_head "$WORKTREE_PATH" "$BRANCH" "$HEAD_REF_OID")"; then
+    :
   else
-    VERIFIED_HEAD="$LOCAL_HEAD"
+    RECHECK_HEAD_REF_OID="$(cd "$WORKTREE_PATH" && gh pr view "$BRANCH" --json headRefOid 2>/dev/null | jq -r '.headRefOid // ""' 2>/dev/null)"
+    fail "local HEAD (${LOCAL_HEAD:-unknown}) does not match the pull request's head (${RECHECK_HEAD_REF_OID:-unresolvable}) — refusing to verify a state that is not the one being merged"
   fi
 fi
 

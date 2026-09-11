@@ -76,13 +76,19 @@ actually **ships**. Independently verify — do not trust the PASS.
   reconciles the branch against its base mid-run):
 
   ```bash
-  BASE_SHA="$(scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE" | sed -n 's/^BASE_SHA //p')"
+  BASE_SHA="$(scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE")" \
+    || { echo "BLOCKER: could not resolve the review diff base — see resolve-review-base.sh's stderr above"; exit 1; }
   git diff "$BASE_SHA"...HEAD
   ```
 
-  (`REVIEW_BASE_BRANCH`/`REVIEW_BASE_REMOTE` from `workflow-state.md`; the
-  script falls back to its own config defaults when they're absent.) —
-  the actual change. Read full files where needed.
+  **Check the exit status, always** (CON-152 cycle 3, finding 2): the
+  script prints exactly the SHA on success and nothing on failure — never
+  pipe through `sed`/`awk` or ignore a non-zero exit, either of which
+  leaves `BASE_SHA` empty and silently turns this into a no-op `HEAD...HEAD`
+  diff instead of a loud error. (`REVIEW_BASE_BRANCH`/`REVIEW_BASE_REMOTE`
+  from `workflow-state.md`; the script falls back to its own config
+  defaults when they're absent.) — the actual change. Read full files
+  where needed.
 - Read `files-modified.md` and the latest `evaluation-*.md` as **claims**.
 
 ### 2. Acceptance criteria — trace each one

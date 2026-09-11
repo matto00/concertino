@@ -96,14 +96,19 @@ Resolve the base LIVE and enumerate against it — never a hand-typed
 `main`/`<base>` ref or a value cached earlier in the run (CON-152):
 
 ```bash
-BASE_SHA="$(scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE" | sed -n 's/^BASE_SHA //p')"
+BASE_SHA="$(scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE")" \
+  || { echo "BLOCKER: could not resolve the review diff base — see resolve-review-base.sh's stderr above"; exit 1; }
 git diff --name-only "$BASE_SHA"...HEAD
 ```
 
-(`REVIEW_BASE_BRANCH`/`REVIEW_BASE_REMOTE` from `workflow-state.md`; the
-script falls back to its own config defaults when they're absent.) This
-gives the evaluator a compact map to orient review. Overwrite on re-runs to
-reflect the current state.
+**Check the exit status, always** (CON-152 cycle 3, finding 2): the script
+prints exactly the SHA on success and nothing on failure — never pipe its
+output through `sed`/`awk` or ignore a non-zero exit, either of which
+leaves `BASE_SHA` empty and turns `...HEAD` into a silent no-op diff
+instead of a loud error. (`REVIEW_BASE_BRANCH`/`REVIEW_BASE_REMOTE` from
+`workflow-state.md`; the script falls back to its own config defaults when
+they're absent.) This gives the evaluator a compact map to orient review.
+Overwrite on re-runs to reflect the current state.
 
 ### 5. Pre-commit self-check
 

@@ -54,11 +54,17 @@ set -uo pipefail
 #      run that hasn't finished.
 #   2. Poll mergeable state, bounded by CONCERTINO_MERGE_RECHECK_TIMEOUT_SEC
 #      / CONCERTINO_MERGE_RECHECK_INTERVAL_SEC, only on the transient
-#      UNKNOWN state. CLEAN passes; `mergeable == CONFLICTING` OR
-#      `mergeStateStatus` in BEHIND/DIRTY/UNSTABLE fails naming the status
-#      (BLOCKED + reviewDecision==REVIEW_REQUIRED fails with the specific
-#      branch-protection reason); anything else not enumerated fails CLOSED
-#      rather than falling through to a silent pass.
+#      UNKNOWN state. CLEAN passes ONLY after verifying local HEAD is
+#      actually the PR's `headRefOid` (CON-122 cycle 3, finding 4 —
+#      lib/pr-reconcile.sh's pr_verify_head, shared with
+#      check-merge-readiness.sh's own condition 2b: without this, a query
+#      right after condition 0's own reconcile push can read back a
+#      mergeability computed for the PRE-push head before GitHub catches up,
+#      trusting CI that never ran on the actual head); `mergeable ==
+#      CONFLICTING` OR `mergeStateStatus` in BEHIND/DIRTY/UNSTABLE fails
+#      naming the status (BLOCKED + reviewDecision==REVIEW_REQUIRED fails
+#      with the specific branch-protection reason); anything else not
+#      enumerated fails CLOSED rather than falling through to a silent pass.
 #
 # Prints "PASS" and exits 0 only when the PR is actually mergeable and CI is
 # green. Prints "PENDING <names>" and exits 3 when CI simply hasn't finished
@@ -143,13 +149,14 @@ done
 # --- 2: mergeable, polled only on the transient UNKNOWN state --------------
 merge_elapsed=0
 while :; do
-  MERGE_RAW="$(cd "$WORKTREE_PATH" && gh pr view "$BRANCH" --json mergeable,mergeStateStatus,reviewDecision 2>&1)"
+  MERGE_RAW="$(cd "$WORKTREE_PATH" && gh pr view "$BRANCH" --json mergeable,mergeStateStatus,reviewDecision,headRefOid 2>&1)"
   if [ $? -ne 0 ]; then
     fail "could not query PR mergeability via gh: $(printf '%s' "$MERGE_RAW" | tr '\n' ' ' | cut -c1-200)"
   fi
   MERGEABLE="$(printf '%s' "$MERGE_RAW" | jq -r '.mergeable // "UNKNOWN"' 2>/dev/null)"
   MERGE_STATUS="$(printf '%s' "$MERGE_RAW" | jq -r '.mergeStateStatus // "UNKNOWN"' 2>/dev/null)"
   REVIEW_DECISION="$(printf '%s' "$MERGE_RAW" | jq -r '.reviewDecision // ""' 2>/dev/null)"
+  HEAD_REF_OID="$(printf '%s' "$MERGE_RAW" | jq -r '.headRefOid // ""' 2>/dev/null)"
   [ -z "$MERGEABLE" ] && MERGEABLE="UNKNOWN"
   [ -z "$MERGE_STATUS" ] && MERGE_STATUS="UNKNOWN"
 
@@ -164,6 +171,17 @@ while :; do
 
   case "$MERGE_STATUS" in
     CLEAN)
+      # CON-122 cycle 3, finding 4: without this, a `gh pr view` right after
+      # THIS SCRIPT'S OWN reconcile push (condition 0 above) can return a
+      # mergeability read GitHub computed for the PRE-push head — a stale
+      # "CLEAN" for a commit whose CI never actually ran. Verify the head
+      # being judged is really the head that would be merged (shared with
+      # check-merge-readiness.sh's own condition 2b via
+      # lib/pr-reconcile.sh's pr_verify_head) before trusting CLEAN.
+      if ! VERIFIED_HEAD="$(pr_verify_head "$WORKTREE_PATH" "$BRANCH" "$HEAD_REF_OID")"; then
+        LOCAL_HEAD="$(cd "$WORKTREE_PATH" && git rev-parse HEAD 2>/dev/null)"
+        fail "local HEAD (${LOCAL_HEAD:-unknown}) does not match the pull request's head (${HEAD_REF_OID:-unresolvable}) — refusing to trust a mergeable read for a state that is not the one being merged"
+      fi
       echo "PASS"
       exit 0
       ;;

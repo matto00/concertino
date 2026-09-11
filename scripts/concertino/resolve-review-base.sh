@@ -2,16 +2,22 @@
 set -uo pipefail
 
 # ===========================================================================
-# resolve-review-base.sh — resolve the review diff base ONCE per run (CON-152).
+# resolve-review-base.sh — resolve the review diff base LIVE (CON-152).
 #
 # Usage:
 #   resolve-review-base.sh <WORKTREE_PATH> [BASE_BRANCH] [BASE_REMOTE]
 #
 # BASE_BRANCH defaults to CONCERTINO_BASE_BRANCH or "main"; BASE_REMOTE
-# defaults to CONCERTINO_BASE_REMOTE or "origin" — same env vars and
-# defaults setup-worktree.sh already uses, so callers that don't pass them
-# explicitly still resolve the same base setup-worktree.sh cut the branch
-# from.
+# defaults to CONCERTINO_BASE_REMOTE or "origin". CON-152 cycle 3 (finding
+# 3): these defaults are sourced from the SAME `.concertino.env` (co-located
+# next to this script, one directory up in `scripts/concertino/` once
+# rendered) that setup-worktree.sh itself sources — not left as bare
+# hardcoded "main"/"origin" fallbacks. A project whose base branch is
+# `develop` (or any non-"main" value) would otherwise silently resolve
+# against the WRONG remote branch on every no-args call, which is worse
+# than a loud failure: `git merge-base HEAD origin/main` can succeed against
+# a real-but-irrelevant `origin/main` and hand back a plausible-looking, but
+# wrong, SHA.
 #
 # Why this exists: every review-bearing role (evaluator/skeptic/auditor) and
 # the executor's own gate-selection step used to compute their diff surface
@@ -24,13 +30,14 @@ set -uo pipefail
 # a one-line fix produced a ~2,400-line diff after absorbing four unrelated
 # merges).
 #
-# This script is the ONE place that resolves the base, called once at Setup
-# (see core/roles/orchestrator.md) and recorded as REVIEW_BASE_SHA in
-# workflow-state.md. Every later role reads that recorded SHA instead of
-# recomputing "<base>" itself, so evaluator/skeptic/auditor/executor all
-# review the identical surface even as the remote base branch keeps moving
-# under them mid-run — a base that differs between roles is its own failure
-# mode (see the ticket's acceptance criteria).
+# This script is called LIVE by every review-bearing role, immediately
+# before its own diff (see core/roles/orchestrator.md,
+# core/roles/{evaluator,skeptic,auditor,executor}.md) — NEVER cached as a
+# SHA anywhere (a cycle-1 design of this same fix cached the resolved SHA in
+# workflow-state.md once at Setup, which reproduces this exact bug one layer
+# later: the moment the branch reconciles against its base mid-run, a
+# cached SHA goes stale in the OTHER direction, re-flagging already-absorbed
+# base commits as still under review).
 #
 # Procedure:
 #   1. Fetch BASE_REMOTE/BASE_BRANCH fresh (so a base branch that advanced
@@ -38,14 +45,25 @@ set -uo pipefail
 #   2. Compute `git merge-base HEAD <BASE_REMOTE>/<BASE_BRANCH>` — the point
 #      where this branch actually diverged, never the base branch's live tip.
 #
-# Output: on success, prints exactly one line to stdout:
-#   BASE_SHA <sha>
-# and exits 0. On failure, prints one "FAIL <reason>" line to stderr and
-# exits 1 — never falls back to a guessed/bare ref silently.
+# Output contract (CON-152 cycle 3, finding 2): on success, prints EXACTLY
+# the resolved SHA (one line, nothing else) to stdout and exits 0 — no
+# "BASE_SHA " prefix, no other output, so a caller never needs `sed`/`awk`
+# to extract it and can never silently treat a "FAIL ..." line or empty
+# output as a valid (if wrong) base. On failure, prints one "FAIL <reason>"
+# line to stderr, prints NOTHING to stdout, and exits 1. A caller MUST check
+# the exit status — `BASE_SHA="$(resolve-review-base.sh ...)" || { ... }`
+# propagates this script's own exit code to the assignment, so a bare `||`
+# is sufficient; do not swallow it through a pipe to `sed`, which would
+# report success regardless of this script's own exit code.
 # ===========================================================================
 
 USAGE="usage: resolve-review-base.sh <WORKTREE_PATH> [BASE_BRANCH] [BASE_REMOTE]"
 WORKTREE_PATH="${1:?$USAGE}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+[ -f "${SCRIPT_DIR}/.concertino.env" ] && source "${SCRIPT_DIR}/.concertino.env"
+
 BASE_BRANCH="${2:-${CONCERTINO_BASE_BRANCH:-main}}"
 BASE_REMOTE="${3:-${CONCERTINO_BASE_REMOTE:-origin}}"
 
@@ -67,4 +85,4 @@ if [ -z "$MERGE_BASE" ]; then
   exit 1
 fi
 
-echo "BASE_SHA ${MERGE_BASE}"
+echo "$MERGE_BASE"
