@@ -437,6 +437,68 @@ has "status=abandoned-stale run.end: stand-down message" "STAND-DOWN" "$ABANDONE
 rm -rf "$d" "$repo"
 
 # ---------------------------------------------------------------------------
+# Cold review (cycle 2, 2026-09-11): "last run.end wins" was implemented but
+# UNTESTED — a mutation reverting to the FIRST run.end's status (instead of
+# the last) would have survived every existing test, since none of them had
+# TWO run.end lines for the same ticket. This is exactly the real shape: an
+# escalation pause (run.end status=escalated), the human answers, the run
+# resumes and this time actually finishes (a second, later run.end
+# status=delivered). The lane must stand down on the LAST status, not trip
+# forever because the FIRST run.end it saw was "escalated".
+#
+# Mutation to confirm failability: change run_is_complete() (lib/run-end-
+# status.sh) to latch on the FIRST run.end match instead of always
+# overwriting `complete` on every match seen — this test's "stands down"
+# assertion goes red (would report TRIP forever on the escalated one).
+repo="$(new_git_checkout)"
+d="$(new_scratch)"
+make_transcript "$d" a-resumed-then-delivered-lane
+touch_mtime_ago "$d/subagents/agent-a-resumed-then-delivered-lane.jsonl" 999999
+mkdir -p "$repo/.concertino/runs/CON-994"
+printf '%s\n' '{"t":1,"kind":"run.start","ticket":"CON-994"}' \
+             '{"t":2,"kind":"run.end","ticket":"CON-994","status":"escalated"}' \
+             '{"t":3,"kind":"escalation.answered","ticket":"CON-994"}' \
+             '{"t":4,"kind":"run.end","ticket":"CON-994","status":"delivered"}' \
+  > "$repo/.concertino/runs/CON-994/events.jsonl"
+printf 'a-resumed-then-delivered-lane a-resumed-then-delivered-lane CON-994\n' > "$d/lanes"
+RESUMED_DELIVERED_OUT="$(mktemp)"
+( cd "$repo" && WATCHDOG_POLL_SEC=1 WATCHDOG_FLEET_SEC=2 WATCHDOG_LANE_SEC=2 \
+    timeout 4 "$SCRIPT" "$d/tasks" "$d/lanes" >"$RESUMED_DELIVERED_OUT" 2>&1 )
+RC=$?
+check "last run.end wins: escalated then delivered stands down, exit 0" "$RC" "0"
+has "last run.end wins: stand-down message" "STAND-DOWN" "$RESUMED_DELIVERED_OUT"
+rm -rf "$d" "$repo"
+
+# ---------------------------------------------------------------------------
+# Cold review (cycle 2): a run.start emitted AFTER a real terminal run.end
+# means the ticket's events.jsonl (append-only, shared across that ticket's
+# whole history) was genuinely re-run — treating it as permanently complete
+# from its FIRST delivery would make the watchdog silently stop watching a
+# second, currently-active delivery of the same ticket.
+#
+# Mutation to confirm failability: drop the run.start-resets-complete branch
+# from run_is_complete() — this test's "still trips" assertion goes red
+# (false STAND-DOWN on the re-run).
+repo="$(new_git_checkout)"
+d="$(new_scratch)"
+make_transcript "$d" a-rerun-lane
+touch_mtime_ago "$d/subagents/agent-a-rerun-lane.jsonl" 999999
+mkdir -p "$repo/.concertino/runs/CON-993"
+printf '%s\n' '{"t":1,"kind":"run.start","ticket":"CON-993"}' \
+             '{"t":2,"kind":"run.end","ticket":"CON-993","status":"delivered"}' \
+             '{"t":3,"kind":"run.start","ticket":"CON-993"}' \
+  > "$repo/.concertino/runs/CON-993/events.jsonl"
+printf 'a-rerun-lane a-rerun-lane CON-993\n' > "$d/lanes"
+RERUN_OUT="$(mktemp)"
+( cd "$repo" && WATCHDOG_POLL_SEC=1 WATCHDOG_FLEET_SEC=2 WATCHDOG_LANE_SEC=2 \
+    timeout 4 "$SCRIPT" "$d/tasks" "$d/lanes" >"$RERUN_OUT" 2>&1 )
+RC=$?
+check "run.start after a delivered run.end (re-run) still trips, exit 1" "$RC" "1"
+has "re-run lane: TRIP text present" "TRIP" "$RERUN_OUT"
+hasnt "re-run lane: no false stand-down" "STAND-DOWN" "$RERUN_OUT"
+rm -rf "$d" "$repo"
+
+# ---------------------------------------------------------------------------
 # Cycle-3 fix 1: CWD-only repo-root resolution silently never detects
 # completion (and falls back to TRIP FLEET) when the watchdog is launched
 # from outside the ticket's own repo — a scratchpad, a driving session in a

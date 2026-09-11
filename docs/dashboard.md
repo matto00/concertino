@@ -467,9 +467,18 @@ first frame and survives restarting the dashboard — `idle 11m` means the run h
 produced nothing for 11 minutes, not that you have been watching for 11.
 
 Runs are grouped by outcome. `FAILED` is separate from `DONE` and coloured red:
-a run that ended `escalated` (a circuit breaker giving up) or whose window died
-must never read like one that shipped. A dead window has no end event, so it
+a run whose window died with no matching completion must never read like one
+that shipped. A dead window with no run.end at all has no end event, so it
 shows `window exited` rather than an elapsed time that keeps growing.
+
+A run paused on an escalation (a circuit breaker sending it to you instead of
+Delivery) is NOT `FAILED` — as of CON-182, that pause is recorded only by
+`escalation.raised`/`escalation.answered`, never by a `run.end`, so it renders
+under `NEEDS YOU` while the escalation is open and reverts to `RUNNING` once
+answered, exactly like any other live run. (Older logs may still contain a
+`run.end status:"escalated"` line from before this fix; the dashboard treats
+that the same way — not terminal, not `FAILED` — rather than showing a stale,
+frozen elapsed time for a run that has actually resumed.)
 
 The finished sections show only the most recent few, with `… and N more` for the
 rest, and the whole view is capped to the terminal height. `NEEDS YOU` is never

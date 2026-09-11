@@ -419,6 +419,21 @@ test('the LAST run.end wins: escalated followed by a later delivered run.end rep
   assert.equal(run.status, 'done');
 });
 
+// Cold review (cycle 2): a run.start emitted AFTER a real terminal run.end
+// means the ticket was genuinely re-run — the dashboard must not keep
+// showing it as permanently 'done' from its FIRST delivery.
+test('a run.start after a delivered run.end (re-run) reports live again, not done', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+    { t: 2, kind: 'run.end', ticket: 'HEL-1', role: 'script', status: 'delivered' },
+    { t: 3, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.notEqual(run.status, 'done');
+  assert.equal(run.status, 'running');
+  assert.equal(run.endStatus, null);
+  assert.equal(run.endedAt, null);
+});
+
 test('telemetry tier is full when semantic events are present', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
@@ -547,18 +562,24 @@ test('a dropped envelope-malformed line and a rejected-phase event both count to
   assert.equal(run.events[0].kind, 'phase.enter');
 });
 
-// CON-182: these tests below use status: 'aborted' as their generic
+// CON-182: these tests below use status: 'abandoned-stale' as their generic
 // "some non-delivered terminal status" placeholder (previously 'escalated',
 // before that string got its own special, non-terminal meaning — see the
-// HEL-1080-replay tests above). 'aborted' isn't a status any current emitter
-// writes; it stands in for "any terminal status other than delivered",
-// which is all these CON-98 tests are actually about.
+// HEL-1080-replay tests above). Unlike the earlier 'aborted' placeholder
+// (cold-review finding, cycle 2: a status no emitter ever writes makes the
+// fixture untruthful), 'abandoned-stale' is a REAL status something in this
+// system actually writes — the fleet-driver's manual marker for a
+// confirmed-dead run (CON-121, .claude/skills/concertino-fleet-driver/
+// SKILL.md) — so these fixtures now describe a real, if incidental, event
+// shape rather than an invented one. It still stands in for "any terminal
+// status other than delivered", which is all these CON-98 tests are
+// actually about.
 test('runs sort attention-first', () => {
   const events = new Map([
     ['HEL-DONE', { events: [{ t: 1, kind: 'run.end', ticket: 'HEL-DONE', role: 'orchestrator', status: 'delivered' }], malformed: 0 }],
     ['HEL-RUN',  { events: [{ t: 2, kind: 'phase.enter', ticket: 'HEL-RUN', role: 'orchestrator', phase: 'Execution' }], malformed: 0 }],
     ['HEL-ESC',  { events: [{ t: 3, kind: 'escalation.raised', ticket: 'HEL-ESC', role: 'orchestrator', question: 'q' }], malformed: 0 }],
-    ['HEL-FAIL', { events: [{ t: 4, kind: 'run.end', ticket: 'HEL-FAIL', role: 'orchestrator', status: 'aborted' }], malformed: 0 }],
+    ['HEL-FAIL', { events: [{ t: 4, kind: 'run.end', ticket: 'HEL-FAIL', role: 'orchestrator', status: 'abandoned-stale' }], malformed: 0 }],
   ]);
   const windows = [
     { ticket: 'HEL-RUN', alive: true, idleMs: 0 },
@@ -580,7 +601,7 @@ test('runs sort attention-first', () => {
 test('a run.override event sets status regardless of endStatus/window (highest precedence)', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
-    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'aborted' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'abandoned-stale' },
     { t: 20, kind: 'run.override', ticket: 'HEL-1', role: 'dashboard', status: 'done' },
   ]), [], NOW);
   assert.equal(run.status, 'done');
@@ -598,7 +619,7 @@ test('a run.override wins even over a live escalation (mutually exclusive in pra
 test('a run with no run.override event is unaffected — status derives exactly as before', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
-    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'aborted' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'abandoned-stale' },
   ]), [], NOW);
   assert.equal(run.status, 'failed');
   assert.equal(run.override, null);
@@ -609,7 +630,7 @@ test('a run with no run.override event is unaffected — status derives exactly 
 test('a respawned FAILED run (run.end then a later run.spawn, window alive) reports running', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
-    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'aborted' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'abandoned-stale' },
     { t: 20, kind: 'run.spawn', ticket: 'HEL-1', role: 'dashboard' },
   ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
   assert.equal(run.status, 'running');
@@ -618,7 +639,7 @@ test('a respawned FAILED run (run.end then a later run.spawn, window alive) repo
 test('once the respawned window dies with no new run.end, the run reverts to failed', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
-    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'aborted' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'abandoned-stale' },
     { t: 20, kind: 'run.spawn', ticket: 'HEL-1', role: 'dashboard' },
   ]), [{ ticket: 'HEL-1', alive: false, idleMs: 0 }], NOW);
   assert.equal(run.status, 'failed');
@@ -627,7 +648,7 @@ test('once the respawned window dies with no new run.end, the run reverts to fai
 test('once the respawn concludes with a new run.end, the newest status wins', () => {
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script' },
-    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'aborted' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'abandoned-stale' },
     { t: 20, kind: 'run.spawn', ticket: 'HEL-1', role: 'dashboard' },
     { t: 30, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'delivered' },
   ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
@@ -641,7 +662,7 @@ test('a run.spawn BEFORE the run.end it is respawning is not mistaken for a retr
   // retry-visibility refinement.
   const [run] = reduce(log('HEL-1', [
     { t: 1, kind: 'run.spawn', ticket: 'HEL-1', role: 'dashboard' },
-    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'aborted' },
+    { t: 9, kind: 'run.end', ticket: 'HEL-1', role: 'orchestrator', status: 'abandoned-stale' },
   ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
   assert.equal(run.status, 'failed');
 });

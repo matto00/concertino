@@ -91,6 +91,7 @@ new_pair() {
   cp "$ROOT/core/scripts/tui-attached.sh" "$primary/scripts/concertino/tui-attached.sh"
   cp "$ROOT/core/scripts/lib/git-child-env.sh" "$primary/scripts/concertino/lib/git-child-env.sh"
   cp "$ROOT/core/scripts/lib/auditor-lease.sh" "$primary/scripts/concertino/lib/auditor-lease.sh"
+  cp "$ROOT/core/scripts/lib/run-end-status.sh" "$primary/scripts/concertino/lib/run-end-status.sh"
   chmod +x "$primary/scripts/concertino/"*.sh
   # .concertino/ (the run log emit-event.sh --await writes to) must be
   # gitignored here exactly as it is in the real project — otherwise the
@@ -684,6 +685,26 @@ check "exits 0 (resumed run later delivered, sync proceeds)" "$?" "0"
 check "sync WAS invoked once the LAST run.end for that ticket is status=delivered" \
   "$([ -e "$BASE/sync-invocations.txt" ] && echo invoked || echo not-invoked)" "invoked"
 hasnt "no skip note once the other run's last run.end is terminal" "skipping \`concertino sync\`" "$ERR"
+rm -rf "$BASE"
+
+# Cold review (cycle 2): a run.start emitted AFTER a real terminal run.end
+# means that ticket's events.jsonl (append-only, shared across its whole
+# history) was genuinely re-run — treating it as permanently complete from
+# its FIRST delivery would let sync proceed out from under a second,
+# currently-active delivery of the same ticket.
+BASE="$(mktemp -d)"; new_pair "$BASE"; new_fakebin "$BASE"
+git -C "$BASE/primary" checkout -q -b scratch
+advance_remote "$BASE/remote.git"
+fake_event "$BASE/primary" TICK-90 run.start
+fake_event "$BASE/primary" TICK-90 run.end
+fake_event "$BASE/primary" TICK-90 run.start
+WT="$BASE/TICK-38"
+OUT="$BASE/out.txt"; ERR="$BASE/err.txt"
+run_cleanup_fakebin "$BASE/primary" "$WT" "$OUT" "$ERR" TICK-38 "$BASE/fakebin"
+check "exits 0 (re-run of an already-delivered ticket, sync still skipped)" "$?" "0"
+check "sync NOT invoked once a run.start follows that ticket's terminal run.end" \
+  "$([ -e "$BASE/sync-invocations.txt" ] && echo invoked || echo not-invoked)" "not-invoked"
+has "stderr notes the skip and names the re-run ticket as still-live" "skipping \`concertino sync\`: run TICK-90 is still live" "$ERR"
 rm -rf "$BASE"
 
 # --- CONCERTINO_LIVE_RUN_STALE_HOURS override is honoured: a run just

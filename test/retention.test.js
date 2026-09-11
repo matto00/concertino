@@ -177,3 +177,25 @@ test('hasRunEnd: the LAST run.end wins — an escalated run.end followed by a la
   writeRun(root, 'HEL-52', lines, 1);
   assert.equal(retention.hasRunEnd(root, 'HEL-52'), true);
 });
+
+// Cold review (cycle 2): a run.start emitted AFTER a real terminal run.end
+// means the ticket was genuinely re-run — its log must not be pruneable
+// just because its FIRST delivery once finished.
+test('hasRunEnd: a run.start after a delivered run.end (re-run) is NOT terminal', () => {
+  const root = tmpRoot();
+  const lines = '{"t":1,"kind":"run.start","ticket":"X"}\n' +
+    '{"t":2,"kind":"run.end","ticket":"X","status":"delivered"}\n' +
+    '{"t":3,"kind":"run.start","ticket":"X"}\n';
+  writeRun(root, 'HEL-53', lines, 1);
+  assert.equal(retention.hasRunEnd(root, 'HEL-53'), false);
+});
+
+test('isEligible: a re-run (run.start after a delivered run.end) is never eligible for pruning', () => {
+  const root = tmpRoot();
+  const lines = '{"t":1,"kind":"run.start","ticket":"X"}\n' +
+    '{"t":2,"kind":"run.end","ticket":"X","status":"delivered"}\n' +
+    '{"t":3,"kind":"run.start","ticket":"X"}\n';
+  writeRun(root, 'HEL-54', lines, 9999); // absurdly old mtime
+  const eligible = retention.isEligible(root, 'HEL-54', { retentionDays: 30, now: NOW });
+  assert.equal(eligible, false);
+});
