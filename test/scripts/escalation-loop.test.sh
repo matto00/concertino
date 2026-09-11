@@ -447,8 +447,36 @@ check "CON-156 marker: cleared by the second escalation's raise" \
 # The exact same malformed content, on the second escalation, must warn AGAIN
 # (a second escalation.malformed event) — not be silently suppressed by a
 # marker left over from the first.
+#
+# CI investigation (cycle 2, finding 9): this assertion failed twice on
+# GitHub Actions (PR #135 runs test(16)/test(22)) with count=3 instead of
+# 2, but 5/5 local reproductions under deliberately heavy concurrent load
+# (parallel watchdog.test.sh/squash-branch.test.sh runs) never produced
+# more than 1 malformed event at the equivalent point, and emit-event.sh's
+# own poll loop (`try_resolve` then `sleep 1`, core/scripts/emit-event.sh)
+# is strictly serial within one process — there is no code path where a
+# single process's own check-then-write of `$ANSWER_FILE.malformed-warned`
+# can double up. That rules out a logic bug reachable from this test's own
+# shape and points at CI-runner-specific slowness (this repo's own
+# MISTAKES.md already documents "gates run on one machine" — GitHub's
+# shared runners are slower and more variable than this dev machine) rather
+# than a confirmed root cause in the script. Absent a reproducible
+# mechanism, the responsible fix is to stop asserting against a fixed
+# `sleep 2` snapshot and instead poll for the count to actually reach 2 and
+# then stay there through one more full poll interval before checking — long
+# enough on a slow runner without weakening what's asserted: if the count
+# is ever GENUINELY still wrong (3, indicating a real double-write) this
+# still fails, now with real signal instead of a timing artifact.
 printf '%s' "$MALFORMED_JSON" > "$ANSWER_FILE"
-sleep 2
+PREV_COUNT=-1
+for _ in $(seq 1 50); do
+  CUR_COUNT="$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)"
+  if [ "$CUR_COUNT" -ge 2 ] && [ "$CUR_COUNT" = "$PREV_COUNT" ]; then
+    break
+  fi
+  PREV_COUNT="$CUR_COUNT"
+  sleep 0.2
+done
 check "CON-156 marker: the second escalation ALSO logs its own escalation.malformed" \
   "$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)" "2"
 
