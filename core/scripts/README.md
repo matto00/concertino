@@ -91,25 +91,42 @@ file — so they stay generic and the config is the single source of truth.
   re-read on every poll rather than inferring stall from silence — a lanes
   file with every line removed (all lanes completed normally) makes it stand
   down silently, exit 0, no trip banner. A lane's line may also carry a
-  ticket id (`<agentId> <label> [<TICKET>]`); once that ticket's
-  `.concertino/runs/<TICKET>/events.jsonl` (resolved against the main
-  checkout, same as `emit-event.sh`) records a terminal `run.end`, the lane
-  counts as complete automatically — so a forgotten lane line for a ticket
-  that actually finished can no longer produce a false FLEET trip, which is
-  what happened in the field on 2026-09-10. The lanes file should be edited
-  atomically (write a temp file in the same directory, then `mv` over the
-  original) — a plain truncate-then-rewrite caught mid-poll briefly reads as
-  empty, which is otherwise indistinguishable from "no lanes in flight".
+  ticket id (`<agentId> <label> [<TICKET>]` or `<agentId> <label>
+  <TICKET>@/abs/repo/root`); once that ticket's
+  `.concertino/runs/<TICKET>/events.jsonl` records a terminal `run.end`
+  (ticket matched case-insensitively, same as `emit-event.sh`'s own
+  uppercasing), the lane counts as complete automatically — so a forgotten
+  lane line for a ticket that actually finished can no longer produce a
+  false FLEET trip, which is what happened in the field on 2026-09-10. That
+  repo root is resolved per lane, in order: (1) the inline `@/abs/path` on
+  that lane's own line, (2) `$CONCERTINO_REPO_ROOT` if set, (3) `git
+  rev-parse --git-common-dir` from the watchdog's own CWD (same as
+  `emit-event.sh`'s `main_checkout()`) — the inline form exists because a
+  single driving session commonly tracks lanes across more than one repo at
+  once (e.g. helio and concertino tickets in the same batch), for which one
+  global root is insufficient, and because the watchdog is often launched
+  from outside the ticket's own repo altogether (a scratchpad, a different
+  repo, a worktree a later `cleanup.sh` deletes) where CWD-based resolution
+  finds nothing at all. A ticket whose root can't be resolved by any of the
+  three warns once (stderr) rather than silently misjudging it either way.
+  The lanes file should be edited atomically (write a temp file in the same
+  directory, then `mv` over the original) — a plain truncate-then-rewrite
+  caught mid-poll briefly reads as empty, which is otherwise indistinguishable
+  from "no lanes in flight".
   Its lock lives at `<lanes-file's directory>/watchdog.pid.d/` — a
   *directory*, not a plain file, so acquiring it is a single atomic `mkdir`
   rather than a separate read-then-write that a second instance could race.
   Before ever signalling a PID recorded there, it confirms (via
-  `/proc/<pid>/cmdline` or `ps`) that the PID is actually a `watchdog.sh`
-  process — a stale lock's PID can be reused by an unrelated process after a
-  crash, and this never signals a process it hasn't identified. Both its
-  FLEET (default 15 min, all transcripts quiet) and LANE (default 3 h
-  minimum, one tracked lane's own transcript quiet) trips print a
-  diagnose-first message and never instruct or perform a kill of a tracked
+  `/proc/<pid>/cmdline` or `ps`) that the PID's command line contains this
+  script's own resolved absolute path (not merely the substring
+  `watchdog.sh`, which a same-named but unrelated script would also match) —
+  a stale lock's PID can be reused by an unrelated process after a crash,
+  and this never signals a process it hasn't identified this way; a prior
+  instance that doesn't honour repeated TERM signals within 50 attempts is
+  given up on (exit 2) rather than retried forever. Both its FLEET (default
+  15 min, all transcripts quiet) and LANE (default 3 h minimum, one tracked
+  lane's own transcript quiet) trips print a diagnose-first message and
+  never instruct or perform a kill of a tracked
   lane; a superseded instance exits 0 quietly rather than surfacing SIGTERM's
   raw 143 to whatever coordinator is watching it. See its own header comment
   for the full contract and env overrides used by its tests.

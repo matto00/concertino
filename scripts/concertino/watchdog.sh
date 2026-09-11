@@ -25,20 +25,43 @@
 #                (correctly, per constraint 7) read as "no lanes live" for
 #                that one poll.
 #
-#                The optional 3rd field is a ticket id: when present, this
-#                script treats that lane as complete — no LANE trip, and it
-#                doesn't count toward keeping the fleet "live" for FLEET
-#                purposes — the moment
-#                  <main checkout>/.concertino/runs/<TICKET>/events.jsonl
+#                The optional 3rd field is a ticket id, spelled either
+#                  TICKET
+#                or, when this watchdog's own CWD is not (or will not stay)
+#                inside the repo that ticket belongs to,
+#                  TICKET@/absolute/path/to/that/repo
+#                When present, this script treats that lane as complete — no
+#                LANE trip, and it doesn't count toward keeping the fleet
+#                "live" for FLEET purposes — the moment
+#                  <repo root>/.concertino/runs/<TICKET>/events.jsonl
 #                contains a `"kind":"run.end"` line (the same terminal-event
 #                marker cleanup.sh's other_runs_live() and
-#                lib/ui/retention.js's hasRunEnd() already use). This is a
-#                REAL completion signal, not driver discipline: a lane whose
-#                line was never removed after it actually finished is
+#                lib/ui/retention.js's hasRunEnd() already use; TICKET is
+#                matched case-insensitively, uppercased the same way
+#                emit-event.sh normalises it before writing that path). This
+#                is a REAL completion signal, not driver discipline: a lane
+#                whose line was never removed after it actually finished is
 #                detected as finished anyway, so forgetting to edit the file
 #                (the exact 2026-09-10 incident) can no longer produce a
 #                false FLEET trip. A line with no 3rd field falls back to
 #                pure liveness-by-file-presence, as before.
+#
+#                <repo root> resolution order (cycle-3 fix — the CWD-only
+#                lookup silently never detected completion, and fell back to
+#                a TRIP FLEET, when this watchdog was launched from outside
+#                the consumer repo: a scratchpad, a driving session in a
+#                DIFFERENT repo, or a worktree a later cleanup.sh deletes):
+#                  1. the inline `@/abs/path` on that lane's own line, if any
+#                  2. $CONCERTINO_REPO_ROOT, if set (a single default root —
+#                     insufficient on its own for a driver tracking lanes
+#                     across two repos at once, which is why (1) exists and
+#                     always wins per-lane)
+#                  3. `git rev-parse --git-common-dir` from this script's own
+#                     CWD, same as emit-event.sh's main_checkout()
+#                A ticket whose root can't be resolved by any of the three
+#                warns once on stderr and is treated as not-yet-complete
+#                (falls back to plain liveness-by-file-presence) rather than
+#                silently misjudging it either way.
 #
 #                All tracked lanes complete (by either removal or the
 #                run.end signal) ⇒ silent stand-down, exit 0, no TRIP text
@@ -162,18 +185,51 @@ main_checkout() {
   ( cd "$(dirname "$common")" 2>/dev/null && pwd ) || return 1
 }
 
+# Warn once per ticket whose repo root can't be resolved by any of the three
+# means lane_is_complete() tries (cycle-3 fix) — distinct from "no run dir
+# yet", which is normal early in a run and must stay silent.
+WARNED_UNRESOLVED=""
+warn_unresolved_root_once() {
+  local ticket="$1"
+  case " $WARNED_UNRESOLVED " in
+    *" $ticket "*) return 0 ;;
+  esac
+  WARNED_UNRESOLVED="$WARNED_UNRESOLVED $ticket"
+  echo "watchdog.sh: warning: could not resolve a repo root for ticket $ticket (no inline @/abs/path on its lane line, \$CONCERTINO_REPO_ROOT unset, and this process's CWD is not inside a git checkout) — cannot check run.end completion for it; treating it as not-yet-complete" >&2
+}
+
 # A tracked lane is "complete" when its ticket's run has emitted the terminal
 # `run.end` event — the same marker cleanup.sh's other_runs_live() and
 # lib/ui/retention.js's hasRunEnd() already treat as authoritative. Plain
 # substring grep on the raw JSONL, exactly like cleanup.sh:656-657, rather
 # than parsing JSON — consistent with how the rest of this pipeline reads
-# events.jsonl cheaply. No ticket field ⇒ can't ask this question ⇒ not
-# complete by this signal (falls back to plain liveness-by-file-presence).
+# events.jsonl cheaply.
+#
+# $1 is the raw 3rd field from a lane's line: `TICKET` or `TICKET@/abs/root`
+# (cycle-3 fix — see the header comment's "repo root resolution order").
+# Empty ⇒ can't ask this question ⇒ not complete by this signal (falls back
+# to plain liveness-by-file-presence).
 lane_is_complete() {
-  local ticket="$1" root log
-  [ -n "$ticket" ] || return 1
-  root="$(main_checkout)" || return 1
+  local field="$1" ticket root log
+  [ -n "$field" ] || return 1
+  case "$field" in
+    *@*) ticket="${field%%@*}"; root="${field#*@}" ;;
+    *)   ticket="$field"; root="" ;;
+  esac
+  # emit-event.sh:345 uppercases the ticket id before it ever becomes a
+  # RUN_DIR path component — match that normalisation here too, or a
+  # lowercase lane line (e.g. "con-9") would never find the run dir
+  # emit-event.sh actually wrote ("CON-9").
+  ticket="$(printf '%s' "$ticket" | tr '[:lower:]' '[:upper:]')"
+  if [ -z "$root" ]; then
+    root="${CONCERTINO_REPO_ROOT:-}"
+  fi
+  if [ -z "$root" ]; then
+    root="$(main_checkout)" || { warn_unresolved_root_once "$ticket"; return 1; }
+  fi
   log="$root/.concertino/runs/$ticket/events.jsonl"
+  # No run dir yet is a normal, silent "not complete" (early in a run) — only
+  # an unresolvable ROOT (above) warns.
   [ -f "$log" ] || return 1
   grep -q '"kind":"run.end"' "$log" 2>/dev/null
 }
@@ -208,9 +264,25 @@ warn_missing_once() {
   echo "watchdog.sh: warning: lane $id has no transcript at $TASKS/$id.output — cannot evaluate LANE staleness for it" >&2
 }
 
-# Confirm a PID recorded in the lock actually belongs to a prior watchdog.sh
-# instance before ever signalling it (constraint 1 fix — cycle 2 review). A
-# SIGKILLed or crashed prior instance can leave a lock recording a PID that
+# This script's own resolved absolute path, used by verify_watchdog_pid()
+# below. Resolved once at startup rather than matching any cmdline that
+# merely mentions "watchdog.sh" as a substring (cycle-3 fix — a same-named
+# but unrelated script, or a shell history entry mentioning this file, would
+# otherwise also pass identity verification).
+resolve_self_path() {
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$0" 2>/dev/null && return
+  fi
+  if command -v readlink >/dev/null 2>&1; then
+    readlink -f "$0" 2>/dev/null && return
+  fi
+  ( cd "$(dirname "$0")" 2>/dev/null && printf '%s/%s' "$(pwd)" "$(basename "$0")" )
+}
+SELF_PATH="$(resolve_self_path)"
+
+# Confirm a PID recorded in the lock actually belongs to a prior instance of
+# THIS script before ever signalling it (constraint 1 fix — cycle 2 review).
+# A SIGKILLed or crashed prior instance can leave a lock recording a PID that
 # has since been reused by an unrelated process (possibly a live agent); the
 # earlier version of this script signalled that PID unconditionally.
 # /proc/<pid>/cmdline is checked first (cheap, exact, Linux); `ps -o command=`
@@ -223,8 +295,11 @@ verify_watchdog_pid() {
   if [ -z "$cmdline" ]; then
     cmdline="$(ps -p "$pid" -o command= 2>/dev/null)"
   fi
+  if [ -z "$SELF_PATH" ]; then
+    return 1
+  fi
   case "$cmdline" in
-    *watchdog.sh*) return 0 ;;
+    *"$SELF_PATH"*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -251,7 +326,7 @@ LOCK_DIR="$(dirname "$LANES")"
 LOCKDIR="$LOCK_DIR/watchdog.pid.d"
 
 acquire_lock() {
-  local old attempts=0
+  local old attempts=0 kill_attempts=0
   while :; do
     if mkdir "$LOCKDIR" 2>/dev/null; then
       echo "$$" > "$LOCKDIR/pid"
@@ -262,7 +337,14 @@ acquire_lock() {
       if verify_watchdog_pid "$old"; then
         # Confirmed: a live, genuine prior watchdog instance. Supersede it —
         # signal it, then loop back around to retry mkdir once it exits and
-        # its own EXIT trap cleans up the directory.
+        # its own EXIT trap cleans up the directory. Capped (cycle-3 fix):
+        # a wedged prior instance that never honours TERM must not spin this
+        # loop forever re-sending it.
+        kill_attempts=$((kill_attempts + 1))
+        if [ "$kill_attempts" -gt 50 ]; then
+          echo "watchdog.sh: FAIL: prior watchdog instance (pid $old) did not exit after $kill_attempts TERM signals — giving up rather than retrying forever" >&2
+          exit 2
+        fi
         kill "$old" 2>/dev/null || true
         sleep 0.1
         continue

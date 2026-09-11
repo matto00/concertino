@@ -354,6 +354,125 @@ has "run.start-only lane: TRIP text present" "TRIP" "$UNFINISHED_OUT"
 rm -rf "$d" "$repo"
 
 # ---------------------------------------------------------------------------
+# Cycle-3 fix 1: CWD-only repo-root resolution silently never detects
+# completion (and falls back to TRIP FLEET) when the watchdog is launched
+# from outside the ticket's own repo — a scratchpad, a driving session in a
+# DIFFERENT repo, or a worktree a later cleanup.sh has already deleted.
+# Reproduced first (no fix applied to the invocation), then the two fixes
+# — inline `@/abs/path` and $CONCERTINO_REPO_ROOT — are each shown to
+# recover the same completion detection from a non-repo CWD.
+#
+# Mutation to confirm failability for all three sub-tests below: revert
+# lane_is_complete()'s root-resolution to ONLY `main_checkout()` (drop the
+# inline `@root` parsing and the $CONCERTINO_REPO_ROOT fallback) — the two
+# "from scratchpad" assertions go red (back to TRIP FLEET) and the
+# unresolved-root warning test goes red (main_checkout's failure is silent,
+# not warned).
+repo="$(new_git_checkout)"
+d="$(new_scratch)"
+make_transcript "$d" a-cross-repo-lane
+touch_mtime_ago "$d/subagents/agent-a-cross-repo-lane.jsonl" 999999
+mkdir -p "$repo/.concertino/runs/CON-997"
+printf '%s\n' '{"t":1,"kind":"run.start","ticket":"CON-997"}' \
+             '{"t":2,"kind":"run.end","ticket":"CON-997"}' \
+  > "$repo/.concertino/runs/CON-997/events.jsonl"
+scratchpad_cwd="$(mktemp -d)"   # NOT a git repo at all
+
+# 3a: reproduce the bug as filed — plain "TICKET" field, launched from a
+# non-repo CWD, no env fallback set. Must genuinely reproduce (TRIP FLEET)
+# before either fix is exercised, or the "fix" assertions below would prove
+# nothing.
+printf 'a-cross-repo-lane a-cross-repo-lane CON-997\n' > "$d/lanes"
+REPRO_OUT="$(mktemp)"
+( cd "$scratchpad_cwd" && WATCHDOG_POLL_SEC=1 WATCHDOG_FLEET_SEC=2 WATCHDOG_LANE_SEC=2 \
+    timeout 4 "$SCRIPT" "$d/tasks" "$d/lanes" >"$REPRO_OUT" 2>&1 )
+RC=$?
+check "reproduced: plain TICKET from a non-repo CWD trips (bug as filed)" "$RC" "1"
+has "reproduced: TRIP text present" "TRIP" "$REPRO_OUT"
+
+# 3b: fix 1 — inline @/abs/path on the lane's own line, still launched from
+# the non-repo CWD, no env fallback.
+printf 'a-cross-repo-lane a-cross-repo-lane CON-997@%s\n' "$repo" > "$d/lanes"
+INLINE_OUT="$(mktemp)"
+( cd "$scratchpad_cwd" && WATCHDOG_POLL_SEC=1 WATCHDOG_FLEET_SEC=2 WATCHDOG_LANE_SEC=2 \
+    timeout 4 "$SCRIPT" "$d/tasks" "$d/lanes" >"$INLINE_OUT" 2>&1 )
+RC=$?
+check "fixed via inline @/abs/path: stands down from a non-repo CWD" "$RC" "0"
+has "fixed via inline @/abs/path: stand-down message" "STAND-DOWN" "$INLINE_OUT"
+hasnt "fixed via inline @/abs/path: no TRIP text" "TRIP" "$INLINE_OUT"
+
+# 3c: fix 2 — plain TICKET field again, but $CONCERTINO_REPO_ROOT names the
+# repo, still launched from the non-repo CWD.
+printf 'a-cross-repo-lane a-cross-repo-lane CON-997\n' > "$d/lanes"
+ENVROOT_OUT="$(mktemp)"
+( cd "$scratchpad_cwd" && CONCERTINO_REPO_ROOT="$repo" \
+    WATCHDOG_POLL_SEC=1 WATCHDOG_FLEET_SEC=2 WATCHDOG_LANE_SEC=2 \
+    timeout 4 "$SCRIPT" "$d/tasks" "$d/lanes" >"$ENVROOT_OUT" 2>&1 )
+RC=$?
+check "fixed via CONCERTINO_REPO_ROOT: stands down from a non-repo CWD" "$RC" "0"
+has "fixed via CONCERTINO_REPO_ROOT: stand-down message" "STAND-DOWN" "$ENVROOT_OUT"
+
+# 3d: per-lane always wins over the env default — a driver tracking lanes in
+# TWO repos at once needs the inline root to override a single global
+# $CONCERTINO_REPO_ROOT that names the WRONG repo for this particular lane.
+other_repo="$(new_git_checkout)"
+printf 'a-cross-repo-lane a-cross-repo-lane CON-997@%s\n' "$repo" > "$d/lanes"
+PERLANE_OUT="$(mktemp)"
+( cd "$scratchpad_cwd" && CONCERTINO_REPO_ROOT="$other_repo" \
+    WATCHDOG_POLL_SEC=1 WATCHDOG_FLEET_SEC=2 WATCHDOG_LANE_SEC=2 \
+    timeout 4 "$SCRIPT" "$d/tasks" "$d/lanes" >"$PERLANE_OUT" 2>&1 )
+RC=$?
+check "per-lane @root overrides a wrong CONCERTINO_REPO_ROOT" "$RC" "0"
+has "per-lane @root overrides a wrong CONCERTINO_REPO_ROOT: stand-down" "STAND-DOWN" "$PERLANE_OUT"
+rm -rf "$other_repo"
+
+rm -rf "$d" "$repo" "$scratchpad_cwd"
+
+# 3e: an unresolvable root (no inline @root, no env var, non-repo CWD) warns
+# once on stderr rather than silently misjudging the lane either way.
+d="$(new_scratch)"
+make_transcript "$d" a-unresolvable-lane
+touch_mtime_ago "$d/subagents/agent-a-unresolvable-lane.jsonl" 5
+printf 'a-unresolvable-lane a-unresolvable-lane CON-996\n' > "$d/lanes"
+scratchpad_cwd2="$(mktemp -d)"
+UNRESOLVED_ERR="$(mktemp)"
+( cd "$scratchpad_cwd2" && WATCHDOG_POLL_SEC=1 WATCHDOG_FLEET_SEC=999999 WATCHDOG_LANE_SEC=999999 \
+    "$SCRIPT" "$d/tasks" "$d/lanes" >/dev/null 2>"$UNRESOLVED_ERR" &
+  pid=$!
+  sleep 2.5
+  kill "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+)
+has "unresolvable repo root: warns once on stderr" "could not resolve a repo root" "$UNRESOLVED_ERR"
+rm -rf "$d" "$scratchpad_cwd2"
+
+# ---------------------------------------------------------------------------
+# Cycle-3 fix 2: ticket matching must be case-insensitive, matching
+# emit-event.sh:345's uppercasing of the ticket id before it becomes a
+# RUN_DIR path component.
+#
+# Mutation to confirm failability: drop the `tr '[:lower:]' '[:upper:]'` call
+# on the parsed ticket id inside lane_is_complete() — this test goes red
+# (back to a TRIP, since "con-9" would look for a "con-9" run dir that was
+# never written; only "CON-9" exists on disk).
+repo="$(new_git_checkout)"
+d="$(new_scratch)"
+make_transcript "$d" a-lowercase-ticket-lane
+touch_mtime_ago "$d/subagents/agent-a-lowercase-ticket-lane.jsonl" 999999
+mkdir -p "$repo/.concertino/runs/CON-9"
+printf '%s\n' '{"t":1,"kind":"run.start","ticket":"CON-9"}' \
+             '{"t":2,"kind":"run.end","ticket":"CON-9"}' \
+  > "$repo/.concertino/runs/CON-9/events.jsonl"
+printf 'a-lowercase-ticket-lane a-lowercase-ticket-lane con-9\n' > "$d/lanes"
+CASE_OUT="$(mktemp)"
+( cd "$repo" && WATCHDOG_POLL_SEC=1 WATCHDOG_FLEET_SEC=2 WATCHDOG_LANE_SEC=2 \
+    timeout 4 "$SCRIPT" "$d/tasks" "$d/lanes" >"$CASE_OUT" 2>&1 )
+RC=$?
+check "lowercase lane-line ticket (con-9) matches the uppercase run dir (CON-9)" "$RC" "0"
+has "lowercase ticket match: stand-down message" "STAND-DOWN" "$CASE_OUT"
+rm -rf "$d" "$repo"
+
+# ---------------------------------------------------------------------------
 # Constraint 5: removing a lane from the lanes file stops that lane's alerts
 # — within ONE continuous run, not just across separate invocations (the
 # script must re-read $LANES every poll, never cache it at startup). A
@@ -526,6 +645,42 @@ check "superseded instance A exits 0, not 143 (routine hand-off, not a failure)"
 kill "$pidB" 2>/dev/null || true
 wait "$pidB" 2>/dev/null || true
 rm -rf "$d"
+
+# ---------------------------------------------------------------------------
+# Cycle-3 non-blocking fix: verify_watchdog_pid matches this script's
+# resolved absolute path, not any cmdline merely containing the substring
+# "watchdog.sh" — a differently-located script that happens to share the
+# basename must not pass identity verification.
+#
+# Mutation to confirm failability: change verify_watchdog_pid's match back to
+# `*watchdog.sh*` (any cmdline containing that substring) — this test's "not
+# verified" assertion goes red (the impostor script would be treated as a
+# genuine prior instance and actually get signalled).
+d="$(new_scratch)"
+: > "$d/lanes"
+impostor_dir="$(mktemp -d)"
+cat > "$impostor_dir/other-watchdog.sh" <<'EOS'
+#!/usr/bin/env bash
+# Not core/scripts/watchdog.sh -- shares only the basename fragment
+# "watchdog.sh", must never be treated as a genuine prior instance.
+sleep 300
+EOS
+chmod +x "$impostor_dir/other-watchdog.sh"
+"$impostor_dir/other-watchdog.sh" &
+lookalike=$!
+mkdir -p "$d/watchdog.pid.d"
+echo "$lookalike" > "$d/watchdog.pid.d/pid"
+LOOKALIKE_OUT="$(mktemp)"
+WATCHDOG_POLL_SEC=1 WATCHDOG_FLEET_SEC=999999 WATCHDOG_LANE_SEC=999999 \
+  timeout 5 "$SCRIPT" "$d/tasks" "$d/lanes" >"$LOOKALIKE_OUT" 2>&1
+if kill -0 "$lookalike" 2>/dev/null; then
+  ok "same-basename lookalike script: not verified, never signalled"
+else
+  bad "same-basename lookalike script: not verified, never signalled" "lookalike pid $lookalike was killed"
+fi
+kill "$lookalike" 2>/dev/null || true
+wait "$lookalike" 2>/dev/null || true
+rm -rf "$d" "$impostor_dir"
 
 echo
 echo "watchdog.sh: $PASS passed, $FAIL failed"

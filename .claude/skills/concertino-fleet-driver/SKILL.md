@@ -421,14 +421,32 @@ The tools you use to watch the fleet lie in specific, learnable ways.
   at finished tickets it still thinks are live.
 - **Add the ticket id when you have one — it makes "forgot to remove a
   finished line" survivable.** The optional 3rd field on a lane's line names
-  the Linear ticket that lane is delivering. The watchdog then checks that
-  ticket's own `events.jsonl` for a terminal `run.end` and treats the lane as
-  complete the moment that appears, independent of whether you ever edited
-  the lanes file — this is the actual fix for the 2026-09-10 incident (a
-  watchdog that tripped FLEET 15 minutes after a ticket had already merged,
-  because the operator forgot to stop it and the file still named a finished
-  lane). Removing the line remains the primary mechanism; the ticket id is a
-  second, independent line of defense against forgetting to.
+  the ticket that lane is delivering, matched case-insensitively. The
+  watchdog then checks that ticket's own `events.jsonl` for a terminal
+  `run.end` and treats the lane as complete the moment that appears,
+  independent of whether you ever edited the lanes file — this is the actual
+  fix for the 2026-09-10 incident (a watchdog that tripped FLEET 15 minutes
+  after a ticket had already merged, because the operator forgot to stop it
+  and the file still named a finished lane). Removing the line remains the
+  primary mechanism; the ticket id is a second, independent line of defense
+  against forgetting to.
+- **Name the repo explicitly when the watchdog isn't running inside it.**
+  Plain `TICKET` resolves that ticket's `events.jsonl` against whatever git
+  repo the watchdog process's own CWD happens to be in — which silently
+  finds nothing (and falls back to a plain FLEET trip once the deadline
+  passes) when you launch the watchdog from a scratchpad, from a different
+  repo, or against a worktree a later `cleanup.sh` has already torn down.
+  Two ways to fix it, and the first always wins per lane over the second:
+  - `TICKET@/abs/path/to/that/repo` on the individual lane's own line —
+    required when one driving session is tracking lanes in **more than one
+    repo at once** (e.g. helio and concertino tickets in the same overnight
+    batch), since a single default root can't be right for both.
+  - `CONCERTINO_REPO_ROOT=/abs/path` exported before starting the watchdog,
+    when every tracked lane in this particular watchdog process belongs to
+    the same one repo.
+  A ticket the watchdog can't resolve a root for by either path (or CWD)
+  warns once on stderr rather than guessing; check for that warning if a
+  lane you expected to be recognized as complete keeps tripping instead.
 
 ## 15. Knowing when to stop a review loop
 
