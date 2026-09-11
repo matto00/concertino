@@ -121,12 +121,20 @@ file — so they stay generic and the config is the single source of truth.
   script's own resolved absolute path (not merely the substring
   `watchdog.sh`, which a same-named but unrelated script would also match) —
   a stale lock's PID can be reused by an unrelated process after a crash,
-  and this never signals a process it hasn't identified this way; a prior
-  instance that doesn't honour repeated TERM signals within 50 attempts is
-  given up on (exit 2) rather than retried forever. Both its FLEET (default
-  15 min, all transcripts quiet) and LANE (default 3 h minimum, one tracked
-  lane's own transcript quiet) trips print a diagnose-first message and
-  never instruct or perform a kill of a tracked
+  and this never signals a process it hasn't identified this way. A genuine
+  prior instance launched by a RELATIVE path (`./watchdog.sh`,
+  `scripts/concertino/watchdog.sh`) still verifies correctly: its cmdline
+  entry, relative to ITS OWN cwd, is resolved against `/proc/<pid>/cwd`
+  before the comparison rather than only compared as a raw substring. A
+  prior instance that doesn't honour repeated TERM signals within 50
+  attempts is given up on (exit 2) rather than retried forever. A resolved
+  root that isn't a real Concertino checkout (a mistyped inline `@/abs/path`,
+  or a stale `$CONCERTINO_REPO_ROOT`) is distinguished from "root is fine,
+  this ticket's run just hasn't started yet" by checking for a `.concertino/`
+  directory under it — the former warns once, the latter stays silent. Both
+  its FLEET (default 15 min, all transcripts quiet) and LANE (default 3 h
+  minimum, one tracked lane's own transcript quiet) trips print a
+  diagnose-first message and never instruct or perform a kill of a tracked
   lane; a superseded instance exits 0 quietly rather than surfacing SIGTERM's
   raw 143 to whatever coordinator is watching it. See its own header comment
   for the full contract and env overrides used by its tests.

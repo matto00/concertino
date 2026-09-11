@@ -663,11 +663,33 @@ cat > "$impostor_dir/other-watchdog.sh" <<'EOS'
 #!/usr/bin/env bash
 # Not core/scripts/watchdog.sh -- shares only the basename fragment
 # "watchdog.sh", must never be treated as a genuine prior instance.
-sleep 300
+# `exec` replaces this process's own image with sleep's rather than forking
+# a child, so killing this script's pid actually terminates the sleep too --
+# a plain `sleep 300` here would leave an orphaned sleep behind (holding
+# this test's stdout open, blocking a piped reader for up to 5 minutes)
+# every time this test runs, since `kill "$lookalike"` only ever reaches the
+# wrapper's own pid.
+# `exec` replaces this process's own image with sleep's rather than forking
+# a child, so killing this script's pid actually terminates the sleep too --
+# a plain `sleep 300` here would leave an orphaned sleep behind (holding
+# this test's stdout open, blocking a piped reader for up to 5 minutes)
+# every time this test runs, since `kill "$lookalike"` only ever reaches the
+# wrapper's own pid.
+exec sleep 300
 EOS
 chmod +x "$impostor_dir/other-watchdog.sh"
 "$impostor_dir/other-watchdog.sh" &
 lookalike=$!
+# Capture the actual sleep pid to check for a leak later, distinct from the
+# wrapper's own pid: with `exec` (the fix) there IS no separate child, so
+# $lookalike itself becomes sleep; without it (a fork, the leak this guards
+# against), $lookalike is the wrapper and sleep is its CHILD — checking only
+# $lookalike after killing the wrapper would incorrectly read as "no leak"
+# even though the orphaned child sleep is still running under a different
+# pid. Give the child a moment to actually spawn before looking for it.
+sleep 0.3
+sleep_pid="$(pgrep -P "$lookalike" 2>/dev/null | head -1)"
+sleep_pid="${sleep_pid:-$lookalike}"
 mkdir -p "$d/watchdog.pid.d"
 echo "$lookalike" > "$d/watchdog.pid.d/pid"
 LOOKALIKE_OUT="$(mktemp)"
@@ -680,7 +702,114 @@ else
 fi
 kill "$lookalike" 2>/dev/null || true
 wait "$lookalike" 2>/dev/null || true
+# Confirm the `exec` fix actually closes the leak: no stray sleep left
+# holding this test's fds open, checking the SLEEP pid specifically (see
+# above), not just the wrapper's.
+#
+# Mutation to confirm failability: change the impostor script's `exec sleep
+# 300` back to plain `sleep 300` (a fork) — this assertion goes red, because
+# killing the wrapper leaves its child sleep running as an orphan under a
+# separate pid.
+sleep 0.3
+if kill -0 "$sleep_pid" 2>/dev/null; then
+  bad "lookalike script: no orphaned sleep left behind" "pid $sleep_pid (sleep) still alive after killing the wrapper"
+else
+  ok "lookalike script: no orphaned sleep left behind"
+fi
+kill "$sleep_pid" 2>/dev/null || true
 rm -rf "$d" "$impostor_dir"
+
+# ---------------------------------------------------------------------------
+# Cycle-3-tidy fix: a genuine prior instance launched by a RELATIVE path
+# (e.g. `bash core/scripts/watchdog.sh ...` from this repo root, rather than
+# an absolute path) must still be recognized and superseded — its
+# /proc/<pid>/cmdline entry is relative to ITS OWN cwd, not this new
+# instance's, so a bare substring compare against SELF_PATH would otherwise
+# misreport it as "not a watchdog.sh process" and leave both running for one
+# poll (a real, if narrow, overlap).
+#
+# Mutation to confirm failability: revert verify_watchdog_pid() to the
+# substring-only compare (no /proc/<pid>/cwd resolution of relative cmdline
+# tokens) — this test's "recognized and superseded" assertion goes red, and
+# the relative-path instance survives instead of being replaced.
+d="$(new_scratch)"
+: > "$d/lanes"
+( cd "$ROOT" && WATCHDOG_POLL_SEC=30 WATCHDOG_FLEET_SEC=999999 WATCHDOG_LANE_SEC=999999 \
+    exec bash core/scripts/watchdog.sh "$d/tasks" "$d/lanes" ) &
+relPid=$!
+sleep 0.5
+lock_owner_before="$(lock_pid "$d")"
+check "relative-path instance took the lock" "$lock_owner_before" "$relPid"
+
+WATCHDOG_POLL_SEC=30 WATCHDOG_FLEET_SEC=999999 WATCHDOG_LANE_SEC=999999 \
+  "$SCRIPT" "$d/tasks" "$d/lanes" &
+pidRelNew=$!
+sleep 0.5
+lock_owner_after="$(lock_pid "$d")"
+check "new instance now owns the lock" "$lock_owner_after" "$pidRelNew"
+if kill -0 "$relPid" 2>/dev/null; then
+  bad "relative-path prior instance: recognized and superseded" "pid $relPid still alive (falsely treated as unverified)"
+else
+  ok "relative-path prior instance: recognized and superseded"
+fi
+kill "$pidRelNew" 2>/dev/null || true
+wait "$pidRelNew" 2>/dev/null || true
+wait "$relPid" 2>/dev/null || true
+rm -rf "$d"
+
+# ---------------------------------------------------------------------------
+# Cycle-3-tidy: the 50-attempt supersede-kill cap. A "prior instance" here
+# has SIG_IGN on TERM installed BEFORE its exec (SIG_IGN, unlike a custom
+# trap handler, survives exec per POSIX) and its argv[0] set (via bash's
+# `exec -a`) to this script's own SELF_PATH text, so verify_watchdog_pid
+# treats it as genuine and repeatedly signals it — it must never actually
+# die, forcing acquire_lock() to hit the cap. 50 attempts at ~0.1s each is
+# about 5s of real time; acceptable for this one test.
+#
+# Mutation to confirm failability: remove the `kill_attempts` cap (or set it
+# absurdly high) — this test's exit-2 assertion goes red (it would instead
+# hang for the whole `timeout` wall-clock budget with no informative exit).
+d="$(new_scratch)"
+: > "$d/lanes"
+bash -c 'trap "" TERM; exec -a "'"$SCRIPT"'" sleep 300' &
+wedged=$!
+mkdir -p "$d/watchdog.pid.d"
+echo "$wedged" > "$d/watchdog.pid.d/pid"
+CAPPED_OUT="$(mktemp)"
+timeout 15 "$SCRIPT" "$d/tasks" "$d/lanes" >"$CAPPED_OUT" 2>&1
+CAPPED_RC=$?
+check "supersede-kill cap: gives up with exit 2 rather than retrying forever" "$CAPPED_RC" "2"
+has "supersede-kill cap: message names the give-up condition" "did not exit after" "$CAPPED_OUT"
+kill -9 "$wedged" 2>/dev/null || true
+wait "$wedged" 2>/dev/null || true
+rm -rf "$d"
+
+# ---------------------------------------------------------------------------
+# Cycle-3-tidy fix: a resolved-but-WRONG root (a mistyped `@/abs/path`, or a
+# stale $CONCERTINO_REPO_ROOT) must warn once, distinct from "root is fine,
+# this ticket's run just hasn't started yet" (which stays silent — see the
+# earlier run.start-only test).
+#
+# Mutation to confirm failability: drop the `[ ! -d "$root/.concertino" ]`
+# check (go straight to checking the events.jsonl path) — this test's
+# "warns once" assertion goes red, and the ancient transcript would instead
+# TRIP with no explanation of why completion couldn't be checked.
+d="$(new_scratch)"
+make_transcript "$d" a-mistyped-root-lane
+touch_mtime_ago "$d/subagents/agent-a-mistyped-root-lane.jsonl" 5
+nonexistent_root="$(mktemp -u)/definitely-does-not-exist"
+printf 'a-mistyped-root-lane a-mistyped-root-lane CON-995@%s\n' "$nonexistent_root" > "$d/lanes"
+MISTYPED_ERR="$(mktemp)"
+WATCHDOG_POLL_SEC=1 WATCHDOG_FLEET_SEC=999999 WATCHDOG_LANE_SEC=999999 \
+  "$SCRIPT" "$d/tasks" "$d/lanes" >/dev/null 2>"$MISTYPED_ERR" &
+pidMistyped=$!
+sleep 2.5
+kill "$pidMistyped" 2>/dev/null || true
+wait "$pidMistyped" 2>/dev/null || true
+has "mistyped/nonexistent @root: warns once on stderr" "does not exist or has no .concertino/" "$MISTYPED_ERR"
+warn_count2="$(grep -c 'does not exist or has no .concertino/' "$MISTYPED_ERR" 2>/dev/null || echo 0)"
+check "mistyped/nonexistent @root: warns only once despite multiple polls" "$warn_count2" "1"
+rm -rf "$d"
 
 echo
 echo "watchdog.sh: $PASS passed, $FAIL failed"

@@ -185,17 +185,37 @@ main_checkout() {
   ( cd "$(dirname "$common")" 2>/dev/null && pwd ) || return 1
 }
 
-# Warn once per ticket whose repo root can't be resolved by any of the three
-# means lane_is_complete() tries (cycle-3 fix) — distinct from "no run dir
-# yet", which is normal early in a run and must stay silent.
-WARNED_UNRESOLVED=""
+# File-marker-backed "warn once" (cycle-3-tidy fix). An in-memory
+# space-separated variable is NOT enough here: lane_is_complete() is called
+# from effective_live_lanes(), which the main loop invokes as
+# `live="$(effective_live_lanes ...)"` — a COMMAND SUBSTITUTION, which bash
+# runs in a subshell. Any variable that subshell sets is gone the instant it
+# exits, so an in-memory dedup set silently reset every single poll and
+# "warn once" was actually "warn every poll" for this call path (caught by
+# this fix's own "warns only once despite multiple polls" test). One marker
+# file per (kind, key) under the lock directory persists for the life of
+# this process (and is cleaned up automatically — release_lock() removes the
+# whole LOCKDIR on exit) and survives being set from inside a subshell,
+# since the subshell's filesystem writes are real, not undone on exit.
+warn_once() {
+  local key="$1" msg="$2" marker
+  marker="$LOCKDIR/.warned-$(printf '%s' "$key" | tr -c 'A-Za-z0-9_-' '_')"
+  [ -e "$marker" ] && return 0
+  : > "$marker" 2>/dev/null
+  echo "watchdog.sh: warning: $msg" >&2
+}
+
+# Warn once per ticket whose repo root can't be resolved, or resolves to
+# something that plainly isn't a Concertino checkout (cycle-3/4 fix) —
+# distinct from "root is fine, run dir just doesn't exist yet", which is
+# normal early in a run and must stay silent.
 warn_unresolved_root_once() {
-  local ticket="$1"
-  case " $WARNED_UNRESOLVED " in
-    *" $ticket "*) return 0 ;;
-  esac
-  WARNED_UNRESOLVED="$WARNED_UNRESOLVED $ticket"
-  echo "watchdog.sh: warning: could not resolve a repo root for ticket $ticket (no inline @/abs/path on its lane line, \$CONCERTINO_REPO_ROOT unset, and this process's CWD is not inside a git checkout) — cannot check run.end completion for it; treating it as not-yet-complete" >&2
+  local ticket="$1" detail="${2:-}"
+  if [ -n "$detail" ]; then
+    warn_once "root-$ticket" "$detail for ticket $ticket — cannot check run.end completion for it; treating it as not-yet-complete"
+  else
+    warn_once "root-$ticket" "could not resolve a repo root for ticket $ticket (no inline @/abs/path on its lane line, \$CONCERTINO_REPO_ROOT unset, and this process's CWD is not inside a git checkout) — cannot check run.end completion for it; treating it as not-yet-complete"
+  fi
 }
 
 # A tracked lane is "complete" when its ticket's run has emitted the terminal
@@ -227,9 +247,22 @@ lane_is_complete() {
   if [ -z "$root" ]; then
     root="$(main_checkout)" || { warn_unresolved_root_once "$ticket"; return 1; }
   fi
+  # A resolved-but-wrong root (a mistyped `@/abs/path`, or a
+  # $CONCERTINO_REPO_ROOT that no longer exists) is a distinct failure mode
+  # from "root is fine, this run just hasn't started yet" — the latter is
+  # normal and silent, the former means completion can never be detected for
+  # this lane and the operator should hear about it once. `.concertino/`
+  # itself (not just `.concertino/runs/`) is the check, so a root that is a
+  # real, unrelated directory still warns rather than reading as merely
+  # run-not-started-yet.
+  if [ ! -d "$root/.concertino" ]; then
+    warn_unresolved_root_once "$ticket" "resolved repo root '$root' does not exist or has no .concertino/ directory"
+    return 1
+  fi
   log="$root/.concertino/runs/$ticket/events.jsonl"
-  # No run dir yet is a normal, silent "not complete" (early in a run) — only
-  # an unresolvable ROOT (above) warns.
+  # No run dir yet (but a genuine .concertino/ root) is a normal, silent
+  # "not complete" (early in a run) — only an unresolvable/wrong ROOT
+  # (above) warns.
   [ -f "$log" ] || return 1
   grep -q '"kind":"run.end"' "$log" 2>/dev/null
 }
@@ -253,15 +286,14 @@ effective_live_lanes() {
 
 # Warn once per lane id with a tracked-but-missing transcript (constraint 4)
 # rather than either failing loud every poll or silently polling forever with
-# no signal at all.
-WARNED_MISSING=""
+# no signal at all. File-marker-backed (see warn_once() above) for the same
+# subshell-safety reason, even though THIS call site happens to run in the
+# main loop's own process today — a future refactor that moved it behind a
+# command substitution would otherwise silently reintroduce the same
+# warn-every-poll bug lane_is_complete()'s callers already hit.
 warn_missing_once() {
   local id="$1"
-  case " $WARNED_MISSING " in
-    *" $id "*) return 0 ;;
-  esac
-  WARNED_MISSING="$WARNED_MISSING $id"
-  echo "watchdog.sh: warning: lane $id has no transcript at $TASKS/$id.output — cannot evaluate LANE staleness for it" >&2
+  warn_once "missing-$id" "lane $id has no transcript at $TASKS/$id.output — cannot evaluate LANE staleness for it"
 }
 
 # This script's own resolved absolute path, used by verify_watchdog_pid()
@@ -288,20 +320,41 @@ SELF_PATH="$(resolve_self_path)"
 # /proc/<pid>/cmdline is checked first (cheap, exact, Linux); `ps -o command=`
 # is the portable fallback for platforms without /proc.
 verify_watchdog_pid() {
-  local pid="$1" cmdline=""
+  local pid="$1" cmdline="" cwd="" tok abs
   if [ -r "/proc/$pid/cmdline" ]; then
     cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
   fi
   if [ -z "$cmdline" ]; then
     cmdline="$(ps -p "$pid" -o command= 2>/dev/null)"
   fi
-  if [ -z "$SELF_PATH" ]; then
+  if [ -z "$SELF_PATH" ] || [ -z "$cmdline" ]; then
     return 1
   fi
   case "$cmdline" in
     *"$SELF_PATH"*) return 0 ;;
-    *) return 1 ;;
   esac
+  # cycle-3-tidy fix: a genuine prior instance launched by a RELATIVE path
+  # (`./watchdog.sh`, `scripts/concertino/watchdog.sh`) has a cmdline entry
+  # that is relative to THAT process's own cwd, not this one's — the bare
+  # substring compare above then falsely reports "not a watchdog.sh
+  # process" for a perfectly real prior instance. Resolve each cmdline token
+  # against /proc/<pid>/cwd before giving up. Best-effort: only Linux has
+  # /proc/<pid>/cwd; a platform without it (already outside /proc/<pid>/cmdline
+  # above, so already on the `ps` fallback) simply can't recover a relative
+  # path and returns not-verified, same as before this fix.
+  if [ -r "/proc/$pid/cwd" ]; then
+    cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null)"
+  fi
+  [ -n "$cwd" ] || return 1
+  for tok in $cmdline; do
+    case "$tok" in
+      /*) abs="$tok" ;;
+      *)  abs="$cwd/$tok" ;;
+    esac
+    abs="$(cd "$(dirname "$abs")" 2>/dev/null && printf '%s/%s' "$(pwd)" "$(basename "$abs")" 2>/dev/null)"
+    [ -n "$abs" ] && [ "$abs" = "$SELF_PATH" ] && return 0
+  done
+  return 1
 }
 
 # ---------------------------------------------------------------------------
