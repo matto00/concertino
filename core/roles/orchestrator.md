@@ -333,11 +333,72 @@ Never let telemetry block delivery: if a call fails, continue.
    human rather than guessing a resolution.
 5. **Gate before advancing:** `scripts/concertino/assert-phase.sh setup "$WORKTREE_PATH" "$TICKET_ID"`.
    If it prints `FAIL`, do not proceed — re-run setup or escalate.
+5a. **Resolve the review base's remote/branch coordinates once, for the
+   whole run (CON-152).** A bare `git diff main...HEAD` (or any other
+   hand-computed base) is wrong in a long-lived worktree: a local
+   base-branch ref is created once at branch time and never moves, while
+   the remote base branch keeps advancing as sibling tickets merge mid-run
+   — so a diff computed against a stale ref silently grows to include
+   unrelated work. **Recording a resolved SHA once has the identical
+   failure mode one layer later** (a first cut of this fix tried exactly
+   that, and cycle-2 review caught it): the moment ANY reconciliation
+   happens mid-run — this run's own step 7a `check-pr-mergeable.sh` BEHIND
+   auto-reconcile, `check-merge-readiness.sh`'s condition 0, or a human
+   manually merging the base in — a cached SHA is now stale in the other
+   direction (it under-counts commits the branch has since absorbed), and a
+   diff against it re-flags already-merged-in base commits as though they
+   were still under review. So only the REMOTE and BRANCH NAME are resolved
+   and cached here — those genuinely don't change mid-run — never the SHA
+   itself:
+
+   ```bash
+   REVIEW_BASE_BRANCH="${CONCERTINO_BASE_BRANCH:-{{var:project.baseBranch}}}"
+   REVIEW_BASE_REMOTE="${CONCERTINO_BASE_REMOTE:-origin}"
+   ```
+
+   Record `REVIEW_BASE_BRANCH`/`REVIEW_BASE_REMOTE` in `workflow-state.md`
+   (step 7 below). **Every review-bearing role (executor's gate-selection
+   diff, evaluator, skeptic, auditor) computes its own diff base LIVE,
+   immediately before it diffs**, by calling the canonical script (never
+   hand-rolled, and never by reading a cached SHA):
+
+   ```bash
+   BASE_SHA="$(scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE")" \
+     || { echo "BLOCKER: could not resolve the review diff base — see resolve-review-base.sh's stderr above"; exit 1; }
+   ```
+
+   which fetches `$REVIEW_BASE_REMOTE/$REVIEW_BASE_BRANCH` fresh and prints
+   EXACTLY the resolved SHA on stdout (nothing else — no prefix, no other
+   output) — the true merge-base AT THE MOMENT OF THE CALL. This is what
+   actually closes CON-152: every role sees a base that reflects whatever
+   has really landed on the remote base branch and whatever this branch has
+   really absorbed, right up to the instant it reviews, instead of a value
+   that was only ever correct at Setup. **Check the exit status, always**
+   (CON-152 cycle 3, finding 2): on failure the script prints one "FAIL
+   ..." line to stderr and NOTHING to stdout, and exits non-zero — a caller
+   that piped its output through `sed`/`awk` to extract a value, or that
+   ignored the exit code, would see an empty `BASE_SHA` and turn a
+   subsequent `git diff "$BASE_SHA"...HEAD` into a silent empty diff
+   (`HEAD...HEAD`) instead of a loud failure. The `|| { ...; exit 1; }`
+   above is load-bearing, not decorative — treat it as a `BLOCKER` for
+   whichever role hit it, surfaced rather than silently reviewing nothing.
+   **Fallback for a resumed/older run with no `REVIEW_BASE_BRANCH`/
+   `REVIEW_BASE_REMOTE` in `workflow-state.md`:** `resolve-review-base.sh`
+   itself sources the SAME co-located `.concertino.env` `setup-worktree.sh`
+   sources (CON-152 cycle 3, finding 3 — a project whose base branch isn't
+   `main` must not silently fall back to a hardcoded, wrong `main`/`origin`
+   default) before falling back further to a literal `main`/`origin` only
+   when even that file doesn't define `CONCERTINO_BASE_BRANCH`/
+   `CONCERTINO_BASE_REMOTE` — this degrades to the same config resolution
+   `setup-worktree.sh` itself uses, never to an unresolved `<base>` a role
+   has to improvise.
 6. **Resolve `AGENT_MERGE` once, for the whole run.** `AGENT_MERGE_OVERRIDE`
    takes precedence when it is `true` or `false`; otherwise fall back to the
    config default `{{var:agentMerge.enabled}}`. This resolution happens
    exactly once, here — never recomputed later in the run.
-7. Write initial `workflow-state.md` (PHASE: Planning, AGENT_MERGE: `<resolved
+7. Write initial `workflow-state.md` (PHASE: Planning, `REVIEW_BASE_BRANCH:
+   <resolved value>` and `REVIEW_BASE_REMOTE: <resolved value>` (from step
+   5a — coordinates only, never a cached SHA), AGENT_MERGE: `<resolved
    value>`, `TICKET_TYPE: <resolved value>` (from the design-ticket-type
    check above), `DESIGN_QUESTIONS: null`, plus every field parsed in step 4:
    `SPEED`, `EXECUTION_CYCLES`, `SKEPTIC_DESIGN_ROUNDS`, `SKEPTIC_FINAL_ROUNDS`,
@@ -1078,10 +1139,60 @@ Run directly (no subagent).
    local-file `ref`, and there is no corresponding `persist-evidence.sh` call
    (the URL itself is the durable reference; there is no local file to
    persist).
-7. **Post the PR link back to the ticket.**
+7. **Verify live mergeable state before presenting the PR as ready
+   (CON-122).** Run this BEFORE posting the PR link back to the ticket
+   (step 7a below) — a failed gate here must never let a ready-looking link
+   reach the ticket first. Twice, driving concurrent runs, an orchestrator
+   asserted a PR was "clean"/"no overlap conflicts expected" from shallow
+   signals (commit-list file names, a belief a sibling ticket didn't touch
+   the same files) instead of actually querying GitHub — and both times the
+   PR was really `CONFLICTING`/`DIRTY` (HEL-412, HEL-703), which is worse
+   than an ordinary conflict: GitHub never materializes a merge ref, so the
+   real `pull_request`-triggered CI jobs never even queue, and only checks
+   that don't need one (e.g. CodeQL) go green — a driver skimming `gh pr
+   checks` sees a mostly-green PR and can merge it believing gates passed
+   that never ran. Run, for every run regardless of `AGENT_MERGE` (the
+   agent-merge path also gets this from `check-merge-readiness.sh`'s own
+   conditions 1-2, but this call is unconditional here so the human-merge
+   path is never the one without it):
+
+   ```bash
+   scripts/concertino/check-pr-mergeable.sh "$WORKTREE_PATH" "<branch>"
+   ```
+
+   - **`PASS`** (exit 0) → proceed to step 7a.
+   - **`PENDING <names> ...`** (exit 3) → this run's own CI simply hasn't
+     finished yet, immediately after `gh pr create` — NOT a failure. Wait a
+     short bounded interval and re-invoke the same call; do not escalate or
+     present the PR while this keeps returning PENDING, and do not treat
+     repeated PENDING as a BLOCKER by itself (only a real `FAIL` is).
+   - **`FAIL <reason>`** (exit 1) → the PR is NOT ready. Never present it to
+     the human (or spawn the auditor) as clean. Treat it exactly like the
+     existing escalation table's `BLOCKER` case: surface the specific
+     reason (never a re-derived guess like "expected clean") to the human,
+     and do not proceed to step 7a until it resolves — a `BEHIND` reason
+     already attempted its own one-shot reconcile inside the script itself,
+     so a `FAIL` here means that either didn't apply or didn't succeed and
+     needs a human.
+
+   **Note on the BEHIND auto-reconcile and squashing:** this script's own
+   condition-0 reconcile (and `check-merge-readiness.sh`'s identical one)
+   merges the base into the branch with an ordinary `git merge`, adding a
+   merge commit — it never rebases or re-squashes. Phase 3 step 2 above
+   already squashed this branch's own commits before the PR was created, so
+   a reconcile that fires AFTER that point leaves the branch as one squashed
+   ticket commit plus one merge commit, not a single flat commit. The human
+   (or `gh pr merge`) should still use a **squash merge** when actually
+   merging the PR — squashing at merge time collapses both into the one
+   commit landing on the base branch, so this is cosmetic to the branch's
+   own history, never a reason to re-run `squash-branch.sh`.
+7a. **Post the PR link back to the ticket** (only after step 7 above returns
+   `PASS`).
 8. **Branch on `AGENT_MERGE`** (resolved once at Setup — see above):
 
-   - **`AGENT_MERGE = false`** (today's behavior, unchanged): read the final
+   - **`AGENT_MERGE = false`** (today's behavior, unchanged other than the
+     mergeable check in step 7 above, which now runs
+     unconditionally before this branch): read the final
      evaluation report now (the only time a PASS report is read). For each
      non-blocking evaluator/skeptic suggestion that names discrete additional
      work (not a one-line style nit), run the **"Triaging a suggested

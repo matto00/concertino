@@ -47,8 +47,30 @@ First run only (skip on resume):
 Every run (including resume):
 
 4. Read `files-modified.md` if present (executor's handoff).
-5. **Diff first**: `git diff <base>...HEAD` — your primary review surface. Read
-   full source files only where the diff lacks context.
+5. **Diff first**: resolve the base LIVE, right now (never a cached value,
+   never a hand-typed `main`/`<base>` ref — CON-152: a bare local
+   base-branch ref never moves for the life of the worktree, and even a
+   SHA cached earlier in the run goes stale the moment anything reconciles
+   the branch against its base mid-run):
+
+   ```bash
+   BASE_SHA="$(scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE")" \
+     || { echo "BLOCKER: could not resolve the review diff base — see resolve-review-base.sh's stderr above"; exit 1; }
+   git diff "$BASE_SHA"...HEAD
+   ```
+
+   **Check the exit status, always** (CON-152 cycle 3, finding 2): the
+   script prints EXACTLY the resolved SHA on success and nothing at all on
+   failure (a "FAIL ..." line goes to stderr, never stdout) — a caller that
+   piped its output through `sed`/`awk` to strip a prefix, or that ignored
+   a non-zero exit, would see an EMPTY `BASE_SHA`, making `git diff
+   ...HEAD` a no-op `HEAD...HEAD` (an empty diff) instead of a loud error —
+   i.e. exactly the failure this whole fix exists to prevent, silently
+   reintroduced one layer up. The `||` above is not optional. (Omit
+   `REVIEW_BASE_BRANCH`/`REVIEW_BASE_REMOTE` and the script falls back to
+   its own config defaults if they're absent on an older/resumed run.)
+   This is your primary review surface — read full source files only where
+   the diff lacks context.
 
 ---
 
@@ -77,7 +99,9 @@ sub-agent's report of success is not evidence; only your own fresh run is):
 
 {{block:gates}}
 
-Run them against changed files (`git diff --name-only <base>...HEAD`) exactly
+Run them against changed files (`git diff --name-only "$BASE_SHA"...HEAD`,
+the same LIVE-resolved base as above — re-resolve it fresh here too rather
+than reusing a variable that may have gone stale between steps) exactly
 as the executor's own instructions describe, in `WORKTREE_PATH` — **unless
 `CLEAN_WORKTREE=true`** (only ever set on `slow` speed — see "`slow`-only:
 clean-worktree gate re-run" below), in which case run them in the clean

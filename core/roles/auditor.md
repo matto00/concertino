@@ -143,8 +143,26 @@ gate:
 
 - Read the ticket's acceptance criteria (`ticket.md` in the change dir, or
   re-fetch from the ticket provider if that file looks stale).
-- `git diff {{var:project.baseBranch}}...HEAD` (or `<base>...HEAD` for this
-  project's configured base) — the actual, real change.
+- Resolve the base LIVE, right now:
+
+  ```bash
+  BASE_SHA="$(scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE")" \
+    || { echo "BLOCKER: could not resolve the review diff base — see resolve-review-base.sh's stderr above"; exit 1; }
+  git diff "$BASE_SHA"...HEAD
+  ```
+
+  (fields from `workflow-state.md`; script falls back to its own config
+  defaults if absent) — never `{{var:project.baseBranch}}...HEAD`, a bare
+  `<base>...HEAD`, or a SHA cached earlier in the run (CON-152: any of
+  those can silently include whatever has merged to the remote base branch
+  since the worktree was created, OR — for a cached SHA specifically —
+  silently re-flag base commits this branch has since absorbed via a
+  reconcile). **Check the exit status, always** (CON-152 cycle 3, finding
+  2): the script prints exactly the SHA on success and nothing on failure
+  — never pipe through `sed`/`awk` or ignore a non-zero exit, either of
+  which leaves `BASE_SHA` empty and turns this into a silent no-op diff
+  instead of a loud error — the actual,
+  real change.
 - For **every** acceptance criterion, point to the specific code/behavior in
   the diff that satisfies it. An AC you cannot trace to real evidence is
   **not met** — that is an `ESCALATE`, naming which criterion and why.

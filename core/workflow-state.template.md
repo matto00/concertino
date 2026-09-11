@@ -10,6 +10,21 @@ TICKET_ID: <id>
 CHANGE_NAME: <name>
 WORKTREE_PATH: <abs path>
 BRANCH: <branch>
+# CON-152: the review diff base's REMOTE/BRANCH coordinates, resolved once
+# at Setup (defaulting to CONCERTINO_BASE_REMOTE/CONCERTINO_BASE_BRANCH,
+# same as setup-worktree.sh) and safe to cache — unlike a SHA, a remote name
+# and branch name don't go stale mid-run. The ACTUAL merge-base SHA is never
+# cached here: every review-bearing role (executor's gate-selection diff,
+# evaluator, skeptic, auditor) calls `resolve-review-base.sh "$WORKTREE_PATH"
+# "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE"` LIVE, immediately before its
+# own diff, and uses the SHA it prints right then. A cycle-1 design that
+# cached the resolved SHA here reviewed a diff that silently grew (or, after
+# a BEHIND auto-reconcile mid-run, silently SHRANK to hide the reconciled
+# commits) every time the remote base branch moved after the cache was
+# written — recomputing live is what actually closes CON-152, not caching
+# harder. See resolve-review-base.sh's header for the incident.
+REVIEW_BASE_BRANCH: <branch>
+REVIEW_BASE_REMOTE: <remote>
 PHASE: Setup | Planning | Execution | Evaluation | Delivery | Cleanup
 # Enforced by PHASE_ORDER in lib/ui/reducer.js — keep both lists in sync.
 CYCLE: <n>

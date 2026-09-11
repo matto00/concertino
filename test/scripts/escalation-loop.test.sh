@@ -427,16 +427,68 @@ for _ in $(seq 1 50); do
   [ "$(grep -c escalation.raised "$LOG" 2>/dev/null || echo 0)" -ge 2 ] && break
   sleep 0.1
 done
+# CON-156 flake fix: write_escalation_raised() (which is what the loop above
+# polls for, via the escalation.raised line landing in LOG) and
+# discard_stale_answer()'s `rm -f "$ANSWER_FILE.malformed-warned"` are two
+# SEPARATE statements in the script (core/scripts/emit-event.sh) — the log
+# write happens first, the marker removal second. Checking the marker in the
+# same instant the log line appears races that gap: under load (this repo's
+# full `npm test` run, many scripts executing concurrently) the marker check
+# can observe the file before the script has reached its own rm -f, producing
+# an intermittent false "yes" here. Poll for the marker's actual absence,
+# bounded, rather than asserting on the log write alone.
+for _ in $(seq 1 50); do
+  [ -f "$ANSWER_FILE.malformed-warned" ] || break
+  sleep 0.1
+done
 check "CON-156 marker: cleared by the second escalation's raise" \
   "$([ -f "$ANSWER_FILE.malformed-warned" ] && echo yes || echo no)" "no"
 
 # The exact same malformed content, on the second escalation, must warn AGAIN
 # (a second escalation.malformed event) — not be silently suppressed by a
 # marker left over from the first.
+#
+# CI investigation (cycle 2, finding 9 / cycle 3, finding 1): this
+# assertion failed on GitHub Actions (PR #135, test(16)/test(22)) with
+# count=3 instead of 2, at both 358d2dc and 2bfda46 (the latter already had
+# the marker-absence poll above). Cycle 2's own local reproduction attempt
+# (5x under heavy load) never produced more than 1 event, but the cycle-3
+# reviewer reproduced a genuinely different race (43/96) in the discard
+# ordering when the answer is written before discard_stale_answer runs, and
+# separately ran 0/96 standalone, 0/30 parallel-full-suite, and 0/16
+# single-core reproductions of THIS specific count=3 symptom, ruling out
+# byte-identical dedupe-marker collision, torn reads, cksum mismatch,
+# writeSubAnswer, write_line double-writing, and an orphaned poller as
+# causes. THE GOT-[3] CAUSE REMAINS UNCONFIRMED — this comment makes no
+# claim to have found it; do not read the fix below as a root-cause claim.
+#
+# Cycle 2's own "fix" here was itself a bug: it broke out of its
+# stabilization loop after just ONE unchanged 0.2s sample once the count
+# reached 2, which is a FAR shorter window than emit-event.sh's own poll
+# period (`try_resolve` then `sleep 1`) — so a genuine regression (e.g. a
+# mutant that never writes `$ANSWER_FILE.malformed-warned` at all, which
+# re-warns on every ~1s poll and would eventually reach count=4) could still
+# land on a transient, unchanged count=2 or 3 reading inside a single 0.2s
+# window and PASS. Fixed by waiting for the count to first reach >= 2, then
+# observing across a FULL fixed window of at least two of emit-event.sh's
+# own poll intervals (>= 2s) before taking the final reading — long enough
+# that a same-process re-warn on the very next poll tick would show up, and
+# NOT adaptively short-circuited the moment two consecutive samples happen
+# to agree. On a mismatch, dump the run's own event log to help diagnose
+# the still-open got-[3] question rather than requiring a re-run to see it.
 printf '%s' "$MALFORMED_JSON" > "$ANSWER_FILE"
-sleep 2
+for _ in $(seq 1 100); do
+  [ "$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)" -ge 2 ] && break
+  sleep 0.1
+done
+sleep 2.5 # >= 2 full emit-event.sh poll intervals (1s each), fixed, not adaptive
+FINAL_MALFORMED_COUNT="$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)"
+if [ "$FINAL_MALFORMED_COUNT" != "2" ]; then
+  echo "CON-156 marker assertion about to fail — dumping $LOG for diagnosis:" >&2
+  cat "$LOG" >&2 2>/dev/null || true
+fi
 check "CON-156 marker: the second escalation ALSO logs its own escalation.malformed" \
-  "$(grep -c escalation.malformed "$LOG" 2>/dev/null || echo 0)" "2"
+  "$FINAL_MALFORMED_COUNT" "2"
 
 kill "$AWAIT_PID" 2>/dev/null
 wait "$AWAIT_PID" 2>/dev/null
