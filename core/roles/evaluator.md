@@ -47,8 +47,15 @@ First run only (skip on resume):
 Every run (including resume):
 
 4. Read `files-modified.md` if present (executor's handoff).
-5. **Diff first**: `git diff <base>...HEAD` — your primary review surface. Read
-   full source files only where the diff lacks context.
+5. **Diff first**: `git diff <REVIEW_BASE_SHA>...HEAD`, where
+   `<REVIEW_BASE_SHA>` is `workflow-state.md`'s `REVIEW_BASE_SHA` field
+   (resolved once at Setup by `resolve-review-base.sh` — CON-152). Never
+   substitute a hand-typed `main`/`<base>` ref: a bare local base-branch ref
+   never moves for the life of the worktree, so it silently pads the diff
+   with every commit a sibling ticket has merged to the remote base branch
+   since the worktree was created — read `workflow-state.md`'s recorded
+   value instead. This is your primary review surface — read full source
+   files only where the diff lacks context.
 
 ---
 
@@ -77,7 +84,8 @@ sub-agent's report of success is not evidence; only your own fresh run is):
 
 {{block:gates}}
 
-Run them against changed files (`git diff --name-only <base>...HEAD`) exactly
+Run them against changed files (`git diff --name-only <REVIEW_BASE_SHA>...HEAD`,
+same `workflow-state.md`-recorded base as above) exactly
 as the executor's own instructions describe, in `WORKTREE_PATH` — **unless
 `CLEAN_WORKTREE=true`** (only ever set on `slow` speed — see "`slow`-only:
 clean-worktree gate re-run" below), in which case run them in the clean

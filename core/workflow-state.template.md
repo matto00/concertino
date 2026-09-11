@@ -10,6 +10,17 @@ TICKET_ID: <id>
 CHANGE_NAME: <name>
 WORKTREE_PATH: <abs path>
 BRANCH: <branch>
+# CON-152: the review diff base, resolved ONCE at Setup via
+# resolve-review-base.sh (merge-base of HEAD against a freshly-fetched
+# origin/<baseBranch>) and never recomputed. Every review-bearing role
+# (executor's gate-selection diff, evaluator, skeptic, auditor) reads THIS
+# value instead of hand-computing its own `<base>...HEAD` — a bare local
+# base-branch ref never moves for the life of the worktree, while the
+# remote base branch keeps advancing as sibling tickets merge mid-run, so a
+# role that recomputes its own base silently reviews a diff padded with
+# unrelated work (or, worse, a base that differs role-to-role, which is its
+# own failure mode). See resolve-review-base.sh's header for the incident.
+REVIEW_BASE_SHA: <sha>
 PHASE: Setup | Planning | Execution | Evaluation | Delivery | Cleanup
 # Enforced by PHASE_ORDER in lib/ui/reducer.js — keep both lists in sync.
 CYCLE: <n>

@@ -69,7 +69,12 @@ actually **ships**. Independently verify — do not trust the PASS.
 ### 1. Re-establish ground truth
 
 - Read the ticket acceptance criteria (`ticket.md` or the ticket provider).
-- `git diff <base>...HEAD` — the actual change. Read full files where needed.
+- `git diff <REVIEW_BASE_SHA>...HEAD`, where `<REVIEW_BASE_SHA>` is
+  `workflow-state.md`'s `REVIEW_BASE_SHA` field (resolved once at Setup by
+  `resolve-review-base.sh` — CON-152; never hand-compute a `main`/`<base>`
+  ref yourself, since a bare local base-branch ref never moves and silently
+  pads the diff with unrelated sibling merges) — the actual change. Read
+  full files where needed.
 - Read `files-modified.md` and the latest `evaluation-*.md` as **claims**.
 
 ### 2. Acceptance criteria — trace each one

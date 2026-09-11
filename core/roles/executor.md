@@ -92,8 +92,13 @@ source file:
 - `path/to/file.ext` — brief rationale
 ```
 
-Use `git diff --name-only <base>...HEAD` to enumerate. This gives the evaluator a
-compact map to orient review. Overwrite on re-runs to reflect the current state.
+Use `git diff --name-only <REVIEW_BASE_SHA>...HEAD` to enumerate, where
+`<REVIEW_BASE_SHA>` is `workflow-state.md`'s `REVIEW_BASE_SHA` field
+(resolved once at Setup by `resolve-review-base.sh` — CON-152; never a
+hand-typed `main`/`<base>` ref, which never moves for the life of the
+worktree and silently pads the enumeration with unrelated sibling merges).
+This gives the evaluator a compact map to orient review. Overwrite on
+re-runs to reflect the current state.
 
 ### 5. Pre-commit self-check
 
@@ -102,7 +107,8 @@ compact map to orient review. Overwrite on re-runs to reflect the current state.
 
 ### 6. Run verification gates
 
-Determine which areas changed (`git diff --name-only <base>...HEAD`) and run the
+Determine which areas changed (`git diff --name-only <REVIEW_BASE_SHA>...HEAD`,
+same `workflow-state.md`-recorded base as above) and run the
 gates whose `when` matches:
 
 {{block:gates}}

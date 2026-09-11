@@ -333,11 +333,32 @@ Never let telemetry block delivery: if a call fails, continue.
    human rather than guessing a resolution.
 5. **Gate before advancing:** `scripts/concertino/assert-phase.sh setup "$WORKTREE_PATH" "$TICKET_ID"`.
    If it prints `FAIL`, do not proceed — re-run setup or escalate.
+5a. **Resolve the review diff base once, for the whole run (CON-152).** A
+   bare `git diff main...HEAD` (or any other hand-computed base) is wrong in
+   a long-lived worktree: the local base-branch ref is created once at
+   branch time and never moves, while the remote base branch keeps
+   advancing as sibling tickets merge mid-run — so the diff silently grows
+   to include unrelated work, and worse, a base computed independently by
+   each role can differ role-to-role. Resolve it ONCE here, via the
+   canonical script (never hand-rolled):
+
+   ```bash
+   scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH"
+   ```
+
+   Parse its `BASE_SHA <sha>` line and store it as `REVIEW_BASE_SHA`. A
+   `FAIL` line is a `BLOCKER` — surface it to the human rather than falling
+   back to a guessed base. Record `REVIEW_BASE_SHA` in `workflow-state.md`
+   (step 7 below) and never recompute it later in the run: the executor's
+   gate-selection diff, the evaluator, the skeptic, and the auditor all read
+   this SAME recorded value for their own `git diff <REVIEW_BASE_SHA>...HEAD`
+   instead of resolving their own base.
 6. **Resolve `AGENT_MERGE` once, for the whole run.** `AGENT_MERGE_OVERRIDE`
    takes precedence when it is `true` or `false`; otherwise fall back to the
    config default `{{var:agentMerge.enabled}}`. This resolution happens
    exactly once, here — never recomputed later in the run.
-7. Write initial `workflow-state.md` (PHASE: Planning, AGENT_MERGE: `<resolved
+7. Write initial `workflow-state.md` (PHASE: Planning, `REVIEW_BASE_SHA:
+   <resolved value>` (from step 5a), AGENT_MERGE: `<resolved
    value>`, `TICKET_TYPE: <resolved value>` (from the design-ticket-type
    check above), `DESIGN_QUESTIONS: null`, plus every field parsed in step 4:
    `SPEED`, `EXECUTION_CYCLES`, `SKEPTIC_DESIGN_ROUNDS`, `SKEPTIC_FINAL_ROUNDS`,
@@ -1079,9 +1100,39 @@ Run directly (no subagent).
    (the URL itself is the durable reference; there is no local file to
    persist).
 7. **Post the PR link back to the ticket.**
+7a. **Verify live mergeable state before presenting the PR as ready
+   (CON-122).** Twice, driving concurrent runs, an orchestrator asserted a
+   PR was "clean"/"no overlap conflicts expected" from shallow signals
+   (commit-list file names, a belief a sibling ticket didn't touch the same
+   files) instead of actually querying GitHub — and both times the PR was
+   really `CONFLICTING`/`DIRTY` (HEL-412, HEL-703), which is worse than an
+   ordinary conflict: GitHub never materializes a merge ref, so the real
+   `pull_request`-triggered CI jobs never even queue, and only checks that
+   don't need one (e.g. CodeQL) go green — a driver skimming `gh pr checks`
+   sees a mostly-green PR and can merge it believing gates passed that never
+   ran. Run, for every run regardless of `AGENT_MERGE` (the agent-merge path
+   also gets this from `check-merge-readiness.sh`'s own condition 2, but
+   this call is unconditional here so the human-merge path is never the one
+   without it):
+
+   ```bash
+   scripts/concertino/check-pr-mergeable.sh "$WORKTREE_PATH" "<branch>"
+   ```
+
+   - **`PASS`** → proceed to step 8.
+   - **`FAIL <reason>`** → the PR is NOT ready. Never present it to the
+     human (or spawn the auditor) as clean. Treat it exactly like the
+     existing escalation table's `BLOCKER` case: surface the specific
+     reason (never a re-derived guess like "expected clean") to the human,
+     and do not proceed to step 8 until it resolves — a `BEHIND` reason
+     already attempted its own one-shot reconcile inside the script itself,
+     so a `FAIL` here means that either didn't apply or didn't succeed and
+     needs a human.
 8. **Branch on `AGENT_MERGE`** (resolved once at Setup — see above):
 
-   - **`AGENT_MERGE = false`** (today's behavior, unchanged): read the final
+   - **`AGENT_MERGE = false`** (today's behavior, unchanged other than the
+     mergeable check in step 7a immediately above, which now runs
+     unconditionally before this branch): read the final
      evaluation report now (the only time a PASS report is read). For each
      non-blocking evaluator/skeptic suggestion that names discrete additional
      work (not a one-line style nit), run the **"Triaging a suggested
