@@ -131,13 +131,27 @@ SENTINEL3="$WORKDIR/never-appears-2.sentinel"
 "$SCRIPT" "$SENTINEL3" 1 1 >"$WORKDIR/out3.log" 2>&1 &
 TIMEOUT_PID=$!
 SPAWNED_PIDS="${SPAWNED_PIDS} ${TIMEOUT_PID}"
+TIMEOUT_PID_DIED=0
 if wait_for_death "$TIMEOUT_PID"; then
+  TIMEOUT_PID_DIED=1
   ok "3.1 await-sentinel.sh exits on its own once TIMEOUT_SEC elapses, with no sentinel ever created"
 else
   bad "3.1 await-sentinel.sh exits on its own once TIMEOUT_SEC elapses, with no sentinel ever created" "pid $TIMEOUT_PID still alive"
 fi
-wait "$TIMEOUT_PID" 2>/dev/null
-RC3=$?
+# CON-178 cycle-3 review (finding 3): only `wait` on a PID confirmed dead
+# by the bounded `wait_for_death` poll above -- a plain `wait "$pid"` here
+# would block forever if a real regression made the script never time out,
+# exactly the CI-hang risk already fixed for Scenarios 4 and 6. If it's
+# still alive, force-kill it by its own recorded PID and report a
+# synthetic non-1 exit so 3.2 below fails loudly instead of hanging.
+if [ "$TIMEOUT_PID_DIED" -eq 1 ]; then
+  wait "$TIMEOUT_PID" 2>/dev/null
+  RC3=$?
+else
+  kill -9 "$TIMEOUT_PID" 2>/dev/null || true
+  wait "$TIMEOUT_PID" 2>/dev/null || true
+  RC3=124
+fi
 if [ "$RC3" -eq 1 ]; then
   ok "3.2 await-sentinel.sh exits 1 on timeout"
 else

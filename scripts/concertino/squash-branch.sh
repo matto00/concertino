@@ -198,14 +198,7 @@ if [ "$FILE_ON_DISK" -eq 0 ] && [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
 fi
 
 DECLARED_PATHS=""
-# ALL_RAW_SPANS_ANYWHERE: every backtick-quoted span in the ENTIRE staged
-# blob, regardless of line position -- kept ONLY for the diagnostic search
-# in the FAIL report below (never for declaring). Lets a refusal say
-# whether a file's basename appears somewhere in the declaration at all,
-# even on a line the parser does not treat as a valid declaration position.
-ALL_RAW_SPANS_ANYWHERE=""
 if [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
-  ALL_RAW_SPANS_ANYWHERE="$(printf '%s\n' "$STAGED_BLOB" | grep -oE '`[^`]+`' | tr -d '`' || true)"
 
   # D2a: a path is declared by a backtick-quoted span that comes
   # IMMEDIATELY (after only whitespace) at the start of either (a) a
@@ -264,10 +257,62 @@ if [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
   # actually, unambiguously part of the declaration itself.
   LIST_OPEN=0
   CURRENT_DIR=""
+  UNIT_FIRST_SPAN_SEEN=0
   DECLARED_LIST=""
+  DIAG_RECORDS=""
+  # DIAG_FS: field separator for DIAG_RECORDS. NOT a tab -- bash's `read`
+  # treats tab as "IFS whitespace" and collapses ADJACENT tab delimiters
+  # even when IFS is set to exactly one tab character, silently merging an
+  # empty field (e.g. an empty AFTER_CTX) into its neighbor and shifting
+  # every field after it. \x1f (ASCII Unit Separator) is not whitespace,
+  # so bash's `read` never collapses it -- verified directly against this
+  # exact shape (an empty middle field) before relying on it here.
+  DIAG_FS=$'\x1f'
   strip_line_suffix() {
     printf '%s' "$1" | sed -E 's/:[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$//'
   }
+  # is_clean_connector: text between two list items may contain nothing but
+  # whitespace, commas, and the word "and" -- anything else (an em-dash, a
+  # negation like "did NOT touch", a parenthetical, "mirrors the approach
+  # in") means the text is prose, not a list separator.
+  is_clean_connector() {
+    local stripped
+    stripped="$(printf '%s' "$1" | sed -E 's/,//g; s/\band\b//g; s/[[:space:]]//g')"
+    [ -z "$stripped" ]
+  }
+  # ELIGIBLE model (cold-review cycles 2-3): which spans count as declared
+  # list items, decided PER SPAN as it is encountered, in document order:
+  #
+  #   1. The very first span of the whole declaration UNIT (the bullet's
+  #      own anchor, right after "-"/"*") is ALWAYS eligible, regardless of
+  #      what surrounds it -- a lone declared path with trailing
+  #      description (CON-158's own `` `file.ts:187` — disambiguated ``)
+  #      is the single most common shape in this repo's declarations and
+  #      must keep working unconditionally. UNIT_FIRST_SPAN_SEEN tracks
+  #      this, reset to 0 at every bullet-open line (alongside CURRENT_DIR).
+  #   2. The first span on a CONTINUATION line (chained by a trailing
+  #      comma from the line before) is eligible only when BOTH its before
+  #      AND after connectors are clean -- a continuation line has no
+  #      anchor exemption of its own, so a lone item trailed by prose
+  #      ("`helper.ts` untouched (reverted)") is excluded even though nothing
+  #      else on the line competes with it (cold-review cycle-3 finding 1,
+  #      repro 2).
+  #   3. Every OTHER span (a later span sharing a bullet-open line with the
+  #      anchor, or a later span sharing a continuation line with its own
+  #      first span) is eligible only when its BEFORE connector is clean --
+  #      trailing content after the LAST span on a line is never checked,
+  #      which is what lets Scenario 5a's `` `gamma.txt` — all three
+  #      rewritten together `` and CON-149's real wrapped lists keep
+  #      working: nothing ever follows the final list item that needs a
+  #      connector to be judged.
+  #
+  # This applies uniformly to FULL and BARE spans alike (cold-review
+  # cycle-3 finding 1's realistic repro was a FULL path -- `Panel.test.tsx`
+  # mentioned in prose on the SAME line as the real anchor -- so gating
+  # only bare-span directory-inheritance, as an earlier draft did, missed
+  # it entirely). An ineligible span is excluded outright: no literal
+  # addition, no CURRENT_DIR update, no inheritance -- "must be refused as
+  # undeclared" per the fix direction, never guessed at.
   while IFS= read -r LINE; do
     TRIMMED="$(printf '%s' "$LINE" | sed -E 's/[[:space:]]+$//')"
     IS_BULLET_OPEN=0
@@ -281,14 +326,74 @@ if [ "$STAGED_BLOB_PRESENT" -eq 1 ]; then
     if [ "$IS_BULLET_OPEN" -eq 1 ]; then
       SCAN=1
       CURRENT_DIR=""
+      UNIT_FIRST_SPAN_SEEN=0
     elif [ "$IS_CONT_OPEN" -eq 1 ] && [ "$LIST_OPEN" -eq 1 ]; then
       SCAN=1
     fi
-    if [ "$SCAN" -eq 1 ]; then
-      LINE_SPANS="$(printf '%s\n' "$LINE" | grep -oE '`[^`]+`' | tr -d '`')"
-      if [ -n "$LINE_SPANS" ]; then
-        while IFS= read -r RAW; do
-          [ -z "$RAW" ] && continue
+    # Split the line on the backtick delimiter itself, so odd indices
+    # (1, 3, 5, ...) are the spans and even indices (0, 2, 4, ...) are
+    # the plain text immediately surrounding them -- PARTS[i-1] is the
+    # connector BEFORE span i, PARTS[i+1] the connector AFTER it (an
+    # index past the end of the array means "nothing there", clean).
+    # Computed for EVERY line (not just SCAN=1 ones) so DIAG_RECORDS below
+    # can describe a span's real position/connector context even when the
+    # line never qualified as a declaration at all.
+    IFS='`' read -ra PARTS <<< "$LINE"
+    PARTS_COUNT="${#PARTS[@]}"
+    SPAN_I=1
+    LINE_SPAN_INDEX=0
+    while [ "$SPAN_I" -lt "$PARTS_COUNT" ]; do
+      RAW="${PARTS[$SPAN_I]}"
+      if [ -n "$RAW" ]; then
+        BEFORE_CTX="${PARTS[$((SPAN_I - 1))]}"
+        AFTER_CTX=""
+        if [ "$((SPAN_I + 1))" -lt "$PARTS_COUNT" ]; then
+          AFTER_CTX="${PARTS[$((SPAN_I + 1))]}"
+        fi
+        ELIGIBLE=0
+        if [ "$SCAN" -eq 1 ]; then
+          if [ "$UNIT_FIRST_SPAN_SEEN" -eq 0 ]; then
+            ELIGIBLE=1
+            UNIT_FIRST_SPAN_SEEN=1
+          elif [ "$IS_CONT_OPEN" -eq 1 ] && [ "$LINE_SPAN_INDEX" -eq 0 ]; then
+            if is_clean_connector "$BEFORE_CTX" && is_clean_connector "$AFTER_CTX"; then
+              ELIGIBLE=1
+            fi
+          else
+            if is_clean_connector "$BEFORE_CTX"; then
+              ELIGIBLE=1
+            fi
+          fi
+        fi
+        # PROSPECTIVE_FULL: what this span would resolve to if it WERE
+        # eligible -- itself, if already a full path; otherwise CURRENT_DIR
+        # (as of this point in the document) + this span, or just the bare
+        # span if no directory context exists yet. Computed regardless of
+        # actual eligibility so the diagnostic below can tell "this bare
+        # mention IS the same file, just blocked by a dirty connector"
+        # apart from "this really is a different file that happens to
+        # share a basename" -- a bare span's raw text alone can never
+        # answer that on its own.
+        DIAG_STRIPPED="$(strip_line_suffix "$RAW")"
+        case "$DIAG_STRIPPED" in
+          */*) PROSPECTIVE_FULL="$DIAG_STRIPPED" ;;
+          *)
+            if [ -n "$CURRENT_DIR" ]; then
+              PROSPECTIVE_FULL="${CURRENT_DIR}/${DIAG_STRIPPED}"
+            else
+              PROSPECTIVE_FULL="$DIAG_STRIPPED"
+            fi
+            ;;
+        esac
+        # DIAG_RECORDS (cold-review cycle 3, finding 2): one record per
+        # backtick span EVERYWHERE in the file, tab-separated
+        # RAW\tSCAN\tELIGIBLE\tBEFORE\tAFTER\tPROSPECTIVE_FULL -- used ONLY
+        # by the FAIL diagnostic below to say the SPECIFIC, accurate reason
+        # a span did not resolve (prose position vs. dirty connector vs. a
+        # genuinely different file), never to gate acceptance.
+        DIAG_RECORDS="${DIAG_RECORDS}${RAW}${DIAG_FS}${SCAN}${DIAG_FS}${ELIGIBLE}${DIAG_FS}${BEFORE_CTX}${DIAG_FS}${AFTER_CTX}${DIAG_FS}${PROSPECTIVE_FULL}
+"
+        if [ "$ELIGIBLE" -eq 1 ]; then
           STRIPPED="$(strip_line_suffix "$RAW")"
           case "$STRIPPED" in
             */*)
@@ -299,7 +404,8 @@ ${STRIPPED}
               CURRENT_DIR="$(dirname -- "$STRIPPED")"
               ;;
             *.[A-Za-z0-9]*)
-              # bare, path-shaped span
+              # bare, path-shaped span -- literal, plus directory
+              # inheritance when a directory has been established.
               DECLARED_LIST="${DECLARED_LIST}${RAW}
 "
               if [ -n "$CURRENT_DIR" ]; then
@@ -312,8 +418,12 @@ ${STRIPPED}
               # counts, regardless of position.
               ;;
           esac
-        done <<< "$LINE_SPANS"
+        fi
+        LINE_SPAN_INDEX=$((LINE_SPAN_INDEX + 1))
       fi
+      SPAN_I=$((SPAN_I + 2))
+    done
+    if [ "$SCAN" -eq 1 ]; then
       case "$TRIMMED" in
         *,) LIST_OPEN=1 ;;
         *)  LIST_OPEN=0 ;;
@@ -374,11 +484,47 @@ fi
 # Echoes nothing (caller checks $? / captures stdout) when it finds no span
 # whose basename corresponds at all.
 describe_unexpected_span_issue() {
-  local ubase="$1" uf="$2" raw stripped core loose loose_core
-  if [ -z "$ALL_RAW_SPANS_ANYWHERE" ]; then
+  local ubase="$1" uf="$2" raw scan eligible before after prospective
+  local stripped core loose loose_core
+  if [ -z "$DIAG_RECORDS" ]; then
     return 1
   fi
-  while IFS= read -r raw; do
+  # PASS 1 (cold-review cycle 3, finding 2): look FIRST for a record whose
+  # PROSPECTIVE full path (itself, if already full; otherwise what it
+  # would resolve to via directory-inheritance, computed regardless of
+  # actual eligibility) is the EXACT SAME path as the unexpected file --
+  # not merely the same basename, and not merely its own raw (possibly
+  # bare) text. This must win over "a different file with the same
+  # basename" whenever it applies: a prose mention of the exact staged
+  # path ("Deliberately did NOT touch `lib/helper.ts`", a bare basename
+  # that WOULD have inherited the right directory had it been eligible, a
+  # trailing-comma-then-prose continuation) is not a different file at
+  # all, and saying so is false in two ways at once -- it claims something
+  # was "declared" when it wasn't, and claims "a different file" when it's
+  # the identical path.
+  while IFS="$DIAG_FS" read -r raw scan eligible before after prospective; do
+    [ -z "$raw" ] && continue
+    if [ "$prospective" != "$uf" ]; then
+      continue
+    fi
+    if [ "$scan" -eq 0 ]; then
+      echo "found \`${raw}\` (the exact same path) elsewhere in files-modified.md, but on a line this parser does not treat as a declaration position -- prose, or a line that neither opens a bulleted item nor continues one chained by a trailing comma."
+      return 0
+    fi
+    if [ "$eligible" -eq 0 ]; then
+      echo "found \`${raw}\` (the exact same path) on a line the parser DOES scan, but the text immediately around it (before: \"${before}\", after: \"${after}\") is not a clean comma/'and' list separator -- it reads as prose mentioning the file, not a declaration of it."
+      return 0
+    fi
+    # Scanned and eligible, yet still unexpected: this should not normally
+    # be reachable (the main parser would have accepted it too) -- report
+    # honestly rather than fall through to a wrong-cause guess.
+    echo "found \`${raw}\` (the exact same path) in what looks like a valid declaration position -- if this file is still being refused, please treat this as a parser inconsistency and report it."
+    return 0
+  done <<< "$DIAG_RECORDS"
+  # PASS 2: no exact-path match anywhere. Now check for a genuinely
+  # DIFFERENT file that merely shares the basename (16g's case) -- never
+  # called ambiguous, since it plainly is not this file.
+  while IFS="$DIAG_FS" read -r raw scan eligible before after prospective; do
     [ -z "$raw" ] && continue
     stripped="$(strip_line_suffix "$raw")"
     case "$stripped" in
@@ -386,13 +532,7 @@ describe_unexpected_span_issue() {
       *)   core="$stripped" ;;
     esac
     if [ "$core" = "$ubase" ]; then
-      # Same basename as the unexpected file, via the STRICT (accepted)
-      # grammar -- whether or not a line annotation was actually present,
-      # this names a genuinely different path (the different-directory
-      # case, or a different-line-annotated path of the same basename
-      # elsewhere). Reported this way regardless: it is never ambiguous,
-      # just a different file.
-      echo "declared as \`${stripped}\` (from raw span \`${raw}\`) -- a different file with the same basename, not this one. Not ambiguous: the two are simply different paths."
+      echo "declared as \`${prospective}\` (from raw span \`${raw}\`) -- a different file with the same basename, not this one. Not ambiguous: the two are simply different paths."
       return 0
     fi
     # Strict grammar found no basename match. Try a LOOSE strip
@@ -417,7 +557,7 @@ describe_unexpected_span_issue() {
     fi
     echo "found as \`${raw}\`, but not in a position this parser treats as a declaration: the backtick must be the first non-whitespace content of either a bulleted line, or a continuation line chained to one by a trailing comma on the line before it."
     return 0
-  done <<< "$ALL_RAW_SPANS_ANYWHERE"
+  done <<< "$DIAG_RECORDS"
   return 1
 }
 
@@ -429,7 +569,7 @@ if [ "$DECLARED_COUNT" -eq 0 ] && [ -n "$UNEXPECTED" ]; then
       echo "--- raw files-modified.md content (staged) ---" >&2
       printf '%s\n' "$STAGED_BLOB" >&2
       echo "------------------------------------------------" >&2
-      if [ -n "$ALL_RAW_SPANS_ANYWHERE" ]; then
+      if [ -n "$DIAG_RECORDS" ]; then
         echo "Note: the file above DOES contain backtick-quoted, path-shaped spans -- none of" >&2
         echo "them are in a position this parser recognizes as a declaration (a bulleted line, or" >&2
         echo "a continuation line chained to one by a trailing comma). Check formatting before" >&2

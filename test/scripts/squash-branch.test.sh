@@ -2146,6 +2146,212 @@ else
 fi
 
 # ---------------------------------------------------------------------
+# Scenario 17 (cold-review cycle 3, finding 1): the SAME-DIRECTORY variant
+# of 16i's vector -- 16i used a nested subdirectory (src/deep/secret.ts)
+# so a wrongly-inherited "src/secret.ts" candidate never happened to equal
+# the real staged path by coincidence. These fixtures put the mentioned
+# file in the SAME directory as the anchor, so directory-inheritance alone
+# (without the connector-cleanliness gate) would construct an EXACT match
+# and falsely accept it.
+# ---------------------------------------------------------------------
+echo "Scenario 17: cold-review cycle 3 -- same-directory false-accept via directory inheritance"
+
+BASE17="$(mktemp -d)"
+REMOTE17="$BASE17/remote.git"
+git init -q --bare "$REMOTE17"
+git clone -q "$REMOTE17" "$BASE17/primary" 2>/dev/null
+echo "root" > "$BASE17/primary/root.txt"
+commit_all "$BASE17/primary" "init"
+git -C "$BASE17/primary" branch -M main
+git -C "$BASE17/primary" push -q origin main
+CHANGE_DIR17="spec/changes/con-review-cycle3-demo"
+
+# 17a (repro 1): same-line mention, same directory as the anchor.
+BRANCH17A="$BASE17/branch-a"
+git clone -q "$REMOTE17" "$BRANCH17A" 2>/dev/null
+git -C "$BRANCH17A" checkout -q -b feature/review3/17a origin/main
+mkdir -p "$BRANCH17A/$CHANGE_DIR17/" "$BRANCH17A/src"
+cat > "$BRANCH17A/$CHANGE_DIR17/files-modified.md" <<'EOF'
+- `src/a.ts` — did NOT touch `helper.ts`
+EOF
+echo "a" > "$BRANCH17A/src/a.ts"
+echo "h" > "$BRANCH17A/src/helper.ts"
+commit_all "$BRANCH17A" "executor commit (same-dir same-line mention)"
+OUT17A="$("$SCRIPT" "$BRANCH17A" origin main "review3 finding 1 repro 1" "$CHANGE_DIR17" 2>&1)"
+RC17A=$?
+if [ "$RC17A" -ne 0 ] && echo "$OUT17A" | grep -qF "src/helper.ts"; then
+  ok "17a same-directory same-line mention ('did NOT touch \`helper.ts\`') does not inherit and declare src/helper.ts"
+else
+  bad "17a same-directory same-line mention ('did NOT touch \`helper.ts\`') does not inherit and declare src/helper.ts" "exit=$RC17A output=$OUT17A"
+fi
+
+# 17b (repro 2): trailing-comma-then-prose continuation line, same directory.
+BRANCH17B="$BASE17/branch-b"
+git clone -q "$REMOTE17" "$BRANCH17B" 2>/dev/null
+git -C "$BRANCH17B" checkout -q -b feature/review3/17b origin/main
+mkdir -p "$BRANCH17B/$CHANGE_DIR17/" "$BRANCH17B/src"
+cat > "$BRANCH17B/$CHANGE_DIR17/files-modified.md" <<'EOF'
+- `src/a.ts`,
+  `helper.ts` untouched (reverted)
+EOF
+echo "a" > "$BRANCH17B/src/a.ts"
+echo "h" > "$BRANCH17B/src/helper.ts"
+commit_all "$BRANCH17B" "executor commit (same-dir trailing-comma-then-prose continuation)"
+OUT17B="$("$SCRIPT" "$BRANCH17B" origin main "review3 finding 1 repro 2" "$CHANGE_DIR17" 2>&1)"
+RC17B=$?
+if [ "$RC17B" -ne 0 ] && echo "$OUT17B" | grep -qF "src/helper.ts"; then
+  ok "17b same-directory trailing-comma continuation with prose ('helper.ts untouched (reverted)') does not inherit and declare src/helper.ts"
+else
+  bad "17b same-directory trailing-comma continuation with prose ('helper.ts untouched (reverted)') does not inherit and declare src/helper.ts" "exit=$RC17B output=$OUT17B"
+fi
+
+# 17c (repro 3, realistic): a same-directory sibling test file mentioned
+# in descriptive prose on the anchor's own line.
+BRANCH17C="$BASE17/branch-c"
+git clone -q "$REMOTE17" "$BRANCH17C" 2>/dev/null
+git -C "$BRANCH17C" checkout -q -b feature/review3/17c origin/main
+mkdir -p "$BRANCH17C/$CHANGE_DIR17/" "$BRANCH17C/frontend/src"
+cat > "$BRANCH17C/$CHANGE_DIR17/files-modified.md" <<'EOF'
+- `frontend/src/Panel.tsx` — mirrors the approach in `Panel.test.tsx` (unchanged)
+EOF
+echo "p" > "$BRANCH17C/frontend/src/Panel.tsx"
+echo "t" > "$BRANCH17C/frontend/src/Panel.test.tsx"
+commit_all "$BRANCH17C" "executor commit (realistic same-dir sibling mention)"
+OUT17C="$("$SCRIPT" "$BRANCH17C" origin main "review3 finding 1 repro 3 (realistic)" "$CHANGE_DIR17" 2>&1)"
+RC17C=$?
+if [ "$RC17C" -ne 0 ] && echo "$OUT17C" | grep -qF "frontend/src/Panel.test.tsx"; then
+  ok "17c realistic same-dir sibling mention ('mirrors the approach in \`Panel.test.tsx\` (unchanged)') does not declare it"
+else
+  bad "17c realistic same-dir sibling mention ('mirrors the approach in \`Panel.test.tsx\` (unchanged)') does not declare it" "exit=$RC17C output=$OUT17C"
+fi
+
+# 17d: positive control -- Scenario 5a's grouped "and"-joined bullet, and
+# CON-149's real wrapped comma-chain (Scenario 15a), must still pass under
+# the new connector-cleanliness gate. Re-run both here as an explicit,
+# named regression guard co-located with the fix that could have broken
+# them (both already run above as Scenarios 5 and 15; re-asserting here
+# documents the intent to keep them green together).
+if [ "$RC5A" -eq 0 ] && [ "$RC15A" -eq 0 ]; then
+  ok "17d positive controls: the 'and'-joined bullet (5a) and the real wrapped comma-chain (15a) are unaffected by the connector-cleanliness gate"
+else
+  bad "17d positive controls: the 'and'-joined bullet (5a) and the real wrapped comma-chain (15a) are unaffected by the connector-cleanliness gate" "RC5A=$RC5A RC15A=$RC15A"
+fi
+
+# ---------------------------------------------------------------------
+# Scenario 18 (cold-review cycle 3, finding 2): dedicated diagnostic-
+# message assertions for the five scenarios the review named, each
+# checking the EXACT, ACCURATE message rather than just "refused". The
+# defect being tested: describe_unexpected_span_issue's first branch used
+# to fire whenever ANY span in the file shared a basename with the
+# unexpected file, without checking whether that span was the identical
+# path (just mentioned in prose) or a genuinely different file -- so a
+# prose mention of the exact staged path was reported as "declared as X
+# ... a different file", which is false twice over.
+# ---------------------------------------------------------------------
+echo "Scenario 18: cold-review cycle 3, finding 2 -- exact diagnostic message per scenario"
+
+BASE18="$(mktemp -d)"
+REMOTE18="$BASE18/remote.git"
+git init -q --bare "$REMOTE18"
+git clone -q "$REMOTE18" "$BASE18/primary" 2>/dev/null
+echo "root" > "$BASE18/primary/root.txt"
+commit_all "$BASE18/primary" "init"
+git -C "$BASE18/primary" branch -M main
+git -C "$BASE18/primary" push -q origin main
+CHANGE_DIR18="spec/changes/con-review-cycle3-diag-demo"
+
+# 18-1: prose-only mention of the EXACT staged path (lib/helper.ts, a
+# full path with a slash), inside a bullet's own descriptive text.
+BRANCH18_1="$BASE18/branch-1"
+git clone -q "$REMOTE18" "$BRANCH18_1" 2>/dev/null
+git -C "$BRANCH18_1" checkout -q -b feature/review3/18-1 origin/main
+mkdir -p "$BRANCH18_1/$CHANGE_DIR18/" "$BRANCH18_1/lib" "$BRANCH18_1/src"
+cat > "$BRANCH18_1/$CHANGE_DIR18/files-modified.md" <<'EOF'
+- `src/a.ts` — did not touch `lib/helper.ts` in this change
+EOF
+echo "a" > "$BRANCH18_1/src/a.ts"
+echo "h" > "$BRANCH18_1/lib/helper.ts"
+commit_all "$BRANCH18_1" "executor commit (prose mention of exact full path)"
+OUT18_1="$("$SCRIPT" "$BRANCH18_1" origin main "review3 diag scenario 1" "$CHANGE_DIR18" 2>&1)"
+if echo "$OUT18_1" | grep -qF "found \`lib/helper.ts\` (the exact same path)" && ! echo "$OUT18_1" | grep -qF "a different file"; then
+  ok "18-1 prose mention of the exact full staged path is reported as found-but-not-declaring, never as 'a different file'"
+else
+  bad "18-1 prose mention of the exact full staged path is reported as found-but-not-declaring, never as 'a different file'" "output=$OUT18_1"
+fi
+
+# 18-2: negation bullet, same directory (repro 1's shape) -- message must
+# reference the exact same path, not claim a different file.
+BRANCH18_2="$BASE18/branch-2"
+git clone -q "$REMOTE18" "$BRANCH18_2" 2>/dev/null
+git -C "$BRANCH18_2" checkout -q -b feature/review3/18-2 origin/main
+mkdir -p "$BRANCH18_2/$CHANGE_DIR18/" "$BRANCH18_2/src"
+cat > "$BRANCH18_2/$CHANGE_DIR18/files-modified.md" <<'EOF'
+- `src/a.ts` — did NOT touch `helper.ts`
+EOF
+echo "a" > "$BRANCH18_2/src/a.ts"
+echo "h" > "$BRANCH18_2/src/helper.ts"
+commit_all "$BRANCH18_2" "executor commit (negation bullet, same dir)"
+OUT18_2="$("$SCRIPT" "$BRANCH18_2" origin main "review3 diag scenario 2" "$CHANGE_DIR18" 2>&1)"
+if echo "$OUT18_2" | grep -qF "found \`helper.ts\` (the exact same path)" && ! echo "$OUT18_2" | grep -qF "a different file"; then
+  ok "18-2 negation bullet ('did NOT touch') is reported as found-but-dirty-connector, never as 'a different file'"
+else
+  bad "18-2 negation bullet ('did NOT touch') is reported as found-but-dirty-connector, never as 'a different file'" "output=$OUT18_2"
+fi
+
+# 18-3: trailing-comma-then-prose continuation (repro 2's shape).
+BRANCH18_3="$BASE18/branch-3"
+git clone -q "$REMOTE18" "$BRANCH18_3" 2>/dev/null
+git -C "$BRANCH18_3" checkout -q -b feature/review3/18-3 origin/main
+mkdir -p "$BRANCH18_3/$CHANGE_DIR18/" "$BRANCH18_3/src"
+cat > "$BRANCH18_3/$CHANGE_DIR18/files-modified.md" <<'EOF'
+- `src/a.ts`,
+  `helper.ts` untouched (reverted)
+EOF
+echo "a" > "$BRANCH18_3/src/a.ts"
+echo "h" > "$BRANCH18_3/src/helper.ts"
+commit_all "$BRANCH18_3" "executor commit (trailing-comma-then-prose)"
+OUT18_3="$("$SCRIPT" "$BRANCH18_3" origin main "review3 diag scenario 3" "$CHANGE_DIR18" 2>&1)"
+if echo "$OUT18_3" | grep -qF "found \`helper.ts\` (the exact same path)" && ! echo "$OUT18_3" | grep -qF "a different file"; then
+  ok "18-3 trailing-comma-then-prose continuation is reported as found-but-dirty-connector, never as 'a different file'"
+else
+  bad "18-3 trailing-comma-then-prose continuation is reported as found-but-dirty-connector, never as 'a different file'" "output=$OUT18_3"
+fi
+
+# 18-4: a prose-only bare basename mention with NO preceding full path at
+# all in the bullet (so it's never scan-position-eligible in the first
+# place -- the "not in a position" branch, not the dirty-connector one).
+# A second, legitimately declared file is included so DECLARED_COUNT > 0
+# and this routes through the per-file describe_unexpected_span_issue
+# diagnostic rather than the separate "no usable declaration at all"
+# branch (which has its own, already-tested wording).
+BRANCH18_4="$BASE18/branch-4"
+git clone -q "$REMOTE18" "$BRANCH18_4" 2>/dev/null
+git -C "$BRANCH18_4" checkout -q -b feature/review3/18-4 origin/main
+mkdir -p "$BRANCH18_4/$CHANGE_DIR18/"
+cat > "$BRANCH18_4/$CHANGE_DIR18/files-modified.md" <<'EOF'
+- `real.txt` — the actual change
+Note: `orphan.txt` is mentioned here only in prose, never declared.
+EOF
+echo "r" > "$BRANCH18_4/real.txt"
+echo "o" > "$BRANCH18_4/orphan.txt"
+commit_all "$BRANCH18_4" "executor commit (prose-only bare mention, no bullet at all)"
+OUT18_4="$("$SCRIPT" "$BRANCH18_4" origin main "review3 diag scenario 4" "$CHANGE_DIR18" 2>&1)"
+if echo "$OUT18_4" | grep -qF "found \`orphan.txt\` (the exact same path)" && echo "$OUT18_4" | grep -qF "not treat as a declaration position" && ! echo "$OUT18_4" | grep -qF "a different file"; then
+  ok "18-4 a prose-only bare mention with no bullet at all is reported as a position issue, never as 'a different file'"
+else
+  bad "18-4 a prose-only bare mention with no bullet at all is reported as a position issue, never as 'a different file'" "output=$OUT18_4"
+fi
+
+# 18-5 (re-assertion of 16g, named per the review's own five-scenario
+# list): bare `foo.ts` vs. actually-staged `a/foo.ts` -- genuinely a
+# different file, correctly still reported that way.
+if echo "$OUT16G" | grep -qF "a different file with the same basename" && ! echo "$OUT16G" | grep -qiF "ambiguous match"; then
+  ok "18-5 (= 16g) bare foo.ts vs. actually-staged a/foo.ts is correctly reported as 'a different file'"
+else
+  bad "18-5 (= 16g) bare foo.ts vs. actually-staged a/foo.ts is correctly reported as 'a different file'" "output=$OUT16G"
+fi
+
+# ---------------------------------------------------------------------
 echo ""
 echo "squash-branch.test.sh: ${PASS} passed, ${FAIL} failed"
 if [ "$FAIL" -gt 0 ]; then
