@@ -427,6 +427,20 @@ for _ in $(seq 1 50); do
   [ "$(grep -c escalation.raised "$LOG" 2>/dev/null || echo 0)" -ge 2 ] && break
   sleep 0.1
 done
+# CON-156 flake fix: write_escalation_raised() (which is what the loop above
+# polls for, via the escalation.raised line landing in LOG) and
+# discard_stale_answer()'s `rm -f "$ANSWER_FILE.malformed-warned"` are two
+# SEPARATE statements in the script (core/scripts/emit-event.sh) — the log
+# write happens first, the marker removal second. Checking the marker in the
+# same instant the log line appears races that gap: under load (this repo's
+# full `npm test` run, many scripts executing concurrently) the marker check
+# can observe the file before the script has reached its own rm -f, producing
+# an intermittent false "yes" here. Poll for the marker's actual absence,
+# bounded, rather than asserting on the log write alone.
+for _ in $(seq 1 50); do
+  [ -f "$ANSWER_FILE.malformed-warned" ] || break
+  sleep 0.1
+done
 check "CON-156 marker: cleared by the second escalation's raise" \
   "$([ -f "$ANSWER_FILE.malformed-warned" ] && echo yes || echo no)" "no"
 
