@@ -9,6 +9,7 @@ const { submitTicket, parseTicketInput } = require('../lib/ui/prompt');
 const { LAUNCH_TEMPLATES } = require('../lib/ui/harness');
 const { ADAPTERS, read } = require('../lib/cli/shared');
 const { shQuote } = require('../lib/ui/shquote');
+const { mkTmpDir } = require('./support/tmp');
 
 const TEMPLATE = 'claude "/concertino-deliver {{TICKET}}"';
 
@@ -292,7 +293,7 @@ test('an operator override with no {{TICKET}} placeholder at all is also left un
 // but this time proving safe content survives rather than unsafe content
 // getting rejected.
 test('regression: the inlined codex prompt body (backticks, $, quotes) survives an actual sh -c hand-off byte-for-byte', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-shquote-roundtrip-'));
+  const dir = mkTmpDir('concertino-shquote-roundtrip-');
   const outFile = path.join(dir, 'argv1.txt');
   const stub = path.join(dir, 'codex');
   try {

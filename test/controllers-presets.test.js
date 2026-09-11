@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const presetsCtl = require('../lib/ui/controllers/presets');
 const presetsCache = require('../lib/ui/presets-cache');
+const { mkTmpDir } = require('./support/tmp');
 
 // Drives the real controller against a minimal ctx, mirroring
 // test/controllers-sessions.test.js's own precedent — the real
@@ -15,7 +16,7 @@ const presetsCache = require('../lib/ui/presets-cache');
 // tmp root, rather than a fake.
 
 function tmpRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-presets-ctl-'));
+  return mkTmpDir('concertino-presets-ctl-');
 }
 
 function ctx(over) {

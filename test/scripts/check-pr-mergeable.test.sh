@@ -10,6 +10,12 @@
 # exhaustion incident on this machine).
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh. This
+# file already installs its own EXIT trap below, so cleanup() calls
+# con181_cleanup_scratch instead of a second `trap ... EXIT`.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="$ROOT/core/scripts/check-pr-mergeable.sh"
 PASS=0; FAIL=0
@@ -27,6 +33,7 @@ export CONCERTINO_CI_POLL_INTERVAL_SEC=1
 
 CLEANUP_DIRS=()
 cleanup() {
+  con181_cleanup_scratch
   local d
   for d in "${CLEANUP_DIRS[@]:-}"; do
     [ -n "$d" ] && rm -rf "$d"

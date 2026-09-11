@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { mkTmpDir } = require('./support/tmp');
 
 // sync-provenance-diff-preview (CON-128), tasks.md 4.2/4.4: `cmdDiff` now
 // covers every file `sync` writes, not just the subset it covered before —
@@ -27,7 +28,7 @@ function run(args) {
 }
 
 function newSyncedTarget(configOverrides) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-diffcov-'));
+  const dir = mkTmpDir('concertino-diffcov-');
   const cfg = JSON.parse(fs.readFileSync(EXAMPLE_CONFIG, 'utf8'));
   Object.assign(cfg, configOverrides || {});
   fs.writeFileSync(path.join(dir, 'concertino.config.json'), JSON.stringify(cfg, null, 2));
@@ -205,7 +206,7 @@ test('a local edit to .codex/prompts/concertino-deliver.md is reported as change
 });
 
 test('sync --dry-run writes nothing to the target directory', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-diffcov-dryrun-'));
+  const dir = mkTmpDir('concertino-diffcov-dryrun-');
   fs.copyFileSync(EXAMPLE_CONFIG, path.join(dir, 'concertino.config.json'));
   try {
     const r = run(['sync', '--out=' + dir, '--dry-run']);

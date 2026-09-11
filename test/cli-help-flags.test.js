@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { mkTmpDir } = require('./support/tmp');
 
 // CON-85 per-subcommand-help-flags: every `concertino <subcommand>` accepts
 // `--help`/`-h`, printing that subcommand's own usage block (sourced from
@@ -28,14 +29,14 @@ function run(args) {
 }
 
 function newOut() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-help-flags-'));
+  return mkTmpDir('concertino-help-flags-');
 }
 
 // A throwaway project root usable by `concertino answer`, same shape as
 // test/answer.test.js's newRoot() — a real git repo with a copy of the real
 // emit-event.sh under scripts/concertino/.
 function newAnswerRoot() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-help-flags-answer-'));
+  const dir = mkTmpDir('concertino-help-flags-answer-');
   const scriptsDir = path.join(dir, 'scripts', 'concertino');
   fs.mkdirSync(scriptsDir, { recursive: true });
   fs.copyFileSync(REAL_EMIT_EVENT, path.join(scriptsDir, 'emit-event.sh'));

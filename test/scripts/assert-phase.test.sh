@@ -3,6 +3,11 @@
 # (duration_ms / first_error). Run: bash test/scripts/assert-phase.test.sh
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+trap con181_cleanup_scratch EXIT
+
 # See emit-event.test.sh for why this is disabled: FORCE_COLOR would wrap
 # node's bare-number output in ANSI codes even off a TTY.
 export NO_COLOR=1

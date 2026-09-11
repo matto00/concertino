@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { mkTmpDir } = require('./support/tmp');
 
 // CON-20: `concertino validate` warns when a launch-pad-enabled project has
 // no explicit ticketProvider.teamKey — the derived fallback
@@ -35,7 +36,7 @@ function baseConfig(over) {
 }
 
 function runValidate(config, extraArgs) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-validate-'));
+  const dir = mkTmpDir('concertino-validate-');
   const cfgPath = path.join(dir, 'concertino.config.json');
   fs.writeFileSync(cfgPath, JSON.stringify(config));
   try {
@@ -172,7 +173,7 @@ test('agentMerge.enabled defaults to false — validate prints no "Agent-merge" 
 });
 
 test('--ticket against a linear provider with no LINEAR_API_KEY fails clearly, before any network call', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-validate-'));
+  const dir = mkTmpDir('concertino-validate-');
   const cfgPath = path.join(dir, 'concertino.config.json');
   fs.writeFileSync(cfgPath, JSON.stringify(baseConfig({})));
   try {
@@ -217,7 +218,7 @@ function seedLocalTicket(dir, id, body) {
 }
 
 function runValidateLocal(config, extraArgs, seed) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-validate-local-'));
+  const dir = mkTmpDir('concertino-validate-local-');
   const cfgPath = path.join(dir, 'concertino.config.json');
   fs.writeFileSync(cfgPath, JSON.stringify(config));
   if (seed) seed(dir);

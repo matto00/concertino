@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { mkTmpDir } = require('./support/tmp');
 
 // sync-provenance-diff-preview (CON-128), tasks.md 4.1: the CLI's printed
 // provenance report distinguishes a "linked global" (a symlink resolving
@@ -27,7 +28,7 @@ function run(binPath, args) {
 }
 
 function newTarget() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-provenance-target-'));
+  const dir = mkTmpDir('concertino-provenance-target-');
   fs.copyFileSync(EXAMPLE_CONFIG, path.join(dir, 'concertino.config.json'));
   return dir;
 }
@@ -37,7 +38,7 @@ function newTarget() {
 // working-tree root (plays the "dev checkout" role a linked global points
 // into). Mirrors test/scripts/sync-core-resolution.test.sh's new_main().
 function newDevCheckout() {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-provenance-devcheckout-'));
+  const d = mkTmpDir('concertino-provenance-devcheckout-');
   for (const sub of ['bin', 'lib', 'adapters', 'core', 'config']) {
     fs.cpSync(path.join(REPO, sub), path.join(d, sub), { recursive: true });
   }
@@ -51,7 +52,7 @@ function newDevCheckout() {
 // A throwaway "installed package" checkout with NO git ancestry at all —
 // plays the "plain global install" role.
 function newPlainCheckout() {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-provenance-plaincheckout-'));
+  const d = mkTmpDir('concertino-provenance-plaincheckout-');
   for (const sub of ['bin', 'lib', 'adapters', 'core', 'config']) {
     fs.cpSync(path.join(REPO, sub), path.join(d, sub), { recursive: true });
   }
@@ -61,7 +62,7 @@ function newPlainCheckout() {
 
 test('diff prints a linked-global provenance line for a symlink resolving into a git checkout', () => {
   const devCheckout = newDevCheckout();
-  const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-provenance-link-'));
+  const linkDir = mkTmpDir('concertino-provenance-link-');
   const linkedBin = path.join(linkDir, 'concertino');
   fs.symlinkSync(path.join(devCheckout, 'bin', 'concertino'), linkedBin);
   const target = newTarget();
@@ -80,7 +81,7 @@ test('diff prints a linked-global provenance line for a symlink resolving into a
 
 test('diff prints a plain-install provenance line for a symlink resolving outside any git checkout', () => {
   const plainCheckout = newPlainCheckout();
-  const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-provenance-link-'));
+  const linkDir = mkTmpDir('concertino-provenance-link-');
   const linkedBin = path.join(linkDir, 'concertino');
   fs.symlinkSync(path.join(plainCheckout, 'bin', 'concertino'), linkedBin);
   const target = newTarget();
@@ -99,8 +100,8 @@ test('diff prints a plain-install provenance line for a symlink resolving outsid
 
 test('diff classifies a multi-hop symlink chain against its FINAL target, not the first hop', () => {
   const devCheckout = newDevCheckout();
-  const hop1Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-provenance-hop1-'));
-  const hop2Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-provenance-hop2-'));
+  const hop1Dir = mkTmpDir('concertino-provenance-hop1-');
+  const hop2Dir = mkTmpDir('concertino-provenance-hop2-');
   const hop1 = path.join(hop1Dir, 'concertino');
   const hop2 = path.join(hop2Dir, 'concertino');
   fs.symlinkSync(path.join(devCheckout, 'bin', 'concertino'), hop1);
@@ -159,7 +160,7 @@ test('a git failure during the linked-global check falls back to plain install r
   // whose PATH has no `git` binary at all — exercises gitRun's try/catch
   // fallback (design.md Risks/Trade-offs, tasks.md 1.2).
   const plainCheckout = newPlainCheckout();
-  const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-provenance-link-'));
+  const linkDir = mkTmpDir('concertino-provenance-link-');
   const linkedBin = path.join(linkDir, 'concertino');
   fs.symlinkSync(path.join(plainCheckout, 'bin', 'concertino'), linkedBin);
   const target = newTarget();

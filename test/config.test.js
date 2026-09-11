@@ -463,7 +463,7 @@ test('ticketHarnessCheck kind=unsupported-provider -> informational, no error', 
 const REPO_SCRIPT = path.join(__dirname, '..', 'core', 'scripts', 'check-agent-merge-permission.sh');
 
 function agentMergeProject({ settings, noScript } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-agentmerge-'));
+  const dir = mkTmpDir('concertino-agentmerge-');
   execSync('git init -q -b main', { cwd: dir });
   execSync('git -c user.email=t@t.test -c user.name=t commit -q --allow-empty -m init', { cwd: dir });
   // `noScript`: the actual first-touch state for this whole feature — a
@@ -696,6 +696,7 @@ test('Agent-merge section: both rules missing renders as one coherent single-lin
 
 // --- CON-44: local ticket provider — withDefaults normalises manual -------
 const { withDefaults } = require('../lib/config');
+const { mkTmpDir } = require('./support/tmp');
 
 test('withDefaults normalises the deprecated manual kind to local', () => {
   const c = withDefaults(baseConfig({ ticketProvider: { kind: 'manual', idExample: 'ABC-123' } }));
@@ -714,7 +715,7 @@ test('withDefaults leaves linear and github alone', () => {
 // optional .claude/settings.json.
 
 function costTrackingProject({ settings } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-costtracking-'));
+  const dir = mkTmpDir('concertino-costtracking-');
   if (settings !== undefined) {
     fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify(settings));

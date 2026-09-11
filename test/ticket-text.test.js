@@ -6,12 +6,13 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { resolve, persistedPath } = require('../lib/ui/ticket-text');
+const { mkTmpDir } = require('./support/tmp');
 
 // Builds a fresh temp "main checkout" root and writes a persisted ticket.md
 // at the exact deterministic path persist-evidence.sh uses:
 //   <root>/.concertino/runs/<ticket>/evidence/ticket.md
 function withPersisted(ticket, content) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-ticket-text-'));
+  const root = mkTmpDir('concertino-ticket-text-');
   const dir = path.join(root, '.concertino', 'runs', ticket, 'evidence');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'ticket.md'), content, 'utf8');
@@ -19,7 +20,7 @@ function withPersisted(ticket, content) {
 }
 
 function tmpRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-ticket-text-'));
+  return mkTmpDir('concertino-ticket-text-');
 }
 
 function cacheWith(tickets) {
@@ -167,7 +168,7 @@ test('an empty persisted file with no cache entry either returns null', () => {
 // change to either side's path convention is caught here instead of
 // silently degrading the drill-down to the launch pad cache.
 test('resolves a ticket.md persisted by the real persist-evidence.sh at its actual (nested) destination', () => {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-ticket-text-real-'));
+  const repo = mkTmpDir('concertino-ticket-text-real-');
   execFileSync('git', ['init', '-q'], { cwd: repo });
   execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'init'], { cwd: repo });
 

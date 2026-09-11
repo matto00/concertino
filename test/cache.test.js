@@ -6,9 +6,10 @@ const os = require('node:os');
 const path = require('node:path');
 
 const cache = require('../lib/ui/cache');
+const { mkTmpDir } = require('./support/tmp');
 
 function tmpRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-cache-'));
+  return mkTmpDir('concertino-cache-');
 }
 
 function seed(root, raw) {

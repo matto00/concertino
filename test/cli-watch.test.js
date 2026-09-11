@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { mkTmpDir } = require('./support/tmp');
 
 // CON-92: lib/cli/watch.js's cmdWatch normalises a successfully-parsed
 // config via lib/config.js's withDefaults before handing it to
@@ -16,7 +17,7 @@ const path = require('node:path');
 // dashboard it hands off to.
 
 function newRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-cli-watch-'));
+  return mkTmpDir('concertino-cli-watch-');
 }
 
 // Replaces lib/ui/watch.js's module.exports with a fake `watch()` that

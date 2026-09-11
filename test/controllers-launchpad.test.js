@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const launchpadCtl = require('../lib/ui/controllers/launchpad');
 const presetsCache = require('../lib/ui/presets-cache');
+const { mkTmpDir } = require('./support/tmp');
 
 // Drives the real controller against a minimal ctx, mirroring
 // test/controllers-presets.test.js's own precedent — the real
@@ -15,7 +16,7 @@ const presetsCache = require('../lib/ui/presets-cache');
 // invocation).
 
 function tmpRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-launchpad-ctl-'));
+  return mkTmpDir('concertino-launchpad-ctl-');
 }
 
 function ticket(id, title, over) {

@@ -5,6 +5,7 @@ const assert = require('node:assert');
 const provider = require('../lib/ui/ticket-provider');
 const linear = require('../lib/ui/linear');
 const local = require('../lib/ui/tickets/local');
+const { mkTmpDir } = require('./support/tmp');
 
 const LINEAR_CFG = { dashboard: { launchPad: { enabled: true } }, ticketProvider: { kind: 'linear', teamKey: 'CON' } };
 const LOCAL_CFG = { dashboard: { launchPad: { enabled: true } }, ticketProvider: { kind: 'local', teamKey: 'CON' } };
@@ -39,7 +40,7 @@ test('resolveTeam takes an object arg and reaches local', () => {
   const os = require('node:os');
   const fs = require('node:fs');
   const path = require('node:path');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-tp-'));
+  const root = mkTmpDir('concertino-tp-');
   assert.deepEqual(provider.resolveTeam(LOCAL_CFG, { root }), { found: false });
   fs.mkdirSync(path.join(root, 'tickets'));
   assert.deepEqual(provider.resolveTeam(LOCAL_CFG, { root }), { found: true });
@@ -206,7 +207,7 @@ test('both fetchTickets branches are awaitable, including the synchronous local 
   const os = require('node:os');
   const fs = require('node:fs');
   const path = require('node:path');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-tp-fetch-'));
+  const root = mkTmpDir('concertino-tp-fetch-');
   fs.mkdirSync(path.join(root, 'tickets'));
   fs.writeFileSync(path.join(root, 'tickets', 'CON-1.md'), '---\ntitle: One\nstate: backlog\n---\n\nb\n');
   const r = await provider.fetchTickets(LOCAL_CFG, { root, teamKey: 'CON' });

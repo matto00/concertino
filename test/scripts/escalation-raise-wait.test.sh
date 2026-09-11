@@ -6,6 +6,11 @@
 # modes and their interaction with a dashboard-style answer writer.
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+trap con181_cleanup_scratch EXIT
+
 # See emit-event.test.sh's own header comment for why job control must be on
 # for a TERM/INT-kill test run from inside a non-interactive script.
 set -m

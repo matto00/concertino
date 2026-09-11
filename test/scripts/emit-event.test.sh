@@ -11,6 +11,11 @@ set -uo pipefail
 # without `-m` here the INT-kill test below would hang on a false negative.
 set -m
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+trap con181_cleanup_scratch EXIT
+
 # Some shells export FORCE_COLOR, which makes node's console.log wrap bare
 # numbers in ANSI codes even when stdout isn't a TTY (e.g. command
 # substitution). That's terminal decoration, not part of the JSON under test

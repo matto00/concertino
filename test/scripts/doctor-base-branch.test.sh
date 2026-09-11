@@ -6,6 +6,12 @@
 # section instead of `Rendered artifacts`.
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh. This file
+# already installs its own EXIT trap below (for $WORK), so that trap is
+# extended to also remove $CON181_SCRATCH_TMPDIR.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok   $1"; }
@@ -16,7 +22,7 @@ hasnt(){ grep -qF "$2" "$3" && bad "$1" "unexpectedly found [$2]" || ok "$1"; }
 echo "concertino doctor (local base branch behind remote)"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK" "$CON181_SCRATCH_TMPDIR"' EXIT
 REMOTE="$WORK/remote.git"
 PRIMARY="$WORK/primary"
 

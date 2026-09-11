@@ -6,9 +6,10 @@ const os = require('node:os');
 const path = require('node:path');
 
 const local = require('../lib/ui/tickets/local');
+const { mkTmpDir } = require('./support/tmp');
 
 function tmpRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'concertino-local-'));
+  return mkTmpDir('concertino-local-');
 }
 
 function seed(root, files) {

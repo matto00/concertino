@@ -13,6 +13,12 @@
 # this test, and those legitimately fail on a machine without them installed).
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh. This file
+# already installs its own EXIT trap below (for $WORK), so that trap is
+# extended to also remove $CON181_SCRATCH_TMPDIR.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+
 export NO_COLOR=1
 unset FORCE_COLOR
 
@@ -26,7 +32,7 @@ hasnt() { grep -qF "$2" "$3" 2>/dev/null && bad "$1" "unexpectedly found [$2] in
 echo "concertino doctor (Ollama per-role model validation)"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK" "$CON181_SCRATCH_TMPDIR"' EXIT
 
 # --- a minimal fake curl -----------------------------------------------------
 # Serves $MOCK_CURL_DIR/tags.json for GET .../api/tags, and

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+# CON-181: scope every mktemp/mktemp -d call in this file to a scratch
+# TMPDIR removed on exit -- see test/scripts/lib/tmp-scratch.sh. This
+# file already installs its own EXIT trap below, so cleanup() calls
+# con181_cleanup_scratch instead of a second `trap ... EXIT`.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
+
 # ===========================================================================
 # await-sentinel.test.sh (CON-178) — proves await-sentinel.sh never leaves a
 # process running after it returns, unlike the ad-hoc
@@ -28,6 +34,7 @@ PRISTINE_SCRIPT="$(mktemp)"
 cp "$SCRIPT" "$PRISTINE_SCRIPT"
 SPAWNED_PIDS=""
 cleanup() {
+  con181_cleanup_scratch
   cp "$PRISTINE_SCRIPT" "$SCRIPT" 2>/dev/null || true
   rm -f "$PRISTINE_SCRIPT"
   for p in $SPAWNED_PIDS; do
