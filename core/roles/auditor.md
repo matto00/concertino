@@ -143,12 +143,16 @@ gate:
 
 - Read the ticket's acceptance criteria (`ticket.md` in the change dir, or
   re-fetch from the ticket provider if that file looks stale).
-- `git diff <REVIEW_BASE_SHA>...HEAD`, where `<REVIEW_BASE_SHA>` is
-  `workflow-state.md`'s `REVIEW_BASE_SHA` field (resolved once at Setup by
-  `resolve-review-base.sh` — CON-152; never `{{var:project.baseBranch}}...HEAD`
-  or any other hand-computed base, both of which silently pad the diff with
+- Resolve the base LIVE, right now, via `resolve-review-base.sh
+  "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE"` (fields from
+  `workflow-state.md`; script falls back to its own config defaults if
+  absent) and diff against the `BASE_SHA` it prints — never
+  `{{var:project.baseBranch}}...HEAD`, a bare `<base>...HEAD`, or a SHA
+  cached earlier in the run (CON-152: any of those can silently include
   whatever has merged to the remote base branch since the worktree was
-  created) — the actual, real change.
+  created, OR — for a cached SHA specifically — silently re-flag base
+  commits this branch has since absorbed via a reconcile) — the actual,
+  real change.
 - For **every** acceptance criterion, point to the specific code/behavior in
   the diff that satisfies it. An AC you cannot trace to real evidence is
   **not met** — that is an `ESCALATE`, naming which criterion and why.

@@ -92,13 +92,18 @@ source file:
 - `path/to/file.ext` — brief rationale
 ```
 
-Use `git diff --name-only <REVIEW_BASE_SHA>...HEAD` to enumerate, where
-`<REVIEW_BASE_SHA>` is `workflow-state.md`'s `REVIEW_BASE_SHA` field
-(resolved once at Setup by `resolve-review-base.sh` — CON-152; never a
-hand-typed `main`/`<base>` ref, which never moves for the life of the
-worktree and silently pads the enumeration with unrelated sibling merges).
-This gives the evaluator a compact map to orient review. Overwrite on
-re-runs to reflect the current state.
+Resolve the base LIVE and enumerate against it — never a hand-typed
+`main`/`<base>` ref or a value cached earlier in the run (CON-152):
+
+```bash
+BASE_SHA="$(scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE" | sed -n 's/^BASE_SHA //p')"
+git diff --name-only "$BASE_SHA"...HEAD
+```
+
+(`REVIEW_BASE_BRANCH`/`REVIEW_BASE_REMOTE` from `workflow-state.md`; the
+script falls back to its own config defaults when they're absent.) This
+gives the evaluator a compact map to orient review. Overwrite on re-runs to
+reflect the current state.
 
 ### 5. Pre-commit self-check
 
@@ -107,8 +112,8 @@ re-runs to reflect the current state.
 
 ### 6. Run verification gates
 
-Determine which areas changed (`git diff --name-only <REVIEW_BASE_SHA>...HEAD`,
-same `workflow-state.md`-recorded base as above) and run the
+Determine which areas changed (`git diff --name-only "$BASE_SHA"...HEAD`,
+re-resolved live via the same call as above) and run the
 gates whose `when` matches:
 
 {{block:gates}}

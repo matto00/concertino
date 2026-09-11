@@ -38,8 +38,14 @@ rendered version of your agent role lists the concrete gates for this project.
 | Regression test added   | the test fails before the fix and passes after — show both         |
 | Acceptance criteria met | line-by-line checklist against actual observed output              |
 
-Run only the gates whose `when` matches your changed files
-(`git diff --name-only <base>...HEAD`).
+Run only the gates whose `when` matches your changed files, enumerated via
+the LIVE-resolved review base (CON-152 — never a hand-typed
+`main`/`<base>` ref, which never moves for the life of the worktree):
+`git diff --name-only "$BASE_SHA"...HEAD`, where `BASE_SHA` comes from
+`scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH"
+"$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE"` (fields from
+`workflow-state.md`; the script falls back to its own config defaults when
+they're absent).
 
 ## Evidence rules
 

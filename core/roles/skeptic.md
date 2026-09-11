@@ -69,12 +69,20 @@ actually **ships**. Independently verify — do not trust the PASS.
 ### 1. Re-establish ground truth
 
 - Read the ticket acceptance criteria (`ticket.md` or the ticket provider).
-- `git diff <REVIEW_BASE_SHA>...HEAD`, where `<REVIEW_BASE_SHA>` is
-  `workflow-state.md`'s `REVIEW_BASE_SHA` field (resolved once at Setup by
-  `resolve-review-base.sh` — CON-152; never hand-compute a `main`/`<base>`
-  ref yourself, since a bare local base-branch ref never moves and silently
-  pads the diff with unrelated sibling merges) — the actual change. Read
-  full files where needed.
+- Resolve the base LIVE, right now, and diff against it — never a
+  hand-computed `main`/`<base>` ref, and never a value cached earlier in the
+  run (CON-152: a bare local base-branch ref never moves for the life of
+  the worktree, and a SHA cached at Setup goes stale the moment anything
+  reconciles the branch against its base mid-run):
+
+  ```bash
+  BASE_SHA="$(scripts/concertino/resolve-review-base.sh "$WORKTREE_PATH" "$REVIEW_BASE_BRANCH" "$REVIEW_BASE_REMOTE" | sed -n 's/^BASE_SHA //p')"
+  git diff "$BASE_SHA"...HEAD
+  ```
+
+  (`REVIEW_BASE_BRANCH`/`REVIEW_BASE_REMOTE` from `workflow-state.md`; the
+  script falls back to its own config defaults when they're absent.) —
+  the actual change. Read full files where needed.
 - Read `files-modified.md` and the latest `evaluation-*.md` as **claims**.
 
 ### 2. Acceptance criteria — trace each one

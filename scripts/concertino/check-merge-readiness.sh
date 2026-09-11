@@ -134,6 +134,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/auditor-lease.sh"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/pr-reconcile.sh"
 
 USAGE="usage: check-merge-readiness.sh <WORKTREE_PATH> <BRANCH> <TICKET_ID> <ARCHIVE_PREFIX>"
 WORKTREE_PATH="${1:?$USAGE}"
@@ -223,31 +225,12 @@ main_checkout() {
 # lost — it only ever gains the base's new commits on top. Run before
 # conditions 1-2 so that, on success, both re-derive fresh state against the
 # new HEAD (CI restarts on a new commit; mergeability recomputes) rather
-# than judging a HEAD this script just moved past.
-PRE_RAW="$(cd "$WORKTREE_PATH" && gh pr view "$BRANCH" --json mergeStateStatus,baseRefName 2>&1)"
-if [ $? -eq 0 ]; then
-  PRE_STATUS="$(printf '%s' "$PRE_RAW" | jq -r '.mergeStateStatus // ""' 2>/dev/null)"
-  BASE_REF="$(printf '%s' "$PRE_RAW" | jq -r '.baseRefName // ""' 2>/dev/null)"
-  [ -z "$BASE_REF" ] && BASE_REF="${CONCERTINO_BASE_BRANCH:-main}"
-  if [ "$PRE_STATUS" = "BEHIND" ]; then
-    FETCH_OUT="$(cd "$WORKTREE_PATH" && git fetch origin "$BASE_REF" 2>&1)"
-    if [ $? -ne 0 ]; then
-      fail "not mergeable: BEHIND (auto-reconcile: could not fetch origin/${BASE_REF}: $(printf '%s' "$FETCH_OUT" | tr '\n' ' ' | cut -c1-200))"
-    else
-      MERGE_OUT="$(cd "$WORKTREE_PATH" && git merge --no-edit "origin/${BASE_REF}" 2>&1)"
-      if [ $? -ne 0 ]; then
-        (cd "$WORKTREE_PATH" && git merge --abort) >/dev/null 2>&1 || true
-        fail "not mergeable: BEHIND (auto-reconcile with origin/${BASE_REF} hit conflicts — needs human resolution; current work left untouched)"
-      else
-        PUSH_OUT="$(cd "$WORKTREE_PATH" && git push origin "HEAD:${BRANCH}" 2>&1)"
-        if [ $? -ne 0 ]; then
-          fail "not mergeable: BEHIND (auto-reconcile merged origin/${BASE_REF} locally but push to origin/${BRANCH} failed: $(printf '%s' "$PUSH_OUT" | tr '\n' ' ' | cut -c1-200))"
-        fi
-        # else: reconciled and pushed cleanly — fall through to 1/2 below,
-        # which re-query on the new HEAD.
-      fi
-    fi
-  fi
+# than judging a HEAD this script just moved past. Shared with
+# check-pr-mergeable.sh via lib/pr-reconcile.sh (CON-122 cycle 2) — one
+# implementation, not two independently-maintained copies.
+RECONCILE_MSG="$(pr_reconcile_behind_once "$WORKTREE_PATH" "$BRANCH")"
+if [ $? -ne 0 ]; then
+  fail "$RECONCILE_MSG"
 fi
 
 # --- 1: CI green, polled ----------------------------------------------------

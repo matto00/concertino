@@ -103,7 +103,91 @@ RC3=$?
 check "no origin remote configured exits 1" "$RC3" "1"
 has "no origin remote reports FAIL" "$OUT3" "FAIL"
 
-rm -rf "$WT" "$LONE" "$(dirname "$WT")"
+# --- Case 4 (CON-152 cycle 2, CRITICAL finding 1): after the branch itself
+# RECONCILES against the moved base (a real `git merge origin/main`, exactly
+# what check-pr-mergeable.sh's/check-merge-readiness.sh's BEHIND
+# auto-reconcile does mid-run), the LIVE-resolved base must reflect that —
+# and a SHA cached from BEFORE the reconcile must NOT be reused, or the
+# sibling's own files spuriously reappear as "changed by this ticket".
+STALE_CACHED_SHA="$BASE_SHA" # from Case 1, before any reconcile
+
+FETCH_OUT="$(cd "$WT" && git fetch origin main 2>&1)"
+MERGE_OUT="$(cd "$WT" && git merge --no-edit origin/main 2>&1)"
+check "fixture premise: the reconcile merge actually succeeded" "$?" "0"
+
+OUT4="$("$SCRIPT" "$WT" main origin 2>&1)"
+RC4=$?
+check "resolves successfully after reconcile" "$RC4" "0"
+LIVE_BASE_AFTER_RECONCILE="$(printf '%s' "$OUT4" | sed -n 's/^BASE_SHA //p')"
+ORIGIN_MAIN_TIP="$(cd "$WT" && git rev-parse origin/main)"
+check "live base after reconcile is origin/main's new tip (the branch now contains it)" \
+  "$LIVE_BASE_AFTER_RECONCILE" "$ORIGIN_MAIN_TIP"
+
+LIVE_DIFF="$(cd "$WT" && git diff --name-only "${LIVE_BASE_AFTER_RECONCILE}...HEAD" 2>/dev/null)"
+has "live post-reconcile diff still includes the ticket's own file" "$LIVE_DIFF" "ticket.txt"
+lacks "live post-reconcile diff excludes the sibling file (already absorbed, not new)" "$LIVE_DIFF" "sibling.txt"
+
+# The failure mode this whole finding is about: reusing the SHA cached
+# BEFORE the reconcile (what a "resolve once at Setup, record the SHA"
+# design — cycle 1 of this very PR — would do) now spuriously re-flags
+# sibling.txt as part of THIS ticket's diff, because the merge commit
+# introduced it relative to that stale base.
+STALE_DIFF="$(cd "$WT" && git diff --name-only "${STALE_CACHED_SHA}...HEAD" 2>/dev/null)"
+has "PROOF this is a real defect class: the STALE cached-SHA diff wrongly includes the sibling file" "$STALE_DIFF" "sibling.txt"
+
+# --- Case 5: same shape via a SQUASH (squash-branch.sh's own approach —
+# reset --soft to the merge-base computed AT SQUASH TIME) rather than a
+# merge — confirms live resolution stays correct however the branch
+# reconciles, not just via the merge path condition-0 happens to take.
+SQ="$(mktemp -d)"
+git clone -q "$ORIGIN_URL" "$SQ"
+git -C "$SQ" checkout -q -b bug/some-other-ticket/CON-1000
+echo "sq ticket" > "$SQ/sq-ticket.txt"
+git -C "$SQ" add -A
+git -C "$SQ" -c user.email=t@t.test -c user.name=t commit -q -m "sq ticket commit"
+echo "sq ticket 2" >> "$SQ/sq-ticket.txt"
+git -C "$SQ" add -A
+git -C "$SQ" -c user.email=t@t.test -c user.name=t commit -q -m "sq ticket commit 2"
+# A fresh merge-base computed live, then squash onto it — mirrors
+# squash-branch.sh's own "compute merge-base fresh at squash time" pattern.
+git -C "$SQ" fetch -q origin main
+SQ_MERGE_BASE="$(git -C "$SQ" merge-base HEAD origin/main)"
+git -C "$SQ" reset -q --soft "$SQ_MERGE_BASE"
+git -C "$SQ" -c user.email=t@t.test -c user.name=t commit -q -m "squashed"
+OUT5="$("$SCRIPT" "$SQ" main origin 2>&1)"
+RC5=$?
+check "resolves successfully after a squash" "$RC5" "0"
+LIVE_BASE_AFTER_SQUASH="$(printf '%s' "$OUT5" | sed -n 's/^BASE_SHA //p')"
+check "live base after squash matches the squash's own merge-base (no drift between the two)" \
+  "$LIVE_BASE_AFTER_SQUASH" "$SQ_MERGE_BASE"
+SQ_DIFF="$(cd "$SQ" && git diff --name-only "${LIVE_BASE_AFTER_SQUASH}...HEAD" 2>/dev/null)"
+has "post-squash live diff includes the squashed ticket file" "$SQ_DIFF" "sq-ticket.txt"
+lacks "post-squash live diff excludes sibling/seed content" "$SQ_DIFF" "sibling.txt"
+
+# --- Case 6 (CON-152 cycle 2, HIGH finding 3): a caller that omits
+# BASE_BRANCH/BASE_REMOTE (e.g. a resumed/older run whose workflow-state.md
+# predates REVIEW_BASE_BRANCH/REVIEW_BASE_REMOTE) must fall back to the same
+# main/origin default setup-worktree.sh itself uses — never fail outright,
+# and never silently improvise something else.
+FB="$(mktemp -d)"
+FBO="$FB/.origin-bare"
+git init -q --bare -b main "$FBO"
+git init -q -b main "$FB"
+echo "seed" > "$FB/README.md"
+git -C "$FB" add -A
+git -C "$FB" -c user.email=t@t.test -c user.name=t commit -q -m seed
+git -C "$FB" remote add origin "$FBO"
+git -C "$FB" push -q origin main
+echo "ticket" > "$FB/ticket.txt"
+git -C "$FB" add -A
+git -C "$FB" -c user.email=t@t.test -c user.name=t commit -q -m "ticket commit"
+OUT6="$("$SCRIPT" "$FB" 2>&1)"
+RC6=$?
+check "no BASE_BRANCH/BASE_REMOTE args: still resolves (default fallback)" "$RC6" "0"
+has "no-args fallback prints BASE_SHA" "$OUT6" "BASE_SHA "
+rm -rf "$FB"
+
+rm -rf "$WT" "$LONE" "$(dirname "$WT")" "$SQ"
 
 echo "resolve-review-base.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -4,7 +4,10 @@
 # human-merge (AGENT_MERGE=false) path.
 #
 # `gh` is stubbed with a minimal fake on PATH so these tests never touch the
-# network or a real PR. All git state is a throwaway scratch repo.
+# network or a real PR. All git state is a throwaway scratch repo, cleaned
+# up unconditionally via a trap (cycle 2 finding 7 — leaked GH_MOCK_DIR/repo
+# temp dirs from a first cut of this test file contributed to a /tmp inode
+# exhaustion incident on this machine).
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -19,10 +22,22 @@ echo "check-pr-mergeable.sh (CON-122)"
 
 export CONCERTINO_MERGE_RECHECK_TIMEOUT_SEC=0
 export CONCERTINO_MERGE_RECHECK_INTERVAL_SEC=1
+export CONCERTINO_CI_WAIT_TIMEOUT_SEC=0
+export CONCERTINO_CI_POLL_INTERVAL_SEC=1
+
+CLEANUP_DIRS=()
+cleanup() {
+  local d
+  for d in "${CLEANUP_DIRS[@]:-}"; do
+    [ -n "$d" ] && rm -rf "$d"
+  done
+}
+trap cleanup EXIT
 
 new_repo() {
   local d o
   d="$(mktemp -d)"
+  CLEANUP_DIRS+=("$d")
   o="$d/.origin-bare"
   git init -q --bare -b main "$o"
   git init -q -b main "$d"
@@ -32,14 +47,20 @@ new_repo() {
   printf '%s' "$d"
 }
 
-# $1=mergeStateStatus $2=reviewDecision("null" or a string)
+# $1=mergeable $2=mergeStateStatus $3=reviewDecision("null" or a string)
 merge_json() {
-  local rd="$2"
+  local rd="$3"
   if [ "$rd" != "null" ]; then rd="\"$rd\""; fi
-  printf '{"mergeable":"UNKNOWN","mergeStateStatus":"%s","reviewDecision":%s,"baseRefName":"main"}' "$1" "$rd"
+  printf '{"mergeable":"%s","mergeStateStatus":"%s","reviewDecision":%s,"baseRefName":"main"}' "$1" "$2" "$rd"
+}
+
+# $1=array of {name,conclusion} pairs as a JSON array literal for statusCheckRollup
+rollup_json() {
+  printf '{"statusCheckRollup":%s}' "$1"
 }
 
 MOCKBIN="$(mktemp -d)"
+CLEANUP_DIRS+=("$MOCKBIN")
 cat > "$MOCKBIN/gh" <<'EOF'
 #!/usr/bin/env bash
 if [ -n "${GH_MOCK_FAIL:-}" ]; then
@@ -47,17 +68,43 @@ if [ -n "${GH_MOCK_FAIL:-}" ]; then
   exit 1
 fi
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  n_file="$GH_MOCK_DIR/mergecalls"
-  n=0
-  [ -f "$n_file" ] && n="$(cat "$n_file")"
-  n=$((n+1))
-  echo "$n" > "$n_file"
-  if [ -f "$GH_MOCK_DIR/merge-$n.json" ]; then
-    cat "$GH_MOCK_DIR/merge-$n.json"
-  else
-    cat "$GH_MOCK_DIR/merge.json"
-  fi
-  exit 0
+  # Distinguish the rollup query (statusCheckRollup) from the mergeable
+  # query (mergeable,mergeStateStatus,reviewDecision) by which fields were
+  # requested, same convention check-merge-readiness.test.sh's mock uses.
+  args="$*"
+  case "$args" in
+    *statusCheckRollup*)
+      n_file="$GH_MOCK_DIR/rollupcalls"
+      n=0
+      [ -f "$n_file" ] && n="$(cat "$n_file")"
+      n=$((n+1))
+      echo "$n" > "$n_file"
+      if [ -f "$GH_MOCK_DIR/rollup-$n.json" ]; then
+        cat "$GH_MOCK_DIR/rollup-$n.json"
+      else
+        cat "$GH_MOCK_DIR/rollup.json"
+      fi
+      exit 0
+      ;;
+    *mergeable*)
+      n_file="$GH_MOCK_DIR/mergecalls"
+      n=0
+      [ -f "$n_file" ] && n="$(cat "$n_file")"
+      n=$((n+1))
+      echo "$n" > "$n_file"
+      if [ -f "$GH_MOCK_DIR/merge-$n.json" ]; then
+        cat "$GH_MOCK_DIR/merge-$n.json"
+      else
+        cat "$GH_MOCK_DIR/merge.json"
+      fi
+      exit 0
+      ;;
+    *mergeStateStatus*baseRefName*)
+      # condition-0 pre-reconcile query
+      cat "$GH_MOCK_DIR/pre.json"
+      exit 0
+      ;;
+  esac
 fi
 echo "unhandled gh invocation: $*" >&2
 exit 1
@@ -65,48 +112,127 @@ EOF
 chmod +x "$MOCKBIN/gh"
 export PATH="$MOCKBIN:$PATH"
 
-# --- Case 1: CLEAN -> PASS --------------------------------------------------
+empty_rollup() { rollup_json '[]'; }
+
+# --- Case 1: CI green (empty rollup), CLEAN -> PASS -------------------------
 REPO="$(new_repo)"
-GH_MOCK_DIR="$(mktemp -d)"; export GH_MOCK_DIR
-merge_json "CLEAN" "null" > "$GH_MOCK_DIR/merge.json"
+GH_MOCK_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$GH_MOCK_DIR"); export GH_MOCK_DIR
+printf '{"mergeStateStatus":"CLEAN","baseRefName":"main"}' > "$GH_MOCK_DIR/pre.json"
+empty_rollup > "$GH_MOCK_DIR/rollup.json"
+merge_json "MERGEABLE" "CLEAN" "null" > "$GH_MOCK_DIR/merge.json"
 OUT="$("$SCRIPT" "$REPO" "some-branch" 2>&1)"; RC=$?
 check "CLEAN exits 0" "$RC" "0"
 has "CLEAN prints PASS" "$OUT" "PASS"
 
 # --- Case 2: DIRTY (a real conflict — the HEL-412/HEL-703 incident shape) ---
 REPO2="$(new_repo)"
-GH_MOCK_DIR="$(mktemp -d)"; export GH_MOCK_DIR
-merge_json "DIRTY" "null" > "$GH_MOCK_DIR/merge.json"
+GH_MOCK_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$GH_MOCK_DIR"); export GH_MOCK_DIR
+printf '{"mergeStateStatus":"DIRTY","baseRefName":"main"}' > "$GH_MOCK_DIR/pre.json"
+empty_rollup > "$GH_MOCK_DIR/rollup.json"
+merge_json "MERGEABLE" "DIRTY" "null" > "$GH_MOCK_DIR/merge.json"
 OUT2="$("$SCRIPT" "$REPO2" "some-branch" 2>&1)"; RC2=$?
 check "DIRTY exits 1 (never claims clean)" "$RC2" "1"
 has "DIRTY names the actual status" "$OUT2" "FAIL not mergeable: DIRTY"
 
-# --- Case 3: CONFLICTING-shaped BLOCKED with review required ---------------
+# --- Case 3: CONFLICTING (mergeable field itself, not mergeStateStatus) -----
 REPO3="$(new_repo)"
-GH_MOCK_DIR="$(mktemp -d)"; export GH_MOCK_DIR
-merge_json "BLOCKED" "REVIEW_REQUIRED" > "$GH_MOCK_DIR/merge.json"
+GH_MOCK_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$GH_MOCK_DIR"); export GH_MOCK_DIR
+printf '{"mergeStateStatus":"UNKNOWN","baseRefName":"main"}' > "$GH_MOCK_DIR/pre.json"
+empty_rollup > "$GH_MOCK_DIR/rollup.json"
+merge_json "CONFLICTING" "UNKNOWN" "null" > "$GH_MOCK_DIR/merge.json"
 OUT3="$("$SCRIPT" "$REPO3" "some-branch" 2>&1)"; RC3=$?
-check "BLOCKED+REVIEW_REQUIRED exits 1" "$RC3" "1"
-has "BLOCKED+REVIEW_REQUIRED names branch protection" "$OUT3" "branch protection requires human review"
+check "CONFLICTING exits 1" "$RC3" "1"
+has "CONFLICTING names the mergeable field, not just mergeStateStatus" "$OUT3" "FAIL not mergeable: CONFLICTING"
 
-# --- Case 4: UNKNOWN forever (never resolves) -> fails closed, not a pass --
+# --- Case 4: BLOCKED with review required -----------------------------------
 REPO4="$(new_repo)"
-GH_MOCK_DIR="$(mktemp -d)"; export GH_MOCK_DIR
-merge_json "UNKNOWN" "null" > "$GH_MOCK_DIR/merge.json"
+GH_MOCK_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$GH_MOCK_DIR"); export GH_MOCK_DIR
+printf '{"mergeStateStatus":"BLOCKED","baseRefName":"main"}' > "$GH_MOCK_DIR/pre.json"
+empty_rollup > "$GH_MOCK_DIR/rollup.json"
+merge_json "MERGEABLE" "BLOCKED" "REVIEW_REQUIRED" > "$GH_MOCK_DIR/merge.json"
 OUT4="$("$SCRIPT" "$REPO4" "some-branch" 2>&1)"; RC4=$?
-check "UNKNOWN timeout exits 1 (never silently passes)" "$RC4" "1"
-has "UNKNOWN timeout names the state" "$OUT4" "mergeability not yet determined"
+check "BLOCKED+REVIEW_REQUIRED exits 1" "$RC4" "1"
+has "BLOCKED+REVIEW_REQUIRED names branch protection" "$OUT4" "branch protection requires human review"
 
-# --- Case 5: gh unauthenticated/unreachable -> distinct environmental wording
+# --- Case 5: UNKNOWN mergeability forever -> fails closed, not a pass ------
 REPO5="$(new_repo)"
-GH_MOCK_DIR="$(mktemp -d)"; export GH_MOCK_DIR
-export GH_MOCK_FAIL=1
+GH_MOCK_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$GH_MOCK_DIR"); export GH_MOCK_DIR
+printf '{"mergeStateStatus":"UNKNOWN","baseRefName":"main"}' > "$GH_MOCK_DIR/pre.json"
+empty_rollup > "$GH_MOCK_DIR/rollup.json"
+merge_json "UNKNOWN" "UNKNOWN" "null" > "$GH_MOCK_DIR/merge.json"
 OUT5="$("$SCRIPT" "$REPO5" "some-branch" 2>&1)"; RC5=$?
-unset GH_MOCK_FAIL
-check "gh failure exits 1" "$RC5" "1"
-has "gh failure worded distinctly from a real conflict" "$OUT5" "could not query PR status via gh"
+check "UNKNOWN timeout exits 1 (never silently passes)" "$RC5" "1"
+has "UNKNOWN timeout names the state" "$OUT5" "mergeability not yet determined"
 
-rm -rf "$REPO" "$REPO2" "$REPO3" "$REPO4" "$REPO5" "$MOCKBIN"
+# --- Case 6: gh unauthenticated/unreachable -> distinct environmental wording
+REPO6="$(new_repo)"
+GH_MOCK_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$GH_MOCK_DIR"); export GH_MOCK_DIR
+export GH_MOCK_FAIL=1
+OUT6="$("$SCRIPT" "$REPO6" "some-branch" 2>&1)"; RC6=$?
+unset GH_MOCK_FAIL
+check "gh failure exits 1" "$RC6" "1"
+has "gh failure worded distinctly from a real conflict" "$OUT6" "could not query"
+
+# --- Case 7: CI still pending after the wait window -> PENDING, exit 3 -----
+# (never a silent pass, and distinct from a hard FAIL — CON-159 shape).
+REPO7="$(new_repo)"
+GH_MOCK_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$GH_MOCK_DIR"); export GH_MOCK_DIR
+printf '{"mergeStateStatus":"UNKNOWN","baseRefName":"main"}' > "$GH_MOCK_DIR/pre.json"
+rollup_json '[{"name":"backend","conclusion":""}]' > "$GH_MOCK_DIR/rollup.json"
+merge_json "MERGEABLE" "CLEAN" "null" > "$GH_MOCK_DIR/merge.json"
+OUT7="$("$SCRIPT" "$REPO7" "some-branch" 2>&1)"; RC7=$?
+check "pending CI exits 3 (re-invoke, not a failure)" "$RC7" "3"
+has "pending CI reports PENDING" "$OUT7" "PENDING"
+
+# --- Case 8: a real required CI job fails -> FAIL, not a mergeable-only view
+REPO8="$(new_repo)"
+GH_MOCK_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$GH_MOCK_DIR"); export GH_MOCK_DIR
+printf '{"mergeStateStatus":"UNKNOWN","baseRefName":"main"}' > "$GH_MOCK_DIR/pre.json"
+rollup_json '[{"name":"backend","conclusion":"FAILURE"}]' > "$GH_MOCK_DIR/rollup.json"
+merge_json "MERGEABLE" "CLEAN" "null" > "$GH_MOCK_DIR/merge.json"
+OUT8="$("$SCRIPT" "$REPO8" "some-branch" 2>&1)"; RC8=$?
+check "failed required CI job exits 1" "$RC8" "1"
+has "failed CI names the job" "$OUT8" "CI failed: backend"
+
+# --- Case 9: CI eventually resolves across polls (exercises the poll loop,
+# not a timeout=0 single-shot) — rollup-1 pending, rollup-2 green.
+REPO9="$(new_repo)"
+GH_MOCK_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$GH_MOCK_DIR"); export GH_MOCK_DIR
+printf '{"mergeStateStatus":"CLEAN","baseRefName":"main"}' > "$GH_MOCK_DIR/pre.json"
+rollup_json '[{"name":"backend","conclusion":""}]' > "$GH_MOCK_DIR/rollup-1.json"
+rollup_json '[{"name":"backend","conclusion":"SUCCESS"}]' > "$GH_MOCK_DIR/rollup.json"
+merge_json "MERGEABLE" "CLEAN" "null" > "$GH_MOCK_DIR/merge.json"
+CONCERTINO_CI_WAIT_TIMEOUT_SEC=30 CONCERTINO_CI_POLL_INTERVAL_SEC=1 \
+  OUT9="$("$SCRIPT" "$REPO9" "some-branch" 2>&1)"; RC9=$?
+check "CI resolves across a real poll -> exits 0" "$RC9" "0"
+has "CI resolves across a real poll -> PASS" "$OUT9" "PASS"
+
+# --- Case 10: BEHIND is actually reconciled (real fetch+merge+push), then
+# passes on the reconciled HEAD — exercises lib/pr-reconcile.sh for real,
+# not just the failure branches.
+REPO10="$(new_repo)"
+GH_MOCK_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$GH_MOCK_DIR"); export GH_MOCK_DIR
+git -C "$REPO10" checkout -q -b bug/some-ticket/CON-999
+echo "ticket" > "$REPO10/ticket.txt"
+git -C "$REPO10" add -A
+git -C "$REPO10" -c user.email=t@t.test -c user.name=t commit -q -m "ticket commit"
+# Base advances on the real origin remote after the branch diverged.
+SIBLING="$(mktemp -d)"; CLEANUP_DIRS+=("$SIBLING")
+git clone -q "$(git -C "$REPO10" remote get-url origin)" "$SIBLING"
+echo "sibling" > "$SIBLING/sibling.txt"
+git -C "$SIBLING" add -A
+git -C "$SIBLING" -c user.email=t@t.test -c user.name=t commit -q -m "sibling merge"
+git -C "$SIBLING" push -q origin main
+printf '{"mergeStateStatus":"BEHIND","baseRefName":"main"}' > "$GH_MOCK_DIR/pre.json"
+empty_rollup > "$GH_MOCK_DIR/rollup.json"
+merge_json "MERGEABLE" "CLEAN" "null" > "$GH_MOCK_DIR/merge.json"
+# The real reconcile does `git push origin HEAD:some-branch` — origin needs
+# that ref to exist for a real push to be meaningful; git allows creating it.
+OUT10="$("$SCRIPT" "$REPO10" "some-branch" 2>&1)"; RC10=$?
+check "BEHIND is actually reconciled then passes" "$RC10" "0"
+has "reconcile result prints PASS" "$OUT10" "PASS"
+MERGED_LOG="$(git -C "$REPO10" log --oneline -3)"
+has "the branch actually contains the sibling's merge after reconcile" "$MERGED_LOG" "sibling merge"
 
 echo "check-pr-mergeable.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
