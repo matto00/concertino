@@ -38,6 +38,63 @@ new_repo() {
   printf '%s' "$d"
 }
 
+# CON-183: shared bounded-wait / leaked-child-detection helpers
+# (wait_killed_bounded, capture_children, assert_children_dead) -- see
+# lib/wait-bounded.sh for the full rationale (a plain unbounded `wait` on a
+# killed --await hung this suite ~20 minutes during a cold review of PR #138
+# on 2026-09-11; checking `pgrep -P` on an already-reaped pid is vacuous).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/wait-bounded.sh"
+
+# Self-test: prove capture_children()/assert_children_dead() actually catch a
+# leaked grandchild, so the checks used against --await below are known to be
+# failable rather than vacuously green. Mirrors the reviewer's own proof:
+# spawn a parent with a live child, kill+reap the parent, show a NAIVE
+# post-reap `pgrep -P <parent>` finds nothing (the vacuous shape being
+# replaced) while the FIXED shape (capture before kill, then check the
+# captured pid directly) still catches the leaked child.
+LEAKY_PARENT_SCRIPT="$(mktemp)"
+cat > "$LEAKY_PARENT_SCRIPT" <<'EOF'
+#!/usr/bin/env bash
+# A deliberately bad parent: on TERM, it exits immediately without waiting
+# for or killing its own background child -- the exact "leak a grandchild"
+# shape assert_children_dead() must catch.
+trap 'exit 1' TERM
+sleep 60 &
+CHILD=$!
+wait "$CHILD"
+EOF
+chmod +x "$LEAKY_PARENT_SCRIPT"
+"$LEAKY_PARENT_SCRIPT" &
+LEAKY_PID=$!
+# Bounded poll for the child to actually appear, rather than a fixed sleep
+# (CON-183 cycle-3 hardening -- a fixed sleep is exactly the class of
+# load-fragile wait this ticket exists to remove, even though no failure of
+# this specific line has ever been reproduced).
+for _ in $(seq 1 50); do
+  LEAKY_CHILD="$(capture_children "$LEAKY_PID")"
+  [ -n "$LEAKY_CHILD" ] && break
+  sleep 0.1
+done
+check "self-test: leaky parent has a live child to capture" \
+  "$([ -n "$LEAKY_CHILD" ] && echo yes || echo no)" "yes"
+kill -TERM "$LEAKY_PID"
+wait "$LEAKY_PID" 2>/dev/null
+check "self-test: the OLD vacuous check (pgrep -P the now-dead parent) finds nothing, proving it cannot fail" \
+  "$(pgrep -P "$LEAKY_PID" 2>/dev/null | tr -d '\n')" ""
+# CON-183 (cycle-3 review): both arms below now call the SAME shared
+# children_alive()/assert_children_dead() functions the real --await checks
+# use, rather than a second, inline kill -0 loop -- a mutation to the real
+# liveness logic previously left this self-test green (93 passed, 0 failed)
+# because the duplicated inline loop here was only accidentally identical.
+check "self-test: the FIXED check (captured child pid, by PID) correctly reports it alive" \
+  "$([ -n "$(children_alive "$LEAKY_CHILD")" ] && echo alive || echo dead)" "alive"
+# Clean up the actually-leaked child -- this test must not itself leave a
+# process running past its own completion.
+kill -KILL "$LEAKY_CHILD" 2>/dev/null
+wait "$LEAKY_CHILD" 2>/dev/null
+assert_children_dead "self-test: after cleanup, assert_children_dead reports it gone" "$LEAKY_CHILD"
+rm -f "$LEAKY_PARENT_SCRIPT"
+
 echo "emit-event.sh"
 
 # --- writes a well-formed line to the right place --------------------------
@@ -149,7 +206,7 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 printf '{"answer":"approve"}' > "$REPO/.concertino/runs/HEL-6/answer.json"
-wait "$AWAIT_PID"; AWAIT_RC=$?
+wait_killed_bounded "$AWAIT_PID" 20; AWAIT_RC=$?
 check "--await exit 0 when answered" "$AWAIT_RC" "0"
 check "--await prints the answer"    "$(tr -d '\n' < "$REPO/out.txt")" "approve"
 check "--await raised an event"      "$(grep -c 'escalation.raised' "$REPO/.concertino/runs/HEL-6/events.jsonl")" "1"
@@ -173,7 +230,7 @@ done
 BIGANS="$(head -c 9000 /dev/zero | tr '\0' 'y')"
 node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({answer: process.argv[2]}))' \
   "$REPO/.concertino/runs/HEL-10/answer.json" "$BIGANS"
-wait "$AWAIT_PID" || true
+wait_killed_bounded "$AWAIT_PID" 20 || true
 ANSLINE="$(grep 'escalation.answered' "$REPO/.concertino/runs/HEL-10/events.jsonl" | head -1)"
 check "answered line <= 4000 bytes" "$([ "$(printf '%s' "$ANSLINE" | wc -c)" -le 4000 ] && echo yes || echo no)" "yes"
 check "answered line is valid JSON" "$(printf '%s' "$ANSLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{JSON.parse(s);console.log("yes")}catch{console.log("no")}})')" "yes"
@@ -207,12 +264,18 @@ for _ in $(seq 1 50); do
   [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
   sleep 0.1
 done
+# Captured BEFORE signalling -- see capture_children()'s header comment for
+# why capturing AFTER the parent is reaped cannot ever catch a leak.
+PRE_KILL_CHILDREN="$(capture_children "$AWAIT_PID")"
 kill -TERM "$AWAIT_PID"
-wait "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 10
 RC=$?
+check "killed --await responded to SIGTERM within 10s (no SIGKILL fallback)" \
+  "$([ "$RC" -ne 124 ] && echo yes || echo no)" "yes"
 check "killed --await exits non-zero" "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
 check "killed --await still logged escalation.timeout" \
   "$(grep -c escalation.timeout "$LOG")" "1"
+assert_children_dead "killed --await leaves no orphan child" "$PRE_KILL_CHILDREN"
 rm -rf "$REPO"
 
 # --- same, but via SIGINT (Ctrl-C) ------------------------------------------
@@ -224,12 +287,16 @@ for _ in $(seq 1 50); do
   [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
   sleep 0.1
 done
+PRE_KILL_CHILDREN="$(capture_children "$AWAIT_PID")"
 kill -INT "$AWAIT_PID"
-wait "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 10
 RC=$?
+check "INT-killed --await responded to SIGINT within 10s (no SIGKILL fallback)" \
+  "$([ "$RC" -ne 124 ] && echo yes || echo no)" "yes"
 check "INT-killed --await exits non-zero" "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
 check "INT-killed --await still logged escalation.timeout" \
   "$(grep -c escalation.timeout "$LOG")" "1"
+assert_children_dead "INT-killed --await leaves no orphan child" "$PRE_KILL_CHILDREN"
 rm -rf "$REPO"
 
 # --- a stale answer file present at wait-start is discarded, not consumed ---
@@ -259,8 +326,8 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 printf '{"answer":"approve"}' > "$REPO/.concertino/runs/HEL-15/answer.json"
-wait "$AWAIT_PID" 2>/dev/null
-check "small context: exit 0" "$?" "0"
+wait_killed_bounded "$AWAIT_PID" 20; RC=$?
+check "small context: exit 0" "$RC" "0"
 check "small context: rides inline unchanged" \
   "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").split("\n").find(x=>x.includes("escalation.raised"));console.log(JSON.parse(l).context)' "$LOG")" \
   "package zod@3.23.0, imported by lib/ui/ticket.js"
@@ -284,7 +351,7 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 printf '{"answer":"approve"}' > "$REPO/.concertino/runs/HEL-16/answer.json"
-wait "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 20
 RAISEDLINE="$(grep escalation.raised "$LOG" | head -1)"
 check "oversized context: raised line <= 4000 bytes" \
   "$([ "$(printf '%s' "$RAISEDLINE" | wc -c)" -le 4000 ] && echo yes || echo no)" "yes"
@@ -324,7 +391,7 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 printf '{"answer":"approve"}' > "$REPO/.concertino/runs/HEL-17/answer.json"
-wait "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 20
 chmod 700 "$REPO/.concertino/runs/HEL-17/evidence"
 RAISEDLINE="$(grep escalation.raised "$LOG" | head -1)"
 check "failed persist: context_truncated is still true" \
@@ -357,7 +424,7 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 printf '{"answer":"approve"}' > "$REPO/.concertino/runs/HEL-19/answer.json"
-wait "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 20
 CALLINE="$(grep escalation.raised "$LOG" | head -1)"
 BOUNDARY="$(printf '%s' "$CALLINE" | node -e '
   let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
@@ -391,7 +458,7 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 printf '{"answer":"approve"}' > "$REPO/.concertino/runs/HEL-20/answer.json"
-wait "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 20
 RAISEDLINE="$(grep escalation.raised "$LOG" | head -1)"
 check "multi-byte context: still valid JSON" \
   "$(printf '%s' "$RAISEDLINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{JSON.parse(s);console.log("yes")}catch{console.log("no")}})')" \
@@ -424,7 +491,7 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 printf '{"answer":"approve"}' > "$REPO/.concertino/runs/HEL-18/answer.json"
-wait "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 20
 check "no context=: no context key at all" \
   "$(grep escalation.raised "$LOG" | head -1 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log("context" in JSON.parse(s))})')" \
   "false"

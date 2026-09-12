@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { mkTmpDir } = require('./support/tmp');
+const store = require('../lib/ui/store');
 
 // CON-76 escalation-answer-cli: exercises `bin/concertino answer` as a real
 // subprocess (the same way the root orchestrator's Bash tool would call it),
@@ -297,8 +298,15 @@ test('a --total mismatched against the REAL sub-question count is refused, not s
     // "recovery silently discards existing answers" failure mode the review
     // found (store.writeSubAnswer's read-modify-write resets on a length
     // mismatch).
+    // CON-179: real sub-questions were derivable, so each recorded slot now
+    // carries its own question text alongside the value (never a bare
+    // positional value) — the whole point being that a later
+    // stored-text-vs-currently-raised mismatch is detectable.
     const state = readAnswerJson(root, ticket);
-    assert.deepEqual(state.subAnswers, ['y', 'n', null]);
+    assert.deepEqual(state.subAnswers.map(store.subAnswerValue), ['y', 'n', null]);
+    assert.deepEqual(state.subAnswers[0], { question: 'a?', value: 'y' });
+    assert.deepEqual(state.subAnswers[1], { question: 'b?', value: 'n' });
+    assert.equal(state.subAnswers[2], null);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -322,8 +330,39 @@ test('--sub with no --total on a REAL multi-part escalation derives --total auto
     assert.match(r2.out, /sub 2\/2/);
 
     const state = readAnswerJson(root, ticket);
-    assert.deepEqual(state.subAnswers, ['y', 'n']);
+    assert.deepEqual(state.subAnswers.map(store.subAnswerValue), ['y', 'n']);
+    assert.deepEqual(state.subAnswers[0], { question: 'a?', value: 'y' });
+    assert.deepEqual(state.subAnswers[1], { question: 'b?', value: 'n' });
     assert.equal(state.complete, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('CON-179 cycle-3: a provenance-mismatch discard is reported to the CLI caller, not silent', () => {
+  const root = newRoot();
+  const ticket = 'CON-1569';
+  raiseEscalation(root, ticket, [
+    'sub_questions=' + JSON.stringify([
+      { question: 'a?', options: ['y', 'n'] },
+      { question: 'b?', options: ['y', 'n'] },
+    ]),
+  ]);
+  // A pre-existing answer.json that does not match the escalation just
+  // raised above (as if it survived from a different/reordered raise).
+  fs.mkdirSync(path.join(root, '.concertino', 'runs', ticket), { recursive: true });
+  fs.writeFileSync(path.join(root, '.concertino', 'runs', ticket, 'answer.json'), JSON.stringify({
+    subAnswers: [{ question: 'a?', value: 'y' }, { question: 'WRONG', value: 'n' }],
+    total: 2,
+    complete: true,
+  }));
+  try {
+    const { out, status } = runAnswer(root, [ticket, 'redo', '--sub', '1', '--total', '2']);
+    assert.equal(status, 0, out);
+    assert.match(out, /discard/i);
+    assert.match(out, /2 prior answers/);
+    const state = readAnswerJson(root, ticket);
+    assert.deepEqual(state.subAnswers, [{ question: 'a?', value: 'redo' }, null]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
