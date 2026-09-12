@@ -588,11 +588,35 @@ try_resolve() {
     # pre-existing signal every other path here relies on):
     #   "OK:<json array>"     — well-formed, resolved
     #   "MALFORMED:<message>" — complete:true but the shape is wrong
+    #
+    # CON-179: each `subAnswers` entry may be either the bare legacy value
+    # (a hand-edited or pre-CON-179 answer.json — see CON-151, where a
+    # purely positional array let an off-by-one silently misattribute one
+    # sub-question's answer to another) or `{question, value}`, written by
+    # store.writeSubAnswer() whenever it knows the sub-question's own text.
+    # When an entry carries `question`, it is checked against THIS
+    # escalation's own currently-raised `sub_questions[index].question`
+    # (passed in as argv[3], the same $SUB_QUESTIONS this call already
+    # derived TOTAL from — never re-read from the answer file, which is
+    # exactly the untrusted side of this check). A mismatch means the
+    # answer file was written against a different, or differently-ordered,
+    # raise of this escalation — reject it the same loud, non-destructive
+    # way as every other malformed shape here, never silently misattribute
+    # it. An entry with no `question` (the legacy shape) is not checked —
+    # "files already on disk in the old shape still resolve" — there is no
+    # provenance to validate.
     local result reason sub_answers_json
     result="$(node -e '
       try {
         const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
         const total = Number(process.argv[2]);
+        let subQuestions = [];
+        try {
+          const parsed = process.argv[3] ? JSON.parse(process.argv[3]) : [];
+          if (Array.isArray(parsed)) subQuestions = parsed;
+        } catch { /* no raised sub_questions to validate against */ }
+        const entryValue = (e) => (e && typeof e === "object" && !Array.isArray(e) && "value" in e) ? e.value : e;
+        const entryQuestion = (e) => (e && typeof e === "object" && !Array.isArray(e) && "question" in e) ? e.question : null;
         if (a && a.complete === true) {
           const arr = a.subAnswers;
           if (!Array.isArray(arr)) {
@@ -601,22 +625,36 @@ try_resolve() {
           } else if (arr.length !== total) {
             process.stdout.write("MALFORMED:subAnswers has " + arr.length + " entries, expected " + total
               + " (one per sub-question) — arity mismatch");
-          } else if (arr.some((x) => x == null || x === "")) {
+          } else if (arr.some((x) => entryValue(x) == null || entryValue(x) === "")) {
             // CON-156 (cycle 3, finding 2): `complete: true` asserts every
             // sub-question was answered — a null/empty slot inside an
             // otherwise-right-length array is the same class of lie as a
             // wrong-length array (a hand-edited or partially-clobbered
             // answer.json), and must be rejected the same way, not silently
             // resolved with an empty answer for that sub-question.
-            const emptyAt = arr.map((x, i) => (x == null || x === "" ? i : -1)).filter((i) => i !== -1);
+            const emptyAt = arr.map((x, i) => (entryValue(x) == null || entryValue(x) === "" ? i : -1)).filter((i) => i !== -1);
             process.stdout.write("MALFORMED:subAnswers has a null/empty entry at index "
               + emptyAt.join(",") + " while complete=true (every slot must be filled)");
           } else {
-            process.stdout.write("OK:" + JSON.stringify(arr));
+            // CON-179: provenance check -- only for entries that carry a
+            // question (the legacy bare-value shape has nothing to check).
+            const mismatchAt = arr.map((x, i) => {
+              const q = entryQuestion(x);
+              if (q == null) return -1;
+              const expected = subQuestions[i] && subQuestions[i].question;
+              return (expected != null && q !== expected) ? i : -1;
+            }).filter((i) => i !== -1);
+            if (mismatchAt.length > 0) {
+              process.stdout.write("MALFORMED:sub-answer question text does not match the "
+                + "currently-raised escalation at index " + mismatchAt.join(",")
+                + " -- this answer.json may belong to a different or reordered escalation");
+            } else {
+              process.stdout.write("OK:" + JSON.stringify(arr.map(entryValue)));
+            }
           }
         }
       } catch { /* not resolved yet — keep polling */ }
-    ' "$ANSWER_FILE" "$TOTAL" 2>/dev/null)"
+    ' "$ANSWER_FILE" "$TOTAL" "$SUB_QUESTIONS" 2>/dev/null)"
     case "$result" in
       OK:*)
         sub_answers_json="${result#OK:}"
@@ -648,11 +686,32 @@ try_resolve() {
         # stays open and NEEDS YOU, exactly as it should while its own
         # answer.json remains malformed.
         local warn_marker="$ANSWER_FILE.malformed-warned"
-        local content_hash
+        local content_hash stored_hash
         content_hash="$(cksum "$ANSWER_FILE" 2>/dev/null)"
-        if [ ! -f "$warn_marker" ] || [ "$(cat "$warn_marker" 2>/dev/null)" != "$content_hash" ]; then
+        # CON-180: an unexplained extra escalation.malformed has been observed
+        # in CI (escalation-loop.test.sh, "expected [2] got [3]") — not
+        # reproduced locally after 142 combined attempts under load/parallel/
+        # single-core conditions, and byte-identical dedupe marker, torn
+        # reads, cksum mismatch, writeSubAnswer, a write_line double write,
+        # and an orphaned poller have all been ruled out by reasoning about
+        # this process's own control flow. What hasn't been available is the
+        # ACTUAL comparison this specific process made on a failing run:
+        # `pid`/`poll_n` distinguish "one process re-warned on consecutive
+        # polls" from "two processes both polled the same file" (the ruled-
+        # out orphaned-poller theory, now falsifiable from the log itself
+        # instead of by argument), and `stored_hash`/`content_hash` show
+        # whether the guard's own read of the marker or the file disagreed
+        # with what a human re-deriving cksum by hand would get — i.e.
+        # whether the "ruled out" causes really were ruled out, or only
+        # reasoned about. Purely additive fields; never consulted by any
+        # control flow here.
+        stored_hash="$(cat "$warn_marker" 2>/dev/null || printf '%s' "<absent>")"
+        MALFORMED_POLL_N=$(( ${MALFORMED_POLL_N:-0} + 1 ))
+        if [ ! -f "$warn_marker" ] || [ "$stored_hash" != "$content_hash" ]; then
           echo "concertino: $ANSWER_FILE is malformed and was NOT recorded as an answer — $reason" >&2
           FIELDS=",\"reason\":$(json_value "$reason")"
+          FIELDS="${FIELDS},\"pid\":$$,\"poll_n\":$MALFORMED_POLL_N"
+          FIELDS="${FIELDS},\"content_hash\":$(json_value "$content_hash"),\"stored_hash\":$(json_value "$stored_hash")"
           write_line escalation.malformed || true
           printf '%s' "$content_hash" > "$warn_marker" 2>/dev/null || true
         fi

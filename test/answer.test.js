@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { mkTmpDir } = require('./support/tmp');
+const store = require('../lib/ui/store');
 
 // CON-76 escalation-answer-cli: exercises `bin/concertino answer` as a real
 // subprocess (the same way the root orchestrator's Bash tool would call it),
@@ -297,8 +298,15 @@ test('a --total mismatched against the REAL sub-question count is refused, not s
     // "recovery silently discards existing answers" failure mode the review
     // found (store.writeSubAnswer's read-modify-write resets on a length
     // mismatch).
+    // CON-179: real sub-questions were derivable, so each recorded slot now
+    // carries its own question text alongside the value (never a bare
+    // positional value) — the whole point being that a later
+    // stored-text-vs-currently-raised mismatch is detectable.
     const state = readAnswerJson(root, ticket);
-    assert.deepEqual(state.subAnswers, ['y', 'n', null]);
+    assert.deepEqual(state.subAnswers.map(store.subAnswerValue), ['y', 'n', null]);
+    assert.deepEqual(state.subAnswers[0], { question: 'a?', value: 'y' });
+    assert.deepEqual(state.subAnswers[1], { question: 'b?', value: 'n' });
+    assert.equal(state.subAnswers[2], null);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -322,7 +330,9 @@ test('--sub with no --total on a REAL multi-part escalation derives --total auto
     assert.match(r2.out, /sub 2\/2/);
 
     const state = readAnswerJson(root, ticket);
-    assert.deepEqual(state.subAnswers, ['y', 'n']);
+    assert.deepEqual(state.subAnswers.map(store.subAnswerValue), ['y', 'n']);
+    assert.deepEqual(state.subAnswers[0], { question: 'a?', value: 'y' });
+    assert.deepEqual(state.subAnswers[1], { question: 'b?', value: 'n' });
     assert.equal(state.complete, true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

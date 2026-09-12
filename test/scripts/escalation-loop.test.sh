@@ -165,6 +165,110 @@ check "multi-part: escalation.answered carries sub_answers, in order" \
   "yes,rename"
 rm -rf "$REPO"
 
+# --- CON-179: sub-answer question-text provenance ---------------------------
+write_sub_answer_q() {
+  # Same writer, but passing the 6th (question) arg — the shape
+  # controllers/escalation.js and lib/cli/answer.js now write in practice.
+  node -e '
+    const store = require(process.argv[1]);
+    const result = store.writeSubAnswer(
+      process.argv[2], process.argv[3], Number(process.argv[4]), process.argv[5], Number(process.argv[6]), process.argv[7]);
+    console.log(JSON.stringify(result));
+  ' "$ROOT/lib/ui/store.js" "$1" "$2" "$3" "$4" "$5" "$6"
+}
+
+# A well-formed answer.json, with each slot's own question text matching the
+# CURRENTLY-raised escalation, resolves normally — provenance recorded but
+# never rejected when it's simply correct.
+REPO="$(new_repo)"
+LOG="$REPO/.concertino/runs/HEL-350/events.jsonl"
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket=HEL-350 role=orchestrator \
+    sub_questions='[{"question":"Keep foo?","options":["yes","no"]},{"question":"Rename bar?","options":["rename","keep"]}]' \
+  ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+write_sub_answer_q "$REPO" HEL-350 0 yes 2 "Keep foo?" >/dev/null
+write_sub_answer_q "$REPO" HEL-350 1 rename 2 "Rename bar?" >/dev/null
+wait "$AWAIT_PID"; AWAIT_RC=$?
+check "CON-179 matching provenance: --await exits 0" "$AWAIT_RC" "0"
+check "CON-179 matching provenance: stdout carries both answers" \
+  "$(cat "$REPO/out.txt")" "$(printf 'yes\nrename')"
+check "CON-179 matching provenance: escalation.answered carries plain values, not {question,value} objects" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n");
+    const l = ls.find((x) => JSON.parse(x).kind === "escalation.answered");
+    console.log(JSON.parse(JSON.parse(l).sub_answers).join(","));
+  ' "$LOG")" \
+  "yes,rename"
+rm -rf "$REPO"
+
+# CON-151's failure mode, made detectable: an answer.json whose stored
+# question text at an index does NOT match this escalation's own
+# currently-raised sub_questions[index] (e.g. left over from a differently-
+# ordered or different raise of "this ticket's" escalation) must be rejected
+# loudly as escalation.malformed, exactly like every other malformed shape —
+# never silently misattributed to the wrong sub-question.
+REPO="$(new_repo)"
+LOG="$REPO/.concertino/runs/HEL-351/events.jsonl"
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket=HEL-351 role=orchestrator \
+    sub_questions='[{"question":"Keep foo?","options":["yes","no"]},{"question":"Rename bar?","options":["rename","keep"]}]' \
+  ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+# The stored text at index 1 belongs to a DIFFERENT question than the one
+# actually raised at that index — the CON-151 off-by-one shape.
+write_sub_answer_q "$REPO" HEL-351 0 yes 2 "Keep foo?" >/dev/null
+write_sub_answer_q "$REPO" HEL-351 1 rename 2 "Ship it?" >/dev/null
+sleep 3
+check "CON-179 mismatch: --await is still running (malformed is non-terminal)" \
+  "$(kill -0 "$AWAIT_PID" 2>/dev/null && echo running || echo exited)" "running"
+check "CON-179 mismatch: never printed a decision" "$(cat "$REPO/out.txt")" ""
+check "CON-179 mismatch: no escalation.answered was recorded" \
+  "$(grep -c escalation.answered "$LOG" 2>/dev/null || true)" "0"
+check "CON-179 mismatch: escalation.malformed was recorded" \
+  "$(grep -c escalation.malformed "$LOG")" "1"
+check "CON-179 mismatch: escalation.malformed names the index" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n");
+    const l = ls.find((x) => JSON.parse(x).kind === "escalation.malformed");
+    console.log(/index 1/.test(JSON.parse(l).reason));
+  ' "$LOG")" \
+  "true"
+kill "$AWAIT_PID" 2>/dev/null
+wait "$AWAIT_PID" 2>/dev/null
+rm -rf "$REPO"
+
+# A legacy answer.json (no `question` on any entry — the shape every
+# answer.json had before CON-179) must still resolve normally: there is no
+# provenance to check, so the resolve loop must not invent a mismatch.
+REPO="$(new_repo)"
+LOG="$REPO/.concertino/runs/HEL-352/events.jsonl"
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket=HEL-352 role=orchestrator \
+    sub_questions='[{"question":"Keep foo?","options":["yes","no"]},{"question":"Rename bar?","options":["rename","keep"]}]' \
+  ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+# Legacy 5-arg write_sub_answer (no question) -- pre-CON-179 shape.
+write_sub_answer "$REPO" HEL-352 0 yes 2 >/dev/null
+write_sub_answer "$REPO" HEL-352 1 rename 2 >/dev/null
+wait "$AWAIT_PID"; AWAIT_RC=$?
+check "CON-179 legacy shape: --await still exits 0 (old files still resolve)" "$AWAIT_RC" "0"
+check "CON-179 legacy shape: stdout carries both answers" \
+  "$(cat "$REPO/out.txt")" "$(printf 'yes\nrename')"
+rm -rf "$REPO"
+
 # --- a complete multi-part answer.json resolves the wait immediately -------
 REPO="$(new_repo)"
 LOG="$REPO/.concertino/runs/HEL-343/events.jsonl"

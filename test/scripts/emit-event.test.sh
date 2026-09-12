@@ -38,6 +38,37 @@ new_repo() {
   printf '%s' "$d"
 }
 
+# CON-183: bound the wait after sending a kill signal to a backgrounded
+# --await. A plain `wait "$pid"` is unbounded -- if the signal never reaches
+# the process, or reaches it but its trap/handler wedges for any reason, the
+# whole suite blocks indefinitely (this hung ~20 minutes during a cold review
+# of PR #138 on 2026-09-11, with no line of emit-event.sh changed). A hang is
+# worse than a failure: bound the wait, and SIGKILL-and-fail on timeout so
+# the suite always terminates. Returns the child's real exit status, or 124
+# if it had to be SIGKILLed.
+wait_killed_bounded() {
+  local pid="$1" max_s="$2" i
+  for (( i = 0; i < max_s * 10; i++ )); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    return 124
+  fi
+  wait "$pid" 2>/dev/null
+}
+
+# CON-183: assert a killed --await leaves no child process running under it,
+# checked by PID (own-PID-only, never `pgrep -f` / `pkill` by name pattern --
+# see await-sentinel.test.sh's header for why that's unsafe on a shared box).
+assert_no_orphan_child() {
+  local label="$1" pid="$2" kids
+  kids="$(pgrep -P "$pid" 2>/dev/null)"
+  check "$label" "$([ -z "$kids" ] && echo none || echo "$kids")" "none"
+}
+
 echo "emit-event.sh"
 
 # --- writes a well-formed line to the right place --------------------------
@@ -208,11 +239,14 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 kill -TERM "$AWAIT_PID"
-wait "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 10
 RC=$?
+check "killed --await responded to SIGTERM within 10s (no SIGKILL fallback)" \
+  "$([ "$RC" -ne 124 ] && echo yes || echo no)" "yes"
 check "killed --await exits non-zero" "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
 check "killed --await still logged escalation.timeout" \
   "$(grep -c escalation.timeout "$LOG")" "1"
+assert_no_orphan_child "killed --await leaves no orphan child" "$AWAIT_PID"
 rm -rf "$REPO"
 
 # --- same, but via SIGINT (Ctrl-C) ------------------------------------------
@@ -225,11 +259,14 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 kill -INT "$AWAIT_PID"
-wait "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 10
 RC=$?
+check "INT-killed --await responded to SIGINT within 10s (no SIGKILL fallback)" \
+  "$([ "$RC" -ne 124 ] && echo yes || echo no)" "yes"
 check "INT-killed --await exits non-zero" "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
 check "INT-killed --await still logged escalation.timeout" \
   "$(grep -c escalation.timeout "$LOG")" "1"
+assert_no_orphan_child "INT-killed --await leaves no orphan child" "$AWAIT_PID"
 rm -rf "$REPO"
 
 # --- a stale answer file present at wait-start is discarded, not consumed ---
