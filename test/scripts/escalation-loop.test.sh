@@ -190,24 +190,61 @@ rm -rf "$REPO"
 # write to answer.json.
 #
 # To make this race deterministic instead of relying on real scheduling luck,
-# reconstruct the OLD (pre-CON-180-fix) two-read shape from git history and
-# inject a controllable delay between its two reads via
-# CON180_RACE_WINDOW_SEC (a test-only hook that does not exist in, and is
-# irrelevant to, the actual fixed script below).
+# reconstruct the OLD (pre-CON-180-fix) two-read shape and inject a
+# controllable delay between its two reads via CON180_RACE_WINDOW_SEC (a
+# test-only hook that does not exist in, and is irrelevant to, the actual
+# fixed script itself).
+#
+# Built from a COPY of the real, current $SCRIPT via a literal string
+# substitution -- deliberately NOT `git show HEAD:...`. This file's own
+# earlier revision made exactly that mistake: once the CON-180 fix and this
+# test landed in the SAME commit, `git show HEAD:core/scripts/emit-event.sh`
+# in CI resolved to the ALREADY-FIXED script (HEAD is self-referential once
+# committed), silently producing a mutant identical to the real script and
+# making this whole reproduction vacuous -- caught only because the python
+# assertion below (correctly) refused to match a cksum line that no longer
+# existed... except that failure didn't abort the test file (no `set -e`
+# here), so the suite kept going with a WRONG, non-representative mutant.
+# Both mistakes are fixed here: no git history involved, and a hard abort if
+# the literal substitution's premise (the fixed script's exact current
+# shape) doesn't hold.
 OLD_MUTANT="$(mktemp)"
-git -C "$ROOT" show HEAD:core/scripts/emit-event.sh > "$OLD_MUTANT"
+cp "$SCRIPT" "$OLD_MUTANT"
 python3 - "$OLD_MUTANT" <<'PYEOF'
 import sys
 path = sys.argv[1]
 with open(path) as f:
     src = f.read()
-needle = '        content_hash="$(cksum "$ANSWER_FILE" 2>/dev/null)"\n'
-assert src.count(needle) == 1, "expected exactly one match of the old cksum line -- git history shape changed?"
-replacement = '        [ -n "${CON180_RACE_WINDOW_SEC:-}" ] && sleep "$CON180_RACE_WINDOW_SEC"\n' + needle
-src = src.replace(needle, replacement)
+# Revert the MALFORMED-branch node code to the pre-fix one-arg shape (no
+# hash coupled to the verdict string).
+node_old = 'const malformed = (msg) => process.stdout.write("MALFORMED:" + rawHash + ":" + msg);'
+node_new = 'const malformed = (msg) => process.stdout.write("MALFORMED:" + msg);'
+assert src.count(node_old) == 1, "premise changed: emit-event.sh's malformed() helper no longer matches the expected fixed shape"
+src = src.replace(node_old, node_new)
+# Revert the bash-side parsing to the pre-fix two-read shape: the verdict's
+# reason is the WHOLE payload again (no hash prefix to split off), and
+# content_hash goes back to a SEPARATE, later `cksum` re-read -- with the
+# injected window this test controls.
+bash_old = (
+    '        local payload="${result#MALFORMED:}"\n'
+    '        content_hash="${payload%%:*}"\n'
+    '        reason="${payload#*:}"\n'
+)
+bash_new = (
+    '        reason="${result#MALFORMED:}"\n'
+    '        [ -n "${CON180_RACE_WINDOW_SEC:-}" ] && sleep "$CON180_RACE_WINDOW_SEC"\n'
+    '        content_hash="$(cksum "$ANSWER_FILE" 2>/dev/null)"\n'
+)
+assert src.count(bash_old) == 1, "premise changed: emit-event.sh's MALFORMED-branch parsing no longer matches the expected fixed shape"
+src = src.replace(bash_old, bash_new)
 with open(path, "w") as f:
     f.write(src)
 PYEOF
+PYRC=$?
+if [ "$PYRC" -ne 0 ]; then
+  echo "FATAL: CON-180 mutant generation failed (see traceback above) -- core/scripts/emit-event.sh's shape has drifted from what this test expects. Aborting rather than running the CON-180 checks below against a wrong/vacuous mutant." >&2
+  exit 1
+fi
 chmod +x "$OLD_MUTANT"
 
 MALFORMED_A='{"answer":"a","complete":true}'
