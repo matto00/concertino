@@ -537,6 +537,66 @@ test('writeSubAnswer refuses to overwrite an already-answered slot ("already ans
   assert.equal(written.subAnswers[0], 'yes');
 });
 
+// --- CON-179 (cycle-2 finding 4): a provenance-mismatched file must be
+// recoverable, not permanently wedged -------------------------------------
+
+test('writeSubAnswer discards a provenance-mismatched file and starts fresh, instead of refusing forever', () => {
+  const root = tmpRoot();
+  const REAL_QUESTIONS = [{ question: 'Keep foo?' }, { question: 'Rename bar?' }];
+  // A file "complete" against a DIFFERENT question at index 1 (as if this
+  // ticket's answer.json survived from a differently-ordered or different
+  // raise of the same escalation -- the CON-151 shape CON-179 detects on
+  // the read side). Every slot is non-null, so without recovery this would
+  // refuse every future write as "already answered" forever.
+  fs.mkdirSync(path.dirname(store.answerPath(root, 'HEL-410')), { recursive: true });
+  fs.writeFileSync(store.answerPath(root, 'HEL-410'), JSON.stringify({
+    subAnswers: [{ question: 'Keep foo?', value: 'yes' }, { question: 'Ship it?', value: 'now' }],
+    total: 2,
+    complete: true,
+  }));
+
+  // Without subQuestions, no ground truth to check against -- refuses, same
+  // as before this fix (never silently discards without being told what the
+  // real questions are).
+  const noGroundTruth = store.writeSubAnswer(root, 'HEL-410', 0, 'no', 2, 'Keep foo?');
+  assert.equal(noGroundTruth.ok, false);
+  assert.equal(noGroundTruth.reason, 'answered');
+
+  // With the real subQuestions supplied, the mismatch at index 1 is detected
+  // and the whole file is discarded -- this write succeeds and starts a
+  // fresh file, rather than refusing.
+  const recovered = store.writeSubAnswer(root, 'HEL-410', 0, 'no', 2, 'Keep foo?', REAL_QUESTIONS);
+  assert.equal(recovered.ok, true, JSON.stringify(recovered));
+  assert.equal(recovered.complete, false);
+  const written = JSON.parse(fs.readFileSync(store.answerPath(root, 'HEL-410'), 'utf8'));
+  assert.deepEqual(written.subAnswers, [{ question: 'Keep foo?', value: 'no' }, null]);
+});
+
+test('writeSubAnswer does NOT discard a file with no provenance mismatch, even when subQuestions is supplied', () => {
+  const root = tmpRoot();
+  const REAL_QUESTIONS = [{ question: 'Keep foo?' }, { question: 'Rename bar?' }];
+  store.writeSubAnswer(root, 'HEL-411', 0, 'yes', 2, 'Keep foo?', REAL_QUESTIONS);
+  const second = store.writeSubAnswer(root, 'HEL-411', 0, 'no', 2, 'Keep foo?', REAL_QUESTIONS);
+  assert.equal(second.ok, false);
+  assert.equal(second.reason, 'answered');
+  const written = JSON.parse(fs.readFileSync(store.answerPath(root, 'HEL-411'), 'utf8'));
+  assert.deepEqual(written.subAnswers[0], { question: 'Keep foo?', value: 'yes' });
+});
+
+test('writeSubAnswer never treats a legacy (no-question) entry as a provenance mismatch', () => {
+  const root = tmpRoot();
+  const REAL_QUESTIONS = [{ question: 'Keep foo?' }, { question: 'Rename bar?' }];
+  // Legacy shape: bare values, no question text recorded at all (files
+  // already on disk before CON-179 shipped).
+  store.writeSubAnswer(root, 'HEL-412', 0, 'yes', 2);
+  const second = store.writeSubAnswer(root, 'HEL-412', 1, 'rename', 2, 'Rename bar?', REAL_QUESTIONS);
+  assert.equal(second.ok, true);
+  assert.equal(second.complete, true);
+  const written = JSON.parse(fs.readFileSync(store.answerPath(root, 'HEL-412'), 'utf8'));
+  // The legacy slot survived untouched -- it was never discarded.
+  assert.equal(written.subAnswers[0], 'yes');
+});
+
 test('writeSubAnswer refuses an out-of-range index rather than corrupting the file', () => {
   const root = tmpRoot();
   const result = store.writeSubAnswer(root, 'HEL-408', 5, 'yes', 3);

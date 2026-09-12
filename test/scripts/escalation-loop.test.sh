@@ -12,6 +12,12 @@ set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/tmp-scratch.sh"
 trap con181_cleanup_scratch EXIT
 
+# CON-183: bound every `wait` on a backgrounded --await -- see
+# lib/wait-bounded.sh for the full rationale (a plain unbounded `wait` on a
+# killed --await hung the emit-event.sh suite ~20 minutes during a cold
+# review of PR #138 on 2026-09-11).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/wait-bounded.sh"
+
 # Some shells export FORCE_COLOR, which makes node's console.log wrap bare
 # booleans in ANSI codes even when stdout isn't a TTY (e.g. command
 # substitution). That's terminal decoration, not part of the JSON under test.
@@ -67,7 +73,7 @@ check "escalation.raised landed before the answer" \
 RESULT="$(write_answer "$REPO" HEL-338 approve)"
 check "writer reports success" "$(node -e "console.log(JSON.parse(process.argv[1]).ok)" "$RESULT")" "true"
 
-wait "$AWAIT_PID"; AWAIT_RC=$?
+wait_killed_bounded "$AWAIT_PID" 20; AWAIT_RC=$?
 check "--await exits 0" "$AWAIT_RC" "0"
 check "--await prints the decision on stdout" "$(tr -d '\n' < "$REPO/out.txt")" "approve"
 check "log carries exactly one escalation.answered" "$(grep -c escalation.answered "$LOG")" "1"
@@ -96,7 +102,7 @@ check "first writer wins"       "$(node -e "console.log(JSON.parse(process.argv[
 check "second writer is refused" "$(node -e "console.log(JSON.parse(process.argv[1]).ok)" "$SECOND")" "false"
 check "second writer is told why" "$(node -e "console.log(JSON.parse(process.argv[1]).reason)" "$SECOND")" "answered"
 
-wait "$AWAIT_PID"; AWAIT_RC=$?
+wait_killed_bounded "$AWAIT_PID" 20; AWAIT_RC=$?
 check "--await still exits 0 (picked up the first writer's file)" "$AWAIT_RC" "0"
 check "the winning answer is the one --await returned" "$(tr -d '\n' < "$REPO/out.txt")" "approve"
 check "still exactly one escalation.answered despite two writers" \
@@ -150,7 +156,7 @@ RESULT2="$(write_sub_answer "$REPO" HEL-340 1 rename 2)"
 check "multi-part: second sub-answer write completes the file" \
   "$(node -e "console.log(JSON.parse(process.argv[1]).complete)" "$RESULT2")" "true"
 
-wait "$AWAIT_PID"; AWAIT_RC=$?
+wait_killed_bounded "$AWAIT_PID" 20; AWAIT_RC=$?
 check "multi-part: --await exits 0 once complete" "$AWAIT_RC" "0"
 check "multi-part: stdout carries each sub-answer on its own line, in order" \
   "$(cat "$REPO/out.txt")" "$(printf 'yes\nrename')"
@@ -164,6 +170,137 @@ check "multi-part: escalation.answered carries sub_answers, in order" \
   ' "$LOG")" \
   "yes,rename"
 rm -rf "$REPO"
+
+# --- CON-180: the malformed-dedupe hash must come from the SAME read as -----
+# the verdict it deduplicates -----------------------------------------------
+#
+# Root-cause reproduction (cycle-2 review): the pre-fix code computed the
+# malformed verdict from one `readFileSync` (inside a node subprocess) and
+# then re-read $ANSWER_FILE a second time via a separate bash-side `cksum`
+# call, to derive the dedupe marker's hash. Between those two reads, nothing
+# stops the file from being rewritten — and this repo's own
+# store.writeSubAnswer() does exactly that (tmp+rename) whenever an
+# escalation's malformed answer.json is subsequently corrected. A verdict
+# computed from stale content, paired with a hash computed from fresh
+# content, defeats the marker: the marker never matches what the CURRENT
+# verdict was actually about, so it re-warns even though nothing "new", from
+# a single consistent read's point of view, ever happened. This matches the
+# CI dump (run 34593785095): two escalation.malformed events, one poll
+# apart, identical reason, the second landing right after the test's own
+# write to answer.json.
+#
+# To make this race deterministic instead of relying on real scheduling luck,
+# reconstruct the OLD (pre-CON-180-fix) two-read shape from git history and
+# inject a controllable delay between its two reads via
+# CON180_RACE_WINDOW_SEC (a test-only hook that does not exist in, and is
+# irrelevant to, the actual fixed script below).
+OLD_MUTANT="$(mktemp)"
+git -C "$ROOT" show HEAD:core/scripts/emit-event.sh > "$OLD_MUTANT"
+python3 - "$OLD_MUTANT" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    src = f.read()
+needle = '        content_hash="$(cksum "$ANSWER_FILE" 2>/dev/null)"\n'
+assert src.count(needle) == 1, "expected exactly one match of the old cksum line -- git history shape changed?"
+replacement = '        [ -n "${CON180_RACE_WINDOW_SEC:-}" ] && sleep "$CON180_RACE_WINDOW_SEC"\n' + needle
+src = src.replace(needle, replacement)
+with open(path, "w") as f:
+    f.write(src)
+PYEOF
+chmod +x "$OLD_MUTANT"
+
+MALFORMED_A='{"answer":"a","complete":true}'
+MALFORMED_B='{"subAnswers":["x"],"total":2,"complete":true}'
+
+# --- reproduction: the OLD two-read shape really does produce an
+# inconsistent (stale-reason, fresh-hash) event under this race ------------
+REPO="$(new_repo)"
+TICKET=HEL-978
+LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
+ANSWER_FILE="$REPO/.concertino/runs/$TICKET/answer.json"
+( cd "$REPO" && CON180_RACE_WINDOW_SEC=2 "$OLD_MUTANT" escalation --await \
+    ticket="$TICKET" role=orchestrator \
+    sub_questions='[{"question":"a?","options":["y","n"]},{"question":"b?","options":["y","n"]}]' \
+  ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+# `discard_stale_answer()` (called before the raise) removes any answer.json
+# that pre-dates this escalation, so A has to land AFTER raising, not before.
+mkdir -p "$(dirname "$ANSWER_FILE")"
+printf '%s' "$MALFORMED_A" > "$ANSWER_FILE"
+# The mutant's setup work (MULTI_PART/TOTAL derivation, trap install) takes
+# a little longer than the raise itself, so give its first poll tick a full
+# second to actually read A and enter its injected 2s sleep before B lands
+# -- confirmed empirically (0.3s was too tight and let B's write win the
+# race for the FIRST read too, which proves nothing). 1s still leaves ample
+# margin inside the 2s window for B's write to land before the sleep ends.
+sleep 1
+printf '%s' "$MALFORMED_B" > "$ANSWER_FILE"
+HASH_B="$(cksum "$ANSWER_FILE")"
+sleep 3
+kill "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 20
+REPRO_LINE="$(grep escalation.malformed "$LOG" | head -1)"
+check "CON-180 repro: the old two-read shape logs a malformed event" \
+  "$([ -n "$REPRO_LINE" ] && echo yes || echo no)" "yes"
+check "CON-180 repro: its reason describes the STALE content (A, missing subAnswers)" \
+  "$(node -e 'console.log(/missing or not an array/.test(JSON.parse(process.argv[1]).reason))' "$REPRO_LINE")" \
+  "true"
+check "CON-180 repro: its content_hash is the FRESH content's hash (B), not A's -- the inconsistency itself" \
+  "$(node -e 'console.log(JSON.parse(process.argv[1]).content_hash)' "$REPRO_LINE")" \
+  "$HASH_B"
+rm -rf "$REPO"
+
+# --- the fix: the real script, raced identically, is never inconsistent ----
+# Same maneuver (rewrite A->B in the instant right after raising) against
+# the ACTUAL fixed script, no injected delay needed or possible -- content
+# hash and verdict now come from the exact same in-memory buffer inside one
+# node invocation, so there is no window between them left to land a rewrite
+# in. Whichever content the verdict is actually based on (A or B, depending
+# on real scheduling), its own hash must match -- never a stale/fresh split.
+REPO="$(new_repo)"
+TICKET=HEL-979
+LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
+ANSWER_FILE="$REPO/.concertino/runs/$TICKET/answer.json"
+( cd "$REPO" && "$SCRIPT" escalation --await \
+    ticket="$TICKET" role=orchestrator \
+    sub_questions='[{"question":"a?","options":["y","n"]},{"question":"b?","options":["y","n"]}]' \
+  ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+mkdir -p "$(dirname "$ANSWER_FILE")"
+printf '%s' "$MALFORMED_A" > "$ANSWER_FILE"
+# CON-180's fix hashes with sha1 (crypto.createHash), not `cksum` -- match
+# that here so the comparison below is apples-to-apples.
+FIXED_HASH_A="$(sha1sum "$ANSWER_FILE" | awk '{print $1}')"
+sleep 1
+printf '%s' "$MALFORMED_B" > "$ANSWER_FILE"
+FIXED_HASH_B="$(sha1sum "$ANSWER_FILE" | awk '{print $1}')"
+sleep 3
+kill "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 20
+FIXED_LINE="$(grep escalation.malformed "$LOG" | head -1)"
+check "CON-180 fix: a malformed event was logged" "$([ -n "$FIXED_LINE" ] && echo yes || echo no)" "yes"
+check "CON-180 fix: reason and content_hash are mutually consistent (both A, or both B -- never split)" \
+  "$(node -e '
+    const e = JSON.parse(process.argv[1]);
+    const hashA = process.argv[2], hashB = process.argv[3];
+    const isA = /missing or not an array/.test(e.reason);
+    const isB = /arity mismatch/.test(e.reason);
+    if (isA) { console.log(e.content_hash === hashA ? "consistent" : "INCONSISTENT:" + e.content_hash); }
+    else if (isB) { console.log(e.content_hash === hashB ? "consistent" : "INCONSISTENT:" + e.content_hash); }
+    else { console.log("UNEXPECTED_REASON:" + e.reason); }
+  ' "$FIXED_LINE" "$FIXED_HASH_A" "$FIXED_HASH_B")" \
+  "consistent"
+rm -rf "$REPO"
+rm -f "$OLD_MUTANT"
 
 # --- CON-179: sub-answer question-text provenance ---------------------------
 write_sub_answer_q() {
@@ -193,7 +330,7 @@ for _ in $(seq 1 50); do
 done
 write_sub_answer_q "$REPO" HEL-350 0 yes 2 "Keep foo?" >/dev/null
 write_sub_answer_q "$REPO" HEL-350 1 rename 2 "Rename bar?" >/dev/null
-wait "$AWAIT_PID"; AWAIT_RC=$?
+wait_killed_bounded "$AWAIT_PID" 20; AWAIT_RC=$?
 check "CON-179 matching provenance: --await exits 0" "$AWAIT_RC" "0"
 check "CON-179 matching provenance: stdout carries both answers" \
   "$(cat "$REPO/out.txt")" "$(printf 'yes\nrename')"
@@ -243,7 +380,7 @@ check "CON-179 mismatch: escalation.malformed names the index" \
   ' "$LOG")" \
   "true"
 kill "$AWAIT_PID" 2>/dev/null
-wait "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 20
 rm -rf "$REPO"
 
 # A legacy answer.json (no `question` on any entry — the shape every
@@ -263,7 +400,7 @@ done
 # Legacy 5-arg write_sub_answer (no question) -- pre-CON-179 shape.
 write_sub_answer "$REPO" HEL-352 0 yes 2 >/dev/null
 write_sub_answer "$REPO" HEL-352 1 rename 2 >/dev/null
-wait "$AWAIT_PID"; AWAIT_RC=$?
+wait_killed_bounded "$AWAIT_PID" 20; AWAIT_RC=$?
 check "CON-179 legacy shape: --await still exits 0 (old files still resolve)" "$AWAIT_RC" "0"
 check "CON-179 legacy shape: stdout carries both answers" \
   "$(cat "$REPO/out.txt")" "$(printf 'yes\nrename')"
@@ -282,7 +419,7 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 write_sub_answer "$REPO" HEL-343 0 ship 1 >/dev/null
-wait "$AWAIT_PID"; AWAIT_RC=$?
+wait_killed_bounded "$AWAIT_PID" 20; AWAIT_RC=$?
 check "single-sub-question multi-part: --await exits 0" "$AWAIT_RC" "0"
 check "single-sub-question multi-part: stdout is the one sub-answer" \
   "$(cat "$REPO/out.txt")" "ship"
@@ -378,7 +515,7 @@ check "CON-156: escalation.malformed carries the same reason" \
 write_sub_answer "$REPO" "$TICKET" 0 fold-in 2 >/dev/null
 write_sub_answer "$REPO" "$TICKET" 1 High 2 >/dev/null
 
-wait "$AWAIT_PID"; AWAIT_RC=$?
+wait_killed_bounded "$AWAIT_PID" 20; AWAIT_RC=$?
 check "CON-156: --await exits 0 once a well-formed file replaces the malformed one" "$AWAIT_RC" "0"
 check "CON-156: exactly one escalation.answered, from the well-formed write" \
   "$(grep -c escalation.answered "$LOG")" "1"
@@ -424,7 +561,7 @@ check "CON-156 arity: an escalation.malformed event names the arity mismatch" \
   "subAnswers has 1 entries, expected 3 (one per sub-question) — arity mismatch"
 
 kill "$AWAIT_PID" 2>/dev/null
-wait "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 20
 rm -rf "$REPO"
 
 # --- CON-156 (cycle 3, finding 2): right-length but null/empty entries ------
@@ -464,7 +601,7 @@ check "CON-156 null-entry: an escalation.malformed event names the null slot" \
 # replaces the bad one — non-destructive, self-correcting, same as every
 # other malformed case above.
 write_sub_answer "$REPO" "$TICKET" 1 n 2 >/dev/null
-wait "$AWAIT_PID"; AWAIT_RC=$?
+wait_killed_bounded "$AWAIT_PID" 20; AWAIT_RC=$?
 check "CON-156 null-entry: --await exits 0 once the null slot is genuinely filled" "$AWAIT_RC" "0"
 rm -rf "$REPO"
 
@@ -488,7 +625,7 @@ sleep 2
 check "CON-156 empty-string entry: does not resolve" \
   "$(kill -0 "$AWAIT_PID" 2>/dev/null && echo running || echo exited)" "running"
 kill "$AWAIT_PID" 2>/dev/null
-wait "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 20
 rm -rf "$REPO"
 
 # --- CON-156 (cycle 2, finding 4): the malformed-content dedupe marker must ---
@@ -525,7 +662,7 @@ check "CON-156 marker: malformed-warned marker file exists after the first escal
 # same one.
 write_sub_answer "$REPO" "$TICKET" 0 y 2 >/dev/null
 write_sub_answer "$REPO" "$TICKET" 1 n 2 >/dev/null
-wait "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 20
 
 ( cd "$REPO" && "$SCRIPT" escalation --await \
     ticket="$TICKET" role=orchestrator \
@@ -600,7 +737,7 @@ check "CON-156 marker: the second escalation ALSO logs its own escalation.malfor
   "$FINAL_MALFORMED_COUNT" "2"
 
 kill "$AWAIT_PID" 2>/dev/null
-wait "$AWAIT_PID" 2>/dev/null
+wait_killed_bounded "$AWAIT_PID" 20
 rm -rf "$REPO"
 
 # --- CON-156: the single-question path is unaffected -----------------------
@@ -618,7 +755,7 @@ done
 RESULT="$(write_answer "$REPO" "$TICKET" approve)"
 check "CON-156 regression: single-question writer still reports success" \
   "$(node -e "console.log(JSON.parse(process.argv[1]).ok)" "$RESULT")" "true"
-wait "$AWAIT_PID"; AWAIT_RC=$?
+wait_killed_bounded "$AWAIT_PID" 20; AWAIT_RC=$?
 check "CON-156 regression: single-question --await still exits 0" "$AWAIT_RC" "0"
 check "CON-156 regression: single-question --await still prints the answer" \
   "$(tr -d '\n' < "$REPO/out.txt")" "approve"

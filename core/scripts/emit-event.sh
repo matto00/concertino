@@ -605,10 +605,32 @@ try_resolve() {
     # it. An entry with no `question` (the legacy shape) is not checked —
     # "files already on disk in the old shape still resolve" — there is no
     # provenance to validate.
-    local result reason sub_answers_json
+    # CON-180 (cycle 2 review): the malformed-dedupe hash MUST be derived from
+    # the exact same bytes the verdict below was computed from. The original
+    # shape here read the file once (inside node, to build the verdict) and
+    # then AGAIN via a separate bash-side `cksum "$ANSWER_FILE"` call — two
+    # reads of a file this process does not hold any lock on, with the poll
+    # loop's own writer (a human/dashboard/CLI answering) free to rewrite it
+    # in the gap. A rewrite landing in that gap makes the hash describe
+    # different content than the verdict it is meant to deduplicate,
+    # defeating the marker and re-warning on content that, from this
+    # process's own single point of view, never should have looked new. This
+    # reproduces the CI dump (run 34593785095): the first escalation's two
+    # `escalation.malformed` events, one poll apart, landed right around the
+    # test's own `write_sub_answer` call. Fixed by hashing the raw buffer
+    # node already read to build the verdict, inside the SAME node process,
+    # and threading that hash out through the result string — no second read,
+    # by anyone, of a file that can change out from under this check.
+    local result reason sub_answers_json content_hash stored_hash
     result="$(node -e '
+      const crypto = require("crypto");
+      let raw;
       try {
-        const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+        raw = require("fs").readFileSync(process.argv[1]);
+      } catch { process.exit(0); /* not resolved yet -- keep polling */ }
+      const rawHash = crypto.createHash("sha1").update(raw).digest("hex");
+      try {
+        const a = JSON.parse(raw.toString("utf8"));
         const total = Number(process.argv[2]);
         let subQuestions = [];
         try {
@@ -617,13 +639,14 @@ try_resolve() {
         } catch { /* no raised sub_questions to validate against */ }
         const entryValue = (e) => (e && typeof e === "object" && !Array.isArray(e) && "value" in e) ? e.value : e;
         const entryQuestion = (e) => (e && typeof e === "object" && !Array.isArray(e) && "question" in e) ? e.question : null;
+        const malformed = (msg) => process.stdout.write("MALFORMED:" + rawHash + ":" + msg);
         if (a && a.complete === true) {
           const arr = a.subAnswers;
           if (!Array.isArray(arr)) {
-            process.stdout.write("MALFORMED:subAnswers is missing or not an array (expected an array of "
+            malformed("subAnswers is missing or not an array (expected an array of "
               + total + " answers, one per sub-question)");
           } else if (arr.length !== total) {
-            process.stdout.write("MALFORMED:subAnswers has " + arr.length + " entries, expected " + total
+            malformed("subAnswers has " + arr.length + " entries, expected " + total
               + " (one per sub-question) — arity mismatch");
           } else if (arr.some((x) => entryValue(x) == null || entryValue(x) === "")) {
             // CON-156 (cycle 3, finding 2): `complete: true` asserts every
@@ -633,7 +656,7 @@ try_resolve() {
             // answer.json), and must be rejected the same way, not silently
             // resolved with an empty answer for that sub-question.
             const emptyAt = arr.map((x, i) => (entryValue(x) == null || entryValue(x) === "" ? i : -1)).filter((i) => i !== -1);
-            process.stdout.write("MALFORMED:subAnswers has a null/empty entry at index "
+            malformed("subAnswers has a null/empty entry at index "
               + emptyAt.join(",") + " while complete=true (every slot must be filled)");
           } else {
             // CON-179: provenance check -- only for entries that carry a
@@ -645,7 +668,7 @@ try_resolve() {
               return (expected != null && q !== expected) ? i : -1;
             }).filter((i) => i !== -1);
             if (mismatchAt.length > 0) {
-              process.stdout.write("MALFORMED:sub-answer question text does not match the "
+              malformed("sub-answer question text does not match the "
                 + "currently-raised escalation at index " + mismatchAt.join(",")
                 + " -- this answer.json may belong to a different or reordered escalation");
             } else {
@@ -660,7 +683,9 @@ try_resolve() {
         sub_answers_json="${result#OK:}"
         ;;
       MALFORMED:*)
-        reason="${result#MALFORMED:}"
+        local payload="${result#MALFORMED:}"
+        content_hash="${payload%%:*}"
+        reason="${payload#*:}"
         # Non-destructive and self-correcting (preferred option in the
         # ticket): keep polling exactly as if nothing had been written yet —
         # never write escalation.answered for a malformed file. Guarded so a
@@ -686,25 +711,20 @@ try_resolve() {
         # stays open and NEEDS YOU, exactly as it should while its own
         # answer.json remains malformed.
         local warn_marker="$ANSWER_FILE.malformed-warned"
-        local content_hash stored_hash
-        content_hash="$(cksum "$ANSWER_FILE" 2>/dev/null)"
-        # CON-180: an unexplained extra escalation.malformed has been observed
-        # in CI (escalation-loop.test.sh, "expected [2] got [3]") — not
-        # reproduced locally after 142 combined attempts under load/parallel/
-        # single-core conditions, and byte-identical dedupe marker, torn
-        # reads, cksum mismatch, writeSubAnswer, a write_line double write,
-        # and an orphaned poller have all been ruled out by reasoning about
-        # this process's own control flow. What hasn't been available is the
-        # ACTUAL comparison this specific process made on a failing run:
-        # `pid`/`poll_n` distinguish "one process re-warned on consecutive
-        # polls" from "two processes both polled the same file" (the ruled-
-        # out orphaned-poller theory, now falsifiable from the log itself
-        # instead of by argument), and `stored_hash`/`content_hash` show
-        # whether the guard's own read of the marker or the file disagreed
-        # with what a human re-deriving cksum by hand would get — i.e.
-        # whether the "ruled out" causes really were ruled out, or only
-        # reasoned about. Purely additive fields; never consulted by any
-        # control flow here.
+        # CON-180 (cycle 2 fix): `content_hash` is now the sha1 of the exact
+        # bytes node's verdict above was computed from (threaded through
+        # `result`, split out above) — never a second, independent read of
+        # $ANSWER_FILE. See the comment above the node invocation for why the
+        # old two-read shape (verdict from one read, `cksum` from another)
+        # was the actual CON-180 mechanism: a rewrite landing between the two
+        # reads made the dedupe hash describe different content than the
+        # verdict it was meant to deduplicate.
+        #
+        # `pid`/`poll_n` remain as CI diagnostics: they distinguish "one
+        # process re-warned on consecutive polls" from "two processes polled
+        # the same file" if a DIFFERENT extra-malformed symptom ever
+        # resurfaces. Purely additive fields; never consulted by any control
+        # flow here.
         stored_hash="$(cat "$warn_marker" 2>/dev/null || printf '%s' "<absent>")"
         MALFORMED_POLL_N=$(( ${MALFORMED_POLL_N:-0} + 1 ))
         if [ ! -f "$warn_marker" ] || [ "$stored_hash" != "$content_hash" ]; then
