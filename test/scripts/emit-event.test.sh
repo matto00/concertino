@@ -66,23 +66,33 @@ EOF
 chmod +x "$LEAKY_PARENT_SCRIPT"
 "$LEAKY_PARENT_SCRIPT" &
 LEAKY_PID=$!
-sleep 0.3 # let it fork its child before we look for it
-LEAKY_CHILD="$(capture_children "$LEAKY_PID")"
+# Bounded poll for the child to actually appear, rather than a fixed sleep
+# (CON-183 cycle-3 hardening -- a fixed sleep is exactly the class of
+# load-fragile wait this ticket exists to remove, even though no failure of
+# this specific line has ever been reproduced).
+for _ in $(seq 1 50); do
+  LEAKY_CHILD="$(capture_children "$LEAKY_PID")"
+  [ -n "$LEAKY_CHILD" ] && break
+  sleep 0.1
+done
 check "self-test: leaky parent has a live child to capture" \
   "$([ -n "$LEAKY_CHILD" ] && echo yes || echo no)" "yes"
 kill -TERM "$LEAKY_PID"
 wait "$LEAKY_PID" 2>/dev/null
 check "self-test: the OLD vacuous check (pgrep -P the now-dead parent) finds nothing, proving it cannot fail" \
   "$(pgrep -P "$LEAKY_PID" 2>/dev/null | tr -d '\n')" ""
+# CON-183 (cycle-3 review): both arms below now call the SAME shared
+# children_alive()/assert_children_dead() functions the real --await checks
+# use, rather than a second, inline kill -0 loop -- a mutation to the real
+# liveness logic previously left this self-test green (93 passed, 0 failed)
+# because the duplicated inline loop here was only accidentally identical.
 check "self-test: the FIXED check (captured child pid, by PID) correctly reports it alive" \
-  "$(kill -0 "$LEAKY_CHILD" 2>/dev/null && echo alive || echo dead)" "alive"
+  "$([ -n "$(children_alive "$LEAKY_CHILD")" ] && echo alive || echo dead)" "alive"
 # Clean up the actually-leaked child -- this test must not itself leave a
 # process running past its own completion.
 kill -KILL "$LEAKY_CHILD" 2>/dev/null
 wait "$LEAKY_CHILD" 2>/dev/null
-check "self-test: after cleanup, assert_children_dead reports it gone" \
-  "$(alive=""; for p in "$LEAKY_CHILD"; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done; [ -z "$alive" ] && echo none || echo "alive:$alive")" \
-  "none"
+assert_children_dead "self-test: after cleanup, assert_children_dead reports it gone" "$LEAKY_CHILD"
 rm -f "$LEAKY_PARENT_SCRIPT"
 
 echo "emit-event.sh"

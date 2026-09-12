@@ -8,6 +8,7 @@ const {
   renderEscalation, handleKey, render, optionKeys, resumeSubIndex,
 } = require('../lib/ui/screens/escalation');
 const store = require('../lib/ui/store');
+const escalationController = require('../lib/ui/controllers/escalation');
 const { mkTmpDir } = require('./support/tmp');
 
 // eslint-disable-next-line no-control-regex
@@ -568,14 +569,46 @@ test('writeSubAnswer discards a provenance-mismatched file and starts fresh, ins
   const recovered = store.writeSubAnswer(root, 'HEL-410', 0, 'no', 2, 'Keep foo?', REAL_QUESTIONS);
   assert.equal(recovered.ok, true, JSON.stringify(recovered));
   assert.equal(recovered.complete, false);
+  // CON-179 (cycle-3 review, finding 3): the discard must not be silent --
+  // both real answers ('yes' and 'now') were destroyed, and the caller must
+  // be able to tell.
+  assert.equal(recovered.discarded, true);
+  assert.equal(recovered.discardedCount, 2);
   const written = JSON.parse(fs.readFileSync(store.answerPath(root, 'HEL-410'), 'utf8'));
   assert.deepEqual(written.subAnswers, [{ question: 'Keep foo?', value: 'no' }, null]);
+});
+
+test('writeSubAnswer reports how many entries a discard destroyed, including a legacy entry taken as collateral', () => {
+  const root = tmpRoot();
+  const REAL_QUESTIONS = [{ question: 'a?' }, { question: 'b?' }, { question: 'c?' }, { question: 'd?' }];
+  // 4-part file: one legacy (bare-value, no question -- never itself
+  // classified as mismatched) entry, two well-formed matching entries, and
+  // one mismatched entry. A mismatch anywhere discards the WHOLE file --
+  // the legacy and matching entries are destroyed as collateral too.
+  fs.mkdirSync(path.dirname(store.answerPath(root, 'HEL-413')), { recursive: true });
+  fs.writeFileSync(store.answerPath(root, 'HEL-413'), JSON.stringify({
+    subAnswers: [
+      'legacy-value',
+      { question: 'b?', value: 'yes' },
+      { question: 'c?', value: 'no' },
+      { question: 'WRONG QUESTION', value: 'now' },
+    ],
+    total: 4,
+    complete: true,
+  }));
+  const result = store.writeSubAnswer(root, 'HEL-413', 0, 'redo', 4, 'a?', REAL_QUESTIONS);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.discarded, true);
+  assert.equal(result.discardedCount, 4, 'all four prior entries -- legacy, both matching, and the mismatched one -- were dropped');
+  const written = JSON.parse(fs.readFileSync(store.answerPath(root, 'HEL-413'), 'utf8'));
+  assert.deepEqual(written.subAnswers, [{ question: 'a?', value: 'redo' }, null, null, null]);
 });
 
 test('writeSubAnswer does NOT discard a file with no provenance mismatch, even when subQuestions is supplied', () => {
   const root = tmpRoot();
   const REAL_QUESTIONS = [{ question: 'Keep foo?' }, { question: 'Rename bar?' }];
-  store.writeSubAnswer(root, 'HEL-411', 0, 'yes', 2, 'Keep foo?', REAL_QUESTIONS);
+  const first = store.writeSubAnswer(root, 'HEL-411', 0, 'yes', 2, 'Keep foo?', REAL_QUESTIONS);
+  assert.equal(first.discarded, undefined, 'an ordinary write never reports a discard');
   const second = store.writeSubAnswer(root, 'HEL-411', 0, 'no', 2, 'Keep foo?', REAL_QUESTIONS);
   assert.equal(second.ok, false);
   assert.equal(second.reason, 'answered');
@@ -595,6 +628,32 @@ test('writeSubAnswer never treats a legacy (no-question) entry as a provenance m
   const written = JSON.parse(fs.readFileSync(store.answerPath(root, 'HEL-412'), 'utf8'));
   // The legacy slot survived untouched -- it was never discarded.
   assert.equal(written.subAnswers[0], 'yes');
+});
+
+test('controllers/escalation.js answerEscalationSub surfaces a discard as a notice, not silently', () => {
+  const root = tmpRoot();
+  const REAL_QUESTIONS = [{ question: 'Keep foo?' }, { question: 'Rename bar?' }];
+  fs.mkdirSync(path.dirname(store.answerPath(root, 'HEL-414')), { recursive: true });
+  fs.writeFileSync(store.answerPath(root, 'HEL-414'), JSON.stringify({
+    subAnswers: [{ question: 'Keep foo?', value: 'yes' }, { question: 'WRONG', value: 'now' }],
+    total: 2,
+    complete: true,
+  }));
+  const S = {
+    runs: [{ ticket: 'HEL-414', escalation: { subQuestions: REAL_QUESTIONS } }],
+    escalationNotice: null,
+  };
+  let wentToFleet = false;
+  const ctx = { S, root, deps: { store }, backToFleet: () => { wentToFleet = true; } };
+  const handled = escalationController.handle(
+    { type: 'answer-sub', ticket: 'HEL-414', index: 0, value: 'no', total: 2 }, ctx,
+  );
+  assert.equal(handled, true);
+  assert.match(S.escalationNotice || '', /did not match|discarded/i);
+  assert.match(S.escalationNotice || '', /2 prior answers/);
+  assert.equal(wentToFleet, false, 'not complete yet -- only index 0 was (re)answered');
+  const written = JSON.parse(fs.readFileSync(store.answerPath(root, 'HEL-414'), 'utf8'));
+  assert.deepEqual(written.subAnswers, [{ question: 'Keep foo?', value: 'no' }, null]);
 });
 
 test('writeSubAnswer refuses an out-of-range index rather than corrupting the file', () => {

@@ -339,6 +339,35 @@ test('--sub with no --total on a REAL multi-part escalation derives --total auto
   }
 });
 
+test('CON-179 cycle-3: a provenance-mismatch discard is reported to the CLI caller, not silent', () => {
+  const root = newRoot();
+  const ticket = 'CON-1569';
+  raiseEscalation(root, ticket, [
+    'sub_questions=' + JSON.stringify([
+      { question: 'a?', options: ['y', 'n'] },
+      { question: 'b?', options: ['y', 'n'] },
+    ]),
+  ]);
+  // A pre-existing answer.json that does not match the escalation just
+  // raised above (as if it survived from a different/reordered raise).
+  fs.mkdirSync(path.join(root, '.concertino', 'runs', ticket), { recursive: true });
+  fs.writeFileSync(path.join(root, '.concertino', 'runs', ticket, 'answer.json'), JSON.stringify({
+    subAnswers: [{ question: 'a?', value: 'y' }, { question: 'WRONG', value: 'n' }],
+    total: 2,
+    complete: true,
+  }));
+  try {
+    const { out, status } = runAnswer(root, [ticket, 'redo', '--sub', '1', '--total', '2']);
+    assert.equal(status, 0, out);
+    assert.match(out, /discard/i);
+    assert.match(out, /2 prior answers/);
+    const state = readAnswerJson(root, ticket);
+    assert.deepEqual(state.subAnswers, [{ question: 'a?', value: 'redo' }, null]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a --total matching the REAL sub-question count is still accepted (no behaviour change for a correct caller)', () => {
   const root = newRoot();
   const ticket = 'CON-1565';

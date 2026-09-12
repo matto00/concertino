@@ -54,16 +54,31 @@ capture_children() {
   pgrep -P "$1" 2>/dev/null
 }
 
-# assert_children_dead <label> <captured-pids-from-capture_children>
+# children_alive <captured-pids-from-capture_children>
 #
-# Checks each PID captured by an earlier capture_children() call directly,
-# by PID (`kill -0`) -- correct regardless of whether the child has since
-# been reparented, unlike re-deriving children from the (by now dead)
-# parent's PID. Reports through the caller's own `check()`.
-assert_children_dead() {
-  local label="$1" captured="$2" alive="" pid
+# The one place the actual liveness check (`kill -0`, by PID) lives --
+# checks each PID captured by an earlier capture_children() call directly,
+# correct regardless of whether the child has since been reparented, unlike
+# re-deriving children from the (by now dead) parent's PID. Prints the
+# still-alive subset (empty if none), never calls check() itself, so a
+# caller can use it to assert EITHER outcome ("none left" or "still
+# alive") -- see emit-event.test.sh's self-test, which exercises both
+# through this one function rather than a second, duplicated loop that a
+# mutation to the real logic could leave accidentally green.
+children_alive() {
+  local captured="$1" alive="" pid
   for pid in $captured; do
     kill -0 "$pid" 2>/dev/null && alive="$alive $pid"
   done
+  printf '%s' "$alive"
+}
+
+# assert_children_dead <label> <captured-pids-from-capture_children>
+#
+# Asserts children_alive() reports none left. Reports through the caller's
+# own `check()`.
+assert_children_dead() {
+  local label="$1" captured="$2" alive
+  alive="$(children_alive "$captured")"
   check "$label" "$([ -z "$alive" ] && echo none || echo "alive:$alive")" "none"
 }
