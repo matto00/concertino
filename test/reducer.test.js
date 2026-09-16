@@ -693,3 +693,49 @@ test('a run.spawn BEFORE the run.end it is respawning is not mistaken for a retr
   ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
   assert.equal(run.status, 'failed');
 });
+
+// --- CON-189/CON-187 design.md Decision 9: historical tolerance ------------
+// No event predating this change carries `category`, and some carry a
+// malformed `head_sha` (three known in the corpus). Neither field is read
+// by the reducer at all — it folds only role/verdict/ref (see applyEvent's
+// 'verdict' case) — so a historical event lacking/malforming either must
+// still render without throwing and reach the same fold outcome as before.
+
+test('a historical verdict with no category still folds (renders without throwing)', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'verdict', ticket: 'HEL-1', role: 'evaluator', verdict: 'PASS', ref: 'r.md' },
+  ]), [], NOW);
+  assert.equal(run.lastVerdict.verdict, 'PASS');
+  assert.equal(run.lastVerdict.role, 'evaluator');
+});
+
+test('a historical verdict with a malformed head_sha still folds (renders without throwing)', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'verdict', ticket: 'HEL-1', role: 'evaluator', verdict: 'PASS', ref: 'r.md', head_sha: 'deadbeef' },
+  ]), [], NOW);
+  assert.equal(run.lastVerdict.verdict, 'PASS');
+});
+
+test('a mixed log of categorized and uncategorized verdicts both render, neither discarded', () => {
+  // applyEvent's 'verdict' case keeps only the single latest verdict overall
+  // (run.lastVerdict, not per-role), so "neither discarded" is asserted by
+  // each event in isolation processing without throwing, and the fold
+  // ending on the later (categorized) event exactly as it would pre-change.
+  const [uncategorizedOnly] = reduce(log('HEL-1', [
+    { t: 1, kind: 'verdict', ticket: 'HEL-1', role: 'evaluator', verdict: 'PASS', ref: 'r1.md' },
+  ]), [], NOW);
+  assert.equal(uncategorizedOnly.lastVerdict.verdict, 'PASS');
+
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'verdict', ticket: 'HEL-1', role: 'evaluator', verdict: 'PASS', ref: 'r1.md' },
+    { t: 2, kind: 'verdict', ticket: 'HEL-1', role: 'skeptic', verdict: 'CONFIRM', ref: 'r2.md', category: 'mechanical', gate: 'final' },
+  ]), [], NOW);
+  assert.equal(run.lastVerdict.verdict, 'CONFIRM');
+  assert.equal(run.lastVerdict.role, 'skeptic');
+});
+
+// A refused (missing-category) verdict from the NEW emitter never reaches
+// the log at all — no event is appended (verdict-category spec's "no
+// verdict event is appended" scenario) — so there is nothing for the
+// reducer to mutate. This test protects the read side only; the emitter's
+// own refusal is proven in test/scripts/emit-event.test.sh.

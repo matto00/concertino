@@ -25,7 +25,17 @@ jobs:
         # version publish.yml publishes from. Both must actually pass.
         node-version: [16, 22]
     steps:
+      # CON-189: full history, not the default depth-1 shallow clone.
+      # test/scripts/emit-event.test.sh's CON-197 RED-baseline mutation proof
+      # self-derives the pre-change core/scripts/emit-event.sh via
+      # `git show <base-sha>:core/scripts/emit-event.sh` at test-run time — a
+      # depth-1 clone cannot resolve that blob (`fatal: path ... exists on
+      # disk, but not in <sha>`), which would turn this leg red. The test
+      # itself also attempts a `git fetch --deepen` fallback for a shallow
+      # clone outside CI, but CI should never rely on that fallback firing.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
