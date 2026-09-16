@@ -584,6 +584,11 @@ never a second, parallel implementation of it.
 
 Execute directly (no subagent).
 
+The project's **canonical standards** are binding for the planning artifacts
+you author below — read the relevant one now, at the point you need it, not
+from memory:
+{{block:docsOrchestrator}}
+
 1. **Derive a change name** from the ticket title: kebab-case, 3–5 words. Set as `CHANGE_NAME`.
 2. **Scaffold the change and write ticket context:**
    {{block:specScaffold}}

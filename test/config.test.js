@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 const configLib = require('../lib/config');
 const renderLib = require('../lib/cli/render');
 
@@ -879,4 +879,173 @@ test('a non-boolean cleanup.skipSync fails validation naming the field and value
 test('omitting cleanup entirely produces no cleanup.skipSync diagnostic', () => {
   const { errors } = configLib.collectConfigIssues(baseConfig({}), { out: __dirname });
   assert.equal(errors.filter((e) => e.path === 'cleanup.skipSync').length, 0);
+});
+
+// --- CON-195: canonicalDocs bound to auditor/orchestrator must actually
+// render, and an unrenderable binding must be a hard validation error, not
+// a silent no-op (see openspec/changes/bind-canonical-docs-all-roles). -----
+
+test('docsPlaceholderName maps every role in ROLES to its docs placeholder name', () => {
+  const expected = {
+    orchestrator: 'docsOrchestrator',
+    executor: 'docsExecutor',
+    evaluator: 'docsEvaluator',
+    skeptic: 'docsSkeptic',
+    auditor: 'docsAuditor',
+  };
+  for (const role of configLib.ROLES) {
+    assert.equal(configLib.docsPlaceholderName(role), expected[role]);
+  }
+});
+
+test('a canonicalDocs entry bound to all five roles validates cleanly (every role template has a placeholder)', () => {
+  const cfg = baseConfig({
+    canonicalDocs: [{ path: 'CONTRIBUTING.md', bindTo: configLib.ROLES.slice() }],
+  });
+  // CONTRIBUTING.md exists at this repo's own root — `out` is the repo root
+  // via __dirname/'..' so the exists() check on the path also passes.
+  const { errors } = configLib.collectConfigIssues(cfg, { out: path.join(__dirname, '..') });
+  const hits = errors.filter((e) => e.path.startsWith('canonicalDocs'));
+  assert.deepEqual(hits, [], `expected no canonicalDocs errors, got: ${JSON.stringify(hits)}`);
+});
+
+test('a canonicalDocs entry bound to an unsupported role fails validation naming the entry and the role', () => {
+  const cfg = baseConfig({
+    canonicalDocs: [{ path: 'CONTRIBUTING.md', bindTo: ['not-a-real-role'] }],
+  });
+  const { errors } = configLib.collectConfigIssues(cfg, { out: path.join(__dirname, '..') });
+  const hit = errors.find((e) => e.path === 'canonicalDocs[0].bindTo');
+  assert.ok(hit, 'expected a canonicalDocs[0].bindTo error');
+  assert.match(hit.message, /CONTRIBUTING\.md/);
+  assert.match(hit.message, /not-a-real-role/);
+});
+
+test('a canonicalDocs entry bound to a role whose template has no docs placeholder fails validation naming the entry and role (mutation-proven)', () => {
+  // Real mutation, not a fixture that can only ever pass: temporarily strip
+  // {{block:docsAuditor}} from the REAL core/roles/auditor.md that
+  // collectConfigIssues actually reads (REPO/core/roles/<role>.md — design.md
+  // Decision 3), confirm the check goes RED, then restore and confirm GREEN.
+  const templatePath = path.join(__dirname, '..', 'core', 'roles', 'auditor.md');
+  const original = fs.readFileSync(templatePath, 'utf8');
+  const placeholder = '{{block:' + configLib.docsPlaceholderName('auditor') + '}}';
+  assert.ok(original.includes(placeholder), 'precondition: the real template must currently carry the placeholder');
+  const mutated = original.split(placeholder).join('');
+  fs.writeFileSync(templatePath, mutated);
+  try {
+    const cfg = baseConfig({ canonicalDocs: [{ path: 'CONTRIBUTING.md', bindTo: ['auditor'] }] });
+    const { errors } = configLib.collectConfigIssues(cfg, { out: path.join(__dirname, '..') });
+    const hit = errors.find((e) => e.path === 'canonicalDocs[0].bindTo');
+    assert.ok(hit, 'RED: expected a canonicalDocs[0].bindTo error once the placeholder is removed');
+    assert.match(hit.message, /CONTRIBUTING\.md/);
+    assert.match(hit.message, /auditor/);
+    assert.match(hit.message, /docsAuditor/);
+  } finally {
+    fs.writeFileSync(templatePath, original);
+  }
+  // GREEN: restored template validates clean again.
+  const cfg2 = baseConfig({ canonicalDocs: [{ path: 'CONTRIBUTING.md', bindTo: ['auditor'] }] });
+  const { errors: errors2 } = configLib.collectConfigIssues(cfg2, { out: path.join(__dirname, '..') });
+  assert.equal(errors2.filter((e) => e.path === 'canonicalDocs[0].bindTo').length, 0);
+});
+
+test('an unreadable role template degrades to no error (the deliberate "cannot tell" arm), not a false positive (mutation-proven)', () => {
+  // Real mutation: temporarily rename core/roles/auditor.md out of the way
+  // so REPO/core/roles/auditor.md is unreadable, and confirm the check does
+  // NOT fail the entry (design.md Decision 3's deliberate fail-silent arm —
+  // an unreadable template is an environment fact, not a config defect).
+  const templatePath = path.join(__dirname, '..', 'core', 'roles', 'auditor.md');
+  const movedPath = templatePath + '.con195-mutation-tmp';
+  assert.ok(fs.existsSync(templatePath), 'precondition: the real template must exist before hiding it');
+  fs.renameSync(templatePath, movedPath);
+  try {
+    const cfg = baseConfig({ canonicalDocs: [{ path: 'CONTRIBUTING.md', bindTo: ['auditor'] }] });
+    const { errors } = configLib.collectConfigIssues(cfg, { out: path.join(__dirname, '..') });
+    assert.equal(
+      errors.filter((e) => e.path === 'canonicalDocs[0].bindTo').length,
+      0,
+      'an unreadable template must not itself produce a canonicalDocs bindTo error',
+    );
+  } finally {
+    fs.renameSync(movedPath, templatePath);
+  }
+  // Sanity: with the template restored, the entry validates via the normal
+  // (readable) path exercised by the earlier positive-case test.
+  assert.ok(fs.existsSync(templatePath));
+});
+
+test('a canonicalDocs entry bound to all five roles renders into all five role files, and role-scoped bindings render only where bound', () => {
+  const c = configLib.withDefaults(baseConfig({
+    canonicalDocs: [
+      { path: 'CONTRIBUTING.md', bindTo: ['orchestrator', 'executor', 'evaluator', 'skeptic', 'auditor'] },
+      { path: 'DESIGN.md', bindTo: ['executor', 'evaluator', 'skeptic'] },
+    ],
+  }));
+  for (const role of configLib.ROLES) {
+    const templatePath = path.join(__dirname, '..', 'core', 'roles', role + '.md');
+    const template = fs.readFileSync(templatePath, 'utf8');
+    const rendered = renderLib.renderBody(template, c, 'claude-code');
+    assert.ok(rendered.includes('CONTRIBUTING.md'), `${role}: expected CONTRIBUTING.md (bound to all 5) to render`);
+    assert.ok(!/\{\{block:docs[A-Za-z]+\}\}/.test(rendered), `${role}: no unsubstituted {{block:docs...}} placeholder should remain`);
+    if (['executor', 'evaluator', 'skeptic'].includes(role)) {
+      assert.ok(rendered.includes('DESIGN.md'), `${role}: expected DESIGN.md (bound to executor/evaluator/skeptic) to render`);
+    } else {
+      assert.ok(!rendered.includes('DESIGN.md'), `${role}: DESIGN.md is NOT bound to ${role} and must not appear`);
+    }
+  }
+});
+
+test('a role with no bound docs renders "(none configured)" rather than a leaked {{block:...}} placeholder', () => {
+  const c = configLib.withDefaults(baseConfig({ canonicalDocs: [] }));
+  for (const role of configLib.ROLES) {
+    const templatePath = path.join(__dirname, '..', 'core', 'roles', role + '.md');
+    const template = fs.readFileSync(templatePath, 'utf8');
+    const rendered = renderLib.renderBody(template, c, 'claude-code');
+    assert.ok(!/\{\{block:docs[A-Za-z]+\}\}/.test(rendered), `${role}: no unsubstituted docs placeholder should remain`);
+    assert.ok(rendered.includes('(none configured)'), `${role}: expected the "(none configured)" marker`);
+  }
+});
+
+test('render coverage is load-bearing (mutation-proven): removing the docsAuditor case from render.js\'s switch leaks the literal placeholder', () => {
+  // Real mutation of lib/cli/render.js's docList switch, run in a child
+  // process so this test file's own cached require of render.js is never
+  // disturbed. Confirms RED (leaked placeholder) then restores and confirms
+  // GREEN (rendered normally) — task 5.4.
+  const renderPath = path.join(__dirname, '..', 'lib', 'cli', 'render.js');
+  const original = fs.readFileSync(renderPath, 'utf8');
+  const caseLine = "case docsPlaceholderName('auditor'): return docList('auditor');";
+  assert.ok(original.includes(caseLine), 'precondition: the real switch must currently carry the auditor case');
+  const mutated = original.split(caseLine).join('');
+  fs.writeFileSync(renderPath, mutated);
+  const probeScriptPath = path.join(os.tmpdir(), 'con195-render-probe-' + process.pid + '.js');
+  const probe = [
+    "const configLib = require(" + JSON.stringify(path.join(__dirname, '..', 'lib', 'config.js')) + ");",
+    "const renderLib = require(" + JSON.stringify(renderPath) + ");",
+    "const fs = require('fs');",
+    "const c = configLib.withDefaults({",
+    "  harnesses: ['claude-code'],",
+    "  project: { name: 'fixture-project', baseBranch: 'main' },",
+    "  ticketProvider: { kind: 'linear', idExample: 'ABC-123' },",
+    "  specProvider: { kind: 'none' },",
+    "  worktree: { ports: { frontendBase: 5173, backendBase: 8080 } },",
+    "  gates: [{ name: 'test', when: 'always', command: 'true' }],",
+    "  canonicalDocs: [{ path: 'CONTRIBUTING.md', bindTo: ['auditor'] }],",
+    "});",
+    "const template = fs.readFileSync(" + JSON.stringify(path.join(__dirname, '..', 'core', 'roles', 'auditor.md')) + ", 'utf8');",
+    "const rendered = renderLib.renderBody(template, c, 'claude-code');",
+    "console.log(rendered.includes('{{block:docsAuditor}}') ? 'LEAKED' : 'NOT_LEAKED');",
+  ].join('\n');
+  fs.writeFileSync(probeScriptPath, probe);
+  try {
+    const result = execFileSync('node', [probeScriptPath], { encoding: 'utf8' }).trim();
+    assert.equal(result, 'LEAKED', 'RED: removing the switch case must leak the literal {{block:docsAuditor}} placeholder');
+  } finally {
+    fs.writeFileSync(renderPath, original);
+    fs.rmSync(probeScriptPath, { force: true });
+  }
+  // GREEN: restored switch renders normally again.
+  const c2 = configLib.withDefaults(baseConfig({ canonicalDocs: [{ path: 'CONTRIBUTING.md', bindTo: ['auditor'] }] }));
+  const template2 = fs.readFileSync(path.join(__dirname, '..', 'core', 'roles', 'auditor.md'), 'utf8');
+  const rendered2 = renderLib.renderBody(template2, c2, 'claude-code');
+  assert.ok(!rendered2.includes('{{block:docsAuditor}}'));
+  assert.ok(rendered2.includes('CONTRIBUTING.md'));
 });
