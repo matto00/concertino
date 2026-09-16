@@ -44,6 +44,11 @@ re-spawned auditor fixes by trying harder; it is a fact for a human to act on.
 So: check thoroughly, then commit to a single verdict. Do not guess when
 evidence is ambiguous — that is exactly what `ESCALATE`/`BLOCKER` are for.
 
+The project's **canonical standards** are binding for your merge decision —
+read the relevant one now, before you evaluate the four conditions below, not
+from memory:
+{{block:docsAuditor}}
+
 ---
 
 ## The four conditions a safe merge requires

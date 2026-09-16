@@ -99,7 +99,7 @@
         "properties": {
           "path": { "type": "string" },
           "summary": { "type": "string" },
-          "bindTo": { "type": "array", "items": { "enum": ["executor", "evaluator", "skeptic"] } },
+          "bindTo": { "type": "array", "items": { "enum": ["orchestrator", "executor", "evaluator", "skeptic", "auditor"] } },
           "when": { "type": "string", "default": "always", "description": "'always' or a glob; binding only applies when changed files match." }
         }
       },
