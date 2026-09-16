@@ -51,6 +51,6 @@
 
 - [x] 5.1 Confirm no file outside `test/scripts/escalation-loop.test.sh` and the change's own
       openspec artifacts is modified — verified by `git diff --stat` against the live review base.
-- [ ] 5.2 Archive with `openspec archive condition-wait-con180-repro --yes --skip-specs` (this
+- [x] 5.2 Archive with `openspec archive condition-wait-con180-repro --yes --skip-specs` (this
       change carries no spec delta; see design.md Decision 5) — verified by the archive completing
       and `openspec/specs/` showing no new or modified capability.

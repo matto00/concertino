@@ -6,14 +6,14 @@ WORKTREE_PATH: /home/matt/Development/concertino/.concertino/worktrees/task/cond
 BRANCH: task/condition-wait-con180-repro/CON-200
 REVIEW_BASE_BRANCH: main
 REVIEW_BASE_REMOTE: origin
-PHASE: Execution
+PHASE: Delivery
 CYCLE: 1
 DEV_PORT: 5447
 BACKEND_PORT: 8354
-EXECUTOR_AGENT_ID: —
-EVALUATOR_AGENT_ID: —
-LAST_EVAL_VERDICT: —
-LAST_EVAL_REPORT: —
+EXECUTOR_AGENT_ID: executor-cycle1
+EVALUATOR_AGENT_ID: evaluator-cycle1
+LAST_EVAL_VERDICT: PASS
+LAST_EVAL_REPORT: openspec/changes/condition-wait-con180-repro/evaluation-1.md
 SKEPTIC_CYCLE: 1
 LAST_SKEPTIC_VERDICT: CONFIRM
 AGENT_MERGE: false
@@ -29,5 +29,5 @@ SECOND_FINAL_GATE_SKEPTIC: false
 EVALUATOR_CLEAN_WORKTREE: false
 PENDING_ESCALATION: null
 CONSTRAINTS: []
-CONSTRAINT_REVIEWS: [{"verdict_seq":1,"gate":"design","round":1,"verdict":"REFUTE","promoted":[]},{"verdict_seq":2,"gate":"design","round":2,"verdict":"CONFIRM","promoted":[]}]
-SKEPTIC_VERDICTS_TOTAL: 2
+CONSTRAINT_REVIEWS: [{"verdict_seq":1,"gate":"design","round":1,"verdict":"REFUTE","promoted":[]},{"verdict_seq":2,"gate":"design","round":2,"verdict":"CONFIRM","promoted":[]},{"verdict_seq":3,"gate":"final","round":1,"verdict":"CONFIRM","promoted":[]}]
+SKEPTIC_VERDICTS_TOTAL: 3
