@@ -1584,19 +1584,19 @@ itself, or a non-root run silently loses its only path to the human (CON-76).
     escalation.answered` call:
 
     ```bash
-    concertino answer $TICKET_ID "<their decision>"
+    concertino answer $TICKET_ID "<their decision>" --channel=chat
     # or, for one step of a multi-part escalation (--sub is 1-based: the
     # first sub-question is --sub 1, matching the dashboard wizard's own
     # "sub-question N of total" display and this command's confirmation):
-    concertino answer $TICKET_ID "<their decision>" --sub <index> --total <n>
+    concertino answer $TICKET_ID "<their decision>" --sub <index> --total <n> --channel=chat
     ```
 
-    This is a genuine write-path change from the root's `TUI_ATTACHED=1`
-    `--await`-timeout fallback below (which still uses a raw `emit-event.sh
-    escalation.answered` call and is unmodified) — this branch specifically
-    uses `concertino answer` because the ticket requires it be the single
-    authoritative write path for a chat-collected answer whenever a store
-    exists to write to. `concertino answer`'s existing
+    This branch specifically uses `concertino answer` (CON-188: as does the
+    root's `TUI_ATTACHED=1` `--await`-timeout fallback below, since that raw
+    `emit-event.sh escalation.answered` call was replaced too) because the
+    ticket requires it be the single authoritative write path for a
+    chat-collected answer whenever a store exists to write to. `concertino
+    answer`'s existing
     refusal-on-already-answered, first-write-wins guarantee applies
     unweakened here. "A timeout is never an approval" holds trivially in this
     branch: there is no deadline anywhere in it, so there is no elapsed-time
@@ -1692,14 +1692,19 @@ below, fit comfortably inside the harness default too.)
   its `TERM`/`INT` trap firing). Fall back to chat exactly as before — you
   already presented the question there; simply wait for the human's reply.
   **A timeout is never an approval — never treat it, or silence, as one.**
-  Once you have the answer from chat, record it yourself, since nothing else
-  will:
+  Once you have the answer from chat, record it through `concertino answer`
+  (CON-188 — no more hand-composed `emit-event.sh escalation.answered` call:
+  the guarded command is the single authoritative write path for a
+  chat-collected answer, exactly like the `TUI_ATTACHED=0` branch above),
+  never through a raw `emit-event.sh escalation.answered` call:
 
   ```bash
-  scripts/concertino/emit-event.sh escalation.answered \
-    ticket=$TICKET_ID role=orchestrator \
-    answer="<their decision, one line>" || true
+  concertino answer $TICKET_ID "<their decision, one line>" --channel=chat
   ```
+
+  This remains the *documented manual fallback* for a chat-collected answer
+  after a dashboard timeout — only its mechanism changed from a hand-assembled
+  event line to this guarded command.
 
 **A sub-agent-originated escalation (CON-127).** When executor/evaluator/
 skeptic returns `ESCALATION`, or auditor returns `ESCALATION-RAISE`, raise it
@@ -1803,9 +1808,9 @@ child):
    `concertino answer` rather than acting on it directly:
 
    ```bash
-   concertino answer $TICKET_ID "<their decision>"
+   concertino answer $TICKET_ID "<their decision>" --channel=chat
    # or, for one step of a multi-part escalation (--sub is 1-based, see above):
-   concertino answer $TICKET_ID "<their decision>" --sub <index> --total <n>
+   concertino answer $TICKET_ID "<their decision>" --sub <index> --total <n> --channel=chat
    ```
 
    Branch directly on its result (see the `escalation-answer-cli` capability)

@@ -80,6 +80,30 @@ check "log carries exactly one escalation.answered" "$(grep -c escalation.answer
 check "the logged answer is what was written" \
   "$(node -e 'const ls=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n");const l=ls.find(x=>JSON.parse(x).kind==="escalation.answered");console.log(JSON.parse(l).answer)' "$LOG")" \
   "approve"
+# CON-188 task 9.6: a dashboard-resolved answer must carry escalation_id
+# (matching the raise), resolution_channel=dashboard, answer_source=human —
+# this is the try_resolve() single-question write path (design.md task 3.1),
+# exercised here via the REAL dashboard answer writer, not a hand-rolled fixture.
+check "raise carried a non-empty escalation_id" \
+  "$(node -e 'const ls=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n");const l=ls.find(x=>JSON.parse(x).kind==="escalation.raised");console.log(!!JSON.parse(l).escalation_id)' "$LOG")" \
+  "true"
+# A single combined check (not two id/id comparisons that would pass
+# vacuously if both sides were empty pre-fix): non-empty AND equal.
+check "dashboard-resolved answer carries the SAME NON-EMPTY escalation_id as the raise" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+    const raised = ls.find((e) => e.kind === "escalation.raised");
+    const answered = ls.find((e) => e.kind === "escalation.answered");
+    const rid = raised.escalation_id, aid = answered.escalation_id;
+    console.log(!!rid && !!aid && rid === aid ? "OK" : "MISMATCH:" + rid + ":" + aid);
+  ' "$LOG")" \
+  "OK"
+check "dashboard-resolved answer carries resolution_channel=dashboard" \
+  "$(node -e 'const ls=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n");const l=ls.find(x=>JSON.parse(x).kind==="escalation.answered");console.log(JSON.parse(l).resolution_channel)' "$LOG")" \
+  "dashboard"
+check "dashboard-resolved answer carries answer_source=human" \
+  "$(node -e 'const ls=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n");const l=ls.find(x=>JSON.parse(x).kind==="escalation.answered");console.log(JSON.parse(l).answer_source)' "$LOG")" \
+  "human"
 rm -rf "$REPO"
 
 # --- a second dashboard answering the same escalation is refused, not raced -
@@ -169,6 +193,23 @@ check "multi-part: escalation.answered carries sub_answers, in order" \
     console.log(JSON.parse(JSON.parse(l).sub_answers).join(","));
   ' "$LOG")" \
   "yes,rename"
+# CON-188 task 9.6: a multi-part completion carries the PARENT escalation_id
+# (the one id generated at raise, never a second one per sub-answer) as
+# exactly one escalation.answered event — the "resolves exactly once"
+# property design.md/AC3 requires, verified here against the real script and
+# the real writer rather than a hand-authored fixture.
+check "multi-part raise carried a non-empty escalation_id" \
+  "$(node -e 'const ls=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n");const l=ls.find(x=>JSON.parse(x).kind==="escalation.raised");console.log(!!JSON.parse(l).escalation_id)' "$LOG")" \
+  "true"
+check "multi-part completion's escalation.answered carries the SAME NON-EMPTY parent escalation_id" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+    const raised = ls.find((e) => e.kind === "escalation.raised");
+    const answered = ls.find((e) => e.kind === "escalation.answered");
+    const rid = raised.escalation_id, aid = answered.escalation_id;
+    console.log(!!rid && !!aid && rid === aid ? "OK" : "MISMATCH:" + rid + ":" + aid);
+  ' "$LOG")" \
+  "OK"
 rm -rf "$REPO"
 
 # --- CON-180: the malformed-dedupe hash must come from the SAME read as -----

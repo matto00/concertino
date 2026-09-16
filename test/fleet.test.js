@@ -755,7 +755,8 @@ test('metricsFor.recentEscalations collects every escalation.raised event across
   assert.deepEqual(m.recentEscalations.map((e) => e.raisedAt), [300, 200, 100], 'newest first');
   assert.deepEqual(m.recentEscalations[0], {
     ticket: 'HEL-2', role: 'evaluator', question: 'drop the column?', options: [], subQuestions: undefined,
-    raisedAt: 300, resolved: false, decision: null, resolvedAt: null, timedOut: false,
+    raisedAt: 300, escalationId: null, resolved: false, decision: null, resolvedAt: null, timedOut: false,
+    resolutionChannel: null,
   });
   assert.equal(m.recentEscalations[1].role, null, 'a missing role stays null, not a made-up default');
 });
@@ -836,6 +837,80 @@ test('metricsFor.recentEscalations ignores an orphaned resolution with no curren
     ] }),
   ], 1000000);
   assert.deepEqual(m.recentEscalations, []);
+});
+
+// --- CON-188 task 5.1/5.2: pairing by escalation_id, resolutionChannel -----
+
+test('metricsFor.recentEscalations pairs by escalation_id: an interleaved answer to X does not close a later-raised Y', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', events: [
+      { kind: 'escalation.raised', t: 100, ticket: 'HEL-1', role: 'orchestrator', question: 'q-X', escalation_id: 'HEL-1-X' },
+      { kind: 'escalation.raised', t: 150, ticket: 'HEL-1', role: 'orchestrator', question: 'q-Y', escalation_id: 'HEL-1-Y' },
+      // Resolves X, even though Y was raised more recently — pure positional
+      // pairing (the algorithm this replaces) would have wrongly closed Y.
+      { kind: 'escalation.answered', t: 200, ticket: 'HEL-1', role: 'human', answer: 'ans-X', escalation_id: 'HEL-1-X', resolution_channel: 'chat' },
+    ] }),
+  ], 1000000);
+  const x = m.recentEscalations.find((e) => e.question === 'q-X');
+  const y = m.recentEscalations.find((e) => e.question === 'q-Y');
+  assert.equal(x.resolved, true);
+  assert.equal(x.decision, 'ans-X');
+  assert.equal(x.resolutionChannel, 'chat');
+  assert.equal(y.resolved, false, 'Y must stay open — the answer was for X, by id, not the most-recently-raised entry');
+});
+
+test('metricsFor.recentEscalations id-less events still pair positionally (pre-CON-188 fallback)', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', events: [
+      { kind: 'escalation.raised', t: 100, ticket: 'HEL-1', role: 'orchestrator', question: 'add zod?' },
+      { kind: 'escalation.answered', t: 200, ticket: 'HEL-1', role: 'human', answer: 'approve' },
+    ] }),
+  ], 1000000);
+  const [entry] = m.recentEscalations;
+  assert.equal(entry.escalationId, null);
+  assert.equal(entry.resolved, true);
+  assert.equal(entry.decision, 'approve');
+});
+
+test('metricsFor.recentEscalations ignores a resolution whose escalation_id matches no raise', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', events: [
+      { kind: 'escalation.raised', t: 100, ticket: 'HEL-1', role: 'orchestrator', question: 'q', escalation_id: 'HEL-1-REAL' },
+      { kind: 'escalation.answered', t: 200, ticket: 'HEL-1', role: 'human', answer: 'x', escalation_id: 'HEL-1-UNRELATED' },
+    ] }),
+  ], 1000000);
+  const [entry] = m.recentEscalations;
+  assert.equal(entry.resolved, false, 'an unmatched id must not be treated as resolving this entry');
+});
+
+test('metricsFor.recentEscalations: a timeout followed by a late answer on the SAME escalation_id reports the answer, timedOut: false (AC3)', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', events: [
+      { kind: 'escalation.raised', t: 100, ticket: 'HEL-1', role: 'orchestrator', question: 'q', escalation_id: 'HEL-1-A' },
+      { kind: 'escalation.timeout', t: 200, ticket: 'HEL-1', role: 'orchestrator', escalation_id: 'HEL-1-A' },
+      { kind: 'escalation.answered', t: 300, ticket: 'HEL-1', role: 'human', answer: 'late-chat-answer', escalation_id: 'HEL-1-A', resolution_channel: 'chat' },
+    ] }),
+  ], 1000000);
+  const [entry] = m.recentEscalations;
+  assert.equal(entry.resolved, true);
+  assert.equal(entry.timedOut, false, 'the late answer must supersede the earlier timeout');
+  assert.equal(entry.decision, 'late-chat-answer');
+  assert.equal(entry.resolutionChannel, 'chat');
+  assert.equal(entry.resolvedAt, 300);
+});
+
+test('metricsFor.recentEscalations: a genuinely unanswered timeout stays timedOut: true with resolutionChannel null', () => {
+  const m = metricsFor([
+    run({ ticket: 'HEL-1', events: [
+      { kind: 'escalation.raised', t: 100, ticket: 'HEL-1', role: 'orchestrator', question: 'q', escalation_id: 'HEL-1-A' },
+      { kind: 'escalation.timeout', t: 200, ticket: 'HEL-1', role: 'orchestrator', escalation_id: 'HEL-1-A' },
+    ] }),
+  ], 1000000);
+  const [entry] = m.recentEscalations;
+  assert.equal(entry.resolved, true);
+  assert.equal(entry.timedOut, true);
+  assert.equal(entry.resolutionChannel, null);
+  assert.equal(entry.decision, null);
 });
 
 test('metricsFor.verdictRates computes each role\'s pass-rate from verdict events across all runs', () => {

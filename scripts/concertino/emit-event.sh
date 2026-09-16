@@ -85,6 +85,15 @@ now_ms() {
   esac
 }
 
+# CON-188 design.md Decision 1: a short random hex suffix so two raises
+# landing in the same millisecond (a `--raise-only` bubble followed quickly by
+# a re-raise) still get distinct escalation_ids. node is already a hard
+# dependency of this script (see utf8_safe_prefix above), so this reuses it
+# rather than adding a new randomness source.
+random_hex() {
+  node -e 'process.stdout.write(require("crypto").randomBytes(3).toString("hex"))' 2>/dev/null
+}
+
 KIND="${1:-}"
 [ -z "$KIND" ] && exit 0
 shift || true
@@ -270,6 +279,23 @@ for kv in ${ARGS+"${ARGS[@]}"}; do
     # by a language model, which is exactly where a plausible-looking `t=` comes
     # from.
     t|kind)  ;;
+    resolution_channel)
+      # CON-188 design.md Decision 4/7: validated here so EVERY caller — the
+      # generic write path used by `concertino answer` (lib/cli/answer.js),
+      # and any future caller — is refused non-zero, before any RUN_DIR is
+      # created or line written, rather than silently recording a bogus
+      # channel. Falls through to FIELDS/OTHER_FIELDS exactly like the
+      # generic `*)` case once validated — no new encoding path.
+      case "$val" in
+        dashboard|cli|chat|self-approved) ;;
+        *)
+          echo "emit-event.sh: invalid resolution_channel '${val}' (must be one of: dashboard, cli, chat, self-approved)" >&2
+          exit 1
+          ;;
+      esac
+      FIELDS="${FIELDS},\"resolution_channel\":$(json_value "$val")"
+      OTHER_FIELDS="${OTHER_FIELDS},\"resolution_channel\":$(json_value "$val")"
+      ;;
     context)
       # Still folded into FIELDS like any other caller field, so the first
       # (untruncated) candidate line is byte-for-byte what it would have been
@@ -403,6 +429,39 @@ if [ "$AWAIT" -eq 0 ] && [ "$RAISE_ONLY" -eq 0 ] && [ "$WAIT_ONLY" -eq 0 ]; then
   write_line "$KIND" || true      # a lost event never fails the run
   exit 0
 fi
+
+# CON-188 design.md Decision 2: reads the LAST escalation.raised event logged
+# for $TICKET and prints one field of it ("raised_at", "sub_questions", or
+# "escalation_id"); empty if none is found. Re-derived fresh on every call —
+# never cached — since the resolving process is frequently a different one
+# than the raising process (--raise-only raises, `concertino answer` or a
+# later --wait-only resolves), so there is no call-stack to thread the id
+# through. Moved to top level (was previously defined only inside the
+# --wait-only branch) so try_resolve() and the --await paths below can call it
+# too, not just --wait-only's own poll loop.
+read_raised_field() {
+  node -e '
+    try {
+      const fs = require("fs");
+      const raw = fs.readFileSync(process.argv[1], "utf8");
+      const ticket = process.argv[2];
+      const field = process.argv[3];
+      let last = null;
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; }
+        if (ev && ev.kind === "escalation.raised" && ev.ticket === ticket) last = ev;
+      }
+      if (!last) { process.stdout.write(""); process.exit(0); }
+      let v;
+      if (field === "raised_at") v = last.t;
+      else if (field === "escalation_id") v = last.escalation_id;
+      else v = last.sub_questions;
+      process.stdout.write(v == null ? "" : String(v));
+    } catch (e) { process.stdout.write(""); }
+  ' "$LOG" "$TICKET" "$1" 2>/dev/null
+}
 
 # escalation.raised's `context` field (if any) gets its own write path: an
 # oversized context is what pays down the byte budget — truncated visibly and
@@ -548,7 +607,12 @@ write_escalation_raised() {
 # as part of the write, never as part of --wait-only.
 discard_stale_answer() {
   if [ -e "$ANSWER_FILE" ]; then
+    # CON-188 task 3.4: ESCALATION_ID is already set (this always runs
+    # immediately after write_escalation_raised(), which sets it) so the
+    # discarded-answer record is attributable to the escalation that
+    # triggered the discard.
     FIELDS=""
+    [ -n "${ESCALATION_ID:-}" ] && FIELDS=",\"escalation_id\":$(json_string "$ESCALATION_ID")"
     write_line escalation.answer_discarded || true
   fi
   rm -f "$ANSWER_FILE" 2>/dev/null || true
@@ -729,9 +793,16 @@ try_resolve() {
         MALFORMED_POLL_N=$(( ${MALFORMED_POLL_N:-0} + 1 ))
         if [ ! -f "$warn_marker" ] || [ "$stored_hash" != "$content_hash" ]; then
           echo "concertino: $ANSWER_FILE is malformed and was NOT recorded as an answer — $reason" >&2
+          # CON-188 task 3.4: read back rather than relying on any in-process
+          # ESCALATION_ID — try_resolve() runs in both --await's own process
+          # (which raised the escalation) and --wait-only's separate poll
+          # process (which never raised it in this process at all).
+          local resolve_id
+          resolve_id="$(read_raised_field escalation_id)"
           FIELDS=",\"reason\":$(json_value "$reason")"
           FIELDS="${FIELDS},\"pid\":$$,\"poll_n\":$MALFORMED_POLL_N"
           FIELDS="${FIELDS},\"content_hash\":$(json_value "$content_hash"),\"stored_hash\":$(json_value "$stored_hash")"
+          [ -n "$resolve_id" ] && FIELDS="${FIELDS},\"escalation_id\":$(json_string "$resolve_id")"
           write_line escalation.malformed || true
           printf '%s' "$content_hash" > "$warn_marker" 2>/dev/null || true
         fi
@@ -744,10 +815,16 @@ try_resolve() {
     # Disarm before the final write — same reasoning as the single-question
     # path just below.
     trap - TERM INT
+    # CON-188 task 3.2: this path resolves by observing answer.json, the
+    # dashboard's write path — same reasoning as the single-question path
+    # below (task 3.1).
+    local resolve_id
+    resolve_id="$(read_raised_field escalation_id)"
     # `sub_answers` mirrors the existing singular `answer` field — a
     # JSON-string-encoded value through the same generic mechanism
     # `sub_questions` itself uses (design.md Decision 5).
-    FIELDS=",\"sub_answers\":$(json_value "$sub_answers_json")"
+    FIELDS=",\"sub_answers\":$(json_value "$sub_answers_json"),\"resolution_channel\":\"dashboard\",\"answer_source\":\"human\""
+    [ -n "$resolve_id" ] && FIELDS="${FIELDS},\"escalation_id\":$(json_string "$resolve_id")"
     write_line escalation.answered
     # One sub-answer per line, in sub-question order — the stdout contract
     # stays "read stdout, get the answer(s)" without inventing a second
@@ -777,9 +854,15 @@ try_resolve() {
   # answer, so a signal landing in this last stretch must not overwrite that
   # outcome with a spurious escalation.timeout.
   trap - TERM INT
+  # CON-188 task 3.1: this path resolves by observing answer.json, the
+  # dashboard's write path — hence resolution_channel=dashboard/
+  # answer_source=human (design.md Decisions 4/6).
+  local resolve_id
+  resolve_id="$(read_raised_field escalation_id)"
   # $answer is free text a human typed at the escalation screen — unbounded by
   # construction, so this write needs the cap as much as any other.
-  FIELDS=",\"answer\":$(json_value "$answer")"
+  FIELDS=",\"answer\":$(json_value "$answer"),\"resolution_channel\":\"dashboard\",\"answer_source\":\"human\""
+  [ -n "$resolve_id" ] && FIELDS="${FIELDS},\"escalation_id\":$(json_string "$resolve_id")"
   write_line escalation.answered
   printf '%s\n' "$answer"
   return 0
@@ -794,31 +877,9 @@ if [ "$WAIT_ONLY" -eq 1 ]; then
     ''|*[!0-9]*) MAX_WAIT_SEC=25 ;;
   esac
 
-  # Reads the LAST escalation.raised event logged for $TICKET and prints one
-  # field of it ("raised_at" or "sub_questions"); empty if none is found.
-  # Re-derived fresh on every call (design.md Decision 2) — never cached
-  # across --wait-only invocations, since each is its own process.
-  read_raised_field() {
-    node -e '
-      try {
-        const fs = require("fs");
-        const raw = fs.readFileSync(process.argv[1], "utf8");
-        const ticket = process.argv[2];
-        const field = process.argv[3];
-        let last = null;
-        for (const line of raw.split("\n")) {
-          if (!line.trim()) continue;
-          let ev;
-          try { ev = JSON.parse(line); } catch { continue; }
-          if (ev && ev.kind === "escalation.raised" && ev.ticket === ticket) last = ev;
-        }
-        if (!last) { process.stdout.write(""); process.exit(0); }
-        const v = field === "raised_at" ? last.t : last.sub_questions;
-        process.stdout.write(v == null ? "" : String(v));
-      } catch (e) { process.stdout.write(""); }
-    ' "$LOG" "$TICKET" "$1" 2>/dev/null
-  }
-
+  # read_raised_field() is defined at top level (above write_escalation_raised)
+  # so it is shared with try_resolve()/the --await paths — see its definition
+  # for the full rationale.
   RAISED_AT="$(read_raised_field raised_at)"
   # design.md Decision 1b: sub_questions/total detection reads from the same
   # already-logged escalation.raised event raised_at is read from — the same
@@ -860,7 +921,11 @@ if [ "$WAIT_ONLY" -eq 1 ]; then
     if [ -n "$RAISED_AT" ] && [ "$(now_ms)" -ge "$REAL_DEADLINE_MS" ]; then
       # The escalation's own real deadline — not this call's max_wait_sec —
       # has been reached: terminal, exactly as --await's own timeout is.
+      # CON-188 task 3.3: escalation_id only, NO resolution_channel — a
+      # timeout is the absence of a resolution channel (design.md Decision 4).
       FIELDS=""
+      RESOLVE_ID="$(read_raised_field escalation_id)"
+      [ -n "$RESOLVE_ID" ] && FIELDS=",\"escalation_id\":$(json_string "$RESOLVE_ID")"
       write_line escalation.timeout || true
       exit 1
     fi
@@ -877,6 +942,17 @@ fi
 # before the write is deliberate: the longer kind string has to be inside the
 # byte cap, not sneaked past it afterwards.
 #
+# CON-188 design.md Decision 1: generate the escalation_id here, once per
+# raise — this point is reached exactly once per --await/--raise-only call
+# (the WAIT_ONLY branch above always exits before here), so it is the one
+# moment every escalation passes through exactly once, in both modes.
+# Folded into both FIELDS and OTHER_FIELDS (like sub_questions above) so it
+# survives write_escalation_raised()'s oversized-line rebuild paths, which
+# rebuild the line from OTHER_FIELDS.
+ESCALATION_ID="${TICKET}-$(now_ms)-$(random_hex)"
+FIELDS="${FIELDS},\"escalation_id\":$(json_string "$ESCALATION_ID")"
+OTHER_FIELDS="${OTHER_FIELDS},\"escalation_id\":$(json_string "$ESCALATION_ID")"
+
 # If that write fails there is nothing for a human to answer — the dashboard
 # will never show the escalation, so polling for an answer would block for the
 # full timeout on a question nobody was asked. Bail immediately instead and let
@@ -934,7 +1010,10 @@ fi
 # escalation.timeout while the process itself kept running, which is worse
 # than doing nothing. A plain `exit` has no such failure mode.
 on_kill() {
+  # CON-188 task 3.3: ESCALATION_ID is already set — this trap only fires
+  # downstream of the raise in this same process.
   FIELDS=""
+  [ -n "${ESCALATION_ID:-}" ] && FIELDS=",\"escalation_id\":$(json_string "$ESCALATION_ID")"
   write_line escalation.timeout || true
   exit 1
 }
@@ -960,6 +1039,9 @@ done
 # Disarm first: this is already writing escalation.timeout, so a signal
 # arriving in this last stretch must not race on_kill into writing it twice.
 trap - TERM INT
+# CON-188 task 3.3: ESCALATION_ID is already set (this is the same process
+# that raised the escalation).
 FIELDS=""
+[ -n "${ESCALATION_ID:-}" ] && FIELDS=",\"escalation_id\":$(json_string "$ESCALATION_ID")"
 write_line escalation.timeout || true
 exit 1
