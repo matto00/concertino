@@ -728,5 +728,218 @@ check "unresolvable-HEAD case: no head_sha field" \
   "absent"
 rm -rf "$DIR2"
 
+# =============================================================================
+# CON-188: committed shell-level coverage of escalation_id / resolution_channel
+# / answer_source, against the REAL script's REAL output (final-gate round 1
+# change request, constraint C4 — manual throwaway reproduction is not
+# coverage). Each assertion below was proven to fail against the pre-CON-188
+# script (git show HEAD~1:core/scripts/emit-event.sh, in a scratch copy)
+# before being shown green — see files-modified.md for the per-assertion
+# red/green record.
+# =============================================================================
+
+# --- 9.1: a real raise carries a well-formed escalation_id ------------------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" escalation --raise-only ticket=HEL-60 question=q options=a,b ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/HEL-60/events.jsonl"
+check "--raise-only: escalation_id matches <TICKET>-<epoch_ms>-<hex>" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();const id=JSON.parse(l).escalation_id;console.log(/^HEL-60-\d+-[0-9a-f]+$/.test(id)?"yes":"no:"+id)' "$LOG")" \
+  "yes"
+rm -rf "$REPO"
+
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-61 question=q options=a,b ) > "$REPO/out.txt" 2>/dev/null &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$REPO/.concertino/runs/HEL-61/events.jsonl" ] && break
+  sleep 0.1
+done
+LOG="$REPO/.concertino/runs/HEL-61/events.jsonl"
+check "--await: escalation_id matches <TICKET>-<epoch_ms>-<hex>" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();const id=JSON.parse(l).escalation_id;console.log(/^HEL-61-\d+-[0-9a-f]+$/.test(id)?"yes":"no:"+id)' "$LOG")" \
+  "yes"
+printf '{"answer":"x"}' > "$REPO/.concertino/runs/HEL-61/answer.json"
+wait_killed_bounded "$AWAIT_PID" 20 || true
+rm -rf "$REPO"
+
+# Two raises in the same process invocation window must get distinct ids —
+# design.md Decision 1's stated "two raises inside one second" case.
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" escalation --raise-only ticket=HEL-62 question=q1 options=a,b ) >/dev/null 2>&1
+( cd "$REPO" && "$SCRIPT" escalation --raise-only ticket=HEL-62 question=q2 options=a,b ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/HEL-62/events.jsonl"
+check "two raises on the same ticket get distinct escalation_ids" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+    const ids = ls.filter((e) => e.kind === "escalation.raised").map((e) => e.escalation_id);
+    console.log(ids.length === 2 && ids[0] && ids[1] && ids[0] !== ids[1] ? "yes" : "no:" + JSON.stringify(ids));
+  ' "$LOG")" \
+  "yes"
+rm -rf "$REPO"
+
+# --- 9.2: all THREE escalation.timeout write sites carry escalation_id, ----
+# and NO resolution_channel, distinctly -------------------------------------
+
+# Site 1: --wait-only's own real-deadline check.
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" escalation --raise-only ticket=HEL-63 question=q ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/HEL-63/events.jsonl"
+RAISED_ID="$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).escalation_id)' "$LOG")"
+( cd "$REPO" && CONCERTINO_ESCALATION_TIMEOUT_MIN=0 "$SCRIPT" escalation --wait-only max_wait_sec=5 ticket=HEL-63 ) >/dev/null 2>&1
+check "--wait-only real-deadline timeout: escalation_id matches the raise" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+    const l = ls.find((e) => e.kind === "escalation.timeout");
+    console.log(l && l.escalation_id === process.argv[2] ? "yes" : "no:" + JSON.stringify(l));
+  ' "$LOG" "$RAISED_ID")" \
+  "yes"
+check "--wait-only real-deadline timeout: NO resolution_channel key" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+    const l = ls.find((e) => e.kind === "escalation.timeout");
+    console.log("resolution_channel" in l ? "present" : "absent");
+  ' "$LOG")" \
+  "absent"
+rm -rf "$REPO"
+
+# Site 2: the on_kill TERM/INT trap.
+REPO="$(new_repo)"
+LOG="$REPO/.concertino/runs/HEL-64/events.jsonl"
+( cd "$REPO" && "$SCRIPT" escalation --await ticket=HEL-64 question=q ) >/dev/null 2>&1 &
+AWAIT_PID=$!
+for _ in $(seq 1 50); do
+  [ -f "$LOG" ] && grep -q escalation.raised "$LOG" 2>/dev/null && break
+  sleep 0.1
+done
+RAISED_ID="$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).escalation_id)' "$LOG")"
+kill -TERM "$AWAIT_PID"
+wait_killed_bounded "$AWAIT_PID" 10
+check "on_kill (TERM) timeout: escalation_id matches the raise" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+    const l = ls.find((e) => e.kind === "escalation.timeout");
+    console.log(l && l.escalation_id === process.argv[2] ? "yes" : "no:" + JSON.stringify(l));
+  ' "$LOG" "$RAISED_ID")" \
+  "yes"
+check "on_kill (TERM) timeout: NO resolution_channel key" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+    const l = ls.find((e) => e.kind === "escalation.timeout");
+    console.log("resolution_channel" in l ? "present" : "absent");
+  ' "$LOG")" \
+  "absent"
+rm -rf "$REPO"
+
+# Site 3: --await's own bottom-of-script timeout (no kill, real deadline).
+REPO="$(new_repo)"
+( cd "$REPO" && CONCERTINO_ESCALATION_TIMEOUT_MIN=0 "$SCRIPT" escalation --await ticket=HEL-65 question=q ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/HEL-65/events.jsonl"
+check "--await bottom-of-script timeout: escalation_id matches the raise" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+    const raised = ls.find((e) => e.kind === "escalation.raised");
+    const timedOut = ls.find((e) => e.kind === "escalation.timeout");
+    console.log(raised && timedOut && raised.escalation_id && timedOut.escalation_id === raised.escalation_id ? "yes" : "no:" + JSON.stringify({raised, timedOut}));
+  ' "$LOG")" \
+  "yes"
+check "--await bottom-of-script timeout: NO resolution_channel key" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+    const l = ls.find((e) => e.kind === "escalation.timeout");
+    console.log("resolution_channel" in l ? "present" : "absent");
+  ' "$LOG")" \
+  "absent"
+rm -rf "$REPO"
+
+# --- 9.3: discard_stale_answer()'s escalation.answer_discarded carries -----
+# escalation_id ---------------------------------------------------------
+REPO="$(new_repo)"
+mkdir -p "$REPO/.concertino/runs/HEL-66"
+printf '{"answer":"stale"}' > "$REPO/.concertino/runs/HEL-66/answer.json"
+LOG="$REPO/.concertino/runs/HEL-66/events.jsonl"
+( cd "$REPO" && CONCERTINO_ESCALATION_TIMEOUT_MIN=0 "$SCRIPT" escalation --await ticket=HEL-66 question=q ) >/dev/null 2>&1
+check "escalation.answer_discarded: escalation_id matches the raise it belongs to" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+    const raised = ls.find((e) => e.kind === "escalation.raised");
+    const discarded = ls.find((e) => e.kind === "escalation.answer_discarded");
+    console.log(raised && discarded && raised.escalation_id && discarded.escalation_id === raised.escalation_id ? "yes" : "no:" + JSON.stringify({raised, discarded}));
+  ' "$LOG")" \
+  "yes"
+rm -rf "$REPO"
+
+# --- 9.4: a bogus resolution_channel is refused BEFORE any write -----------
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" escalation.answered ticket=HEL-67 answer=x resolution_channel=carrier-pigeon ) >"$REPO/out.txt" 2>"$REPO/err.txt"
+RC=$?
+check "bogus resolution_channel: non-zero exit" "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
+check "bogus resolution_channel: stderr names the legal values" \
+  "$(grep -c "dashboard, cli, chat, self-approved" "$REPO/err.txt")" \
+  "1"
+check "bogus resolution_channel: NO run directory was created at all" \
+  "$([ -d "$REPO/.concertino/runs/HEL-67" ] && echo present || echo absent)" \
+  "absent"
+check "bogus resolution_channel: NO event line was written" \
+  "$([ -f "$REPO/.concertino/runs/HEL-67/events.jsonl" ] && echo present || echo absent)" \
+  "absent"
+rm -rf "$REPO"
+
+# Each of the four legal values IS accepted (task 3.5's other half — refusal
+# alone would be a vacuous "everything is rejected" pass).
+for CH in dashboard cli chat self-approved; do
+  REPO="$(new_repo)"
+  ( cd "$REPO" && "$SCRIPT" escalation.answered ticket=HEL-68 answer=x "resolution_channel=$CH" ) >/dev/null 2>&1
+  RC=$?
+  LOG="$REPO/.concertino/runs/HEL-68/events.jsonl"
+  check "legal resolution_channel=$CH: accepted (exit 0)" "$RC" "0"
+  check "legal resolution_channel=$CH: recorded verbatim" \
+    "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).resolution_channel)' "$LOG")" \
+    "$CH"
+  rm -rf "$REPO"
+done
+
+# --- 9.5: the moved-to-top-level read_raised_field() serves every mode -----
+# that now shares it: --await (same process), --raise-only + a LATER,
+# separate --wait-only process (cross-process), and the resolve path with NO
+# prior raise at all (must return empty, not error — design.md Decision 3).
+
+# Cross-process: --raise-only in one invocation, --wait-only (a SEPARATE
+# process) resolves it later and must still read the id back correctly.
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" escalation --raise-only ticket=HEL-69 question=q sub_questions='[{"question":"a?"},{"question":"b?"}]' ) >/dev/null 2>&1
+LOG="$REPO/.concertino/runs/HEL-69/events.jsonl"
+RAISED_ID="$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).escalation_id)' "$LOG")"
+echo '{"complete":true,"subAnswers":["1","2"]}' > "$REPO/.concertino/runs/HEL-69/answer.json"
+( cd "$REPO" && timeout 10 "$SCRIPT" escalation --wait-only max_wait_sec=5 ticket=HEL-69 ) >/dev/null 2>&1
+check "cross-process read_raised_field: --wait-only resolves the SAME escalation_id --raise-only wrote" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+    const l = ls.find((e) => e.kind === "escalation.answered");
+    console.log(l && l.escalation_id === process.argv[2] ? "yes" : "no:" + JSON.stringify(l));
+  ' "$LOG" "$RAISED_ID")" \
+  "yes"
+check "cross-process read_raised_field: also resolved sub_questions correctly (total=2, not 0)" \
+  "$(node -e '
+    const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+    const l = ls.find((e) => e.kind === "escalation.answered");
+    console.log(JSON.parse(l.sub_answers).length);
+  ' "$LOG")" \
+  "2"
+rm -rf "$REPO"
+
+# Resolve path with no prior raise at all: read_raised_field must return
+# empty (not error) so the generic write path still appends with no
+# escalation_id key, rather than being blocked or crashing.
+REPO="$(new_repo)"
+mkdir -p "$REPO/.concertino/runs/HEL-70"
+( cd "$REPO" && "$SCRIPT" escalation.answered ticket=HEL-70 answer=x resolution_channel=cli ) >/dev/null 2>&1
+RC=$?
+LOG="$REPO/.concertino/runs/HEL-70/events.jsonl"
+check "no prior raise: resolution still appends (exit 0)" "$RC" "0"
+check "no prior raise: no escalation_id key (empty read_raised_field, not an error)" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log("escalation_id" in JSON.parse(l) ? "present" : "absent")' "$LOG")" \
+  "absent"
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

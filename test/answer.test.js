@@ -447,3 +447,115 @@ test('reads the LATEST escalation.raised: single-question then multi-part — no
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// --- CON-188: escalation_id / --channel / resolution_channel / answer_source
+
+test('default channel is cli: escalation.answered carries resolution_channel=cli and answer_source=human', () => {
+  const root = newRoot();
+  const ticket = 'CON1880';
+  raiseEscalation(root, ticket, ['question=q1', 'options=approve,deny']);
+  try {
+    const { out, status } = runAnswer(root, [ticket, 'approve']);
+    assert.equal(status, 0, out);
+    const events = readEvents(root, ticket);
+    const answered = events.find((e) => e.kind === 'escalation.answered');
+    assert.ok(answered, 'expected an escalation.answered event');
+    assert.equal(answered.resolution_channel, 'cli');
+    assert.equal(answered.answer_source, 'human');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('--channel=chat: escalation.answered carries resolution_channel=chat and answer_source=human, and the escalation_id matches the raise', () => {
+  const root = newRoot();
+  const ticket = 'CON1881';
+  raiseEscalation(root, ticket, ['question=q1', 'options=approve,deny']);
+  const raisedId = readEvents(root, ticket).find((e) => e.kind === 'escalation.raised').escalation_id;
+  assert.ok(raisedId, 'the raise fixture itself must carry an escalation_id (CON-188 raise-side)');
+  try {
+    const { out, status } = runAnswer(root, [ticket, 'approve', '--channel=chat']);
+    assert.equal(status, 0, out);
+    const answered = readEvents(root, ticket).find((e) => e.kind === 'escalation.answered');
+    assert.equal(answered.resolution_channel, 'chat');
+    assert.equal(answered.answer_source, 'human');
+    assert.equal(answered.escalation_id, raisedId, 'the resolution must reference the SAME escalation_id the raise carried');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('--channel=self-approved: answer_source is derived as agent-default, never supplied independently', () => {
+  const root = newRoot();
+  const ticket = 'CON1882';
+  raiseEscalation(root, ticket, ['question=q1', 'options=approve,deny']);
+  try {
+    const { out, status } = runAnswer(root, [ticket, 'approve', '--channel=self-approved']);
+    assert.equal(status, 0, out);
+    const answered = readEvents(root, ticket).find((e) => e.kind === 'escalation.answered');
+    assert.equal(answered.resolution_channel, 'self-approved');
+    assert.equal(answered.answer_source, 'agent-default');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a bogus --channel is refused BEFORE any write: no answer.json, no event, non-zero exit', () => {
+  const root = newRoot();
+  const ticket = 'CON1883';
+  raiseEscalation(root, ticket, ['question=q1', 'options=approve,deny']);
+  try {
+    const { out, status } = runAnswer(root, [ticket, 'approve', '--channel=carrier-pigeon']);
+    assert.notEqual(status, 0, out);
+    assert.match(out, /--channel/);
+    assert.match(out, /dashboard, cli, chat, self-approved/);
+    assert.equal(fs.existsSync(path.join(root, '.concertino', 'runs', ticket, 'answer.json')), false,
+      'a refused channel must never write answer.json');
+    const events = readEvents(root, ticket).filter((e) => e.kind === 'escalation.answered');
+    assert.equal(events.length, 0, 'a refused channel must never emit escalation.answered');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('multi-part completion: escalation.answered carries the SAME escalation_id as the raise, plus the channel/source', () => {
+  const root = newRoot();
+  const ticket = 'CON1884';
+  raiseEscalation(root, ticket, [
+    'sub_questions=' + JSON.stringify([
+      { question: 'a?', options: ['y', 'n'] },
+      { question: 'b?', options: ['y', 'n'] },
+    ]),
+  ]);
+  const raisedId = readEvents(root, ticket).find((e) => e.kind === 'escalation.raised').escalation_id;
+  try {
+    let res = runAnswer(root, [ticket, 'y', '--sub', '1', '--total', '2', '--channel=chat']);
+    assert.equal(res.status, 0, res.out);
+    // Partial write: no event yet (existing behaviour, unchanged by CON-188).
+    assert.equal(readEvents(root, ticket).filter((e) => e.kind === 'escalation.answered').length, 0);
+
+    res = runAnswer(root, [ticket, 'n', '--sub', '2', '--total', '2', '--channel=chat']);
+    assert.equal(res.status, 0, res.out);
+    const answered = readEvents(root, ticket).find((e) => e.kind === 'escalation.answered');
+    assert.ok(answered);
+    assert.equal(answered.escalation_id, raisedId);
+    assert.equal(answered.resolution_channel, 'chat');
+    assert.equal(answered.answer_source, 'human');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('with no escalation.raised event at all, a resolved answer still writes with no escalation_id field', () => {
+  const root = newRoot();
+  const ticket = 'CON1885';
+  try {
+    const { out, status } = runAnswer(root, [ticket, 'approve']);
+    assert.equal(status, 0, out);
+    const answered = readEvents(root, ticket).find((e) => e.kind === 'escalation.answered');
+    assert.ok(answered);
+    assert.equal('escalation_id' in answered, false, 'no raise exists to derive an escalation_id from');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

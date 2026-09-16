@@ -208,6 +208,33 @@ test('an escalation.raised with no context yields context: null and no truncatio
   assert.equal(run.escalation.contextRef, null);
 });
 
+// CON-188 task 5.3
+test('an escalation.raised carrying an escalation_id surfaces it on run.escalation', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator',
+      question: 'q', options: 'approve,deny', escalation_id: 'HEL-1-1000-abc123' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.equal(run.escalation.escalationId, 'HEL-1-1000-abc123');
+});
+
+test('an escalation.raised with no escalation_id (pre-CON-188 event) leaves escalationId null', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator',
+      question: 'q', options: 'approve,deny' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.equal(run.escalation.escalationId, null);
+});
+
+test('resolution still clears run.escalation (and its escalationId) exactly as before', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'escalation.raised', ticket: 'HEL-1', role: 'orchestrator',
+      question: 'q', options: 'approve,deny', escalation_id: 'HEL-1-1000-abc123' },
+    { t: 2, kind: 'escalation.answered', ticket: 'HEL-1', role: 'orchestrator',
+      answer: 'approve', escalation_id: 'HEL-1-1000-abc123' },
+  ]), [{ ticket: 'HEL-1', alive: true, idleMs: 0 }], NOW);
+  assert.equal(run.escalation, null);
+});
+
 // --- CON-46: multi-part sub_questions ---------------------------------
 
 test('an escalation.raised with sub_questions parses it into run.escalation.subQuestions', () => {
