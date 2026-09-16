@@ -232,6 +232,7 @@ bash_old = (
 )
 bash_new = (
     '        reason="${result#MALFORMED:}"\n'
+    '        [ -n "${CON180_FIRST_READ_MARKER:-}" ] && printf %s read > "$CON180_FIRST_READ_MARKER"\n'
     '        [ -n "${CON180_RACE_WINDOW_SEC:-}" ] && sleep "$CON180_RACE_WINDOW_SEC"\n'
     '        content_hash="$(cksum "$ANSWER_FILE" 2>/dev/null)"\n'
 )
@@ -256,7 +257,8 @@ REPO="$(new_repo)"
 TICKET=HEL-978
 LOG="$REPO/.concertino/runs/$TICKET/events.jsonl"
 ANSWER_FILE="$REPO/.concertino/runs/$TICKET/answer.json"
-( cd "$REPO" && CON180_RACE_WINDOW_SEC=2 "$OLD_MUTANT" escalation --await \
+FIRST_READ_MARKER="$(mktemp -u)"
+( cd "$REPO" && CON180_RACE_WINDOW_SEC=2 CON180_FIRST_READ_MARKER="$FIRST_READ_MARKER" "$OLD_MUTANT" escalation --await \
     ticket="$TICKET" role=orchestrator \
     sub_questions='[{"question":"a?","options":["y","n"]},{"question":"b?","options":["y","n"]}]' \
   ) > "$REPO/out.txt" 2>/dev/null &
@@ -269,13 +271,26 @@ done
 # that pre-dates this escalation, so A has to land AFTER raising, not before.
 mkdir -p "$(dirname "$ANSWER_FILE")"
 printf '%s' "$MALFORMED_A" > "$ANSWER_FILE"
-# The mutant's setup work (MULTI_PART/TOTAL derivation, trap install) takes
-# a little longer than the raise itself, so give its first poll tick a full
-# second to actually read A and enter its injected 2s sleep before B lands
-# -- confirmed empirically (0.3s was too tight and let B's write win the
-# race for the FIRST read too, which proves nothing). 1s still leaves ample
-# margin inside the 2s window for B's write to land before the sleep ends.
-sleep 1
+# CON-200: wait for POSITIVE EVIDENCE that the mutant has actually read A --
+# the marker its injected MALFORMED branch writes immediately after parsing
+# the read's result, before entering the injected 2s window -- then write B
+# inside that window. This used to be a fixed `sleep 1`, which raced
+# emit-event.sh's OWN 1s poll period: measured first-read margins were
+# 0.943-0.947s unloaded (~55ms of headroom) and bimodal under load
+# (0.106-0.179s, or 1.048-1.050s -- past the budget, so B won the first read
+# and the STALE-reason assertion below failed). Because the wait and the
+# period it races were the same length, no constant <= the period is safe and
+# a larger one only narrows the failing phase band; hence a condition wait.
+# Bounded at 10s (~10x the observed event, far under the 20s this file's
+# wait_killed_bounded calls use) and reported as a LOUD failure on timeout --
+# never a silent fallthrough that would assert the split below against an
+# interleaving nobody established.
+for _ in $(seq 1 200); do
+  [ -s "$FIRST_READ_MARKER" ] && break
+  sleep 0.05
+done
+check "CON-180 repro: the mutant recorded its first read of A before B was written" \
+  "$([ -s "$FIRST_READ_MARKER" ] && echo recorded || echo MISSING)" "recorded"
 printf '%s' "$MALFORMED_B" > "$ANSWER_FILE"
 HASH_B="$(cksum "$ANSWER_FILE")"
 sleep 3
