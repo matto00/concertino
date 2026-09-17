@@ -340,14 +340,28 @@ current `git rev-parse HEAD`, at the moment you finish reading the diff, not
 at emit time. The executor can commit between those two moments; passing
 `head_sha` explicitly (CON-166) is what lets `check-merge-readiness.sh`
 refuse a merge on a commit you never actually saw, rather than certifying
-whatever HEAD happens to be when this line runs.
+whatever HEAD happens to be when this line runs. If you state `head_sha`, it
+must be the full 40-character SHA `git rev-parse HEAD` prints — `emit-event.sh`
+refuses anything shorter (CON-187).
+
+Every verdict you emit must also carry `category=<value>` (CON-189), one of:
+
+- `mechanical` — a gate failed, or you found a lint/type error/broken test
+- `spec-divergence` — the implementation does not match the written spec
+- `design-judgment` — the implementation is sound but wrong-shaped; an
+  opinion about structure
+- `intent-mismatch` — the work satisfies the stated acceptance criteria but
+  still misses the point
+
+`emit-event.sh` refuses a verdict with a missing or unrecognized `category`.
 
 ```bash
 cd "$WORKTREE_PATH" && scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/evaluation-<M>.md" --no-clobber
 # READY ref=<durable path>
 cd "$WORKTREE_PATH" && scripts/concertino/emit-event.sh verdict \
   ticket=$TICKET_ID role=evaluator verdict=<PASS|FAIL|BLOCKER|ESCALATION> ref=<durable path from READY ref=> \
-  head_sha=<the SHA you reviewed>
+  category=<mechanical|spec-divergence|design-judgment|intent-mismatch> \
+  head_sha=<the full 40-character SHA you reviewed>
 ```
 
 If `persist-evidence.sh` prints `FAIL`, emit `verdict` with no `ref` field at

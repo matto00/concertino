@@ -252,6 +252,14 @@ SUB_QUESTIONS=""
 # `*)` case still folds head_sha into FIELDS/OTHER_FIELDS unchanged for every
 # other event kind; this var only drives the head_sha_source decision.
 HEAD_SHA=""
+# CON-189/CON-194: captured separately (like HEAD_SHA above) so the
+# verdict-field validation block below — which sits AFTER the CON-171
+# auditor-lease release, never in this loop (design.md Decision 3) — can
+# validate the caller-supplied value. The `*)` case already folds these into
+# FIELDS/OTHER_FIELDS unchanged for every event kind; these vars only carry
+# the extra raw copy the post-loop validation needs.
+CATEGORY=""
+GATE_FIELD=""
 MAX_WAIT_SEC=""
 
 for kv in ${ARGS+"${ARGS[@]}"}; do
@@ -304,6 +312,24 @@ for kv in ${ARGS+"${ARGS[@]}"}; do
       # needs if that candidate line turns out to be too long.
       CONTEXT="$val"
       FIELDS="${FIELDS},\"context\":$(json_value "$val")"
+      ;;
+    category)
+      # CON-189: captured raw here; refused (if missing/illegal on a verdict,
+      # or illegal on any other kind) below the CON-171 lease release, NOT in
+      # this loop — the loop runs above that release, and refusing here would
+      # strand an auditor verdict's teardown lease behind --force-teardown
+      # (design.md Decision 3). Falls through to FIELDS/OTHER_FIELDS exactly
+      # like the generic `*)` case; no new encoding path.
+      CATEGORY="$val"
+      FIELDS="${FIELDS},\"category\":$(json_value "$val")"
+      OTHER_FIELDS="${OTHER_FIELDS},\"category\":$(json_value "$val")"
+      ;;
+    gate)
+      # CON-194: same capture-only-here, validate-below-the-release pattern as
+      # `category` above, for the same CON-171 reason.
+      GATE_FIELD="$val"
+      FIELDS="${FIELDS},\"gate\":$(json_value "$val")"
+      OTHER_FIELDS="${OTHER_FIELDS},\"gate\":$(json_value "$val")"
       ;;
     sub_questions)
       # Raised alongside (never instead of) question/options — CON-46's
@@ -383,6 +409,65 @@ TICKET="$(printf '%s' "$TICKET" | tr '[:lower:]' '[:upper:]')"
 # of KIND/ROLE/TICKET-shape is auditor-verdict-specific past this point.
 if [ "$KIND" = "verdict" ] && [ "$ROLE" = "auditor" ]; then
   lease_release "$ROOT" "$TICKET" || true
+fi
+
+# --- CON-189/CON-187/CON-194: verdict-field validation -----------------------
+# Deliberately placed HERE — after the CON-171 lease release above, never in
+# the k=v argument loop — so a refused auditor verdict still releases its
+# Phase-4 teardown lease (design.md Decision 3). Each refusal is a non-zero
+# exit with no event appended, matching the CON-188 `resolution_channel`
+# precedent extended here to `verdict`'s own required fields (design.md
+# Decision 1).
+if [ -n "$CATEGORY" ] || [ "$KIND" = "verdict" ]; then
+  case "$KIND" in
+    verdict)
+      case "$CATEGORY" in
+        mechanical|spec-divergence|design-judgment|intent-mismatch) ;;
+        *)
+          echo "emit-event.sh: invalid or missing category '${CATEGORY}' (must be one of: mechanical, spec-divergence, design-judgment, intent-mismatch)" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    *)
+      # CON-189 task 2.3: a category is never required on a non-verdict
+      # event, but an illegal one supplied anyway is still refused rather
+      # than recorded meaningless.
+      case "$CATEGORY" in
+        mechanical|spec-divergence|design-judgment|intent-mismatch) ;;
+        *)
+          echo "emit-event.sh: invalid category '${CATEGORY}' (must be one of: mechanical, spec-divergence, design-judgment, intent-mismatch)" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+  esac
+fi
+
+if [ "$KIND" = "verdict" ]; then
+  # CON-187: a STATED head_sha must be a full 40-character hex SHA. Omitted
+  # SHAs are untouched (design.md Context fact 3 / proposal.md) — this check
+  # only fires when the caller actually passed head_sha=.
+  if [ -n "$HEAD_SHA" ]; then
+    if ! [[ "$HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+      echo "emit-event.sh: invalid head_sha '${HEAD_SHA}' (must be a full 40-character hexadecimal SHA)" >&2
+      exit 1
+    fi
+  fi
+
+  # CON-194: a skeptic verdict must state which gate it resolves, so a
+  # duplicate record for one review (same ticket/role/gate) is mechanically
+  # detectable (design.md Decision 5). Evaluator and auditor verdicts are
+  # unaffected.
+  if [ "$ROLE" = "skeptic" ]; then
+    case "$GATE_FIELD" in
+      design|final) ;;
+      *)
+        echo "emit-event.sh: invalid or missing gate '${GATE_FIELD}' (must be one of: design, final)" >&2
+        exit 1
+        ;;
+    esac
+  fi
 fi
 
 RUN_DIR="${ROOT}/.concertino/runs/${TICKET}"

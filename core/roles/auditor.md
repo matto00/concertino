@@ -277,6 +277,23 @@ Write to `WORKTREE_PATH/<change-dir>/auditor-report.md`:
 If an environmental failure blocks verification before you can even reach a
 verdict, write `BLOCKER` with the diagnosis instead of guessing.
 
+Every verdict you emit must also carry `category=<value>` (CON-189), one of:
+
+- `mechanical` — Condition 1–3 (`check-merge-readiness.sh`) failed, or your
+  own verdict is a gate/lint/test-shaped failure (most `ESCALATE`/`BLOCKER`
+  outcomes land here)
+- `spec-divergence` — Condition 4's cold trace found the delivered work does
+  not match the written spec
+- `design-judgment` — the work is sound but wrong-shaped, an opinion about
+  structure noticed during the cold trace
+- `intent-mismatch` — Condition 4's cold trace found the work satisfies its
+  stated acceptance criteria but still misses the point
+
+A `MERGE` verdict still requires a `category` — use whichever value best
+characterizes what you checked (typically `mechanical`, since Conditions 1–3
+passing is itself a mechanical result). `emit-event.sh` refuses a verdict
+with a missing or unrecognized `category`.
+
 Immediately after writing your report, persist it so `ref` survives
 `cleanup.sh --phase4` removing this worktree, then emit the verdict for the
 dashboard using that durable path — never the raw `WORKTREE_PATH`-relative
@@ -286,7 +303,8 @@ report path:
 cd "$WORKTREE_PATH" && scripts/concertino/persist-evidence.sh "$TICKET_ID" "WORKTREE_PATH/<change-dir>/auditor-report.md"
 # READY ref=<durable path>
 cd "$WORKTREE_PATH" && scripts/concertino/emit-event.sh verdict \
-  ticket=$TICKET_ID role=auditor verdict=<MERGE|ESCALATE|BLOCKER|STALE|ESCALATION-RAISE> ref=<durable path from READY ref=>
+  ticket=$TICKET_ID role=auditor verdict=<MERGE|ESCALATE|BLOCKER|STALE|ESCALATION-RAISE> ref=<durable path from READY ref=> \
+  category=<mechanical|spec-divergence|design-judgment|intent-mismatch>
 ```
 
 If `persist-evidence.sh` prints `FAIL` instead, emit `verdict` with no `ref`

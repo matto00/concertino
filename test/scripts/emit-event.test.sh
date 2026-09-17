@@ -92,6 +92,22 @@ check "self-test: the FIXED check (captured child pid, by PID) correctly reports
 # process running past its own completion.
 kill -KILL "$LEAKY_CHILD" 2>/dev/null
 wait "$LEAKY_CHILD" 2>/dev/null
+# CON-189 cycle 4: bounded poll for the SIGKILL to actually be reflected by
+# `kill -0` before asserting, mirroring this same file's own "wait for the
+# child to appear" idiom a few lines above (seq 1 50 / sleep 0.1 = 5s bound)
+# rather than a fixed sleep or a magic constant (CON-200 precedent: no
+# constant at or below the poll period it races is ever safe). `wait
+# "$LEAKY_CHILD"` above is best-effort only -- LEAKY_CHILD is a grandchild of
+# this shell (child of the now-dead LEAKY_PARENT_SCRIPT subshell), not a
+# direct job of it, so bash's `wait` silently no-ops on it rather than
+# blocking until the kernel finishes tearing it down; under load the very
+# next `kill -0` can still observe it alive. This is what turned CI red
+# (test (22)=FAILURE, PR #143): the assertion ran before the kill had
+# actually taken effect.
+for _ in $(seq 1 50); do
+  [ -z "$(children_alive "$LEAKY_CHILD")" ] && break
+  sleep 0.1
+done
 assert_children_dead "self-test: after cleanup, assert_children_dead reports it gone" "$LEAKY_CHILD"
 rm -f "$LEAKY_PARENT_SCRIPT"
 
@@ -689,11 +705,16 @@ echo "  $PASS passed, $FAIL failed"
 # generic k=v passthrough and is NOT the assertion under test here — the
 # assertion is head_sha_source, which the pre-fix script never wrote at all.
 REPO="$(new_repo)"
-( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-40 role=evaluator verdict=PASS head_sha=deadbeef ) >/dev/null 2>&1
+# CON-187 task 5.2: replaced the 8-char `deadbeef` fixture with a full
+# 40-character hex SHA — the new format validation necessarily refuses a
+# short one. The assertion's original intent (a stated SHA is recorded
+# verbatim with head_sha_source=stated) is preserved.
+STATED_SHA="deadbeef00112233445566778899aabbccddeeff"
+( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-40 role=evaluator verdict=PASS category=mechanical head_sha="$STATED_SHA" ) >/dev/null 2>&1
 LOG="$REPO/.concertino/runs/HEL-40/events.jsonl"
 check "stated head_sha recorded" \
   "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).head_sha)' "$LOG")" \
-  "deadbeef"
+  "$STATED_SHA"
 check "stated head_sha_source" \
   "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).head_sha_source)' "$LOG")" \
   "stated"
@@ -702,7 +723,7 @@ rm -rf "$REPO"
 # Omitted head_sha, inside a git worktree: infer HEAD, mark "inferred".
 REPO="$(new_repo)"
 REAL_HEAD="$(git -C "$REPO" rev-parse HEAD)"
-( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-41 role=skeptic verdict=CONFIRM ) >/dev/null 2>&1
+( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-41 role=skeptic verdict=CONFIRM category=mechanical gate=design ) >/dev/null 2>&1
 LOG="$REPO/.concertino/runs/HEL-41/events.jsonl"
 check "inferred head_sha equals git HEAD" \
   "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).head_sha)' "$LOG")" \
@@ -717,7 +738,7 @@ rm -rf "$REPO"
 # written, carries no SHA/head_sha_source at all, and emission does not fail.
 DIR2="$(mktemp -d)"
 git -C "$DIR2" init -q
-( cd "$DIR2" && "$SCRIPT" verdict ticket=HEL-42 role=evaluator verdict=PASS ) >/dev/null 2>&1
+( cd "$DIR2" && "$SCRIPT" verdict ticket=HEL-42 role=evaluator verdict=PASS category=mechanical ) >/dev/null 2>&1
 RC=$?
 LOG2="$DIR2/.concertino/runs/HEL-42/events.jsonl"
 check "unresolvable-HEAD case: emission still exits 0" "$RC" "0"
@@ -940,6 +961,231 @@ check "no prior raise: no escalation_id key (empty read_raised_field, not an err
   "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log("escalation_id" in JSON.parse(l) ? "present" : "absent")' "$LOG")" \
   "absent"
 rm -rf "$REPO"
+
+# --- CON-189/CON-187/CON-194: verdict category/gate/head_sha validation ----
+# CON-197 precedent: a validation that cannot fail is worse than none. Every
+# refusal below is asserted RED against the pre-change script FIRST, then
+# GREEN against the new one, so a vacuous check (one that would "pass" even
+# if the refusal code were deleted) is caught here rather than assumed.
+#
+# CR2 (evaluation-1.md): the RED half must run unconditionally on every
+# `npm test`, not only when an operator remembers to export
+# PRE_CHANGE_SCRIPT — a skip-by-default is exactly the "missing committed
+# shell-level coverage" shape CON-188 REFUTED on one ticket earlier in this
+# batch. So the pre-change copy is now self-derived via `git show` against
+# the review-base SHA this change was built against
+# (d246b703059e8b8e5ecea6de31c8e46491edacac, permanently in this repo's
+# history — the resolve-review-base.sh output recorded in
+# files-modified.md), landed in the TMPDIR scratch dir tmp-scratch.sh already
+# scopes and cleans up for this file. PRE_CHANGE_SCRIPT remains available as
+# an explicit override (e.g. for testing against a different base), but is no
+# longer the only path, and an unresolvable git-show is now a LOUD failure —
+# a silent skip is what produced this finding in the first place.
+CON189_BASE_SHA="d246b703059e8b8e5ecea6de31c8e46491edacac"
+CON189_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+if [ -n "${PRE_CHANGE_SCRIPT:-}" ] && [ -x "${PRE_CHANGE_SCRIPT}" ]; then
+  PRE="$PRE_CHANGE_SCRIPT"
+else
+  PRE="$(mktemp)"
+  if ! git -C "$CON189_REPO_ROOT" show "${CON189_BASE_SHA}:core/scripts/emit-event.sh" > "$PRE" 2>/dev/null; then
+    # CON-189 cycle 3: a depth-1 (shallow) clone — CI's default before this
+    # change added `fetch-depth: 0` to pr-ci.yml, and still a real
+    # possibility outside CI — cannot resolve a blob from a commit git never
+    # fetched. Try to deepen once before treating this as fatal, so the
+    # RED-baseline proof is robust to a shallow clone wherever it runs, not
+    # only in a CI job that remembered the workflow-level fix. `--unshallow`
+    # only applies to an actually-shallow repo; a full clone reports
+    # "--unshallow on a complete repository does not make sense" on stderr
+    # and exits non-zero, which is fine to ignore here — the point is
+    # whether the SECOND `git show` attempt below succeeds, not whether the
+    # deepen command itself reported success.
+    if [ "$(git -C "$CON189_REPO_ROOT" rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+      git -C "$CON189_REPO_ROOT" fetch --unshallow --quiet 2>/dev/null \
+        || git -C "$CON189_REPO_ROOT" fetch --deepen=1000 --quiet 2>/dev/null \
+        || true
+    fi
+    if ! git -C "$CON189_REPO_ROOT" show "${CON189_BASE_SHA}:core/scripts/emit-event.sh" > "$PRE" 2>/dev/null; then
+      echo "FATAL: could not resolve pre-change core/scripts/emit-event.sh at ${CON189_BASE_SHA} via git show, even after attempting to deepen a shallow clone — the CON-197 RED-baseline proof cannot run. This is a loud failure, not a skip (CR2, evaluation-1.md). If this is CI, confirm the checkout step uses fetch-depth: 0." >&2
+      exit 1
+    fi
+  fi
+  chmod +x "$PRE"
+fi
+
+assert_red() {
+  # $1=description $2..=k=v args to `verdict`; expects the PRE-change script
+  # to exit 0 (i.e. NOT yet refusing) — proving the assertion below is
+  # genuinely new coverage, not a vacuously-true check. PRE is always
+  # resolved by this point (self-derived via git show, or an explicit
+  # override) — no longer conditionally skipped.
+  local desc="$1"; shift
+  local d; d="$(new_repo)"
+  ( cd "$d" && "$PRE" verdict ticket=HEL-90 role=evaluator "$@" ) >/dev/null 2>&1
+  local rc=$?
+  check "RED (pre-change): $desc still exits 0 (baseline had no validation)" "$rc" "0"
+  rm -rf "$d"
+}
+
+# category: missing
+assert_red "missing category" verdict=PASS
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-90 role=evaluator verdict=PASS ) >/dev/null 2>&1
+RC=$?
+check "GREEN: missing category refused (non-zero exit)" "$RC" "1"
+check "GREEN: missing category — no event appended" \
+  "$([ -f "$REPO/.concertino/runs/HEL-90/events.jsonl" ] && echo present || echo absent)" "absent"
+rm -rf "$REPO"
+
+# category: unknown value
+assert_red "bogus category" verdict=PASS category=totally-bogus
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-91 role=evaluator verdict=PASS category=totally-bogus ) >/dev/null 2>&1
+RC=$?
+check "GREEN: bogus category refused (non-zero exit)" "$RC" "1"
+check "GREEN: bogus category — no event appended" \
+  "$([ -f "$REPO/.concertino/runs/HEL-91/events.jsonl" ] && echo present || echo absent)" "absent"
+rm -rf "$REPO"
+
+# category: each of the four legal values accepted and recorded verbatim
+for CAT in mechanical spec-divergence design-judgment intent-mismatch; do
+  REPO="$(new_repo)"
+  ( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-92 role=evaluator verdict=PASS "category=$CAT" ) >/dev/null 2>&1
+  RC=$?
+  LOG="$REPO/.concertino/runs/HEL-92/events.jsonl"
+  check "legal category=$CAT: accepted (exit 0)" "$RC" "0"
+  check "legal category=$CAT: recorded verbatim" \
+    "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).category)' "$LOG")" \
+    "$CAT"
+  rm -rf "$REPO"
+done
+
+# category on a non-verdict event: never required, but an illegal value is
+# still refused (CON-189 task 2.3 / verdict-category spec scenario 5).
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" phase.enter ticket=HEL-93 role=orchestrator phase=Execution ) >/dev/null 2>&1
+RC=$?
+check "phase.enter with no category: exits 0 (category not required off verdicts)" "$RC" "0"
+check "phase.enter with no category: still appended" \
+  "$(grep -c phase.enter "$REPO/.concertino/runs/HEL-93/events.jsonl" || true)" "1"
+rm -rf "$REPO"
+
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" phase.enter ticket=HEL-94 role=orchestrator phase=Execution category=bogus ) >/dev/null 2>&1
+RC=$?
+check "phase.enter with category=bogus: refused (non-zero exit)" "$RC" "1"
+check "phase.enter with category=bogus: no event appended" \
+  "$([ -f "$REPO/.concertino/runs/HEL-94/events.jsonl" ] && echo present || echo absent)" "absent"
+rm -rf "$REPO"
+
+# head_sha: stated, malformed (39 chars, 8 chars, 40 non-hex) vs full 40-hex
+FULLSHA="deadbeef00112233445566778899aabbccddeeff"
+SHA39="${FULLSHA%?}"
+SHA_NONHEX="zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+
+assert_red "39-char head_sha" verdict=PASS category=mechanical "head_sha=$SHA39"
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-95 role=evaluator verdict=PASS category=mechanical "head_sha=$SHA39" ) >/dev/null 2>&1
+RC=$?
+check "GREEN: 39-char head_sha refused" "$RC" "1"
+rm -rf "$REPO"
+
+assert_red "8-char head_sha" verdict=PASS category=mechanical head_sha=deadbeef
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-96 role=evaluator verdict=PASS category=mechanical head_sha=deadbeef ) >/dev/null 2>&1
+RC=$?
+check "GREEN: 8-char head_sha refused" "$RC" "1"
+rm -rf "$REPO"
+
+assert_red "40-char non-hex head_sha" verdict=PASS category=mechanical "head_sha=$SHA_NONHEX"
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-97 role=evaluator verdict=PASS category=mechanical "head_sha=$SHA_NONHEX" ) >/dev/null 2>&1
+RC=$?
+check "GREEN: 40-char non-hex head_sha refused" "$RC" "1"
+rm -rf "$REPO"
+
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-98 role=evaluator verdict=PASS category=mechanical "head_sha=$FULLSHA" ) >/dev/null 2>&1
+RC=$?
+LOG="$REPO/.concertino/runs/HEL-98/events.jsonl"
+check "GREEN: full 40-char head_sha accepted (exit 0)" "$RC" "0"
+check "GREEN: full 40-char head_sha recorded, source=stated" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();const e=JSON.parse(l);console.log(e.head_sha+"|"+e.head_sha_source)' "$LOG")" \
+  "$FULLSHA|stated"
+rm -rf "$REPO"
+
+# gate: required on role=skeptic only
+assert_red "skeptic verdict with no gate" verdict=CONFIRM category=mechanical
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-990 role=skeptic verdict=CONFIRM category=mechanical ) >/dev/null 2>&1
+RC=$?
+check "GREEN: skeptic verdict with no gate refused" "$RC" "1"
+rm -rf "$REPO"
+
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-991 role=skeptic verdict=CONFIRM category=mechanical gate=bogus ) >/dev/null 2>&1
+RC=$?
+check "GREEN: skeptic verdict with illegal gate refused" "$RC" "1"
+rm -rf "$REPO"
+
+for G in design final; do
+  REPO="$(new_repo)"
+  ( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-992 role=skeptic verdict=CONFIRM category=mechanical "gate=$G" ) >/dev/null 2>&1
+  RC=$?
+  LOG="$REPO/.concertino/runs/HEL-992/events.jsonl"
+  check "GREEN: skeptic gate=$G accepted (exit 0)" "$RC" "0"
+  check "GREEN: skeptic gate=$G recorded verbatim" \
+    "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).gate)' "$LOG")" \
+    "$G"
+  rm -rf "$REPO"
+done
+
+# evaluator/auditor verdicts are NOT required to state gate
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" verdict ticket=HEL-993 role=evaluator verdict=PASS category=mechanical ) >/dev/null 2>&1
+RC=$?
+check "GREEN: evaluator verdict with no gate still exits 0" "$RC" "0"
+rm -rf "$REPO"
+
+# --- CON-189 task 2.7 / CON-171: a refused auditor verdict still releases ---
+# --- the Phase-4 teardown lease (design.md Decision 3) ----------------------
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/lib/auditor-lease.sh"
+
+assert_refused_auditor_verdict_releases_lease() {
+  # $1=description $2.. = extra k=v args that make the verdict get refused
+  local desc="$1"; shift
+  local WTREPO WT
+  WTREPO="$(mktemp -d)"
+  git -C "$WTREPO" init -q -b main
+  git -C "$WTREPO" -c user.email=t@t.test -c user.name=t commit -q --allow-empty -m init
+  WT="$(mktemp -d)"; rm -rf "$WT"
+  git -C "$WTREPO" worktree add -q -b "lease-test-branch-$$-$RANDOM" "$WT" main >/dev/null 2>&1
+
+  local RESOLVED_ROOT CANON LEASE_FILE
+  RESOLVED_ROOT="$(cd "$WT" && lease_resolve_root)"
+  CANON="$(lease_canonicalize HEL-CON171)"
+  lease_acquire "$RESOLVED_ROOT" "$CANON" "$WT" "check-merge-readiness.sh"
+  LEASE_FILE="$(lease_path "$RESOLVED_ROOT" "$CANON")"
+
+  local PRE_EXISTS="no"
+  [ -f "$LEASE_FILE" ] && PRE_EXISTS="yes"
+  check "$desc: lease exists before the refused verdict" "$PRE_EXISTS" "yes"
+
+  ( cd "$WT" && "$SCRIPT" verdict ticket=HEL-CON171 role=auditor verdict=MERGE "$@" ) >/dev/null 2>&1
+  local RC=$?
+  check "$desc: verdict itself still exits non-zero" "$RC" "1"
+
+  local POST_EXISTS="yes"
+  [ -f "$LEASE_FILE" ] || POST_EXISTS="no"
+  check "$desc: lease still released despite the refusal" "$POST_EXISTS" "no"
+
+  git -C "$WTREPO" worktree remove --force "$WT" >/dev/null 2>&1
+  rm -rf "$WTREPO" "$WT" 2>/dev/null
+}
+
+assert_refused_auditor_verdict_releases_lease "refused on illegal category" category=totally-bogus
+assert_refused_auditor_verdict_releases_lease "refused on malformed head_sha" category=mechanical head_sha=deadbeef
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

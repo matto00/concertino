@@ -988,5 +988,56 @@ check "166.12.1 empty-PATHS (no branch divergence at all) passes" "$RC" "0"
 check "166.12.2 empty-PATHS passes cleanly (prints PASS)" "$OUT" "PASS"
 rm -rf "$ORIGIN" "$SEED" "$GH_MOCK_DIR" "$ERR"
 
+# --- CON-189/CON-187 design.md Decision 9 / tasks.md 5.3 / verdict-category --
+# --- spec's historical-tolerance scenario: readiness half (evaluation-1.md --
+# --- CR1) --------------------------------------------------------------------
+# check-merge-readiness.sh's own code is untouched by this change (its jq
+# selection reads only .verdict/.head_sha — never .category or .gate), so a
+# historical verdict missing category (eval_pass/skeptic_confirm already
+# never set it — this is the same shape every fixture above already uses)
+# and one carrying a malformed head_sha (short, not the 40-hex form the new
+# emit-time validation would refuse going forward — exactly the shape of the
+# three already-malformed corpus entries this change's own premise-validation
+# found) must reach the exact same outcome the script already produces for
+# an unresolvable/malformed reviewed SHA (166.4/166.5 above), proving nothing
+# regressed for a log written before this change existed.
+
+# 189.1: an uncategorized-but-otherwise-normal pair still passes cleanly —
+# the historical-tolerance happy path (design.md Decision 9's first scenario:
+# "a pre-change log still renders ... reaches the same outcome").
+REPO="$(new_repo)"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-189-1 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-189-1 TEST-189-1
+check "189.1.1 uncategorized evaluator+skeptic verdicts: still all-pass exits zero" "$RC" "0"
+check "189.1.2 uncategorized evaluator+skeptic verdicts: still prints PASS" "$OUT" "PASS"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# 189.2: an uncategorized evaluator verdict alongside a skeptic verdict
+# carrying a malformed (8-character) head_sha — the exact shape of the
+# HEL-1105/HEL-1121 corpus entries CON-187's own ticket.md documents as
+# already-existing defects this change does not (and cannot) retroactively
+# fix. Reaches the same STALE/unresolvable-SHA refusal 166.4/166.5 already
+# assert for a well-formed-but-nonexistent SHA — the malformed length is not
+# specially detected or crashed on by the read path, it is simply another
+# unresolvable value.
+REPO="$(new_repo)"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-189-2 "$(eval_pass "$HS")" \
+  '{"t":2,"kind":"verdict","role":"skeptic","verdict":"CONFIRM","head_sha":"deadbeef"}'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-189-2 TEST-189-2
+check "189.2.1 malformed (8-char) skeptic head_sha: refuses exactly as an unresolvable SHA does (exit 4)" "$RC" "4"
+has "189.2.2 malformed head_sha is named in the refusal, same as 166.4's unresolvable-SHA message shape" \
+  "STALE skeptic reviewed SHA is unresolvable: deadbeef" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

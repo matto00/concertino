@@ -897,12 +897,19 @@ path there is no other way the verdict reaches you.
   any other option set and a legitimate override leaves the gate permanently
   unsatisfiable.
 
-  **Never emit a `verdict role=skeptic` event yourself to represent an
-  override.** The gate is cleared by the human's recorded answer, not by your
+  **Never emit a `verdict` event yourself, for any role, gate, or outcome**
+  (CON-194) — this override case is only the motivating example, not the
+  scope. The gate is cleared by the human's recorded answer, not by your
   report of it: `escalation.answered` is written only by `emit-event.sh`'s own
   resolution path from an answer file a human wrote, so no agent can forge
   one. A relayed authorization is not authority — an orchestrator-written
-  CONFIRM would be exactly that, and the auditor is right to refuse it.
+  CONFIRM would be exactly that, and the auditor is right to refuse it. The
+  same rule holds outside an override too: on HEL-1109 the orchestrator
+  emitted its own `verdict` after the design gate's round-2 CONFIRM, creating
+  two log entries for one review — a `verdict` event is a reviewing role's
+  own record of its own review, never the orchestrator's summary of one. Your
+  own accounting of a verdict stays what it already is: record it in
+  `workflow-state.md`, never as an additional `emit-event.sh verdict` call.
   If the harness can't wait inline on either the executor resume or the
   skeptic re-spawn, poll for the executor's new commit / the skeptic's report
   file instead of returning control, or escalate.
