@@ -110,9 +110,29 @@ node -e '
   // payload'"'"'s `agent_type` is literally `concertino-executor` etc. SessionEnd
   // never carries `agent_type` at all, so this always defaults to
   // "orchestrator" for that firing.
-  const role = payload.agent_type
-    ? String(payload.agent_type).replace(/^concertino-/, "")
-    : "orchestrator";
+  //
+  // CON-191: `role` must always lie within emit-event.sh'"'"'s closed role set
+  // (see the emit-role-validation capability) or the event this script is
+  // about to emit gets refused outright, silently losing cost telemetry.
+  // `SubagentStop` fires for EVERY Task-tool subagent of a concertino
+  // session, not only its own `concertino-<role>` agents, so a non-Concertino
+  // `agent_type` (a general-purpose/exploratory subagent spawned in the same
+  // session) is a real, expected case here — normalise it onto `script`
+  // (the emitter'"'"'s own inert default) rather than passing the raw stripped
+  // value through, and preserve that raw value verbatim in its own field so
+  // no information is lost and the `role` grouping key stays clean.
+  const AGENT_ROLES = ["orchestrator", "executor", "evaluator", "skeptic", "auditor"];
+  const rawAgentType = payload.agent_type ? String(payload.agent_type) : null;
+  const strippedAgentType = rawAgentType ? rawAgentType.replace(/^concertino-/, "") : null;
+  let role, normalizedAgentType = null;
+  if (!rawAgentType) {
+    role = "orchestrator";
+  } else if (AGENT_ROLES.includes(strippedAgentType)) {
+    role = strippedAgentType;
+  } else {
+    role = "script";
+    normalizedAgentType = rawAgentType;
+  }
   const cursorKey = String((isSubagent ? payload.agent_id : payload.session_id) || "unknown");
 
   let raw;
@@ -185,6 +205,11 @@ node -e '
     "cache_read_tokens=" + cacheReadTokens, "cache_creation_tokens=" + cacheCreationTokens,
   ];
   if (model) args.push("model=" + model);
+  // CON-191: preserve the raw, unstripped agent_type only when it was
+  // actually normalised away from `role` above — a recognised
+  // `concertino-<role>` agent_type needs no separate carry-through field,
+  // since `role` already records exactly what it named.
+  if (normalizedAgentType) args.push("agent_type=" + normalizedAgentType);
   // Fixed-point, not exponential notation (a tiny cost like 8.5e-7 would
   // otherwise reach emit-event.sh'"'"'s json_value() as a string it writes out
   // literally — "8.5e-7" round-trips through JSON fine, but is needlessly

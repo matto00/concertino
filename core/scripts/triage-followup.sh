@@ -51,6 +51,13 @@ set -uo pipefail
 # produced it, then exits 0 — this is what the caller passes through as
 # `context=` on the `emit-event.sh escalation --await` call that follows.
 #
+# CON-190: additionally prints one machine-readable line, prefixed
+# `TRIAGE_JSON:`, carrying a JSON object with `ac_relevant`, `effort`, the
+# computed `overlap`, and `recommendation` — the same four values a
+# `ticket.filed` event's `triage=` field requires. This line is additive: the
+# human-readable block above it is unchanged in meaning, since that block is
+# still what an escalation passes through as `context=`.
+#
 # On a missing required field, an `ac_relevant`/`effort` value outside the
 # allowed set, or a `worktree=` that is not a git repository: prints
 # `FAIL <reason>` to stderr, prints nothing to stdout, and exits non-zero —
@@ -168,3 +175,19 @@ Follow-up triage
   note: discard is always a valid choice regardless of this recommendation —
         this script has no signal for "not worth doing," only for scope/cost.
 EOF
+
+# CON-190: one machine-readable line carrying the four values a
+# `ticket.filed` event's `triage` field requires — distinguishable from the
+# human-readable block above by a fixed prefix, so a caller can grep for it
+# and JSON-decode the remainder without disturbing the block above (still
+# passed through as `context=` unchanged, per design.md Decision 7). Built
+# with node (already a hard dependency of this script suite) so JSON escaping
+# is correct regardless of what a caller-supplied `description`/`files`
+# happens to contain — this line carries only the four triage fields, never
+# the free-text description/files, so no caller input reaches it unescaped.
+node -e '
+  const [acRelevant, effort, overlap, recommendation] = process.argv.slice(1);
+  process.stdout.write(
+    "TRIAGE_JSON:" + JSON.stringify({ ac_relevant: acRelevant, effort, overlap, recommendation }) + "\n"
+  );
+' "$AC_RELEVANT" "$EFFORT" "$OVERLAP" "$RECOMMENDATION"

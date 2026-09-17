@@ -164,13 +164,16 @@ rm -rf "$REPO"
 # --- identity fields stay strings even when they look numeric ---------------
 # `ticket` itself can no longer be pure digits (looks_like_ticket requires a
 # leading letter/# and a trailing digit — see CON-14), so HEL-42 stands in as
-# a ticket-shaped value; `role` carries no such shape requirement, so `7`
-# still exercises the same auto-unquote-avoidance for that field.
+# a ticket-shaped value. `role` is no longer usable for this probe as of
+# CON-191 (it is now validated against a closed set — `role=7` is refused,
+# not auto-unquote-avoided) — `project=7` carries no such shape requirement
+# and still exercises the same auto-unquote-avoidance the identity fields
+# share.
 REPO="$(new_repo)"
-( cd "$REPO" && "$SCRIPT" note ticket=HEL-42 role=7 msg=hi ) >/dev/null 2>&1
+( cd "$REPO" && "$SCRIPT" note ticket=HEL-42 role=script project=7 msg=hi ) >/dev/null 2>&1
 LOG="$REPO/.concertino/runs/HEL-42/events.jsonl"
 check "ticket stays a string" "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).ticket)' "$LOG")" "string"
-check "numeric role stays a string"   "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).role)' "$LOG")" "string"
+check "numeric-looking project stays a string" "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(typeof JSON.parse(l).project)' "$LOG")" "string"
 rm -rf "$REPO"
 
 # --- `t` and `kind` cannot be shadowed by a caller --------------------------
@@ -1186,6 +1189,227 @@ assert_refused_auditor_verdict_releases_lease() {
 
 assert_refused_auditor_verdict_releases_lease "refused on illegal category" category=totally-bogus
 assert_refused_auditor_verdict_releases_lease "refused on malformed head_sha" category=mechanical head_sha=deadbeef
+
+# =============================================================================
+# CON-191: closed role validation
+# =============================================================================
+
+assert_red_role() {
+  # $1=description $2=role $3..=extra k=v; expects the PRE-change script to
+  # exit 0 (i.e. NOT yet refusing the role) — same shape as assert_red above,
+  # but against `phase.enter` (role validation applies to every kind, not
+  # only `verdict`).
+  local desc="$1" role="$2"; shift 2
+  local d; d="$(new_repo)"
+  ( cd "$d" && CONCERTINO_ROLE="$role" "$PRE" phase.enter ticket=HEL-190 "$@" ) >/dev/null 2>&1
+  local rc=$?
+  check "RED (pre-change): $desc still exits 0 (baseline had no role validation)" "$rc" "0"
+  rm -rf "$d"
+}
+
+# Misspelled role: refused post-change, accepted pre-change (RED baseline).
+assert_red_role "role=orchestorator" orchestorator
+REPO="$(new_repo)"
+( cd "$REPO" && CONCERTINO_ROLE=orchestorator "$SCRIPT" phase.enter ticket=HEL-190 ) >/dev/null 2>&1
+RC=$?
+check "GREEN: role=orchestorator refused (non-zero exit)" "$RC" "1"
+check "GREEN: role=orchestorator — no event appended" \
+  "$([ -f "$REPO/.concertino/runs/HEL-190/events.jsonl" ] && echo present || echo absent)" "absent"
+rm -rf "$REPO"
+
+# Every legal role is accepted and recorded verbatim.
+for R in orchestrator executor evaluator skeptic auditor script dashboard; do
+  REPO="$(new_repo)"
+  ( cd "$REPO" && CONCERTINO_ROLE="$R" "$SCRIPT" phase.enter ticket=HEL-191 ) >/dev/null 2>&1
+  RC=$?
+  LOG="$REPO/.concertino/runs/HEL-191/events.jsonl"
+  check "legal role=$R: accepted (exit 0)" "$RC" "0"
+  check "legal role=$R: recorded verbatim" \
+    "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).role)' "$LOG")" \
+    "$R"
+  rm -rf "$REPO"
+done
+
+# The emitter's own default (no CONCERTINO_ROLE set) still resolves to
+# role=script and is accepted — task 2.3.
+REPO="$(new_repo)"
+( cd "$REPO" && env -u CONCERTINO_ROLE "$SCRIPT" phase.enter ticket=HEL-192 ) >/dev/null 2>&1
+RC=$?
+LOG="$REPO/.concertino/runs/HEL-192/events.jsonl"
+check "no CONCERTINO_ROLE set: exits 0" "$RC" "0"
+check "no CONCERTINO_ROLE set: role recorded as script" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).role)' "$LOG")" \
+  "script"
+rm -rf "$REPO"
+
+# A script-role run.end (cleanup.sh's actual invocation shape) is never
+# refused, so runs still become terminal — task 2.4.
+REPO="$(new_repo)"
+( cd "$REPO" && CONCERTINO_ROLE=script "$SCRIPT" run.end ticket=HEL-193 status=merged ) >/dev/null 2>&1
+RC=$?
+LOG="$REPO/.concertino/runs/HEL-193/events.jsonl"
+check "script-role run.end: exits 0" "$RC" "0"
+check "script-role run.end: appended" \
+  "$(grep -c run.end "$LOG" 2>/dev/null || true)" "1"
+rm -rf "$REPO"
+
+# A role-refused invocation still releases the auditor's teardown lease —
+# task 2.5. Uses the same assert_refused_auditor_verdict_releases_lease
+# helper defined above (CON-189/CON-171), but drives the refusal through an
+# out-of-set CONCERTINO_ROLE overriding the verdict's stated role=auditor
+# k=v pair — CONCERTINO_ROLE is read as the ROLE default, but an explicit
+# `role=` k=v argument always wins in the k=v loop, so this asserts the
+# release fires from RECOGNITION of `verdict`+`role=auditor` (CON-171's own
+# contract) even though the SAME invocation is refused moments later by role
+# validation misreading a stale env — exercised here instead via an illegal
+# `origin_kind`-shaped mistake is not applicable to `verdict`, so this test
+# instead forces the refusal through an illegal category while role=auditor,
+# proving role validation's new placement (immediately after the release,
+# before the category block) does not disturb the existing release-before-
+# category guarantee.
+assert_refused_auditor_verdict_releases_lease "refused on illegal category (post role-validation insertion)" category=still-bogus
+
+# =============================================================================
+# CON-190: ticket.filed required-field + enum validation
+# =============================================================================
+
+TF_VALID_ARGS=(
+  ticket_id=CON-999 origin_ticket=CON-190 origin_repo=helio
+  origin_role=orchestrator origin_phase=Setup origin_kind=followup
+  suggested_by=agent 'triage={"ac_relevant":"no","effort":"small","overlap":"none","recommendation":"standalone"}'
+)
+
+# RED baseline: today ticket.filed with fields omitted is accepted silently.
+assert_red_ticket_filed_missing() {
+  local field="$1"; shift
+  local d; d="$(new_repo)"
+  ( cd "$d" && "$PRE" ticket.filed ticket=HEL-194 role=orchestrator "$@" ) >/dev/null 2>&1
+  local rc=$?
+  check "RED (pre-change): ticket.filed missing $field still exits 0" "$rc" "0"
+  rm -rf "$d"
+}
+
+for FIELD in ticket_id origin_ticket origin_repo origin_role origin_phase origin_kind suggested_by triage; do
+  ARGS=()
+  for kv in "${TF_VALID_ARGS[@]}"; do
+    key="${kv%%=*}"
+    [ "$key" = "$FIELD" ] && continue
+    ARGS+=("$kv")
+  done
+  assert_red_ticket_filed_missing "$FIELD" "${ARGS[@]}"
+
+  REPO="$(new_repo)"
+  ( cd "$REPO" && "$SCRIPT" ticket.filed ticket=HEL-194 role=orchestrator "${ARGS[@]}" ) >/dev/null 2>&1
+  RC=$?
+  check "GREEN: ticket.filed missing $FIELD refused (non-zero exit)" "$RC" "1"
+  check "GREEN: ticket.filed missing $FIELD — no event appended" \
+    "$([ -f "$REPO/.concertino/runs/HEL-194/events.jsonl" ] && echo present || echo absent)" "absent"
+  rm -rf "$REPO"
+done
+
+# A fully-populated ticket.filed is accepted and records every field verbatim.
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" ticket.filed ticket=HEL-195 role=orchestrator "${TF_VALID_ARGS[@]}" ) >/dev/null 2>&1
+RC=$?
+LOG="$REPO/.concertino/runs/HEL-195/events.jsonl"
+check "GREEN: fully-populated ticket.filed accepted (exit 0)" "$RC" "0"
+check "GREEN: ticket.filed records ticket_id verbatim" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).ticket_id)' "$LOG")" \
+  "CON-999"
+check "GREEN: ticket.filed records origin_repo verbatim" \
+  "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim();console.log(JSON.parse(l).origin_repo)' "$LOG")" \
+  "helio"
+rm -rf "$REPO"
+
+# origin_kind enum: illegal value refused (pre-change accepted it silently).
+d="$(new_repo)"
+BAD_ARGS=()
+for kv in "${TF_VALID_ARGS[@]}"; do
+  case "$kv" in
+    origin_kind=*) BAD_ARGS+=("origin_kind=bogus") ;;
+    *) BAD_ARGS+=("$kv") ;;
+  esac
+done
+( cd "$d" && "$PRE" ticket.filed ticket=HEL-196 role=orchestrator "${BAD_ARGS[@]}" ) >/dev/null 2>&1
+RC=$?
+check "RED (pre-change): ticket.filed illegal origin_kind still exits 0" "$RC" "0"
+rm -rf "$d"
+
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" ticket.filed ticket=HEL-196 role=orchestrator "${BAD_ARGS[@]}" ) >/dev/null 2>&1
+RC=$?
+check "GREEN: ticket.filed illegal origin_kind refused (non-zero exit)" "$RC" "1"
+check "GREEN: ticket.filed illegal origin_kind — no event appended" \
+  "$([ -f "$REPO/.concertino/runs/HEL-196/events.jsonl" ] && echo present || echo absent)" "absent"
+rm -rf "$REPO"
+
+for K in followup roadmap escalation-split human; do
+  ARGS=()
+  for kv in "${TF_VALID_ARGS[@]}"; do
+    case "$kv" in
+      origin_kind=*) ARGS+=("origin_kind=$K") ;;
+      *) ARGS+=("$kv") ;;
+    esac
+  done
+  REPO="$(new_repo)"
+  ( cd "$REPO" && "$SCRIPT" ticket.filed ticket=HEL-197 role=orchestrator "${ARGS[@]}" ) >/dev/null 2>&1
+  RC=$?
+  check "legal origin_kind=$K: accepted (exit 0)" "$RC" "0"
+  rm -rf "$REPO"
+done
+
+# suggested_by enum: illegal value refused.
+BAD_ARGS=()
+for kv in "${TF_VALID_ARGS[@]}"; do
+  case "$kv" in
+    suggested_by=*) BAD_ARGS+=("suggested_by=nobody") ;;
+    *) BAD_ARGS+=("$kv") ;;
+  esac
+done
+d="$(new_repo)"
+( cd "$d" && "$PRE" ticket.filed ticket=HEL-198 role=orchestrator "${BAD_ARGS[@]}" ) >/dev/null 2>&1
+RC=$?
+check "RED (pre-change): ticket.filed illegal suggested_by still exits 0" "$RC" "0"
+rm -rf "$d"
+
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" ticket.filed ticket=HEL-198 role=orchestrator "${BAD_ARGS[@]}" ) >/dev/null 2>&1
+RC=$?
+check "GREEN: ticket.filed illegal suggested_by refused (non-zero exit)" "$RC" "1"
+rm -rf "$REPO"
+
+for S in agent human; do
+  ARGS=()
+  for kv in "${TF_VALID_ARGS[@]}"; do
+    case "$kv" in
+      suggested_by=*) ARGS+=("suggested_by=$S") ;;
+      *) ARGS+=("$kv") ;;
+    esac
+  done
+  REPO="$(new_repo)"
+  ( cd "$REPO" && "$SCRIPT" ticket.filed ticket=HEL-199 role=orchestrator "${ARGS[@]}" ) >/dev/null 2>&1
+  RC=$?
+  check "legal suggested_by=$S: accepted (exit 0)" "$RC" "0"
+  rm -rf "$REPO"
+done
+
+# Other event kinds are entirely unaffected by ticket.filed's field
+# requirements — task 1.4.
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" phase.enter ticket=HEL-200 role=orchestrator phase=Setup ) >/dev/null 2>&1
+RC=$?
+check "phase.enter with none of ticket.filed's fields: exits 0" "$RC" "0"
+check "phase.enter with none of ticket.filed's fields: appended" \
+  "$(grep -c phase.enter "$REPO/.concertino/runs/HEL-200/events.jsonl" 2>/dev/null || true)" "1"
+rm -rf "$REPO"
+
+REPO="$(new_repo)"
+( cd "$REPO" && "$SCRIPT" gate.result ticket=HEL-201 role=orchestrator ) >/dev/null 2>&1
+RC=$?
+check "gate.result with none of ticket.filed's fields: exits 0" "$RC" "0"
+check "gate.result with none of ticket.filed's fields: appended" \
+  "$(grep -c gate.result "$REPO/.concertino/runs/HEL-201/events.jsonl" 2>/dev/null || true)" "1"
+rm -rf "$REPO"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

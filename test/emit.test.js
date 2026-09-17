@@ -106,6 +106,67 @@ test('copyAssets copies every core/scripts/ file into scripts/concertino/, chmod
   assert.ok(fs.existsSync(path.join(out, 'scripts', 'concertino', 'pricing-table.json')));
 });
 
+// CON-191 design.md Decision 3/4: copyAssets() writes a render-time
+// instrumentation-digest manifest alongside the scripts it copies — the
+// baseline setup-worktree.sh's own live digest is compared against at run
+// start. Computed RECURSIVELY over every *.sh file actually written into
+// scripts/concertino/ (including scripts/concertino/lib/**), never core/'s
+// own templates.
+//
+// CON-191 skeptic-final-1 (round 1, REFUTE): this test originally counted
+// only TOP-LEVEL *.sh files via a plain fs.readdirSync(), which is exactly
+// the non-recursive shape the skeptic's probe found the production code
+// itself using — that version of this test would have stayed green even if
+// computeInstrumentationManifest() silently kept excluding
+// scripts/concertino/lib/**. Fixed to walk recursively (mirroring
+// listFilesRecursive()) so this test actually fails if that regresses.
+function listShFilesRecursive(dir, prefix) {
+  const out = [];
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return out; }
+  for (const entry of entries) {
+    const abs = path.join(dir, entry.name);
+    const rel = prefix ? prefix + '/' + entry.name : entry.name;
+    if (entry.isDirectory()) out.push(...listShFilesRecursive(abs, rel));
+    else if (entry.isFile() && entry.name.endsWith('.sh')) out.push(rel);
+  }
+  return out;
+}
+
+test('copyAssets writes .instrumentation-manifest.json alongside the rendered scripts', () => {
+  const out = tmpOut();
+  silently(() => copyAssets(out, CORE, false, true));
+
+  const manifestPath = path.join(out, 'scripts', 'concertino', '.instrumentation-manifest.json');
+  assert.ok(fs.existsSync(manifestPath), '.instrumentation-manifest.json should be written');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  assert.equal(typeof manifest.digest, 'string');
+  assert.ok(manifest.digest.length > 0);
+  assert.ok(manifest.files && typeof manifest.files === 'object');
+
+  // Every *.sh file actually rendered — anywhere under scripts/concertino/,
+  // including scripts/concertino/lib/** — has an entry keyed by its
+  // relative path, and nothing else does.
+  const renderedShFiles = listShFilesRecursive(path.join(out, 'scripts', 'concertino'), '');
+  assert.ok(renderedShFiles.length > 0, 'sanity: some .sh files should have been rendered');
+  // Sanity that this test actually exercises the nested case, not just the
+  // top-level one (guards against the fixture itself silently losing its
+  // lib/*.sh files in some future core/scripts/ reorganisation).
+  assert.ok(renderedShFiles.some((f) => f.startsWith('lib/')),
+    'sanity: at least one rendered .sh file should be nested under lib/');
+  for (const f of renderedShFiles) {
+    assert.ok(Object.prototype.hasOwnProperty.call(manifest.files, f), `manifest should record ${f}`);
+  }
+  assert.equal(Object.keys(manifest.files).length, renderedShFiles.length);
+});
+
+// A dry run must never write the manifest — dry runs write nothing at all.
+test('copyAssets does not write .instrumentation-manifest.json on a dry run', () => {
+  const out = tmpOut();
+  silently(() => copyAssets(out, CORE, true, true));
+  assert.equal(fs.existsSync(path.join(out, 'scripts', 'concertino', '.instrumentation-manifest.json')), false);
+});
+
 // track-per-run-cost-spend, tasks.md 2.2/design.md Decision 1/3:
 // mergeCostHookSettings wires report-cost.sh into BOTH SessionEnd and
 // SubagentStop — SessionEnd alone only ever reports the orchestrator role.

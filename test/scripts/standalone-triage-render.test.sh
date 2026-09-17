@@ -25,15 +25,7 @@ ok()    { PASS=$((PASS+1)); echo "  ok   $1"; }
 bad()   { FAIL=$((FAIL+1)); echo "  FAIL $1"; echo "       $2"; }
 check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$3] got [$2]"; fi; }
 
-echo "standalone triage rendering (CON-91)"
-
-# The exact pre-change wording (verbatim from core/roles/orchestrator.md
-# before this change — confirmed against `git show main:core/roles/orchestrator.md`)
-# that linear/github must still render byte-for-byte, indentation included.
-EXPECTED_LINEAR_GITHUB='   - **`standalone`** — file a new Linear ticket (`mcp__linear__save_issue`,
-     no `id`) summarizing `description` and linking back to the current
-     ticket (`$TICKET_ID`); note the new ticket'"'"'s identifier in your summary
-     to the human. No re-planning, no scope change to the current run.'
+echo "standalone triage rendering (CON-91 / CON-190)"
 
 extract_standalone_bullet() {
   # Prints the `standalone` bullet's lines (its own line through the line
@@ -52,7 +44,26 @@ RC=$?
 check "linear: sync exits zero" "$RC" "0"
 ORCH="$OUT/.claude/agents/concertino-orchestrator.md"
 BULLET="$(extract_standalone_bullet "$ORCH")"
-check "linear: standalone bullet is byte-identical to pre-change wording" "$BULLET" "$EXPECTED_LINEAR_GITHUB"
+if printf '%s' "$BULLET" | grep -qF 'mcp__linear__save_issue'; then
+  ok "linear: still names the Linear MCP call"
+else
+  bad "linear: still names the Linear MCP call" "not found in: $BULLET"
+fi
+if printf '%s' "$BULLET" | grep -qF 'origin_kind: followup'; then
+  ok "linear: ticket description carries origin_kind: followup (CON-190)"
+else
+  bad "linear: ticket description carries origin_kind: followup (CON-190)" "not found in: $BULLET"
+fi
+if printf '%s' "$BULLET" | grep -qF 'ticket.filed'; then
+  ok "linear: emits ticket.filed (CON-190)"
+else
+  bad "linear: emits ticket.filed (CON-190)" "not found in: $BULLET"
+fi
+if printf '%s' "$BULLET" | grep -qF 'origin_repo="$ORIGIN_REPO"'; then
+  ok "linear: ticket.filed records origin_repo derived from the running repository, not the ticket prefix"
+else
+  bad "linear: ticket.filed records origin_repo derived from the running repository, not the ticket prefix" "not found in: $BULLET"
+fi
 rm -rf "$OUT"
 
 # --- github fixture -----------------------------------------------------------
@@ -62,7 +73,16 @@ RC=$?
 check "github: sync exits zero" "$RC" "0"
 ORCH="$OUT/.claude/agents/concertino-orchestrator.md"
 BULLET="$(extract_standalone_bullet "$ORCH")"
-check "github: standalone bullet is byte-identical to pre-change wording" "$BULLET" "$EXPECTED_LINEAR_GITHUB"
+if printf '%s' "$BULLET" | grep -qF 'mcp__linear__save_issue'; then
+  ok "github: still names the Linear MCP call (github wording is identical to linear's)"
+else
+  bad "github: still names the Linear MCP call (github wording is identical to linear's)" "not found in: $BULLET"
+fi
+if printf '%s' "$BULLET" | grep -qF 'ticket.filed'; then
+  ok "github: emits ticket.filed (CON-190)"
+else
+  bad "github: emits ticket.filed (CON-190)" "not found in: $BULLET"
+fi
 rm -rf "$OUT"
 
 # --- local fixture -------------------------------------------------------------
@@ -104,6 +124,16 @@ if printf '%s' "$BULLET" | grep -qF 'mcp__linear__save_issue'; then
   bad "local: does not name the unexecutable Linear MCP call" "unexpectedly found mcp__linear__save_issue in: $BULLET"
 else
   ok "local: does not name the unexecutable Linear MCP call"
+fi
+if printf '%s' "$BULLET" | grep -qF 'origin_kind: followup'; then
+  ok "local: frontmatter carries origin_kind: followup (CON-190)"
+else
+  bad "local: frontmatter carries origin_kind: followup (CON-190)" "not found in: $BULLET"
+fi
+if printf '%s' "$BULLET" | grep -qF 'ticket.filed'; then
+  ok "local: emits ticket.filed (CON-190)"
+else
+  bad "local: emits ticket.filed (CON-190)" "not found in: $BULLET"
 fi
 rm -rf "$OUT"
 
