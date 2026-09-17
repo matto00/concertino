@@ -15,8 +15,8 @@ set -uo pipefail
 # resolved change-dir root) so a project archiving under a different prefix
 # is not refused on every delivery.
 #
-# Checks, in one invocation, the three MACHINE-VERIFIABLE conditions a safe
-# merge requires. The fourth condition a merge requires — the diff actually
+# Checks, in one invocation, the four MACHINE-VERIFIABLE conditions a safe
+# merge requires. The fifth condition a merge requires — the diff actually
 # satisfies the ticket's acceptance criteria — is cold subjective judgment
 # and stays entirely with the auditor; this script never attempts it.
 #
@@ -79,7 +79,24 @@ set -uo pipefail
 #      Decision 1). A CON-152 owner override waives the skeptic leg only
 #      (Decision 6); the evaluator leg is never waived. See "STALE" below.
 #
-# Prints "PASS" and exits 0 only when conditions 1-3 hold. Otherwise prints
+#   4. Protected paths  — (CON-193) no path in BRANCH's diff against the
+#      review base matches any glob configured in
+#      `agentMerge.protectedPaths`, read from the MAIN checkout's
+#      concertino.config.json (never from an argument or a worktree-local
+#      file — see design.md Decision 2) and matched with git's `:(glob)`
+#      pathspec magic (Decision 1), reusing condition 3's already-fetched
+#      base (Decision 5). A complete no-op — no git calls, no output — when
+#      `protectedPaths` is empty or unset. A match refuses distinctly (exit
+#      5, one "PROTECTED <path>" line per match to stderr) rather than
+#      failing or passing; an unresolvable main checkout, an unreadable/
+#      unparseable config, or a pattern git reports as unusable all refuse
+#      as a hard FAIL instead of silently proceeding as though nothing were
+#      protected (Decision 3, fail-closed). A pattern containing an
+#      unclosed `[` is treated as malformed and refused rather than
+#      silently matching nothing, since git's own pathspec engine accepts
+#      it and matches empty.
+#
+# Prints "PASS" and exits 0 only when conditions 1-4 hold. Otherwise prints
 # one "FAIL <reason>" line per failed condition to stderr and exits
 # non-zero — the same stdout/stderr contract assert-phase.sh already uses.
 #
@@ -115,6 +132,15 @@ set -uo pipefail
 # both present, exit 1 dominates (design.md Decision 6a) — a "do work and
 # re-invoke" signal must never mask a failure no amount of re-review clears.
 #
+# CON-193: a protected-path match is reported as one "PROTECTED <path>" line
+# per matched path, exit code 5 — distinct from exit 1 (FAIL), exit 3
+# (PENDING), and exit 4 (STALE). It means "a human must perform this merge",
+# never "retry" or "do work and re-invoke" — the auditor escalates and does
+# not attempt the merge itself. Precedence: 1 > 5 > 4 (design.md Decision
+# 4) — a hard failure still wins outright, but a protected-path match must
+# not be masked by a stale reviewed SHA, since clearing the staleness would
+# just surface the same protected-path refusal on the next invocation.
+#
 
 # This invocation can block for a while (bounded by the two timeouts below,
 # worst case a few minutes) — a caller invoking this via a tool with its own
@@ -132,6 +158,20 @@ set -uo pipefail
 # ===========================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# CON-193 (skeptic-final-3.md, standing constraint C4 — the FOURTH fail-open,
+# and the one that ends the pattern of independent bash reimplementations):
+# this script's OWN repo root, two levels up from either rendered location
+# (core/scripts/ or scripts/concertino/ — both are exactly two directories
+# below the repo root, so this resolves identically from either copy).
+# Condition 4 uses this to `require()` lib/config.js's own
+# `isPlainRelativeGlob` from THIS worktree's checkout (never the main
+# checkout's — the predicate under test is this run's own code, not
+# whatever main happens to have), so the glob-acceptance decision is made
+# by ONE piece of code, not by a second, independently-drifting bash
+# reimplementation of the same rule. See condition 4's own comment below
+# for why a prior bash reimplementation was itself the round-3 disarm
+# shape (locale-widened `[[ =~ ]]` character classes).
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/auditor-lease.sh"
 # shellcheck disable=SC1091
@@ -159,6 +199,10 @@ CI_PENDING_NAMES=""
 # bottom references this even on paths (ROOT unresolvable, no event log)
 # that never reach the block below.
 STALE=0
+# CON-193: set unconditionally, same reasoning as STALE above — referenced
+# at the bottom's exit-code decision even on paths that never reach the
+# condition-4 block (ROOT unresolvable, no VERIFIED_HEAD, etc).
+PROTECTED_MATCH=0
 fail() {
   echo "FAIL $*" >&2
   FAILED=1
@@ -526,12 +570,187 @@ else
       else
         stale_check skeptic "$SKEPTIC_SHA"
       fi
+
+      # --- 4: no diff path matches a configured protectedPaths glob --------
+      # (design.md Decision 2/3/4/5.) Only reached when FAILED is still 0
+      # up to this point — a hard failure earlier already dominates (exit 1
+      # wins over exit 5 regardless, so there is nothing to gain by
+      # detecting a match under an already-failed run). Reuses
+      # C3_BASE_REMOTE/C3_FETCH_RC, the same freshly-fetched base condition
+      # 3's stale-check already resolved, rather than resolving a second
+      # base (Decision 5). The glob list is read from the MAIN checkout's
+      # concertino.config.json (Decision 2) — never from an argument or a
+      # worktree-local file — via an embedded `node -e`, matching
+      # check-gate-chain-change.sh's existing precedent for structured
+      # config reads in this script suite.
+      #
+      # CON-193 (skeptic-final-3.md, standing constraint C4): this SAME
+      # `node -e` call ALSO validates every entry with `isPlainRelativeGlob`
+      # — required from THIS worktree's own `lib/config.js`
+      # (`${REPO_ROOT}/lib/config.js`, resolved above), never re-derived in
+      # bash. Rounds 1-3 each independently reimplemented the accept/reject
+      # predicate in bash, and each reimplementation diverged from the JS
+      # original in a way nobody predicted in advance: round 1's denylist
+      # missed a leading space; round 3's bash `[[ =~ ]]` character class
+      # turned out to be LOCALE-COLLATION-AWARE under the ambient
+      # `LANG=en_US.UTF-8` and silently widened `[A-Za-z0-9._-]` to accept
+      # accented Latin letters (`"récord/**"` — ACCEPTED by bash,
+      # correctly REJECTED by the ASCII-only JS regex), so an entry that
+      # looks like it protects `record/**` was accepted by this backstop
+      # and then matched nothing under the real ASCII `record/` directory.
+      # Two independent reimplementations of one predicate can always
+      # disagree; the fix is not a fourth reimplementation but ONE
+      # predicate, called once, with bash only consuming its verdict.
+      PP_JSON="$(node -e '
+        try {
+          const fs = require("fs");
+          const path = require("path");
+          const cfgPath = path.join(process.argv[1], "concertino.config.json");
+          if (!fs.existsSync(cfgPath)) { process.stdout.write(JSON.stringify({ ok: true, patterns: [] })); process.exit(0); }
+          const raw = fs.readFileSync(cfgPath, "utf8");
+          const cfg = JSON.parse(raw);
+          const pp = (cfg.agentMerge && Array.isArray(cfg.agentMerge.protectedPaths)) ? cfg.agentMerge.protectedPaths : [];
+          // CON-193 (round 4, self-caught regression — the require below
+          // used to run UNCONDITIONALLY, before this length check): only
+          // resolve/require lib/config.js (and thus isPlainRelativeGlob)
+          // when there is something to validate. In a project that HAS a
+          // concertino.config.json (the ordinary case) but has not set
+          // protectedPaths, `pp` is `[]` here and there is nothing to
+          // validate — this is the SAME no-op guarantee the missing-
+          // config-file branch above already gives, just one JSON key
+          // deeper. A consuming repo never receives concertino`s own
+          // `lib/` (only `scripts/concertino/*.sh` and role/law templates
+          // are rendered into it) — REPO_ROOT there has no `lib/config.js`
+          // at all, so an unconditional `require` threw for EVERY project
+          // with agentMerge enabled and ANY concertino.config.json,
+          // regardless of protectedPaths, which is a much bigger break
+          // than the round-3 defect this predicate exists to close.
+          if (pp.length === 0) {
+            process.stdout.write(JSON.stringify({ ok: true, patterns: [] }));
+            process.exit(0);
+          }
+          const { isPlainRelativeGlob } = require(path.join(process.argv[2], "lib", "config.js"));
+          const bad = [];
+          pp.forEach((entry, i) => {
+            if (typeof entry !== "string" || !isPlainRelativeGlob(entry)) bad.push({ i, entry: String(entry) });
+          });
+          if (bad.length) {
+            process.stdout.write(JSON.stringify({ ok: false, bad }));
+          } else {
+            process.stdout.write(JSON.stringify({ ok: true, patterns: pp }));
+          }
+        } catch (e) {
+          process.stderr.write(String((e && e.message) || e));
+          process.exit(2);
+        }
+      ' "$ROOT" "$REPO_ROOT" 2>&1)"
+      PP_RC=$?
+      if [ $PP_RC -ne 0 ]; then
+        # Decision 3, run-time fail-closed arm: an unreadable or unparseable
+        # config, or an unresolvable/unrequirable lib/config.js, refuses
+        # rather than proceeding as though nothing were protected.
+        fail "could not read/validate agentMerge.protectedPaths from main checkout config (${ROOT}/concertino.config.json) using ${REPO_ROOT}/lib/config.js: $(printf '%s' "$PP_JSON" | tr '\n' ' ' | cut -c1-200)"
+      else
+        PP_OK="$(printf '%s' "$PP_JSON" | jq -r '.ok' 2>/dev/null)"
+        if [ "$PP_OK" != "true" ]; then
+          # One or more entries failed lib/config.js's own
+          # isPlainRelativeGlob (the SAME predicate collectConfigIssues
+          # uses) — name every offending entry, exactly as
+          # collectConfigIssues would, and fail closed rather than
+          # proceeding with only the valid subset.
+          while IFS= read -r pp_bad_entry; do
+            fail "protectedPaths pattern is malformed (not a plain relative glob, per lib/config.js's isPlainRelativeGlob): ${pp_bad_entry}"
+          done < <(printf '%s' "$PP_JSON" | jq -r '.bad[]?.entry' 2>/dev/null)
+        fi
+        # jq -e so an empty array is distinguishable from "one empty-string
+        # entry" (moot here — an empty string already fails
+        # isPlainRelativeGlob and would have set PP_OK=false above, but the
+        # no-op guarantee below still needs this array regardless).
+        mapfile -t PROTECTED_PATTERNS < <(printf '%s' "$PP_JSON" | jq -r '.patterns[]?' 2>/dev/null)
+        if [ "$PP_OK" = "true" ] && [ "${#PROTECTED_PATTERNS[@]}" -gt 0 ]; then
+          # Decision 5: reuse condition 3's already-fetched base when it
+          # resolved cleanly; otherwise resolve our own the same way
+          # condition 3 does, so condition 4 still works on a run where the
+          # stale-check's own base fetch failed but this run's gates
+          # otherwise passed (C3_FETCH_RC nonzero only fails the STALE leg,
+          # not FAILED).
+          if [ -n "${C3_BASE_REMOTE:-}" ] && [ "${C3_FETCH_RC:-1}" -eq 0 ]; then
+            PP_BASE_REMOTE="$C3_BASE_REMOTE"
+          else
+            PP_BASE_REF=""
+            PP_BASE_RAW="$(cd "$WORKTREE_PATH" && gh pr view "$BRANCH" --json baseRefName 2>&1)"
+            if [ $? -eq 0 ]; then
+              PP_BASE_REF="$(printf '%s' "$PP_BASE_RAW" | jq -r '.baseRefName // ""' 2>/dev/null)"
+            fi
+            [ -z "$PP_BASE_REF" ] && PP_BASE_REF="${CONCERTINO_BASE_BRANCH:-main}"
+            (cd "$WORKTREE_PATH" && git fetch origin "$PP_BASE_REF" >/dev/null 2>&1)
+            PP_BASE_REMOTE="origin/${PP_BASE_REF}"
+          fi
+          PP_MB="$(git -C "$WORKTREE_PATH" merge-base "$PP_BASE_REMOTE" "$VERIFIED_HEAD" 2>/dev/null)"
+          if [ -z "$PP_MB" ]; then
+            fail "protectedPaths check could not resolve a common ancestor with ${PP_BASE_REMOTE} for head=${VERIFIED_HEAD}"
+          else
+            for pat in "${PROTECTED_PATTERNS[@]}"; do
+              # CON-193 (skeptic-final-3.md, standing constraint C4): the
+              # plain-glob accept/reject decision for `$pat` was ALREADY
+              # made above, once, by `lib/config.js`'s isPlainRelativeGlob
+              # (via the `node -e` call) — this loop does not re-derive it.
+              # A pattern reaching this point has already passed that
+              # single predicate.
+              #
+              # The ONE bash-side check that remains is deliberately NOT
+              # delegated: an unclosed `[` character class. This is not a
+              # "what characters does a plain glob use" question (which
+              # is exactly the question rounds 1-3 kept getting wrong in
+              # bash) — it is "does GIT's OWN pathspec engine treat this
+              # syntactically-valid-by-our-rules string as matching
+              # nothing," which is a property of git's parser, not of our
+              # allow-list. `isPlainRelativeGlob` does not check bracket
+              # balance either (design.md Decision 3 / spec "malformed
+              # glob fails closed": git's `:(glob)` magic accepts an
+              # unclosed character class and silently matches nothing —
+              # measured behavior, unrelated to which characters are
+              # "safe"). `LC_ALL=C` is pinned around this one remaining
+              # `[[ =~ ]]` use so it cannot repeat round 3's mistake: the
+              # test itself is a negated single-character class
+              # (`[^]]*$`, "anything but a closing bracket"), which is not
+              # a collating range and should not be locale-sensitive, but
+              # pinning the locale here removes any doubt rather than
+              # relying on that reasoning holding forever.
+              if (LC_ALL=C; [[ "$pat" =~ \[[^]]*$ ]]); then
+                fail "protectedPaths pattern is malformed (unclosed '['): ${pat}"
+                continue
+              fi
+              PP_MATCH_OUT="$(git -C "$WORKTREE_PATH" diff --name-only "$PP_MB" "$VERIFIED_HEAD" -- ":(glob)${pat}" 2>&1)"
+              PP_MATCH_RC=$?
+              if [ $PP_MATCH_RC -ne 0 ]; then
+                fail "protectedPaths pattern is unusable (git rejected it): ${pat}: $(printf '%s' "$PP_MATCH_OUT" | tr '\n' ' ' | cut -c1-200)"
+                continue
+              fi
+              if [ -n "$PP_MATCH_OUT" ]; then
+                PROTECTED_MATCH=1
+                while IFS= read -r pp_path; do
+                  [ -n "$pp_path" ] && echo "PROTECTED ${pp_path}" >&2
+                done <<< "$PP_MATCH_OUT"
+              fi
+            done
+          fi
+        fi
+      fi
     fi
   fi
 fi
 
 if [ "$FAILED" -ne 0 ]; then
   exit 1
+fi
+# CON-193 (design.md Decision 4): exit 1 dominates exit 5 — a hard failure
+# above already returned before this line is reached. Exit 5 dominates exit
+# 4 (STALE): a protected-path match must not be masked by a stale reviewed
+# SHA, since re-reviewing would just clear the 4 and surface the 5 anyway,
+# wasting a full gate cycle to reach the same conclusion.
+if [ "$PROTECTED_MATCH" -ne 0 ]; then
+  exit 5
 fi
 # CON-166 (design.md Decision 6a): exit 1 dominates exit 4 — a hard failure
 # above already returned. A stale reviewed SHA, with no hard failure, is

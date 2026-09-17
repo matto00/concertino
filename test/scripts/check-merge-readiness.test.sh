@@ -164,6 +164,88 @@ run_check() {
   RC=$?
 }
 
+# CON-193 (tasks.md 2.5/3.3d no-op guarantee): counts `git merge-base`
+# invocations made DURING the run, on top of the real `git` binary (so the
+# script's own git calls still work). Condition 3's stale-check already
+# calls `git merge-base` FOUR times on every healthy fixture (each role's
+# leg calls it twice — once against its reviewed SHA, once against
+# VERIFIED_HEAD — times two roles, evaluator/skeptic) — that is this
+# counter's BASELINE, not zero. Condition 4 is a genuine no-op (task 2.5)
+# only if an empty/absent protectedPaths list adds NOTHING on top of that
+# baseline; if the empty-list guard around condition 4's own PP_MB
+# computation is ever removed, this counter goes up
+# by exactly one, which run_check_spied's caller asserts against.
+REAL_GIT="$(command -v git)"
+run_check_spied() {
+  # Same contract as run_check, but also sets $MERGEBASE_CALLS to the
+  # number of `git merge-base` invocations made by the run.
+  local repo="$1" branch="$2" ticket="$3" prefix="${4:-$AUDITOR_ARCHIVE_PREFIX}"
+  local spy_dir; spy_dir="$(mktemp -d)"
+  cat > "$spy_dir/git" <<EOF
+#!/usr/bin/env bash
+# git is invoked as "git -C <dir> merge-base ..." here, so "merge-base" is
+# not necessarily \$1 -- scan all args, not just the first.
+for a in "\$@"; do
+  if [ "\$a" = "merge-base" ]; then
+    n=0
+    [ -f "$spy_dir/mergebasecalls" ] && n="\$(cat "$spy_dir/mergebasecalls")"
+    n=\$((n+1))
+    echo "\$n" > "$spy_dir/mergebasecalls"
+    break
+  fi
+done
+exec "$REAL_GIT" "\$@"
+EOF
+  chmod +x "$spy_dir/git"
+  ERR="$(mktemp)"
+  OUT="$(PATH="$spy_dir:$PATH" "$SCRIPT" "$repo" "$branch" "$ticket" "$prefix" 2>"$ERR")"
+  RC=$?
+  MERGEBASE_CALLS=0
+  [ -f "$spy_dir/mergebasecalls" ] && MERGEBASE_CALLS="$(cat "$spy_dir/mergebasecalls")"
+  rm -rf "$spy_dir"
+}
+
+# CON-193 (round 4, self-caught regression): every fixture ABOVE this point
+# invokes `$SCRIPT` -- the real file living inside THIS checkout
+# (core/scripts/check-merge-readiness.sh) -- so `SCRIPT_DIR`/`REPO_ROOT`
+# inside the script always resolve to THIS checkout's own root, which DOES
+# have `lib/config.js`. That is exactly why 133/133 fixtures stayed green
+# while condition 4's `node -e` call unconditionally `require()`d
+# `${REPO_ROOT}/lib/config.js` even for an empty/absent `protectedPaths` --
+# no fixture ever exercised the shape a REAL consuming repo is in, where
+# `scripts/concertino/check-merge-readiness.sh` is a byte-copied file with
+# no `lib/` anywhere above it (concertino ships `scripts/concertino/*.sh`
+# and role/law templates into a consumer's tree; it does NOT ship its own
+# `lib/`). This is a genuine coverage gap this suite had, not merely an
+# untested edge -- reported explicitly, not glossed over.
+#
+# `deployed_script_dir()` builds that real shape: a throwaway directory
+# containing ONLY a copy of the script and its two sourced lib/*.sh
+# dependencies (auditor-lease.sh, pr-reconcile.sh — the full source list;
+# neither sources anything further), laid out exactly as
+# `scripts/concertino/` is, with NO top-level `lib/config.js` anywhere in
+# its tree. `run_check_deployed` invokes THAT copy, not `$SCRIPT`, so
+# `REPO_ROOT` genuinely resolves to a directory with no `lib/config.js` --
+# the actual production consumer shape.
+deployed_script_dir() {
+  local dir; dir="$(mktemp -d)"
+  mkdir -p "$dir/scripts/concertino/lib"
+  cp "$SCRIPT" "$dir/scripts/concertino/check-merge-readiness.sh"
+  cp "$ROOT/core/scripts/lib/auditor-lease.sh" "$ROOT/core/scripts/lib/pr-reconcile.sh" "$dir/scripts/concertino/lib/"
+  chmod +x "$dir/scripts/concertino/check-merge-readiness.sh"
+  printf '%s' "$dir"
+}
+
+run_check_deployed() {
+  # Same contract as run_check, but invokes a COPY of the script deployed
+  # into a directory with no lib/config.js anywhere above it (the real
+  # consuming-repo shape), not $SCRIPT itself.
+  local deploy_dir="$1" repo="$2" branch="$3" ticket="$4" prefix="${5:-$AUDITOR_ARCHIVE_PREFIX}"
+  ERR="$(mktemp)"
+  OUT="$("$deploy_dir/scripts/concertino/check-merge-readiness.sh" "$repo" "$branch" "$ticket" "$prefix" 2>"$ERR")"
+  RC=$?
+}
+
 # --- all three conditions pass ----------------------------------------------
 REPO="$(new_repo)"
 HS="$(head_sha_of "$REPO")"
@@ -1038,6 +1120,513 @@ check "189.2.1 malformed (8-char) skeptic head_sha: refuses exactly as an unreso
 has "189.2.2 malformed head_sha is named in the refusal, same as 166.4's unresolvable-SHA message shape" \
   "STALE skeptic reviewed SHA is unresolvable: deadbeef" "$ERR"
 rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# =============================================================================
+# CON-193: agentMerge.protectedPaths — condition 4.
+#
+# `concertino.config.json` is written directly to the fixture repo's
+# filesystem root (never committed/tracked) — the script reads it via
+# `fs.readFileSync`, not `git show`, matching design.md Decision 2's "read
+# from the main checkout" contract, which for these single-checkout fixtures
+# (not a linked worktree) means ROOT == the fixture repo root itself.
+# =============================================================================
+
+write_protected_config() {
+  # $1 = repo, $2.. = glob patterns (JSON-quoted by the caller)
+  local repo="$1"; shift
+  local globs="$*"
+  printf '{"agentMerge":{"protectedPaths":[%s]}}' "$globs" > "$repo/concertino.config.json"
+}
+
+# --- P1: a diff touching a protected glob refuses, naming the path ---------
+REPO="$(new_repo)"
+mkdir -p "$REPO/record"
+echo "x" > "$REPO/record/foo.md"
+git -C "$REPO" add record/foo.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch protected path"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P1 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '"record/**"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p1 TEST-P1
+check "P1.1 a protected-path match refuses with exit 5" "$RC" "5"
+lacks "P1.2 a protected-path match does not print PASS" "PASS" "$ERR"
+[ "$OUT" != "PASS" ] && ok "P1.2b PASS not printed on stdout either" || bad "P1.2b PASS not printed on stdout either" "got PASS on stdout"
+has "P1.3 the matched path is named" "PROTECTED record/foo.md" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P2: multiple matches are ALL named, not just the first ----------------
+REPO="$(new_repo)"
+mkdir -p "$REPO/record" "$REPO/docs"
+echo "x" > "$REPO/record/foo.md"
+echo "y" > "$REPO/record/bar.md"
+echo "z" > "$REPO/CHARTER.md"
+git -C "$REPO" add record/foo.md record/bar.md CHARTER.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch three protected paths"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P2 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '"record/**","CHARTER.md"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p2 TEST-P2
+check "P2.1 multiple matches: exit 5" "$RC" "5"
+has "P2.2 first matched path named" "PROTECTED record/foo.md" "$ERR"
+has "P2.3 second matched path named" "PROTECTED record/bar.md" "$ERR"
+has "P2.4 third matched path named" "PROTECTED CHARTER.md" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P3: a diff touching no protected glob is unaffected --------------------
+REPO="$(new_repo)"
+mkdir -p "$REPO/src"
+echo "x" > "$REPO/src/thing.txt"
+git -C "$REPO" add src/thing.txt
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "ordinary change"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P3 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '"record/**"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p3 TEST-P3
+check "P3.1 non-matching diff with protectedPaths configured: exits zero" "$RC" "0"
+check "P3.2 non-matching diff with protectedPaths configured: prints PASS" "$OUT" "PASS"
+lacks "P3.3 no PROTECTED line emitted" "PROTECTED" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P4: an empty/absent protectedPaths list is a complete no-op -----------
+REPO="$(new_repo)"
+mkdir -p "$REPO/record"
+echo "x" > "$REPO/record/foo.md"
+git -C "$REPO" add record/foo.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch what would be protected, if configured"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P4 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+# No concertino.config.json at all — absent, not merely empty-array.
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p4 TEST-P4
+check "P4.1 absent protectedPaths: exits zero" "$RC" "0"
+check "P4.2 absent protectedPaths: prints PASS" "$OUT" "PASS"
+lacks "P4.3 no PROTECTED line emitted" "PROTECTED" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+REPO="$(new_repo)"
+mkdir -p "$REPO/record"
+echo "x" > "$REPO/record/foo.md"
+git -C "$REPO" add record/foo.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch what would be protected, if configured (empty array)"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P42 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO"
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p42 TEST-P42
+check "P42.1 explicit empty-array protectedPaths: exits zero" "$RC" "0"
+check "P42.2 explicit empty-array protectedPaths: prints PASS" "$OUT" "PASS"
+lacks "P42.3 no PROTECTED line emitted" "PROTECTED" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P43: the no-op guarantee is git-call-observable, not just output-shaped
+# (tasks.md 2.5/3.3d) -- an empty protectedPaths list must add ZERO git
+# calls on top of condition 3's own baseline (measured: FOUR `git
+# merge-base` calls -- each role's stale_check leg calls merge-base twice,
+# once against its reviewed SHA and once against VERIFIED_HEAD, times two
+# roles), not merely produce no visible output.
+REPO="$(new_repo)"
+mkdir -p "$REPO/record"
+echo "x" > "$REPO/record/foo.md"
+git -C "$REPO" add record/foo.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch what would be protected, if configured (no-op git-call check)"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P43 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO"
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check_spied "$REPO" branch-p43 TEST-P43
+check "P43.1 empty protectedPaths adds no git merge-base calls beyond condition 3's own baseline of 4" "$MERGEBASE_CALLS" "4"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P5: exit 1 dominates exit 5 (a hard failure alongside a match) --------
+REPO="$(new_repo)"
+mkdir -p "$REPO/record"
+echo "x" > "$REPO/record/foo.md"
+git -C "$REPO" add record/foo.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch protected path, alongside a hard failure"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P5 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '"record/**"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' '{"statusCheckRollup":[{"name":"build","conclusion":"FAILURE"}]}' > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p5 TEST-P5
+check "P5.1 a hard CI failure alongside a protected match: exit 1, not 5" "$RC" "1"
+has "P5.2 the CI failure reason is still reported" "CI failed: build" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P6: exit 5 dominates exit 4 (protected match alongside a stale SHA) ---
+ORIGIN="$(mktemp -d)"
+git init -q --bare -b main "$ORIGIN"
+SEED="$(mktemp -d)"
+git init -q -b main "$SEED"
+git -C "$SEED" config user.email t@t.test; git -C "$SEED" config user.name t
+echo base > "$SEED/base.txt"
+git -C "$SEED" add base.txt
+git -C "$SEED" commit -q -m "base: init"
+git -C "$SEED" remote add origin "$ORIGIN"
+git -C "$SEED" push -q origin main
+
+WORK="$(mktemp -d)"
+git clone -q "$ORIGIN" "$WORK"
+git -C "$WORK" config user.email t@t.test; git -C "$WORK" config user.name t
+git -C "$WORK" checkout -q -b feature-p6
+mkdir -p "$WORK/record"
+echo "x" > "$WORK/record/foo.md"
+git -C "$WORK" add record/foo.md
+git -C "$WORK" commit -q -m "feature: touches record/foo.md (reviewed here)"
+REVIEWED_P6="$(git -C "$WORK" rev-parse HEAD)"
+# a late, unreviewed commit lands AFTER the verdicts above were recorded —
+# triggers condition 3's STALE outcome (exit 4) independent of condition 4
+echo late > "$WORK/late.txt"
+git -C "$WORK" add late.txt
+git -C "$WORK" -c user.email=t@t.test -c user.name=t commit -q -m "late fix after review"
+HEAD_P6="$(git -C "$WORK" rev-parse HEAD)"
+
+write_events "$WORK" TEST-P6 "$(eval_pass "$REVIEWED_P6")" "$(skeptic_confirm "$REVIEWED_P6")"
+write_protected_config "$WORK" '"record/**"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HEAD_P6" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$WORK" feature-p6 TEST-P6
+check "P6.1 a protected match alongside a stale SHA: exit 5, not 4" "$RC" "5"
+has "P6.2 the matched path is still named" "PROTECTED record/foo.md" "$ERR"
+rm -rf "$ORIGIN" "$SEED" "$WORK" "$GH_MOCK_DIR" "$ERR"
+
+# --- P7 (design.md Decision 1 glob semantics): record/** spans nested dirs -
+REPO="$(new_repo)"
+mkdir -p "$REPO/record/nested/deep"
+echo "x" > "$REPO/record/nested/deep/c.md"
+git -C "$REPO" add record/nested/deep/c.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch deeply nested record path"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P7 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '"record/**"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p7 TEST-P7
+check "P7.1 record/** matches a deeply nested path: exit 5" "$RC" "5"
+has "P7.2 the nested path is named" "PROTECTED record/nested/deep/c.md" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P8: scripts/check-*.sh does NOT match scripts/nested/check-bar.sh -----
+REPO="$(new_repo)"
+mkdir -p "$REPO/scripts/nested"
+echo "x" > "$REPO/scripts/nested/check-bar.sh"
+git -C "$REPO" add scripts/nested/check-bar.sh
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch only the nested script"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P8 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '"scripts/check-*.sh"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p8 TEST-P8
+check "P8.1 scripts/check-*.sh does not cross into a subdirectory: exits zero" "$RC" "0"
+check "P8.2 scripts/check-*.sh does not cross into a subdirectory: prints PASS" "$OUT" "PASS"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P9: CHARTER.md does NOT match docs/CHARTER.md (root-anchored) --------
+REPO="$(new_repo)"
+mkdir -p "$REPO/docs"
+echo "x" > "$REPO/docs/CHARTER.md"
+git -C "$REPO" add docs/CHARTER.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch only the nested CHARTER.md"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P9 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '"CHARTER.md"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p9 TEST-P9
+check "P9.1 root-anchored CHARTER.md does not match docs/CHARTER.md: exits zero" "$RC" "0"
+check "P9.2 root-anchored CHARTER.md does not match docs/CHARTER.md: prints PASS" "$OUT" "PASS"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P10: an unclosed character class is not a silent pass -----------------
+REPO="$(new_repo)"
+mkdir -p "$REPO/record"
+echo "x" > "$REPO/record/foo.md"
+git -C "$REPO" add record/foo.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch a path a malformed glob was meant to protect"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P10 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '"record/[unclosed"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p10 TEST-P10
+check "P10.1 a malformed (unclosed '[') glob does not silently pass" "$RC" "1"
+lacks "P10.2 PASS is not printed for a malformed glob" "PASS" "$OUT"
+has "P10.3 the malformed pattern is surfaced" "malformed" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P11 (CON-193, skeptic-final-1.md, standing constraint C2): a
+# `!`-prefixed protectedPaths entry is git EXCLUDE pathspec magic, not a
+# plain glob. An exclude-only pathspec has no positive pathspec to pair
+# with, so it matches NOTHING — the diff genuinely touches the path, but
+# without the new detection the run would silently print PASS/exit 0,
+# indistinguishable in shape from a legitimate non-match. This reproduces
+# the skeptic's own repro exactly (config-validation-bypassing entry
+# reaching the script directly, mirroring an operator who hand-edits
+# concertino.config.json without running `concertino validate`).
+REPO="$(new_repo)"
+mkdir -p "$REPO/record"
+echo "x" > "$REPO/record/foo.md"
+git -C "$REPO" add record/foo.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch a path an exclude-magic glob was meant to protect"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P11 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '"!record/**"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p11 TEST-P11
+check "P11.1 a leading-'!' (exclude-magic) glob does not silently pass" "$RC" "1"
+lacks "P11.2 PASS is not printed for an exclude-magic glob" "PASS" "$OUT"
+has "P11.3 the pathspec-magic pattern is surfaced as malformed" "malformed" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P12: a leading-":" pathspec-magic entry (":(exclude)...") is rejected
+# the same way — the class rejection, not just the one shape demonstrated.
+REPO="$(new_repo)"
+mkdir -p "$REPO/record"
+echo "x" > "$REPO/record/foo.md"
+git -C "$REPO" add record/foo.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch a path a :(exclude)-magic glob was meant to protect"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P12 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '":(exclude)record/**"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p12 TEST-P12
+check "P12.1 a leading-':' (:(exclude) magic) glob does not silently pass" "$RC" "1"
+lacks "P12.2 PASS is not printed for a :(exclude)-magic glob" "PASS" "$OUT"
+has "P12.3 the pathspec-magic pattern is surfaced as malformed" "malformed" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P13: positive control for P11 -- same fixture, the PLAIN (non-magic)
+# glob still correctly refuses via the ordinary match path (exit 5), proving
+# P11/P12's exit-1 outcome is the new magic-rejection firing, not some
+# unrelated breakage that makes every protectedPaths fixture fail alike.
+REPO="$(new_repo)"
+mkdir -p "$REPO/record"
+echo "x" > "$REPO/record/foo.md"
+git -C "$REPO" add record/foo.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch protected path (positive control for P11/P12)"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P13 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '"record/**"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p13 TEST-P13
+check "P13.1 positive control: the plain (non-magic) glob still refuses via exit 5" "$RC" "5"
+has "P13.2 positive control: the matched path is still named" "PROTECTED record/foo.md" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P14 (CON-193, skeptic-final-2.md, standing constraint C3 — REGRESSION
+# TEST for the shape that defeated cycle-2): a leading-SPACE entry
+# (" !record/**") passes neither `startsWith('!')` nor `startsWith(':')`
+# (round-2's denylist), so it reached git as `:(glob) !record/**` and
+# silently matched nothing even though the diff genuinely touched the
+# path. This fixture is committed specifically so that regression cannot
+# silently return -- it is red against the cycle-2 denylist (demonstrated
+# in the delivery report's mutation transcript) and green against the
+# current positive allowlist.
+REPO="$(new_repo)"
+mkdir -p "$REPO/record"
+echo "x" > "$REPO/record/foo.md"
+git -C "$REPO" add record/foo.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch a path a leading-space exclude-magic glob was meant to protect"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P14 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '" !record/**"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p14 TEST-P14
+check "P14.1 a leading-space (exclude-magic) glob does not silently pass" "$RC" "1"
+lacks "P14.2 PASS is not printed for a leading-space exclude-magic glob" "PASS" "$OUT"
+has "P14.3 the malformed pattern is surfaced" "malformed" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P15: positive control for P14 -- same fixture, the PLAIN (no leading
+# space) glob still correctly refuses via the ordinary match path (exit 5).
+REPO="$(new_repo)"
+mkdir -p "$REPO/record"
+echo "x" > "$REPO/record/foo.md"
+git -C "$REPO" add record/foo.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch protected path (positive control for P14)"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P15 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '"record/**"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p15 TEST-P15
+check "P15.1 positive control: the plain glob (no leading space) still refuses via exit 5" "$RC" "5"
+has "P15.2 positive control: the matched path is still named" "PROTECTED record/foo.md" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P16: a bare interior/trailing-whitespace-free but otherwise-magic-free
+# glob containing ".." (path escape) is rejected too (C3's allowlist rule,
+# not merely the two demonstrated shapes) -- proves the allowlist rejects
+# by construction, not by re-adding a third prefix check.
+REPO="$(new_repo)"
+mkdir -p "$REPO/record"
+echo "x" > "$REPO/record/foo.md"
+git -C "$REPO" add record/foo.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch a path a path-escape glob was meant to protect"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P16 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '"record/../record/**"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p16 TEST-P16
+check "P16.1 a '..'-containing pattern does not silently pass" "$RC" "1"
+lacks "P16.2 PASS is not printed for a '..'-containing pattern" "PASS" "$OUT"
+has "P16.3 the malformed pattern is surfaced" "malformed" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P17 (CON-193, skeptic-final-3.md, standing constraint C4 -- the
+# FOURTH disarm shape, and the reason condition 4 no longer reimplements
+# the accept/reject predicate in bash at all): a DIACRITIC entry
+# ("récord/**") is a well-formed, non-empty, non-whitespace string that a
+# LOCALE-COLLATION-AWARE bash `[[ =~ ]]` character class (under the
+# ambient LANG=en_US.UTF-8 this suite runs under -- confirmed via `locale`
+# in the delivery report, not assumed) would have silently ACCEPTED as
+# "just another Latin letter", while the real diff genuinely touches the
+# ASCII `record/**` directory and ":(glob)récord/**" matches nothing.
+# Condition 4 now delegates the entire accept/reject decision to
+# lib/config.js's isPlainRelativeGlob (ASCII-only, not locale-dependent)
+# via the SAME node -e call that already reads the config, rather than
+# re-deriving the rule a fourth time in bash -- this fixture is the
+# regression test for that fix, run under this suite's own real ambient
+# locale (never LANG=C-pinned for the test itself; that would hide
+# exactly the defect this fixture exists to catch).
+REPO="$(new_repo)"
+mkdir -p "$REPO/record"
+echo "x" > "$REPO/record/foo.md"
+git -C "$REPO" add record/foo.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch a path a diacritic-magic glob was meant to protect"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P17 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '"récord/**"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p17 TEST-P17
+check "P17.1 a diacritic ('récord/**') glob does not silently pass" "$RC" "1"
+lacks "P17.2 PASS is not printed for a diacritic glob" "PASS" "$OUT"
+has "P17.3 the malformed pattern is surfaced" "malformed" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P18: positive control for P17 -- same fixture, the PLAIN (ASCII,
+# no diacritic) glob still correctly refuses via the ordinary match path
+# (exit 5), proving P17's exit-1 outcome is the new delegated-predicate
+# rejection firing, not some unrelated breakage.
+REPO="$(new_repo)"
+mkdir -p "$REPO/record"
+echo "x" > "$REPO/record/foo.md"
+git -C "$REPO" add record/foo.md
+git -C "$REPO" -c user.email=t@t.test -c user.name=t commit -q -m "touch protected path (positive control for P17)"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P18 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+write_protected_config "$REPO" '"record/**"'
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check "$REPO" branch-p18 TEST-P18
+check "P18.1 positive control: the plain (ASCII) glob still refuses via exit 5" "$RC" "5"
+has "P18.2 positive control: the matched path is still named" "PROTECTED record/foo.md" "$ERR"
+rm -rf "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P19 (CON-193, round 4, self-caught regression -- consuming-repo no-op
+# shape): a REAL consuming repo's rendered script (deployed_script_dir --
+# no lib/config.js anywhere above it), with a REAL concertino.config.json
+# present (the ordinary case: every project using concertino has one) that
+# sets agentMerge.enabled but never sets protectedPaths at all. This must
+# behave EXACTLY as before this whole capability existed -- a no-op, never
+# a refusal -- because there is nothing to validate. `10d7c28` (the
+# commit right before this fix) required lib/config.js UNCONDITIONALLY,
+# before ever checking whether protectedPaths was even non-empty, so this
+# fixture failed with exit 1 there for every consuming repo with
+# agentMerge enabled, regardless of whether protectedPaths was ever set --
+# a strictly worse break than the round-3 defect this predicate exists to
+# close.
+DEPLOY="$(deployed_script_dir)"
+REPO="$(new_repo)"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P19 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+printf '{"agentMerge":{"enabled":true}}' > "$REPO/concertino.config.json"
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check_deployed "$DEPLOY" "$REPO" branch-p19 TEST-P19
+check "P19.1 consuming repo (no lib/config.js), config present but no protectedPaths: exits zero" "$RC" "0"
+check "P19.2 consuming repo (no lib/config.js), config present but no protectedPaths: prints PASS" "$OUT" "PASS"
+rm -rf "$DEPLOY" "$REPO" "$GH_MOCK_DIR" "$ERR"
+
+# --- P20: companion to P19 -- same consuming-repo shape (no lib/config.js
+# anywhere above the deployed script), but THIS time protectedPaths IS
+# configured (non-empty). There is genuinely something to validate and the
+# predicate genuinely cannot be reached -- this must still FAIL CLOSED
+# (never silently pass), distinguishing "nothing configured, no-op" (P19)
+# from "something configured, cannot validate it, refuse" (P20). Testing
+# only one of these two arms would hide the other.
+DEPLOY="$(deployed_script_dir)"
+REPO="$(new_repo)"
+HS="$(head_sha_of "$REPO")"
+write_events "$REPO" TEST-P20 "$(eval_pass "$HS")" "$(skeptic_confirm "$HS")"
+printf '{"agentMerge":{"enabled":true,"protectedPaths":["record/**"]}}' > "$REPO/concertino.config.json"
+GH_MOCK_DIR="$(mktemp -d)"
+printf '%s' "$ALL_PASS_ROLLUP" > "$GH_MOCK_DIR/rollup.json"
+merge_json MERGEABLE CLEAN null "$HS" main > "$GH_MOCK_DIR/merge.json"
+export GH_MOCK_DIR
+run_check_deployed "$DEPLOY" "$REPO" branch-p20 TEST-P20
+check "P20.1 consuming repo (no lib/config.js), protectedPaths configured: fails closed, not a silent pass" "$RC" "1"
+lacks "P20.2 PASS is not printed when the predicate cannot be reached" "PASS" "$OUT"
+has "P20.3 the failure names that protectedPaths could not be validated" "protectedPaths" "$ERR"
+rm -rf "$DEPLOY" "$REPO" "$GH_MOCK_DIR" "$ERR"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

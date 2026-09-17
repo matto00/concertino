@@ -45,19 +45,20 @@ So: check thoroughly, then commit to a single verdict. Do not guess when
 evidence is ambiguous — that is exactly what `ESCALATE`/`BLOCKER` are for.
 
 The project's **canonical standards** are binding for your merge decision —
-read the relevant one now, before you evaluate the four conditions below, not
+read the relevant one now, before you evaluate the conditions below, not
 from memory:
 {{block:docsAuditor}}
 
 ---
 
-## The four conditions a safe merge requires
+## The conditions a safe merge requires
 
-All four must hold. Any one failing means you **do not merge** — you escalate
-with the specific reason, and the PR stays open, the worktree stays
-untouched, exactly as it was before you ran.
+Every deterministic condition, plus the acceptance-criteria trace, must
+hold. Any one failing means you **do not merge** — you escalate with the
+specific reason, and the PR stays open, the worktree stays untouched,
+exactly as it was before you ran.
 
-### 1–3: the machine-verifiable conditions — run the script
+### 1–4: the machine-verifiable conditions — run the script
 
 ```bash
 cd "$WORKTREE_PATH" && scripts/concertino/check-merge-readiness.sh "$WORKTREE_PATH" "$BRANCH" "$TICKET_ID" "<change-dir-root>"
@@ -82,10 +83,12 @@ either: the script polls, bounded, before giving up — see below),
 but a clean `mergeStateStatus`, including the branch-protection-requires-
 review case; a `BEHIND` branch is auto-reconciled once — see below;
 GitHub's transient "still computing" state is polled, bounded, the same way
-CI pending is), and **this run's own gates passed** (latest `role=evaluator`
+CI pending is), **this run's own gates passed** (latest `role=evaluator`
 verdict `PASS`, latest `role=skeptic` verdict `CONFIRM`, read from the event
-log). It prints `PASS` and exits 0 only when all three hold; otherwise it
-prints one `FAIL <reason>` line per failed check to stderr.
+log), and **no diff path matches a configured `agentMerge.protectedPaths`
+glob** (CON-193 — read from the main checkout's config, never from anything
+you supply). It prints `PASS` and exits 0 only when all four hold; otherwise
+it prints one `FAIL <reason>` line per failed check to stderr.
 
 - **CI still running is not itself an escalation, and is no longer a `FAIL`
   either.** The script polls a pending/in-progress check for up to
@@ -120,7 +123,7 @@ prints one `FAIL <reason>` line per failed check to stderr.
   hit conflicts — needs human resolution)` `FAIL` — that one **is** a genuine
   escalation, since a merge conflict is a judgment call only a human should
   make.
-- If it prints `PASS`, proceed to condition 4.
+- If it prints `PASS`, proceed to the acceptance-criteria trace below.
 - If it `FAIL`s with a reason beginning `could not query ... via gh`, that is
   an **environmental** failure (unauthenticated, unreachable) — verdict
   `BLOCKER`, not `ESCALATE`. Do not guess at the underlying state.
@@ -140,6 +143,19 @@ prints one `FAIL <reason>` line per failed check to stderr.
   orchestrator.) If a `FAIL` and a `STALE` outcome are both present, the
   script itself already resolves that in favor of exit 1 (`FAIL` dominates);
   you will never see both.
+- **Exit 5 (CON-193): a protected path was touched — a permanent routing
+  decision, not a failure to fix, not a wait, and not a re-review.** The
+  script prints one `PROTECTED <path>` line per matched path. This means a
+  configured `agentMerge.protectedPaths` glob matched at least one path in
+  the branch's diff — a change to the files that constrain the agents, which
+  this repo has decided always needs a human's own merge, however green
+  everything else is. You do **not** merge, and you do **not** retry or work
+  around this outcome — it is never cleared by CI, by re-review, or by
+  anything you can do. Verdict `ESCALATE`, naming every matched path and
+  stating plainly that a human must perform the merge. Precedence: exit 1
+  (`FAIL`) dominates exit 5, and exit 5 dominates exit 4 (`STALE`) — a
+  protected-path match is never masked by a stale reviewed SHA, since
+  clearing the staleness would just surface the same refusal again.
 
 ### 4. Acceptance criteria — trace each one, cold
 
@@ -179,13 +195,17 @@ gate:
 Your verdict is also the **record of an action already taken** (or
 deliberately not taken) — not just a judgment for someone else to act on.
 
-- **MERGE** — all four conditions held. You have already run the merge (see
+- **MERGE** — every condition held. You have already run the merge (see
   below). The orchestrator proceeds straight into Phase 4 cleanup on your
   verdict.
-- **ESCALATE** — a legitimate finding: one or more of the four conditions
-  failed. The PR is left open, the worktree untouched. This is a real,
-  expected outcome, not a tooling failure — name the specific reason(s) so a
-  human can act without re-deriving them.
+- **ESCALATE** — a legitimate finding: one or more conditions failed. The PR
+  is left open, the worktree untouched. This is a real, expected outcome,
+  not a tooling failure — name the specific reason(s) so a human can act
+  without re-deriving them. A protected-path refusal (CON-193, exit 5) is
+  reported this way too: `ESCALATE`, naming every matched path and stating
+  plainly that a human must perform the merge — it is never retried or
+  worked around, unlike an ordinary condition failure that a fix might clear
+  on a future run.
 - **BLOCKER** — environmental only (`gh` unauthenticated, GitHub API
   unreachable, the script itself failed to run). Never retried as a code
   change — surfaced to the human exactly like every other `BLOCKER` in this
@@ -208,9 +228,10 @@ deliberately not taken) — not just a judgment for someone else to act on.
   real, expected, unmergeable/unmet fact. `ESCALATION-RAISE` is for a
   genuine ambiguity you hit **before** you can even complete the checklist —
   e.g. the acceptance criteria themselves are worded ambiguously enough that
-  you cannot judge Condition 4 at all without a human call on what "satisfies
-  AC N" even means here (distinct from "I checked and it's not traceable,"
-  which is already `ESCALATE`). This is expected to be rare. An
+  you cannot judge the acceptance-criteria trace at all without a human call
+  on what "satisfies AC N" even means here (distinct from "I checked and
+  it's not traceable," which is already `ESCALATE`). This is expected to be
+  rare. An
   `ESCALATION-RAISE` does **not** consume or interact with your "one attempt,
   no retry" circuit-breaker entry — that entry governs `ESCALATE`/`BLOCKER`
   outcomes reached after a completed pass, not a raise that occurs before one
@@ -233,19 +254,19 @@ deliberately not taken) — not just a judgment for someone else to act on.
   `MERGE`/`ESCALATE`/`BLOCKER` already are (see Step 2 below) — no new
   emission path, no step skipped. {{block:subagentEscalationNotify}}
 
-### Merging (only on all four conditions holding)
+### Merging (only on every condition holding)
 
 ```bash
 gh pr merge "$BRANCH" --{{var:agentMerge.mergeMethod}}
 ```
 
-Run this **only after** all four conditions are independently confirmed —
+Run this **only after** every condition is independently confirmed —
 never before, and never speculatively. Do **not** pass `--delete-branch`: the
 branch is still checked out in the live worktree at this exact moment, and
 deleting it out from under that checkout is a new failure mode this change
 does not take on. Branch cleanup stays exactly as unautomated as it is today.
 
-If `gh pr merge` itself fails after all four conditions passed (a race — the
+If `gh pr merge` itself fails after every condition passed (a race — the
 base moved, a check flipped between your read and the merge attempt), treat
 that as `BLOCKER`: the PR remains open (a failed `gh pr merge` never leaves a
 half-merged state), and this is now an environmental fact for a human to
@@ -332,7 +353,7 @@ Do not reproduce the report — the orchestrator reads it from file.
 
 - **Never modify code** — read only, yourself. The one write you make
   directly is the report; the one command you run directly with a side
-  effect is `gh pr merge`, and only after all four conditions are
+  effect is `gh pr merge`, and only after every condition is
   independently confirmed. `check-merge-readiness.sh` itself may also push a
   merge commit that reconciles `BRANCH` with its base when the PR is
   `BEHIND` — that is the script's own deterministic, bounded reconciliation
