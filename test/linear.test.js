@@ -127,6 +127,22 @@ test('normalise never leaks Linear wire keys into the model', () => {
   assert.ok(!Object.keys(tickets[0].comments[0]).includes('user'));
 });
 
+// CON-192 (followup-survival-report), tasks.md 3.1 — additive-only fields
+// the survival report needs to compute completion without a second lookup.
+test('a fixture node carrying createdAt and completedAt normalises both to epoch millis', () => {
+  const { tickets } = linear.normalise('CON', [
+    issueNode({ createdAt: '2026-06-01T00:00:00.000Z', completedAt: '2026-06-10T12:00:00.000Z' }),
+  ]);
+  assert.equal(tickets[0].createdAt, Date.parse('2026-06-01T00:00:00.000Z'));
+  assert.equal(tickets[0].completedAt, Date.parse('2026-06-10T12:00:00.000Z'));
+});
+
+// tasks.md 3.2 — additive-only: OPEN_STATE_TYPES and the launch pad's default
+// fetch behaviour must be unchanged by this addition.
+test('CON-192: OPEN_STATE_TYPES is unchanged by the additive completion fields', () => {
+  assert.deepEqual(linear.OPEN_STATE_TYPES, ['backlog', 'unstarted', 'started']);
+});
+
 test('a missing assignee, project, estimate or description is null-safe', () => {
   const { tickets } = linear.normalise('CON', [
     issueNode({

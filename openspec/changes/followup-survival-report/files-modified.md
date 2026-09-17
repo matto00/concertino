@@ -1,0 +1,12 @@
+- `bin/concertino` — register the `report` subcommand in dispatch
+- `lib/cli/help.js` — add `report`'s usage block and `USAGE_ORDER` entry
+- `lib/cli/report.js` (new) — `cmdReport`, the two-tier provenance/recovered model builder, and the renderer
+- `lib/followup-survival.js` (new) — pure computation: `median`, `computeSurvival`, `segmentBy`, `bucketByWeek`
+- `lib/ui/linear.js` — additive `createdAt`/`completedAt` in `QUERY` and `normaliseTicket` (OPEN_STATE_TYPES/launch-pad defaults unchanged)
+- `test/followup-survival.test.js` (new) — unit tests + falsifiability controls for the pure module
+- `test/cli-report.test.js` (new) — unit + subprocess tests for the report subcommand, incl. C5/CR2/7.1 regression tests
+- `test/linear.test.js` — tests for the additive `createdAt`/`completedAt` fields and the unchanged `OPEN_STATE_TYPES`
+- `docs/verification-vacuity-2026-09.md` (new) — the verification-vacuity class analysis artifact (added scope, tasks group 7)
+- `openspec/changes/followup-survival-report/class-evidence.md` — section E entries 9-11 added; heading count corrected (orchestrator-owned, edited by executor per handoff)
+- `openspec/changes/followup-survival-report/tasks.md` — checkboxes marked complete; C5/C6 appended to Standing Constraints; task 7.8 count corrected
+- `openspec/changes/followup-survival-report/workflow-state.md` — cycle/constraint bookkeeping (orchestrator-owned)
