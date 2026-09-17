@@ -2,7 +2,9 @@
 
 ## Purpose
 Defines the `run.cost` tier-2 event contract — emitted by `core/scripts/report-cost.sh` via Claude Code's `SessionEnd`/`SubagentStop` hooks, with an incremental per-agent cursor so a resumed subagent never double-counts — and the sync-time `costTracking.enabled` wiring that gates it.
+
 ## Requirements
+
 ### Requirement: `run.cost` is a tier-2 (deterministic) event kind
 `lib/ui/reducer.js`'s `TIER2_KINDS` SHALL include `run.cost`, so a run that
 has emitted only `run.start`/`gate.result`/`run.cost` events (no agent-authored
@@ -100,6 +102,21 @@ field from the hook payload's `agent_type` field when present (stripping the
 the case for a `SessionEnd` firing (the root/orchestrator session's own
 firing) and never the case for a `SubagentStop` firing.
 
+The `role` value `report-cost.sh` emits SHALL always lie within the closed
+role set enforced on emit (see the `emit-role-validation` capability). The
+`SubagentStop` hook fires for EVERY Task-tool subagent of a concertino
+session, not only Concertino's own `concertino-<role>` agents, so an
+`agent_type` naming a non-Concertino subagent (for example a general-purpose
+or exploratory agent spawned during the same session) would otherwise yield
+an out-of-set `role` and have its `run.cost` event refused, silently losing
+cost telemetry for exactly the sessions where such agents are most used.
+When the stripped `agent_type` is not one of the five agent roles,
+`report-cost.sh` SHALL therefore record a `role` drawn from the closed set
+rather than the raw value, and SHALL preserve the raw `agent_type` verbatim
+in a separate field that is not subject to role validation, so no
+information is lost and no grouping key is polluted. Discarding the raw
+value, or emitting it as `role`, SHALL NOT satisfy this requirement.
+
 #### Scenario: Root orchestrator session ends
 - **WHEN** `SessionEnd` fires for the orchestrator's own top-level session,
   whose hook payload carries no `agent_type` field
@@ -109,6 +126,17 @@ firing) and never the case for a `SubagentStop` firing.
 - **WHEN** `SubagentStop` fires for a Task-tool subagent whose hook payload
   carries `agent_type: "concertino-executor"`
 - **THEN** the emitted `run.cost` event's `role` field is `executor`
+
+#### Scenario: A non-Concertino subagent's cost is still recorded
+- **WHEN** `SubagentStop` fires for a subagent whose `agent_type` does not
+  name one of the five Concertino agent roles
+- **THEN** the emitted `run.cost` event carries a `role` within the closed
+  role set, preserves the raw `agent_type` in its own separate field, is
+  appended rather than refused, and its token fields are unchanged
+
+#### Scenario: Cost telemetry is never lost to role validation
+- **WHEN** any `run.cost` event is emitted by `report-cost.sh`
+- **THEN** it is never refused on account of an out-of-set `role`
 
 ### Requirement: cost_usd is derived from a self-maintained pricing table, omitted when the model is unrecognized
 `report-cost.sh` SHALL look up the transcript's `model` id in
@@ -235,4 +263,3 @@ for `permissions.allow`. When `costTracking.enabled` is `false` or absent
   absent or `false`
 - **THEN** `.claude/settings.json`'s `hooks` key is left exactly as it was
   before sync ran (untouched, including not being created if absent)
-
