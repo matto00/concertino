@@ -454,6 +454,183 @@ test('ticketHarnessCheck kind=unsupported-provider -> informational, no error', 
   assert.equal(errors.filter((e) => e.path === 'ticket.harness').length, 0);
 });
 
+// --- agentMerge.protectedPaths (CON-193) ------------------------------------
+
+test('withDefaults normalizes agentMerge.protectedPaths to [] when omitted', () => {
+  const cfg = configLib.withDefaults(baseConfig({ agentMerge: { enabled: true } }));
+  assert.deepEqual(cfg.agentMerge.protectedPaths, []);
+});
+
+test('withDefaults preserves a configured agentMerge.protectedPaths array in order', () => {
+  const cfg = configLib.withDefaults(
+    baseConfig({ agentMerge: { enabled: true, protectedPaths: ['record/**', 'CHARTER.md', 'scripts/check-*.sh'] } })
+  );
+  assert.deepEqual(cfg.agentMerge.protectedPaths, ['record/**', 'CHARTER.md', 'scripts/check-*.sh']);
+});
+
+test('collectConfigIssues rejects a non-array agentMerge.protectedPaths', () => {
+  const { errors } = configLib.collectConfigIssues(
+    baseConfig({ agentMerge: { enabled: false, protectedPaths: 'record/**' } }),
+    { out: __dirname }
+  );
+  const e = errors.find((e) => e.path === 'agentMerge.protectedPaths');
+  assert.ok(e, 'expected an agentMerge.protectedPaths error');
+  assert.match(e.message, /must be an array/);
+});
+
+test('collectConfigIssues rejects a non-string entry in agentMerge.protectedPaths, naming index and value', () => {
+  const { errors } = configLib.collectConfigIssues(
+    baseConfig({ agentMerge: { enabled: false, protectedPaths: ['record/**', 42] } }),
+    { out: __dirname }
+  );
+  const e = errors.find((e) => e.path === 'agentMerge.protectedPaths[1]');
+  assert.ok(e, 'expected an agentMerge.protectedPaths[1] error');
+  assert.match(e.message, /must be a string/);
+  assert.match(e.message, /42/);
+});
+
+test('collectConfigIssues rejects an empty-string entry in agentMerge.protectedPaths, naming index', () => {
+  const { errors } = configLib.collectConfigIssues(
+    baseConfig({ agentMerge: { enabled: false, protectedPaths: ['record/**', ''] } }),
+    { out: __dirname }
+  );
+  const e = errors.find((e) => e.path === 'agentMerge.protectedPaths[1]');
+  assert.ok(e, 'expected an agentMerge.protectedPaths[1] error');
+  assert.match(e.message, /empty string/);
+});
+
+test('collectConfigIssues accepts a well-formed agentMerge.protectedPaths array', () => {
+  const { errors } = configLib.collectConfigIssues(
+    baseConfig({ agentMerge: { enabled: false, protectedPaths: ['record/**', 'CHARTER.md'] } }),
+    { out: __dirname }
+  );
+  assert.equal(errors.filter((e) => e.path.startsWith('agentMerge.protectedPaths')).length, 0);
+});
+
+test('collectConfigIssues is silent on agentMerge.protectedPaths when the key is absent', () => {
+  const { errors } = configLib.collectConfigIssues(
+    baseConfig({ agentMerge: { enabled: false } }),
+    { out: __dirname }
+  );
+  assert.equal(errors.filter((e) => e.path.startsWith('agentMerge.protectedPaths')).length, 0);
+});
+
+// --- agentMerge.protectedPaths: POSITIVE plain-glob allowlist (CON-193,
+// skeptic-final-2.md, standing constraint C3 — the SECOND fail-open a
+// denylist let through) --------------------------------------------------
+// Round 1 shipped `entry.startsWith('!') || entry.startsWith(':')` — a
+// denylist of the ONE shape a review demonstrated. Round 2's skeptic
+// defeated it in under 15 minutes with a THIRD shape neither prefix check
+// fires on: a leading space (`" !record/**"` starts with neither `!` nor
+// `:`), which git still silently matches as nothing when handed
+// `:(glob) !record/**`. isPlainRelativeGlob replaces the denylist with a
+// POSITIVE accept pattern: reject anything that is NOT recognizably a
+// plain relative glob, with no per-character knowledge of what `!`/`:`/
+// whitespace individually "mean" to git.
+
+test('isPlainRelativeGlob accepts a plain relative glob', () => {
+  assert.equal(configLib.isPlainRelativeGlob('record/**'), true);
+  assert.equal(configLib.isPlainRelativeGlob('CHARTER.md'), true);
+  assert.equal(configLib.isPlainRelativeGlob('scripts/check-*.sh'), true);
+});
+
+test('isPlainRelativeGlob rejects a leading "!" (exclude short-form)', () => {
+  assert.equal(configLib.isPlainRelativeGlob('!record/**'), false);
+});
+
+test('isPlainRelativeGlob rejects a leading ":" in any form', () => {
+  assert.equal(configLib.isPlainRelativeGlob(':(exclude)record/**'), false);
+  assert.equal(configLib.isPlainRelativeGlob(':(top,exclude)record/**'), false);
+  assert.equal(configLib.isPlainRelativeGlob(':(icase)record/**'), false);
+  assert.equal(configLib.isPlainRelativeGlob(':!record/**'), false);
+  assert.equal(configLib.isPlainRelativeGlob(':^record/**'), false);
+});
+
+test('isPlainRelativeGlob rejects leading/trailing/embedded whitespace, never silently trims', () => {
+  assert.equal(configLib.isPlainRelativeGlob(' !record/**'), false);
+  assert.equal(configLib.isPlainRelativeGlob('record/** '), false);
+  assert.equal(configLib.isPlainRelativeGlob('record/ **'), false);
+  assert.equal(configLib.isPlainRelativeGlob('   '), false);
+});
+
+test('isPlainRelativeGlob rejects ".." (path escape), a leading "/", and a trailing "/"', () => {
+  assert.equal(configLib.isPlainRelativeGlob('../etc/passwd'), false);
+  assert.equal(configLib.isPlainRelativeGlob('/absolute/path'), false);
+  assert.equal(configLib.isPlainRelativeGlob('record/'), false);
+});
+
+test('isPathspecMagic is the negation of isPlainRelativeGlob (back-compat wrapper)', () => {
+  assert.equal(configLib.isPathspecMagic('!record/**'), true);
+  assert.equal(configLib.isPathspecMagic(' !record/**'), true);
+  assert.equal(configLib.isPathspecMagic('record/**'), false);
+});
+
+test('collectConfigIssues rejects a leading-"!" protectedPaths entry, naming index and value', () => {
+  const { errors } = configLib.collectConfigIssues(
+    baseConfig({ agentMerge: { enabled: false, protectedPaths: ['record/**', '!record/**'] } }),
+    { out: __dirname }
+  );
+  const e = errors.find((e) => e.path === 'agentMerge.protectedPaths[1]');
+  assert.ok(e, 'expected an agentMerge.protectedPaths[1] error');
+  assert.match(e.message, /plain relative glob/);
+  assert.match(e.message, /!record\/\*\*/);
+});
+
+test('collectConfigIssues rejects a leading-":" protectedPaths entry (:(exclude) magic), naming index and value', () => {
+  const { errors } = configLib.collectConfigIssues(
+    baseConfig({ agentMerge: { enabled: false, protectedPaths: [':(exclude)record/**'] } }),
+    { out: __dirname }
+  );
+  const e = errors.find((e) => e.path === 'agentMerge.protectedPaths[0]');
+  assert.ok(e, 'expected an agentMerge.protectedPaths[0] error');
+  assert.match(e.message, /plain relative glob/);
+});
+
+test('collectConfigIssues accepts protectedPaths entries that are recognizably plain globs', () => {
+  const { errors } = configLib.collectConfigIssues(
+    baseConfig({ agentMerge: { enabled: false, protectedPaths: ['record/**', 'CHARTER.md', 'scripts/check-*.sh'] } }),
+    { out: __dirname }
+  );
+  assert.equal(errors.filter((e) => e.path.startsWith('agentMerge.protectedPaths')).length, 0);
+});
+
+// --- CON-193 regression tests (skeptic-final-2.md, C3): both shapes that
+// have EVER defeated a prior version of this guard, committed so neither
+// can silently regress again. Each test below is paired with a live
+// demonstration (recorded in the delivery report, not re-run automatically
+// here) that it goes RED against the specific prior predicate it regresses:
+//
+//   - "!record/**" (round-1 shape): red against a PRE-CON-193 baseline that
+//     had no magic/allowlist check at all (only non-array/non-string/
+//     empty-string validation) — that baseline reports zero errors for
+//     this entry.
+//   - " !record/**" (round-2 shape, leading space): red against the
+//     CYCLE-2 denylist predicate specifically
+//     (`entry.startsWith('!') || entry.startsWith(':')`), which returns
+//     `false` (wrongly: "not magic") for this exact string since it starts
+//     with a space, not `!` or `:`.
+//
+// Both are green against the CURRENT isPlainRelativeGlob allowlist, which
+// this test file exercises directly below (not a reconstruction).
+
+test('regression: "!record/**" (round-1 shape) is rejected by the current allowlist', () => {
+  assert.equal(configLib.isPlainRelativeGlob('!record/**'), false);
+  const { errors } = configLib.collectConfigIssues(
+    baseConfig({ agentMerge: { enabled: false, protectedPaths: ['!record/**'] } }),
+    { out: __dirname }
+  );
+  assert.ok(errors.find((e) => e.path === 'agentMerge.protectedPaths[0]'), 'expected a rejection');
+});
+
+test('regression: " !record/**" (round-2 leading-space shape) is rejected by the current allowlist', () => {
+  assert.equal(configLib.isPlainRelativeGlob(' !record/**'), false);
+  const { errors } = configLib.collectConfigIssues(
+    baseConfig({ agentMerge: { enabled: false, protectedPaths: [' !record/**'] } }),
+    { out: __dirname }
+  );
+  assert.ok(errors.find((e) => e.path === 'agentMerge.protectedPaths[0]'), 'expected a rejection');
+});
+
 // --- Agent-merge (CON-88 agent-merge-permission-preflight) -----------------
 // collectConfigIssues' new "Agent-merge" section shells out to the real
 // scripts/concertino/check-agent-merge-permission.sh against `opts.out` — a

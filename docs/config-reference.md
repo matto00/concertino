@@ -386,7 +386,11 @@ human instead of thrashing.
 ## `agentMerge`
 
 ```json
-"agentMerge": { "enabled": true, "mergeMethod": "squash" }
+"agentMerge": {
+  "enabled": true,
+  "mergeMethod": "squash",
+  "protectedPaths": ["record/**", "CHARTER.md", "scripts/check-*.sh"]
+}
 ```
 
 Whether a verified run may merge its own PR via the cold `auditor` role,
@@ -422,6 +426,73 @@ so part 2 is a no-op on those harnesses — part 1 alone is sufficient there.
 | ----- | ---- | ------- | ------- |
 | `enabled` | boolean | `false` | Project-level default. `false` preserves today's human-confirms-merge flow for every run that doesn't explicitly override it. |
 | `mergeMethod` | `squash` \| `merge` \| `rebase` | `squash` | Passed to `gh pr merge --<mergeMethod>` when the auditor merges. |
+| `protectedPaths` | array of strings | `[]` | Path globs that force a human merge even when every other check passes (CON-193). See below. |
+
+### `agentMerge.protectedPaths`
+
+Names path globs that the auditor may never merge on its own — a change
+touching one of these always reaches a human, even when CI is green and
+every acceptance criterion is satisfied. This matters most for the files
+whose whole purpose is to constrain the agents: without an exclusion, an
+ordinary PR that quietly removes the escalation machinery would look
+unremarkable in diff review, and the auditor would merge it.
+
+Each pattern is matched against the run's diff (against the review base)
+using **git's own `:(glob)` pathspec magic**, not a hand-rolled matcher, so
+the semantics are per-segment: `**` spans nested directories, a `*` inside a
+segment does not cross `/`, and a pattern with no leading path segment is
+anchored at the repository root. Concretely, with the example above:
+
+- `record/**` matches `record/foo.md` and `record/nested/deep/c.md`.
+- `CHARTER.md` matches only the root-level file, not `docs/CHARTER.md`.
+- `scripts/check-*.sh` matches `scripts/check-foo.sh`, not
+  `scripts/nested/check-bar.sh`.
+
+The list is read from the **main checkout's** `concertino.config.json` by
+`check-merge-readiness.sh` (never from a script argument, and never from a
+worktree-local file — a linked delivery worktree has neither
+`concertino.config.json` nor `.concertino.env` present) — see
+`core/scripts/check-merge-readiness.sh`'s own header and
+`core/roles/auditor.md` for the enforcement contract. A match refuses the
+merge with a distinct exit code (5) and
+a `PROTECTED <path>` line per matched path; the auditor reports this as
+`ESCALATE`, naming the matched paths, and never retries or works around it.
+Unset or empty is a byte-for-byte no-op — the check makes no additional git
+calls and produces no additional output.
+
+Each configured pattern is schema- and `collectConfigIssues`-validated: it
+must be a non-empty string that is also recognizably a **plain relative
+glob**, decided by exactly ONE predicate (`isPlainRelativeGlob`,
+`lib/config.js`) — never by two independently-written rules that could
+disagree. An entry beginning `!` or `:` (git pathspec magic), containing
+leading/trailing/embedded whitespace, containing `..`, or ending in `/` is
+rejected outright, naming the index and value. `check-merge-readiness.sh`'s
+own script-level layer (the backstop for a hand-edited config that never
+ran `concertino validate`) calls this SAME predicate directly from this
+worktree's own `lib/config.js`, rather than re-deriving an equivalent rule
+in shell — an earlier version of this backstop reimplemented the rule
+separately using a bash `[[ =~ ]]` character-class test, which turned out
+to be **locale-collation-aware**: under a UTF-8 locale it silently accepted
+accented Latin letters (e.g. `"récord/**"`) that the ASCII-only JS
+predicate correctly rejects, so an entry meant to protect `record/**` could
+be accepted by the backstop and then match nothing under the real ASCII
+directory. **The JS layer itself was never wrong here** — any project that
+ran `concertino sync`/`concertino validate`/`concertino doctor` before a
+merge attempt was already protected by `collectConfigIssues`; the exposure
+was narrowly the hand-edited-config path the backstop exists for. The one
+bash-side check that remains (an unclosed `[` character class, a property
+of git's own pathspec parser rather than of what a plain glob is) is pinned
+to the `C` locale so it cannot repeat the same class of defect.
+
+**This path is unexercised in this repository today.** `agentMerge.enabled`
+is `true` in this project's own config, but the owner has kept
+`AGENT_MERGE=false` for every run so far, so no auditor has actually run
+here and every merge has been manual — `check-pr-mergeable.sh` also still
+passes on an empty `statusCheckRollup` today (CON-207, open), a predicate
+this feature deliberately does not build on but that underscores how little
+of the surrounding merge path has real field evidence behind it. This
+feature ships with test and mutation-proof evidence only, not field use —
+do not describe it as battle-tested.
 
 ## `costTracking`
 

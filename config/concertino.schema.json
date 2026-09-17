@@ -209,7 +209,13 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean", "default": false, "description": "Project-level default. false preserves today's human-confirms-merge flow for every run that doesn't explicitly override it." },
-        "mergeMethod": { "enum": ["squash", "merge", "rebase"], "default": "squash", "description": "Passed to `gh pr merge --<mergeMethod>` when the auditor merges." }
+        "mergeMethod": { "enum": ["squash", "merge", "rebase"], "default": "squash", "description": "Passed to `gh pr merge --<mergeMethod>` when the auditor merges." },
+        "protectedPaths": {
+          "type": "array",
+          "default": [],
+          "description": "Path globs (matched with git's :(glob) pathspec magic against the run's diff) that the auditor may never merge on its own; a match forces the check to refuse and the auditor to escalate for human merge. Empty/unset preserves today's behavior.",
+          "items": { "type": "string", "minLength": 1 }
+        }
       }
     },
     "costTracking": {
