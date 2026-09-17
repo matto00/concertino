@@ -92,6 +92,22 @@ check "self-test: the FIXED check (captured child pid, by PID) correctly reports
 # process running past its own completion.
 kill -KILL "$LEAKY_CHILD" 2>/dev/null
 wait "$LEAKY_CHILD" 2>/dev/null
+# CON-189 cycle 4: bounded poll for the SIGKILL to actually be reflected by
+# `kill -0` before asserting, mirroring this same file's own "wait for the
+# child to appear" idiom a few lines above (seq 1 50 / sleep 0.1 = 5s bound)
+# rather than a fixed sleep or a magic constant (CON-200 precedent: no
+# constant at or below the poll period it races is ever safe). `wait
+# "$LEAKY_CHILD"` above is best-effort only -- LEAKY_CHILD is a grandchild of
+# this shell (child of the now-dead LEAKY_PARENT_SCRIPT subshell), not a
+# direct job of it, so bash's `wait` silently no-ops on it rather than
+# blocking until the kernel finishes tearing it down; under load the very
+# next `kill -0` can still observe it alive. This is what turned CI red
+# (test (22)=FAILURE, PR #143): the assertion ran before the kill had
+# actually taken effect.
+for _ in $(seq 1 50); do
+  [ -z "$(children_alive "$LEAKY_CHILD")" ] && break
+  sleep 0.1
+done
 assert_children_dead "self-test: after cleanup, assert_children_dead reports it gone" "$LEAKY_CHILD"
 rm -f "$LEAKY_PARENT_SCRIPT"
 
