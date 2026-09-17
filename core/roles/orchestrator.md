@@ -1025,19 +1025,31 @@ led to the plan actually being revised.
 3. **Run the triage script, capturing its stdout:**
 
    ```bash
-   TRIAGE_CONTEXT="$(scripts/concertino/triage-followup.sh \
+   TRIAGE_OUTPUT="$(scripts/concertino/triage-followup.sh \
      description="<one-line description>" \
      files="<comma-separated files, or unknown>" \
      ac_relevant=<yes|no> \
      effort=<small|large> \
-     worktree="$WORKTREE_PATH")" || TRIAGE_CONTEXT=""
+     worktree="$WORKTREE_PATH")" || TRIAGE_OUTPUT=""
+   TRIAGE_CONTEXT="$(printf '%s\n' "$TRIAGE_OUTPUT" | grep -v '^TRIAGE_JSON:')"
+   # CON-190: the one machine-readable `TRIAGE_JSON:`-prefixed line — this is
+   # what a `standalone` verdict's `ticket.filed` emission below records as
+   # `triage=`, capturing the same ac_relevant/effort/overlap/recommendation
+   # signal `TRIAGE_CONTEXT` already presents to the human, rather than
+   # letting it be thrown away once the escalation resolves.
+   TRIAGE_JSON="$(printf '%s\n' "$TRIAGE_OUTPUT" | sed -n 's/^TRIAGE_JSON://p')"
    ```
 
-   On `FAIL` (or any script failure), `TRIAGE_CONTEXT` is simply empty —
-   proceed to the escalation below anyway, without `context=`, exactly like
-   `gather-escalation-context.sh`'s existing fallback rule ("How to raise
-   one" below). Never let a malformed triage call block the escalation
-   itself.
+   On `FAIL` (or any script failure), `TRIAGE_OUTPUT`/`TRIAGE_CONTEXT`/
+   `TRIAGE_JSON` are simply empty — proceed to the escalation below anyway,
+   without `context=`, exactly like `gather-escalation-context.sh`'s existing
+   fallback rule ("How to raise one" below). Never let a malformed triage
+   call block the escalation itself. A `standalone` verdict with an empty
+   `TRIAGE_JSON` still emits `ticket.filed` below (per required-field
+   validation, `triage=` cannot be omitted) — fall back to a minimal JSON
+   object recording your own stated `ac_relevant`/`effort` and
+   `overlap: unknown`/`recommendation: unknown` in that case, rather than
+   skipping the emission.
 4. **Raise the escalation** through "How to raise one" below, in full — the
    same TUI-liveness check, topology branch, per-call timeout, and off-ramp
    rules, not a second, hand-rolled call. Use

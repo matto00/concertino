@@ -148,5 +148,31 @@ check "base defaults from CONCERTINO_BASE_BRANCH: overlap high" \
   "$(printf '%s' "$OUT" | grep -c 'overlap:.*high')" "1"
 rm -rf "$REPO"
 
+# --- CON-190: the machine-readable TRIAGE_JSON: line ------------------------
+REPO="$(new_repo)"
+OUT="$("$SCRIPT" description="tighten the icon set" files=a.js ac_relevant=no effort=small worktree="$REPO" base=main)"
+RC=$?
+check "triage json line: exits 0" "$RC" "0"
+TRIAGE_LINE="$(printf '%s\n' "$OUT" | grep '^TRIAGE_JSON:')"
+if [ -n "$TRIAGE_LINE" ]; then ok "triage json line: present"; else bad "triage json line: present" "no TRIAGE_JSON: line in: $OUT"; fi
+TRIAGE_JSON="${TRIAGE_LINE#TRIAGE_JSON:}"
+check "triage json line: carries ac_relevant" \
+  "$(printf '%s' "$TRIAGE_JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>console.log(JSON.parse(s).ac_relevant))')" \
+  "no"
+check "triage json line: carries effort" \
+  "$(printf '%s' "$TRIAGE_JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>console.log(JSON.parse(s).effort))')" \
+  "small"
+check "triage json line: carries computed overlap" \
+  "$(printf '%s' "$TRIAGE_JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>console.log(JSON.parse(s).overlap))')" \
+  "high"
+check "triage json line: carries recommendation" \
+  "$(printf '%s' "$TRIAGE_JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>console.log(JSON.parse(s).recommendation))')" \
+  "fold-in"
+# The human-readable block passed through as an escalation's context= is
+# still present, unchanged in meaning, alongside the new line.
+check "triage json line: human-readable discard note still present" \
+  "$(printf '%s' "$OUT" | grep -c 'discard is always a valid choice')" "1"
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -261,6 +261,20 @@ HEAD_SHA=""
 CATEGORY=""
 GATE_FIELD=""
 MAX_WAIT_SEC=""
+# CON-190/CON-191: captured separately (like CATEGORY/GATE_FIELD above) so the
+# post-lease-release validation block below can enforce ticket.filed's
+# required fields/enums and the closed role set, without refusing in the
+# k=v loop (design.md Decision 5 / C3). Each still falls through to
+# FIELDS/OTHER_FIELDS unchanged via the generic `*)` case for every other
+# event kind — these vars only carry the extra raw copy validation needs.
+TICKET_ID_FIELD=""
+ORIGIN_TICKET=""
+ORIGIN_REPO=""
+ORIGIN_ROLE=""
+ORIGIN_PHASE=""
+ORIGIN_KIND=""
+SUGGESTED_BY=""
+TRIAGE_FIELD=""
 
 for kv in ${ARGS+"${ARGS[@]}"}; do
   key="${kv%%=*}"
@@ -330,6 +344,50 @@ for kv in ${ARGS+"${ARGS[@]}"}; do
       GATE_FIELD="$val"
       FIELDS="${FIELDS},\"gate\":$(json_value "$val")"
       OTHER_FIELDS="${OTHER_FIELDS},\"gate\":$(json_value "$val")"
+      ;;
+    ticket_id)
+      # CON-190: the newly filed ticket's id — required on ticket.filed,
+      # validated below the CON-171 lease release, never in this loop.
+      TICKET_ID_FIELD="$val"
+      FIELDS="${FIELDS},\"ticket_id\":$(json_value "$val")"
+      OTHER_FIELDS="${OTHER_FIELDS},\"ticket_id\":$(json_value "$val")"
+      ;;
+    origin_ticket)
+      ORIGIN_TICKET="$val"
+      FIELDS="${FIELDS},\"origin_ticket\":$(json_value "$val")"
+      OTHER_FIELDS="${OTHER_FIELDS},\"origin_ticket\":$(json_value "$val")"
+      ;;
+    origin_repo)
+      ORIGIN_REPO="$val"
+      FIELDS="${FIELDS},\"origin_repo\":$(json_value "$val")"
+      OTHER_FIELDS="${OTHER_FIELDS},\"origin_repo\":$(json_value "$val")"
+      ;;
+    origin_role)
+      ORIGIN_ROLE="$val"
+      FIELDS="${FIELDS},\"origin_role\":$(json_value "$val")"
+      OTHER_FIELDS="${OTHER_FIELDS},\"origin_role\":$(json_value "$val")"
+      ;;
+    origin_phase)
+      ORIGIN_PHASE="$val"
+      FIELDS="${FIELDS},\"origin_phase\":$(json_value "$val")"
+      OTHER_FIELDS="${OTHER_FIELDS},\"origin_phase\":$(json_value "$val")"
+      ;;
+    origin_kind)
+      ORIGIN_KIND="$val"
+      FIELDS="${FIELDS},\"origin_kind\":$(json_value "$val")"
+      OTHER_FIELDS="${OTHER_FIELDS},\"origin_kind\":$(json_value "$val")"
+      ;;
+    suggested_by)
+      SUGGESTED_BY="$val"
+      FIELDS="${FIELDS},\"suggested_by\":$(json_value "$val")"
+      OTHER_FIELDS="${OTHER_FIELDS},\"suggested_by\":$(json_value "$val")"
+      ;;
+    triage)
+      # design.md Decision 7: JSON-encoded value, following the `models=`
+      # precedent — travels through json_value like any other string field.
+      TRIAGE_FIELD="$val"
+      FIELDS="${FIELDS},\"triage\":$(json_value "$val")"
+      OTHER_FIELDS="${OTHER_FIELDS},\"triage\":$(json_value "$val")"
       ;;
     sub_questions)
       # Raised alongside (never instead of) question/options — CON-46's
@@ -409,6 +467,80 @@ TICKET="$(printf '%s' "$TICKET" | tr '[:lower:]' '[:upper:]')"
 # of KIND/ROLE/TICKET-shape is auditor-verdict-specific past this point.
 if [ "$KIND" = "verdict" ] && [ "$ROLE" = "auditor" ]; then
   lease_release "$ROOT" "$TICKET" || true
+fi
+
+# --- CON-191: closed role validation -----------------------------------------
+# Deliberately placed HERE — after the CON-171 lease release above, never in
+# the k=v argument loop — so a refused invocation (of ANY kind, including a
+# `verdict`) still releases its Phase-4 teardown lease (design.md Decision 5 /
+# C3). The legal set is the five agent roles plus `script` (the emitter's own
+# default, and what every procedure script — including cleanup.sh's run.end —
+# emits under) and `dashboard` (currently inert — see design.md Decision 5 —
+# but retained so routing lib/ui/session.js through this emitter later is not
+# a silent breaking change). A five-value set would refuse `run.end` and
+# leave every run non-terminal forever; do not narrow this without re-reading
+# that decision.
+case "$ROLE" in
+  orchestrator|executor|evaluator|skeptic|auditor|script|dashboard) ;;
+  *)
+    echo "emit-event.sh: invalid role '${ROLE}' (must be one of: orchestrator, executor, evaluator, skeptic, auditor, script, dashboard)" >&2
+    exit 1
+    ;;
+esac
+
+# --- CON-190: ticket.filed required-field + enum validation ------------------
+# Same placement rule as the role check above and the verdict checks below —
+# after the CON-171 lease release, never in the k=v loop (design.md Decision 5
+# / C3). Applies ONLY to kind=ticket.filed; every other kind is unaffected
+# (design.md Goals / spec.md "Required fields are enforced only for
+# ticket.filed").
+if [ "$KIND" = "ticket.filed" ]; then
+  if [ -z "$TICKET_ID_FIELD" ]; then
+    echo "emit-event.sh: missing required field 'ticket_id' for ticket.filed" >&2
+    exit 1
+  fi
+  if [ -z "$ORIGIN_TICKET" ]; then
+    echo "emit-event.sh: missing required field 'origin_ticket' for ticket.filed" >&2
+    exit 1
+  fi
+  if [ -z "$ORIGIN_REPO" ]; then
+    echo "emit-event.sh: missing required field 'origin_repo' for ticket.filed" >&2
+    exit 1
+  fi
+  if [ -z "$ORIGIN_ROLE" ]; then
+    echo "emit-event.sh: missing required field 'origin_role' for ticket.filed" >&2
+    exit 1
+  fi
+  if [ -z "$ORIGIN_PHASE" ]; then
+    echo "emit-event.sh: missing required field 'origin_phase' for ticket.filed" >&2
+    exit 1
+  fi
+  if [ -z "$ORIGIN_KIND" ]; then
+    echo "emit-event.sh: missing required field 'origin_kind' for ticket.filed" >&2
+    exit 1
+  fi
+  if [ -z "$SUGGESTED_BY" ]; then
+    echo "emit-event.sh: missing required field 'suggested_by' for ticket.filed" >&2
+    exit 1
+  fi
+  if [ -z "$TRIAGE_FIELD" ]; then
+    echo "emit-event.sh: missing required field 'triage' for ticket.filed" >&2
+    exit 1
+  fi
+  case "$ORIGIN_KIND" in
+    followup|roadmap|escalation-split|human) ;;
+    *)
+      echo "emit-event.sh: invalid origin_kind '${ORIGIN_KIND}' (must be one of: followup, roadmap, escalation-split, human)" >&2
+      exit 1
+      ;;
+  esac
+  case "$SUGGESTED_BY" in
+    agent|human) ;;
+    *)
+      echo "emit-event.sh: invalid suggested_by '${SUGGESTED_BY}' (must be one of: agent, human)" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 # --- CON-189/CON-187/CON-194: verdict-field validation -----------------------

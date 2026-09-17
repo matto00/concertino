@@ -164,5 +164,36 @@ check "6.1 exits 0 for a missing transcript" "$RC" "0"
 check "6.2 no event emitted for a missing transcript" "$(event_count "$REPO/.concertino/runs/CON-6/events.jsonl")" "0"
 rm -rf "$REPO"
 
+# --- 7. CON-191: a non-Concertino SubagentStop agent_type must not have its
+# cost silently refused by emit-role-validation's closed role set. Normalised
+# onto `script`, with the raw agent_type preserved separately.
+REPO="$(new_repo)"
+TRANSCRIPT="$REPO/agent-transcript.jsonl"
+write_transcript "$TRANSCRIPT" "60,20,0,0,claude-haiku-4-5-20251001"
+PAYLOAD="{\"session_id\":\"root-s\",\"agent_id\":\"agentZ\",\"agent_type\":\"general-purpose\",\"hook_event_name\":\"SubagentStop\",\"agent_transcript_path\":\"$TRANSCRIPT\"}"
+( cd "$REPO" && CONCERTINO_TICKET=CON-7 bash -c "printf '%s' '$PAYLOAD' | '$SCRIPT'" )
+RC=$?
+LOG="$REPO/.concertino/runs/CON-7/events.jsonl"
+check "7.1 exits 0 for a non-Concertino agent_type" "$RC" "0"
+check "7.2 event is appended, not refused" "$(event_count "$LOG")" "1"
+check "7.3 role normalised into the closed set (script)" "$(json_field "$LOG" role)" "script"
+check "7.4 raw agent_type preserved verbatim" "$(json_field "$LOG" agent_type)" "general-purpose"
+check "7.5 token fields unchanged" "$(json_field "$LOG" input_tokens)" "60"
+rm -rf "$REPO"
+
+# A recognized concertino-<role> agent_type still emits NO separate
+# agent_type field (test 3 above already asserts role=executor for it) —
+# confirmed explicitly here so a future change can't silently start
+# clobbering `role` with a redundant `agent_type` for the common case.
+REPO="$(new_repo)"
+TRANSCRIPT="$REPO/agent-transcript.jsonl"
+write_transcript "$TRANSCRIPT" "10,5,0,0,claude-haiku-4-5-20251001"
+PAYLOAD="{\"session_id\":\"root-s\",\"agent_id\":\"agentY\",\"agent_type\":\"concertino-skeptic\",\"hook_event_name\":\"SubagentStop\",\"agent_transcript_path\":\"$TRANSCRIPT\"}"
+( cd "$REPO" && CONCERTINO_TICKET=CON-8 bash -c "printf '%s' '$PAYLOAD' | '$SCRIPT'" )
+LOG="$REPO/.concertino/runs/CON-8/events.jsonl"
+check "7.6 recognized agent_type: role is exactly the stripped value" "$(json_field "$LOG" role)" "skeptic"
+check "7.7 recognized agent_type: no redundant agent_type field" "$(json_field "$LOG" agent_type)" "undefined"
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

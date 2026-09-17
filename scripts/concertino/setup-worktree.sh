@@ -208,6 +208,84 @@ RESOLVED_PROVIDER="$(printf '%s' "$RESOLVED_SPEED_JSON" | jq -r '.provider // "d
 RESOLVED_SECOND_FINAL_GATE_SKEPTIC="$(printf '%s' "$RESOLVED_SPEED_JSON" | jq -r '.secondFinalGateSkeptic')"
 RESOLVED_EVALUATOR_CLEAN_WORKTREE="$(printf '%s' "$RESOLVED_SPEED_JSON" | jq -r '.evaluatorCleanWorktree')"
 
+# CON-191: instrumentation digest, computed over the RENDERED
+# scripts/concertino/**/*.sh files in the repository being operated on —
+# never over core/'s own templates, since a locally patched rendered copy
+# (the CON-128 case) is precisely what this exists to detect (design.md
+# Decision 3). SCRIPT_DIR is this script's own directory, i.e. the rendered
+# scripts/concertino/ this process is itself running from.
+#
+# CON-191 skeptic-final-1 (round 1, REFUTE): this originally walked
+# SCRIPT_DIR non-recursively (top-level `.sh` files only), silently
+# excluding everything under `scripts/concertino/lib/` — including
+# `lib/auditor-lease.sh`, which THIS SCRIPT'S OWN SIBLING emit-event.sh
+# `source`s on every invocation, so its content is directly part of what
+# executes. A patch to a nested `lib/*.sh` file moved the digest not at all
+# — the exact CON-128 shape this exists to catch. Fixed by walking
+# recursively and keying/sorting on the full, forward-slash-normalized
+# RELATIVE path (e.g. `lib/auditor-lease.sh`), never a bare basename, which
+# could collide across directories or sort inconsistently. Kept in lockstep
+# with lib/cli/emit.js's computeInstrumentationManifest(), which the
+# render-time baseline this compares against is written by.
+#
+# Deliberately non-fatal end to end (design.md's "computing the digest SHALL
+# NOT fail a run" / task 3.2): every step below degrades to an empty
+# manifest rather than aborting under `set -e`, and run.start is emitted
+# with or without the digest field depending only on whether this succeeded.
+compute_instrumentation_manifest() {
+  node -e '
+    const fs = require("fs"), path = require("path"), crypto = require("crypto");
+    // Mirrors lib/cli/shared.js'"'"'s listFilesRecursive(): forward-slash-
+    // joined relative paths, sorted, regardless of platform.
+    function listShFilesRecursive(dir, prefix) {
+      let out = [];
+      let entries;
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch (e) {
+        return out;
+      }
+      for (const entry of entries) {
+        const abs = path.join(dir, entry.name);
+        const rel = prefix ? prefix + "/" + entry.name : entry.name;
+        if (entry.isDirectory()) {
+          out = out.concat(listShFilesRecursive(abs, rel));
+        } else if (entry.isFile() && entry.name.endsWith(".sh")) {
+          out.push(rel);
+        }
+      }
+      return out;
+    }
+    try {
+      const dir = process.argv[1];
+      const files = listShFilesRecursive(dir, "").sort();
+      const fileHashes = {};
+      const agg = crypto.createHash("sha256");
+      for (const f of files) {
+        const content = fs.readFileSync(path.join(dir, f));
+        const h = crypto.createHash("sha256").update(content).digest("hex");
+        fileHashes[f] = h;
+        agg.update(f + ":" + h + "\n");
+      }
+      process.stdout.write(JSON.stringify({ digest: agg.digest("hex"), files: fileHashes }));
+    } catch (e) {
+      process.exit(1);
+    }
+  ' "$1"
+}
+
+INSTRUMENTATION_MANIFEST="$(compute_instrumentation_manifest "$SCRIPT_DIR" 2>/dev/null)" || INSTRUMENTATION_MANIFEST=""
+INSTRUMENTATION_DIGEST=""
+if [ -n "$INSTRUMENTATION_MANIFEST" ]; then
+  INSTRUMENTATION_DIGEST="$(printf '%s' "$INSTRUMENTATION_MANIFEST" | node -e '
+    let s = "";
+    process.stdin.on("data", (d) => { s += d; });
+    process.stdin.on("end", () => {
+      try { process.stdout.write(JSON.parse(s).digest || ""); } catch (e) { /* leave empty */ }
+    });
+  ' 2>/dev/null)" || INSTRUMENTATION_DIGEST=""
+fi
+
 REPO_ROOT="$(git_child rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
@@ -366,16 +444,54 @@ fi
 # header (design.md Decision 3a) — `models=` is the compact per-role JSON
 # object; emit-event.sh already handles arbitrary key=value fields, JSON
 # value included (see its own `context=` handling for escalations).
-CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.start \
-  "ticket=${TICKET_ID}" \
-  "branch=${BRANCH}" \
-  "worktree=${WORKTREE_PATH}" \
-  "dev_port=${DEV_PORT}" \
-  "backend_port=${BACKEND_PORT}" \
-  "harness=${HARNESS}" \
-  "speed=${SPEED}" \
-  "provider=${RESOLVED_PROVIDER}" \
-  "models=${RESOLVED_MODELS_JSON}" || true
+RUN_START_ARGS=(
+  "ticket=${TICKET_ID}"
+  "branch=${BRANCH}"
+  "worktree=${WORKTREE_PATH}"
+  "dev_port=${DEV_PORT}"
+  "backend_port=${BACKEND_PORT}"
+  "harness=${HARNESS}"
+  "speed=${SPEED}"
+  "provider=${RESOLVED_PROVIDER}"
+  "models=${RESOLVED_MODELS_JSON}"
+)
+# CON-191 task 3.1/3.2: only added when it could actually be computed — a
+# digest that could not be computed for any reason must never fail run.start
+# or setup itself (design.md's graceful-degradation requirement).
+[ -n "$INSTRUMENTATION_DIGEST" ] && RUN_START_ARGS+=("instrumentation_digest=${INSTRUMENTATION_DIGEST}")
+
+CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" run.start "${RUN_START_ARGS[@]}" || true
+
+# CON-191 task 3.3–3.6: compare the live digest just computed against the
+# render-time baseline `concertino sync` wrote alongside these scripts
+# (design.md Decision 4). No baseline (a repo that has not re-synced since
+# this change — helio's state until the batch is synced, by owner ruling) is
+# NOT drift: the live digest is still recorded above, nothing more happens
+# here, and the run proceeds. This block is best-effort in the same way the
+# digest computation itself is — a comparison failure must never fail setup.
+INSTRUMENTATION_BASELINE_FILE="${SCRIPT_DIR}/.instrumentation-manifest.json"
+if [ -n "$INSTRUMENTATION_MANIFEST" ] && [ -f "$INSTRUMENTATION_BASELINE_FILE" ]; then
+  AFFECTED_SCRIPTS="$(node -e '
+    try {
+      const fs = require("fs");
+      const baseline = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const live = JSON.parse(process.argv[2]);
+      const baseFiles = baseline.files || {};
+      const liveFiles = live.files || {};
+      const names = new Set([...Object.keys(baseFiles), ...Object.keys(liveFiles)]);
+      const diffs = [...names].filter((n) => baseFiles[n] !== liveFiles[n]).sort();
+      process.stdout.write(diffs.join(","));
+    } catch (e) {
+      process.exit(1);
+    }
+  ' "$INSTRUMENTATION_BASELINE_FILE" "$INSTRUMENTATION_MANIFEST" 2>/dev/null)" || AFFECTED_SCRIPTS=""
+  if [ -n "$AFFECTED_SCRIPTS" ]; then
+    CONCERTINO_ROLE=script "${SCRIPT_DIR}/emit-event.sh" schema.change \
+      "ticket=${TICKET_ID}" \
+      "reason=rendered-script-drift" \
+      "affected_scripts=${AFFECTED_SCRIPTS}" || true
+  fi
+fi
 
 echo "READY worktree=${WORKTREE_PATH}"
 echo "READY branch=${BRANCH}"
