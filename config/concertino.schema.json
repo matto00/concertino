@@ -30,7 +30,8 @@
       "properties": {
         "kind": { "enum": ["linear", "github", "local"] },
         "idExample": { "type": "string", "description": "Sample ticket id, e.g. HEL-26, used in rendered examples." },
-        "teamKey": { "type": "string", "description": "Linear team key the launch pad fetches tickets for, e.g. CON. Distinct from idExample, which is only a sample id for agent prose and is often a placeholder. Falls back to the idExample prefix when unset; LINEAR_TEAM_KEY overrides both." }
+        "teamKey": { "type": "string", "description": "Linear team key the launch pad fetches tickets for, e.g. CON. Distinct from idExample, which is only a sample id for agent prose and is often a placeholder. Falls back to the idExample prefix when unset; LINEAR_TEAM_KEY overrides both." },
+        "followUpLabel": { "type": "string", "minLength": 1, "description": "Label the orchestrator applies to a ticket it files as a standalone follow-up (linear: `addLabels` on the filing `save_issue` call; local: frontmatter `labels`), so follow-ups are distinguishable from original scope on the board. The label must already exist in the ticket system. Unset: no label instruction is rendered and provenance lives only in the description's `origin_kind`/`origin_ticket` lines." }
       }
     },
     "specProvider": {

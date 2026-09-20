@@ -137,5 +137,81 @@ else
 fi
 rm -rf "$OUT"
 
+# --- ticketProvider.followUpLabel ---------------------------------------------
+# A filed follow-up must be distinguishable from original scope on the board
+# itself, not only by scanning description text for `origin_kind:`. When the
+# project configures `ticketProvider.followUpLabel`, the standalone bullet tells
+# the orchestrator to apply it at filing time. When unset, the wording is
+# unchanged (asserted here by the absence of any label instruction, on top of
+# the existing per-provider assertions above).
+
+render_with_label() {
+  # $1 = provider kind, $2 = label ("" for none) -> prints the standalone bullet
+  local out cfg
+  out="$(mktemp -d)"
+  cfg="$out/concertino.config.json"
+  node -e '
+    const fs = require("fs");
+    const [kind, label, dest] = process.argv.slice(2);
+    const tp = { kind, idExample: "CON-1", teamKey: "CON" };
+    if (label) tp.followUpLabel = label;
+    fs.writeFileSync(dest, JSON.stringify({
+      harnesses: ["claude-code"],
+      project: { name: "fixture-project", baseBranch: "main" },
+      ticketProvider: tp,
+      specProvider: { kind: "none" },
+      worktree: { ports: { frontendBase: 5173, backendBase: 8080 } },
+      gates: [{ name: "test", when: "always", command: "true" }],
+    }, null, 2));
+  ' _ "$1" "$2" "$cfg"
+  node "$ROOT/bin/concertino" sync --out="$out" --config="$cfg" > "$out/sync.txt" 2>&1 || { echo "SYNC-FAILED: $(cat "$out/sync.txt")"; rm -rf "$out"; return; }
+  extract_standalone_bullet "$out/.claude/agents/concertino-orchestrator.md"
+  rm -rf "$out"
+}
+
+BULLET="$(render_with_label linear 'Follow-up')"
+if printf '%s' "$BULLET" | grep -qF 'addLabels: ["Follow-up"]'; then
+  ok "label: linear names addLabels with the configured label"
+else
+  bad "label: linear names addLabels with the configured label" "not found in: $BULLET"
+fi
+if printf '%s' "$BULLET" | grep -qF 'origin_kind: followup'; then
+  ok "label: linear still carries the origin_kind description fallback"
+else
+  bad "label: linear still carries the origin_kind description fallback" "not found in: $BULLET"
+fi
+
+if printf '%s' "$BULLET" | grep -qF 'relatedTo: ["$TICKET_ID"]'; then
+  ok "label: linear links the filed follow-up to its origin via relatedTo"
+else
+  bad "label: linear links the filed follow-up to its origin via relatedTo" "not found in: $BULLET"
+fi
+
+BULLET="$(render_with_label linear '')"
+if printf '%s' "$BULLET" | grep -qF 'addLabels'; then
+  bad "label: linear with no followUpLabel emits no label instruction" "unexpectedly found addLabels in: $BULLET"
+else
+  ok "label: linear with no followUpLabel emits no label instruction"
+fi
+if printf '%s' "$BULLET" | grep -qF 'relatedTo'; then
+  bad "label: linear with no followUpLabel emits no relatedTo instruction" "unexpectedly found relatedTo in: $BULLET"
+else
+  ok "label: linear with no followUpLabel emits no relatedTo instruction"
+fi
+
+BULLET="$(render_with_label local 'Follow-up')"
+if printf '%s' "$BULLET" | grep -qF 'labels: ["Follow-up"]'; then
+  ok "label: local names frontmatter labels with the configured label"
+else
+  bad "label: local names frontmatter labels with the configured label" "not found in: $BULLET"
+fi
+
+BULLET="$(render_with_label local '')"
+if printf '%s' "$BULLET" | grep -qF 'labels:'; then
+  bad "label: local with no followUpLabel emits no label instruction" "unexpectedly found labels: in: $BULLET"
+else
+  ok "label: local with no followUpLabel emits no label instruction"
+fi
+
 echo "  ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

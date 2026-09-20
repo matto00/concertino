@@ -199,6 +199,32 @@ test('ticketProvider.kind local is accepted', () => {
   assert.doesNotMatch(out, /✗[^\n]*ticketProvider/);
 });
 
+// followUpLabel: the label the orchestrator applies when it files a standalone
+// follow-up, so the board can tell follow-ups from original scope. Optional.
+test('ticketProvider.followUpLabel as a non-empty string is accepted and reported', () => {
+  const { out, status } = runValidate(baseConfig({
+    ticketProvider: { kind: 'linear', idExample: 'ABC-123', followUpLabel: 'Follow-up' },
+  }));
+  assert.equal(status, 0, out);
+  assert.match(out, /ticketProvider\.followUpLabel[^\n]*Follow-up/);
+});
+
+test('ticketProvider.followUpLabel absent — validate prints nothing about it', () => {
+  const { out, status } = runValidate(baseConfig({}));
+  assert.equal(status, 0, out);
+  assert.doesNotMatch(out, /followUpLabel/);
+});
+
+test('ticketProvider.followUpLabel that is not a non-empty string fails and names the key', () => {
+  for (const bad of [42, '', '   ', ['Follow-up'], { name: 'Follow-up' }]) {
+    const { out, status } = runValidate(baseConfig({
+      ticketProvider: { kind: 'linear', idExample: 'ABC-123', followUpLabel: bad },
+    }));
+    assert.notEqual(status, 0, 'expected a validation failure for ' + JSON.stringify(bad) + ':\n' + out);
+    assert.match(out, /ticketProvider\.followUpLabel/, 'failure must name the key for ' + JSON.stringify(bad));
+  }
+});
+
 test('ticketProvider.kind manual is accepted but warns that it is deprecated', () => {
   const { out } = runValidate(baseConfig({ ticketProvider: { kind: 'manual', idExample: 'ABC-123' } }));
   assert.match(out, /deprecated/);

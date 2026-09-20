@@ -4,7 +4,7 @@ description: Drive multiple concertino orchestrator runs concurrently from direc
 license: MIT
 metadata:
   author: concertino
-  version: "1.2"
+  version: "1.3"
 ---
 
 Coordinate several concertino ticket-delivery runs at once as their **driver** —
@@ -16,8 +16,9 @@ yourself instead of a merge-confirmation screen.
 
 Every rule below exists because skipping it caused a real, specific incident in
 production driving (helio, 2026-08-16/17 — one session, seven tickets, three
-near-misses; and 2026-09-07/09 — two nights, five lanes, 19 merged PRs, which
-added §§11-15). This is not theoretical hardening; it is what actually broke.
+near-misses; 2026-09-07/09 — two nights, five lanes, 19 merged PRs, which
+added §§11-15; and a 2026-09-19 board audit of helio v0.8, which added §17).
+This is not theoretical hardening; it is what actually broke.
 
 ---
 
@@ -567,3 +568,46 @@ view, and **nothing detects that it happened.**
 Four lanes the same night escalated properly and were answered within minutes.
 The cost of asking is a few seconds. The cost of not asking is unbounded and
 invisible.
+
+## 17. File a follow-up so the board can tell it from original scope
+
+§7 tells you to decide `fold-in`/`standalone`/`discard` on a suggested
+follow-up. It never said how to *file* the `standalone` ones — and the orchestrator's
+own filing convention (`origin_kind`/`origin_ticket` in the description, the
+project's follow-up label) lives in its role prompt, which you do not run.
+
+**What went wrong (helio v0.8, audited 2026-09-19):** 24 of the 72 tickets in the
+project were created after the original batch. Only 4 of the 20 that were
+genuine follow-ups carried `origin_kind:` in their description; the rest carried
+prose provenance at best ("Follow-up from HEL-1100", "Spun off from…") — several
+say "triaged standalone by the driver", others were filed at the owner's
+direction. There was no label, so the only way to separate follow-ups from
+original scope was `createdAt` — which cannot distinguish a spinoff from a
+blocker discovered mid-batch.
+
+When you file a `standalone` follow-up yourself, on the **same** `save_issue`
+call (not a step you can forget afterwards):
+
+- put `origin_kind: followup` and `origin_ticket: <ID>` in the description — the
+  same two lines the orchestrator writes; the legal `origin_kind` values are the
+  ones `emit-event.sh` enforces for `ticket.filed`, do not invent one;
+- link the origin ticket with `relatedTo`;
+- apply the project's follow-up label — `ticketProvider.followUpLabel` in
+  `concertino.config.json` (helio: `Follow-up`). Unset means the project has not
+  opted in; then say so in your summary rather than inventing a label.
+
+**Do not conflate a follow-up with a scope addition.** A follow-up is a spinoff
+— a gap, defect or idea found while working ticket X that X's own acceptance
+criteria do not need. A scope addition is something an original-scope ticket
+*cannot be delivered without* (a blocker you find when you check a premise at
+dispatch), or something the owner adds to the epic. Test: **would the origin
+ticket's own AC be unmeetable without it?** If yes it is a scope addition —
+parent it to the epic, set `blocks`, and use the project's scope-addition label
+(helio: `Scope addition`). If no, it is a follow-up. HEL-1121, HEL-1122 and
+HEL-1124 were scope additions (each blocked HEL-1080 or HEL-1079), yet a
+`createdAt` cut swept them in with genuine spinoffs like HEL-1133.
+
+**Read the ticket back after filing.** Whether a label name that does not exist
+in the team errors or is silently dropped depends on the tool; check that the
+label is actually on the ticket, the same way §14 asks you to check any
+instrument before trusting it.
