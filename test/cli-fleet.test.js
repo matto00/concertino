@@ -136,3 +136,57 @@ test('resolveRoot: outside a git repo returns the directory itself', () => {
   const dir = mkTmpDir('concertino-fleet-');
   assert.equal(fleet.resolveRoot(dir), dir);
 });
+
+function runFleet(cwd, args) {
+  try {
+    const out = execFileSync('node', [BIN, 'fleet'].concat(args), { cwd, encoding: 'utf8' });
+    return { out, status: 0 };
+  } catch (e) {
+    return { out: (e.stdout || '') + (e.stderr || ''), status: e.status };
+  }
+}
+
+test('cmdFleet --json: prints the snapshot for the cwd root and exits 0', () => {
+  const root = mkTmpDir('concertino-fleet-');
+  writeRun(root, 'CON-1', [START, { kind: 'phase.enter', phase: 'Planning', cycle: 1 }]);
+  const { out, status } = runFleet(root, ['--json']);
+  assert.equal(status, 0);
+  const snap = JSON.parse(out);
+  assert.equal(snap.runs[0].ticket, 'CON-1');
+  assert.equal(snap.runs[0].phase, 'Planning');
+});
+
+test('cmdFleet --json: empty root prints runs: [] and exits 0', () => {
+  const root = mkTmpDir('concertino-fleet-');
+  const { out, status } = runFleet(root, ['--json']);
+  assert.equal(status, 0);
+  assert.deepEqual(JSON.parse(out).runs, []);
+});
+
+test('cmdFleet (table): one line per run with ticket, status, phase, cycle, gates', () => {
+  const root = mkTmpDir('concertino-fleet-');
+  writeRun(root, 'CON-1', [
+    START,
+    { kind: 'phase.enter', phase: 'Execution', cycle: 2 },
+    { kind: 'gate.result', gate: 'a', status: 'pass' },
+    { kind: 'gate.result', gate: 'b', status: 'fail' },
+  ]);
+  const { out, status } = runFleet(root, []);
+  assert.equal(status, 0);
+  assert.match(out, /CON-1\s+unknown\s+Execution\s+c2\s+1\/2/);
+});
+
+test('cmdFleet: --out=DIR overrides the cwd', () => {
+  const root = mkTmpDir('concertino-fleet-');
+  const elsewhere = mkTmpDir('concertino-fleet-cwd-');
+  writeRun(root, 'CON-9', [START]);
+  const { out } = runFleet(elsewhere, ['--json', '--out=' + root]);
+  assert.equal(JSON.parse(out).runs[0].ticket, 'CON-9');
+});
+
+test('cmdFleet --help prints the usage block', () => {
+  const { out, status } = runFleet(process.cwd(), ['--help']);
+  assert.equal(status, 0);
+  assert.match(out, /concertino fleet/);
+  assert.match(out, /--json/);
+});

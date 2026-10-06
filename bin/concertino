@@ -9,6 +9,7 @@
  *   concertino sync [--config=PATH] [--out=DIR] [--harness=claude-code,codex,opencode] [--dry-run]
  *   concertino update <key=value> [...] [--config=PATH] [--out=DIR] [--dry-run]
  *   concertino answer <ticket> <value> [--sub <index> --total <n>] [--out=DIR]
+ *   concertino fleet [--json] [--all] [--out=DIR]
  *   concertino help
  *
  * This file is the executable entry point only: arg parsing, the command
@@ -35,6 +36,7 @@ const { cmdEject } = require('../lib/cli/eject');
 const { cmdMigrate } = require('../lib/cli/migrate');
 const { cmdAnswer } = require('../lib/cli/answer');
 const { cmdReport } = require('../lib/cli/report');
+const { cmdFleet } = require('../lib/cli/fleet');
 const { help } = require('../lib/cli/help');
 
 const args = parseArgs(process.argv.slice(2));
@@ -71,6 +73,7 @@ if (!args._[0] && hasHelpFlag(args)) { help(); process.exit(0); }
     // convention can't represent without losing the flag/value association
     // (see lib/cli/answer.js's own header comment).
     else if (cmd === 'answer')     await cmdAnswer(process.argv.slice(3));
+    else if (cmd === 'fleet')      await cmdFleet(args);
     else help();
   } catch (e) {
     console.error(red('error: ') + e.message);
