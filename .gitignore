@@ -35,3 +35,6 @@ node_modules/
 
 # superpowers brainstorming scratch
 .superpowers/
+
+# Written by the Claude Code engine when the fleet-pane mod loads.
+.claude-plugin/types/
