@@ -1,7 +1,7 @@
 // hooks/fleet-pane/render.tsx
 // Pure drawing: a PaneModel in, a tree out. `els` is `$.ui.resolve(e)`.
 import type { Elements, RenderSurface, RenderElement } from 'claude-code'
-import type { FleetState, Lane } from '../../types'
+import type { FleetState, Lane, TimelineEvent } from '../../types'
 import { summarize } from './lanes'
 
 type PaneEls = Elements[RenderSurface]
@@ -71,24 +71,91 @@ export function renderPane(els: PaneEls, model: PaneModel): RenderElement {
       {fleet.lanes.length === 0 && !fleet.error && (
         <Box key="empty"><Text dimColor>{truncate(`No concertino runs under ${fleet.root}/.concertino/runs`, w)}</Text></Box>
       )}
-      {fleet.lanes.map((lane, i) => (
-        <Button
-          key={`lane:${lane.run.ticket}`}
-          plain
-          {...(i < 9 ? { hotkey: String(i + 1) } : {})}
-          dimColor={lane.liveness === 'external' || lane.liveness === 'stalled' || lane.run.status === 'unknown'}
-          label={truncate(`${detail === lane ? '▶ ' : '  '}${laneRow(lane)}`, w)}
-          onPress={() => model.onSelect(lane.run.ticket)}
-        />
-      ))}
+      {fleet.lanes.map((lane, i) => {
+        const colour = colourOf(lane)
+        return (
+          <Box key={`row:${lane.run.ticket}`} flexDirection="row">
+            <Text {...(colour ? { color: colour } : {})}>{detail === lane ? '▶ ' : '● '}</Text>
+            <Button
+              key={`lane:${lane.run.ticket}`}
+              plain
+              {...(i < 9 ? { hotkey: String(i + 1) } : {})}
+              dimColor={lane.liveness === 'external' || lane.liveness === 'stalled' || lane.run.status === 'unknown'}
+              label={truncate(laneRow(lane), w - 2)}
+              onPress={() => model.onSelect(lane.run.ticket)}
+            />
+          </Box>
+        )
+      })}
       {model.placement === 'dock' && detail && <Text dimColor>{rule}</Text>}
       {model.placement === 'dock' && detail && renderDetail(els, model, detail)}
     </Box>
   )
 }
 
-// Stub until Task 7. The rule above it is drawn by renderPane.
-export function renderDetail(els: PaneEls, _model: PaneModel, _lane: Lane): RenderElement {
-  const { Box } = els
-  return <Box key="detail" flexDirection="column" />
+const colourOf = (lane: Lane): 'yellow' | 'red' | undefined =>
+  lane.run.status === 'needs-you' ? 'yellow' : lane.run.status === 'failed' ? 'red' : undefined
+
+const LETTERS = 'abcdefghijklmnopqrstuvwxyz'
+const lettered = (options: string[]) => options.map((o, i) => `${LETTERS[i] ?? '?'}) ${o}`).join('   ')
+
+function answeredLine(lane: Lane): string | null {
+  const a = lane.run.pendingAnswer
+  if (!a) return null
+  if ('answer' in a) return `answered: ${a.answer}`
+  return `answered: ${a.subAnswers.filter(x => x != null).length}/${a.total}${a.complete ? '' : ' (in progress)'}`
+}
+
+function timelineLine(ev: TimelineEvent, w: number): string {
+  const d = new Date(ev.t)
+  const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  const rest = [ev.kind, ev.agent, ev.role && ev.kind === 'verdict' ? ev.role : undefined, ev.verdict, ev.phase, ev.gate,
+    ev.status, ev.cycle != null ? `c${ev.cycle}` : undefined, ev.label].filter(Boolean).join(' ')
+  return truncate(`${hhmm} ${rest}`, w)
+}
+
+export function renderDetail(els: PaneEls, model: PaneModel, lane: Lane): RenderElement {
+  const { Box, Text } = els
+  const w = model.bodyColumns
+  const r = lane.run
+  const colour = colourOf(lane)
+  const pr = r.timeline.filter(ev => ev.kind === 'pr' && ev.url).at(-1)
+  const excerptLines = (r.ticket_doc.excerpt ?? '').split('\n').filter(l => l.trim()).slice(0, 8)
+  const esc = r.escalation
+  const answered = answeredLine(lane)
+  return (
+    <Box key="detail" flexDirection="column">
+            <Text bold {...(colour ? { color: colour } : {})}>{truncate(`${r.ticket}  ${r.ticket_doc.title ?? r.changeName ?? ''}  ${r.branch ?? ''}`, w)}</Text>
+      <Text>{truncate(`Phase ${r.phase ?? '-'} · cycle ${r.cycle ?? '-'} · agent ${lane.liveness} · worktree ${r.worktree ?? '-'}`, w)}</Text>
+      {esc && (
+        <Box key="escalation" flexDirection="column" marginTop={1}>
+          <Text bold color="yellow">{truncate(`ESCALATION (${esc.role ?? 'unknown'}, ${fmtAgo(model.now - esc.raisedAt)})`, w)}</Text>
+          <Text wrap="wrap">{esc.question}</Text>
+          {esc.options.length > 0 && <Text wrap="wrap">{lettered(esc.options)}</Text>}
+          {(esc.subQuestions ?? []).map((sq, i) => (
+            <Box flexDirection="column" key={`sq:${i}`}>
+              <Text wrap="wrap">{`${i + 1}. ${sq.question}`}</Text>
+              <Text wrap="wrap">{'   ' + lettered(sq.options)}</Text>
+            </Box>
+          ))}
+          {answered && <Text dimColor>{truncate(answered, w)}</Text>}
+        </Box>
+      )}
+      {excerptLines.length > 0 && (
+        <Box key="ticket" flexDirection="column" marginTop={1}>
+          <Text bold>TICKET</Text>
+          <Text wrap="wrap">{excerptLines.join('\n')}</Text>
+        </Box>
+      )}
+      {r.timeline.length > 0 && (
+        <Box key="timeline" flexDirection="column" marginTop={1}>
+          <Text bold>TIMELINE</Text>
+          {r.timeline.slice(-8).map((ev, i) => <Text key={`tl:${i}`} dimColor>{timelineLine(ev, w)}</Text>)}
+        </Box>
+      )}
+      {(pr || r.costUsd != null) && (
+        <Box key="pr" marginTop={1}><Text>{truncate(`${pr ? `PR  ${pr.url}` : ''}${r.costUsd != null ? `   cost $${r.costUsd.toFixed(2)}` : ''}`.trim(), w)}</Text></Box>
+      )}
+    </Box>
+  )
 }
