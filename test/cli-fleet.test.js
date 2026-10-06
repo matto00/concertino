@@ -190,3 +190,9 @@ test('cmdFleet --help prints the usage block', () => {
   assert.match(out, /concertino fleet/);
   assert.match(out, /--json/);
 });
+
+test('cmdFleet: a root that is not a directory exits 1 naming the path', () => {
+  const { out, status } = runFleet(process.cwd(), ['--out=/nonexistent/dir', '--json']);
+  assert.notEqual(status, 0);
+  assert.match(out, /\/nonexistent\/dir is not a directory/);
+});
