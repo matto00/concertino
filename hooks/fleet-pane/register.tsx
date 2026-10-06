@@ -1,6 +1,6 @@
 // hooks/fleet-pane/register.tsx
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, SessionMessage } from 'claude-code'
+import type { AgentInfo, EngineInterface, Register, SessionMessage } from 'claude-code'
 import type { FleetState } from '../../types'
 import { renderPane } from './render'
 import { runFleetSnapshot, POLL_MS } from './snapshot'
@@ -22,6 +22,18 @@ async function mainMessages($: EngineInterface): Promise<readonly SessionMessage
   }
 }
 
+async function listAgents($: EngineInterface): Promise<readonly AgentInfo[]> {
+  try {
+    const found = await $.agent.list()
+    return Array.isArray(found) ? found : []
+  } catch {
+    return []
+  }
+}
+
+// CLI_TIMEOUT_MS exceeds POLL_MS, so a slow CLI would overlap ticks; skip a tick while one runs.
+let inFlight = false
+
 /** One poll. Never throws: a failure is recorded in state, the last lanes stay. */
 export async function refresh($: EngineInterface): Promise<void> {
   const cwd = await $.session.root()
@@ -34,7 +46,7 @@ export async function refresh($: EngineInterface): Promise<void> {
     if (previous.error !== got.error) await update($, fleet, f => ({ ...f, error: got.error }))
     return
   }
-  const [agents, messages] = await Promise.all([$.agent.list().catch(() => []), mainMessages($)])
+  const [agents, messages] = await Promise.all([listAgents($), mainMessages($)])
   const lanes = correlate(got.snapshot.runs, agents, agentIdsByTicket(messages))
   const next: FleetState = {
     lanes, error: null, fingerprint: fingerprint(lanes, null),
@@ -65,7 +77,11 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'fleet', description: 'Show concertino lanes in a pane (`/fleet off` closes it)', argumentHint: '[off]' })
     void openPane($)
-    $.clock.every(POLL_MS, () => { void refresh($).catch(() => undefined) })
+    $.clock.every(POLL_MS, () => {
+      if (inFlight) return
+      inFlight = true
+      void refresh($).catch(() => undefined).finally(() => { inFlight = false })
+    })
     return next(e)
   })
 

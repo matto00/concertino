@@ -54,7 +54,7 @@ test('runFleetSnapshot: a rejected process call is an error, not a throw', async
 // The kit's `$` has no `process`/`state`/`ui.status` nouns, so the plugin's own `$` calls are answered
 // by hooks registered beneath it, and `session.start` + the mock clock fire `refresh` for real.
 type On = (name: any, fn: (...a: any[]) => any) => void
-type World = { stdout?: () => Promise<any>; agents?: AgentInfo[]; messages?: any }
+type World = { stdout?: () => Promise<any>; agents?: any; messages?: any }
 
 const okRun = (stdout: string) =>
   ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
@@ -66,10 +66,11 @@ function world(on: On, w: World = {}) {
   const opened: string[] = []
   const closed: string[] = []
   let stateSets = 0
+  const fleetSets: any[] = []
   let runs = 0
   on('state.get', async (_$: unknown, e: { key: string }) => ({ value: { value: store.get(e.key), version: 1 } }))
   on('state.set', async (_$: unknown, e: { key: string; value: unknown }) => {
-    if (e.key === 'fleet') stateSets++
+    if (e.key === 'fleet') { stateSets++; fleetSets.push(e.value) }
     store.set(e.key, e.value)
     return { value: { isSet: true, version: 2 } }
   })
@@ -85,7 +86,7 @@ function world(on: On, w: World = {}) {
   on('ui.close', async (_$: unknown, e: { id: string }) => { closed.push(e.id); return { value: undefined } })
   on('command.register', async (_$: unknown, e: { name: string }) => ({ value: { command: e.name } }))
   const clock = mock.clock(on as never)
-  return { store, statuses, toasts, opened, closed, clock, stateSets: () => stateSets, runs: () => runs }
+  return { fleetSets, store, statuses, toasts, opened, closed, clock, stateSets: () => stateSets, runs: () => runs }
 }
 
 const start = ($: any) => $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
@@ -172,4 +173,42 @@ test('/fleet opens the pane; /fleet off closes it', async ($, on) => {
   expect(w.opened).toEqual([PANE])
   await $.command.run({ command: 'fleet', args: 'off' })
   expect(w.closed).toEqual([PANE])
+})
+
+test('refresh: a good poll after a failure clears the error even when the lanes are unchanged', async ($, on) => {
+  let fail = false
+  const w = world(on, {
+    stdout: async () => fail
+      ? { exitCode: 1, stdout: '', stderr: 'boom', isStdoutTruncated: false, isStderrTruncated: false }
+      : okRun(JSON.stringify(SNAP)),
+  })
+  await start($)
+  await w.clock.advance(2000)
+  fail = true
+  await w.clock.advance(2000)
+  fail = false
+  await w.clock.advance(2000)
+  const last = w.fleetSets.at(-1)
+  expect(last.error).toBeNull()
+  expect(last.lanes).toHaveLength(1)
+})
+
+test('refresh: a tick is skipped while the previous poll is still running', async ($, on) => {
+  let release: () => void = () => {}
+  const gate = new Promise<void>(r => { release = r })
+  const w = world(on, { stdout: async () => { await gate; return okRun(JSON.stringify(SNAP)) } })
+  await start($)
+  await w.clock.advance(2000)
+  await w.clock.advance(2000)
+  expect(w.runs()).toBe(1)
+  release()
+  await w.clock.advance(0)
+  expect(w.stateSets()).toBe(1)
+})
+
+test('refresh: a denied agent.list still renders lanes as external and writes state', async ($, on) => {
+  const w = world(on, { agents: { deny: 'no' } })
+  await start($)
+  await w.clock.advance(2000)
+  expect((w.store.get('fleet') as any).lanes[0]?.liveness).toBe('external')
 })
