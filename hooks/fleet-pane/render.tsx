@@ -2,7 +2,7 @@
 // Pure drawing: a PaneModel in, a tree out. `els` is `$.ui.resolve(e)`.
 import type { Elements, RenderSurface, RenderElement } from 'claude-code'
 import type { FleetState, Lane, TimelineEvent } from '../../types'
-import { summarize } from './lanes'
+import { summarize, displayStatus } from './lanes'
 
 type PaneEls = Elements[RenderSurface]
 
@@ -18,7 +18,10 @@ export type PaneModel = {
 
 export const PHASE_ORDER = ['Setup', 'Planning', 'Execution', 'Evaluation', 'Delivery', 'Cleanup']
 
-export const truncate = (s: string, n: number) => (s.length <= n ? s : n <= 1 ? s.slice(0, n) : s.slice(0, n - 1) + '…')
+export function truncate(s: string, max: number): string {
+  const n = Math.max(0, max)
+  return s.length <= n ? s : n <= 1 ? s.slice(0, n) : s.slice(0, n - 1) + '…'
+}
 
 export function phaseBar(phase: string | null): string {
   const i = phase ? PHASE_ORDER.indexOf(phase) : -1
@@ -33,19 +36,24 @@ export function fmtElapsed(ms: number | null): string {
 
 export const fmtAgo = (ms: number) => fmtElapsed(Math.max(0, ms)) + ' ago'
 
+// A needs-you row is already yellow and the orchestrator's pause is expected, so it is never "stalled".
 function agentLabel(lane: Lane): string {
-  if (lane.liveness === 'stalled') return `${lane.run.currentAgent ?? ''} stalled`.trim()
+  if (lane.liveness === 'stalled' && lane.run.status !== 'needs-you') return `${lane.run.currentAgent ?? ''} stalled`.trim()
   if (lane.liveness === 'external') return 'external'
   return lane.run.currentAgent ?? ''
 }
 
-export function laneRow(lane: Lane): string {
+const dimmed = (lane: Lane) =>
+  ((lane.liveness === 'external' || lane.liveness === 'stalled') && lane.run.status !== 'needs-you') || displayStatus(lane) === 'unknown'
+
+export function laneRow(lane: Lane, now: number): string {
   const r = lane.run
+  const elapsed = r.startedAt != null ? (r.endedAt ?? now) - r.startedAt : r.elapsedMs
   const passed = r.gates.filter(g => g.status === 'pass').length
   return [
-    r.ticket.padEnd(9), r.status.padEnd(10), (r.phase ?? '-').padEnd(10),
+    r.ticket.padEnd(9), displayStatus(lane).padEnd(10), (r.phase ?? '-').padEnd(10),
     `c${r.cycle ?? '-'}`.padEnd(3), `${phaseBar(r.phase)} ${passed}/${r.gates.length}`.padEnd(11),
-    fmtElapsed(r.elapsedMs).padEnd(5), agentLabel(lane),
+    fmtElapsed(elapsed).padEnd(7), agentLabel(lane),
   ].join(' ').trimEnd()
 }
 
@@ -80,8 +88,8 @@ export function renderPane(els: PaneEls, model: PaneModel): RenderElement {
               key={`lane:${lane.run.ticket}`}
               plain
               {...(i < 9 ? { hotkey: String(i + 1) } : {})}
-              dimColor={lane.liveness === 'external' || lane.liveness === 'stalled' || lane.run.status === 'unknown'}
-              label={truncate(laneRow(lane), w - 2)}
+              dimColor={dimmed(lane)}
+              label={truncate(laneRow(lane, model.now), w - 2)}
               onPress={() => model.onSelect(lane.run.ticket)}
             />
           </Box>
@@ -93,8 +101,10 @@ export function renderPane(els: PaneEls, model: PaneModel): RenderElement {
   )
 }
 
-const colourOf = (lane: Lane): 'yellow' | 'red' | undefined =>
-  lane.run.status === 'needs-you' ? 'yellow' : lane.run.status === 'failed' ? 'red' : undefined
+const colourOf = (lane: Lane): 'yellow' | 'red' | undefined => {
+  const s = displayStatus(lane)
+  return s === 'needs-you' ? 'yellow' : s === 'failed' ? 'red' : undefined
+}
 
 const LETTERS = 'abcdefghijklmnopqrstuvwxyz'
 const lettered = (options: string[]) => options.map((o, i) => `${LETTERS[i] ?? '?'}) ${o}`).join('   ')
@@ -125,7 +135,7 @@ export function renderDetail(els: PaneEls, model: PaneModel, lane: Lane): Render
   const answered = answeredLine(lane)
   return (
     <Box key="detail" flexDirection="column">
-            <Text bold {...(colour ? { color: colour } : {})}>{truncate(`${r.ticket}  ${r.ticket_doc.title ?? r.changeName ?? ''}  ${r.branch ?? ''}`, w)}</Text>
+      <Text bold {...(colour ? { color: colour } : {})}>{truncate(`${r.ticket}  ${r.ticket_doc.title ?? r.changeName ?? ''}  ${r.branch ?? ''}`, w)}</Text>
       <Text>{truncate(`Phase ${r.phase ?? '-'} · cycle ${r.cycle ?? '-'} · agent ${lane.liveness} · worktree ${r.worktree ?? '-'}`, w)}</Text>
       {esc && (
         <Box key="escalation" flexDirection="column" marginTop={1}>

@@ -44,6 +44,12 @@ test('runFleetSnapshot: empty stdout is an error, lanes are kept', async () => {
   if (!got.ok) expect(got.error).toMatch(/no output/)
 })
 
+test('runFleetSnapshot: help-like stdout means concertino has no fleet command', async () => {
+  const got = await runFleetSnapshot(fake$(async () => result({ stdout: 'concertino — usage:\n  init ...' })), '/repo')
+  expect(got.ok).toBe(false)
+  if (!got.ok) expect(got.error).toMatch(/no `fleet` command/)
+})
+
 test('runFleetSnapshot: a rejected process call is an error, not a throw', async () => {
   const got = await runFleetSnapshot(fake$(async () => { throw new Error('spawn ENOENT') }), '/repo')
   expect(got.ok).toBe(false)
@@ -93,7 +99,7 @@ const start = ($: any) => $.session.start({ cwd: '/repo', surface: 'terminal', i
 
 const agentCall = (id: string, ticket: string): SessionMessage => ({
   role: 'assistant', text: '',
-  toolUses: [{ tool_use_id: 'tu-' + id, tool: 'Agent', agentId: id, input: { prompt: `TICKET_ID=${ticket}` } }],
+  toolUses: [{ tool_use_id: 'tu-' + id, tool: 'Agent', agentId: id, input: { subagent_type: 'concertino-orchestrator', prompt: `TICKET_ID=${ticket}` } }],
 }) as unknown as SessionMessage
 
 test('refresh: writes correlated lanes to state and sets the status line', async ($, on) => {
@@ -155,14 +161,48 @@ test('refresh: denied session.messages still renders lanes as external', async (
   expect((w.store.get('fleet') as any).lanes[0]?.liveness).toBe('external')
 })
 
-test('session.start registers /fleet, opens the pane and polls every 2 s', async ($, on) => {
+test('session.start does not open the pane; with a run it opens once at the first poll and polls every 2 s', async ($, on) => {
   const w = world(on)
   await start($)
-  expect(w.opened).toEqual([PANE])
+  expect(w.opened).toEqual([])
   await w.clock.advance(2000)
   expect(w.runs()).toBe(1)
+  expect(w.opened).toEqual([PANE])
   await w.clock.advance(4000)
   expect(w.runs()).toBe(3)
+  expect(w.opened).toEqual([PANE])
+})
+
+test('an empty snapshot opens no pane and backs off to 15 s', async ($, on) => {
+  const w = world(on, { stdout: async () => okRun(JSON.stringify({ ...SNAP, runs: [] })) })
+  await start($)
+  await w.clock.advance(2000)
+  expect(w.runs()).toBe(1)
+  await w.clock.advance(2000)
+  expect(w.runs()).toBe(1)
+  await w.clock.advance(11000)
+  expect(w.runs()).toBe(1)
+  await w.clock.advance(2000)
+  expect(w.runs()).toBe(2)
+  expect(w.opened).toEqual([])
+})
+
+test('/fleet opens the pane even with no runs', async ($, on) => {
+  const w = world(on, { stdout: async () => okRun(JSON.stringify({ ...SNAP, runs: [] })) })
+  await start($)
+  await $.command.run({ command: 'fleet', args: '' })
+  expect(w.opened).toEqual([PANE])
+})
+
+test('refresh: an escalation without an escalationId toasts once, keyed by ticket and raisedAt', async ($, on) => {
+  const old = { ...SNAP, runs: [{ ...SNAP.runs[0], status: 'needs-you',
+    escalation: { question: 'Old one?', options: [], raisedAt: 123, escalationId: null, role: null } }] }
+  const w = world(on, { stdout: async () => okRun(JSON.stringify(old)) })
+  await start($)
+  await w.clock.advance(2000)
+  await w.clock.advance(2000)
+  expect(w.toasts).toEqual(['CON-1 needs you: Old one?'])
+  expect(w.store.get('seenEscalations')).toEqual(['CON-1:123'])
 })
 
 test('/fleet opens the pane; /fleet off closes it', async ($, on) => {
@@ -187,7 +227,7 @@ test('refresh: a good poll after a failure clears the error even when the lanes 
   fail = true
   await w.clock.advance(2000)
   fail = false
-  await w.clock.advance(2000)
+  await w.clock.advance(15000)   // a failing poll backs off to the idle delay
   const last = w.fleetSets.at(-1)
   expect(last.error).toBeNull()
   expect(last.lanes).toHaveLength(1)

@@ -1,0 +1,37 @@
+## Purpose
+
+Gives a Claude Code session that drives concertino runs a read-only Fleet pane: every run's lane, its agent's liveness and its escalations, without the tmux-based watch TUI.
+
+## ADDED Requirements
+
+### Requirement: Lanes correlated from the session's orchestrator Agent calls
+The mod SHALL build one lane per run in `concertino fleet --json` and correlate each with the session's own `Agent` tool uses whose `subagent_type` is `concertino-orchestrator` and whose prompt carries `TICKET_ID` (`=` or `:`, optionally backtick-quoted), comparing tickets case-insensitively and letting the newest call win. Liveness SHALL be `running`, `external`, `stalled` or `ended`.
+
+#### Scenario: Real prompt shapes
+- **WHEN** an orchestrator prompt reads `TICKET_ID=HEL-1027. …`, ``TICKET_ID=`HEL-1027`. …`` or `TICKET_ID: HEL-1027 …`
+- **THEN** the lane for `HEL-1027` is linked to that call's agentId
+
+#### Scenario: Helper agents are ignored
+- **WHEN** an `Explore` Agent call mentions `TICKET_ID=CON-1`
+- **THEN** it is not correlated with any lane
+
+### Requirement: Inspect-only pane with list and detail
+The mod SHALL draw a Fleet pane listing each lane (ticket, display status, phase, cycle, gates, elapsed, agent) and a detail view (escalation, ticket excerpt, timeline, PR) for the selected lane, following the transcript's `view.agentId` when it matches a lane. A run whose status is `unknown` with a running agent SHALL display as `running`.
+
+#### Scenario: Detail follows the viewed transcript
+- **WHEN** the pane's `view.agentId` is a lane's agentId
+- **THEN** the detail shows that lane regardless of the selection
+
+### Requirement: Status line and escalation toast
+The mod SHALL set a status line `fleet: <r> running[ · <i> idle][ · <n> needs you][ · <f> failed]` and toast each escalation once, keyed by `escalationId` or, when absent, by ticket and `raisedAt`.
+
+#### Scenario: Toast once
+- **WHEN** the same open escalation appears in consecutive polls
+- **THEN** exactly one toast is shown
+
+### Requirement: Read-only, opens once runs exist, polls with backoff
+The mod SHALL NOT write files, call tools or register gating hooks. It SHALL open the pane unasked the first time a snapshot has at least one run (and `/fleet` SHALL open it any time), and SHALL poll every 2 s while runs exist and every 15 s when there are none or the CLI fails.
+
+#### Scenario: Idle session
+- **WHEN** a snapshot has no runs
+- **THEN** no pane is opened and the next poll is 15 s later

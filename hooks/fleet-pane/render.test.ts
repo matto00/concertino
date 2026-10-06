@@ -8,7 +8,7 @@ const PANE = { title: 'Fleet', isFocused: true, bodyColumns: 80, placement: 'doc
 const run = (over: Partial<Run>): Run => ({
   ticket: 'CON-1', changeName: 'thing', branch: 'feature/thing/CON-1', worktree: '/w/CON-1', phase: 'Execution', cycle: 1,
   gates: [{ name: 'a', status: 'pass', durationMs: null, firstError: null }, { name: 'b', status: 'fail', durationMs: null, firstError: null }],
-  lastVerdict: null, escalation: null, costUsd: 1.84, startedAt: 0, endedAt: null, endStatus: null,
+  lastVerdict: null, escalation: null, costUsd: 1.84, startedAt: -12 * 60_000, endedAt: null, endStatus: null,
   elapsedMs: 12 * 60_000, status: 'unknown', malformed: 0, ticket_doc: { title: 'Add the thing', excerpt: 'Line one.\nLine two.' },
   pendingAnswer: null, timeline: [{ t: 0, kind: 'phase.enter', phase: 'Execution', cycle: 1 }], currentAgent: 'executor', ...over,
 })
@@ -45,7 +45,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(rows.map((r: any) => r.key)).toEqual(['lane:CON-231', 'lane:CON-228', 'lane:CON-219'])
     expect(rows[0]?.text).toMatch(/CON-231\s+needs-you\s+Evaluation\s+c2\s+\S+ 1\/2\s+12m\s+skeptic/)
     expect(rows[2]?.text).toMatch(/external$/)
-    expect((await ui.find({ key: 'header' }))?.text).toMatch(/2 running · 1 needs you/)
+    expect((await ui.find({ key: 'header' }))?.text).toMatch(/2 running · 1 idle · 1 needs you/)
   })
 
   test(`list: stalled lane is labelled (${surface})`, async ($, on) => {
@@ -92,13 +92,29 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
   test(`list: dimColor for external/stalled/unknown, not for running needs-you (${surface})`, async ($, on) => {
     seed(on, [lane({ ticket: 'EXT', status: 'running' }, 'external'), lane({ ticket: 'STL', status: 'running' }, 'stalled'),
-              lane({ ticket: 'UNK', status: 'unknown' }), lane({ ticket: 'NEED', status: 'needs-you' })])
+              lane({ ticket: 'UNK', status: 'unknown' }, 'ended'), lane({ ticket: 'NEED', status: 'needs-you' })])
     const ui = await mount($)
     const dim = async (k: string) => (await ui.find({ key: 'lane:' + k }))?.props?.dimColor
     expect(await dim('EXT')).toBe(true)
     expect(await dim('STL')).toBe(true)
     expect(await dim('UNK')).toBe(true)
     expect(await dim('NEED')).toBeFalsy()
+  })
+
+  test(`list: unknown status with a running agent reads running and is not dimmed (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket: 'LIVE', status: 'unknown' }, 'running')])
+    const ui = await mount($)
+    const row = await ui.find({ key: 'lane:LIVE' })
+    expect(row?.text).toMatch(/LIVE\s+running\s/)
+    expect(row?.props?.dimColor).toBeFalsy()
+  })
+
+  test(`list: a needs-you lane whose agent ended is neither labelled stalled nor dimmed (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket: 'NEED', status: 'needs-you' }, 'stalled')])
+    const ui = await mount($)
+    const row = await ui.find({ key: 'lane:NEED' })
+    expect(row?.text).not.toMatch(/stalled/)
+    expect(row?.props?.dimColor).toBeFalsy()
   })
 
   test(`list: header is truncated to bodyColumns (${surface})`, async ($, on) => {
@@ -109,7 +125,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(text.length).toBeLessThanOrEqual(20)
   })
 
- test(`detail: header, phase line, ticket excerpt, timeline tail, PR and cost (${surface})`, async ($, on) => {
+  test(`detail: header, phase line, ticket excerpt, timeline tail, PR and cost (${surface})`, async ($, on) => {
     seed(on, [lane({ timeline: Array.from({ length: 12 }, (_, i) => ({ t: i * 60_000, kind: 'gate.result', gate: 'g' + i, status: 'pass' }))
       .concat([{ t: 13 * 60_000, kind: 'pr', url: 'https://github.com/x/y/pull/148', label: 'pr' }]) })])
     const ui = await mount($)

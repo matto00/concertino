@@ -658,6 +658,22 @@ neither is ever part of the window set reaping considers.
 
 When you drive runs from a Claude Code session instead of tmux (the
 `concertino-fleet-driver` skill), the dashboard cannot see their liveness.
+The concertino plugin ships a docked **Fleet** pane for that session instead:
+lanes with phase, cycle, gates, elapsed time and agent liveness, and a detail
+view (ticket, escalation, timeline, PR) for the selected lane. It follows the
+transcript: open an orchestrator's transcript from the tasks list and the
+detail switches to that lane.
+
+Install the plugin once:
+
+```
+/plugin install concertino --marketplace matto00/concertino
+```
+
+or, from a checkout, `claude --plugin-dir ~/Development/concertino`. The pane
+opens by itself once a run exists (at 144 columns or wider), or via `/fleet`
+any time; `/fleet off` closes it. The pane is read-only in this release —
+answer escalations and steer lanes by talking to the driver.
 
 The pane is fed by `concertino fleet --json`, a read-only snapshot you can
 run yourself: `concertino fleet` prints one line per active run.

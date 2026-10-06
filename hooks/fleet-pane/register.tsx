@@ -1,9 +1,9 @@
 // hooks/fleet-pane/register.tsx
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register, SessionMessage } from 'claude-code'
-import type { FleetState } from '../../types'
+import type { FleetState, Lane } from '../../types'
 import { renderPane } from './render'
-import { runFleetSnapshot, POLL_MS } from './snapshot'
+import { runFleetSnapshot, POLL_MS, IDLE_POLL_MS } from './snapshot'
 import { agentIdsByTicket, correlate, summarize, fingerprint } from './lanes'
 
 export const PANE = 'fleet'
@@ -11,6 +11,7 @@ const EMPTY: FleetState = { lanes: [], error: null, fingerprint: '', generatedAt
 
 export const fleet = atom({ plugin: 'concertino', key: 'fleet' } as const, EMPTY)
 export const selected = atom({ plugin: 'concertino', key: 'selected' } as const, null as string | null)
+export const paneOffered = atom({ plugin: 'concertino', key: 'paneOffered' } as const, false)
 export const seenEscalations = atom({ plugin: 'concertino', key: 'seenEscalations' } as const, [] as string[])
 
 async function mainMessages($: EngineInterface): Promise<readonly SessionMessage[]> {
@@ -31,11 +32,14 @@ async function listAgents($: EngineInterface): Promise<readonly AgentInfo[]> {
   }
 }
 
-// CLI_TIMEOUT_MS exceeds POLL_MS, so a slow CLI would overlap ticks; skip a tick while one runs.
+// Polls are chained with `clock.after`, so they cannot overlap; the guard stays as a backstop.
 let inFlight = false
 
-/** One poll. Never throws: a failure is recorded in state, the last lanes stay. */
-export async function refresh($: EngineInterface): Promise<void> {
+/**
+ * One poll. Never throws: a failure is recorded in state, the last lanes stay.
+ * Resolves the delay before the next poll: POLL_MS while runs exist, IDLE_POLL_MS when idle or failing.
+ */
+export async function refresh($: EngineInterface): Promise<number> {
   const cwd = await $.session.root()
   const previous = await read($, fleet)
   // The engine follows `$` only into same-file functions, never across an import, so the snapshot
@@ -44,7 +48,7 @@ export async function refresh($: EngineInterface): Promise<void> {
   if (!got.ok) {
     await $.ui.status(undefined)
     if (previous.error !== got.error) await update($, fleet, f => ({ ...f, error: got.error }))
-    return
+    return IDLE_POLL_MS
   }
   const [agents, messages] = await Promise.all([listAgents($), mainMessages($)])
   const lanes = correlate(got.snapshot.runs, agents, agentIdsByTicket(messages))
@@ -55,17 +59,29 @@ export async function refresh($: EngineInterface): Promise<void> {
   await $.ui.status(summarize(lanes))
   if (next.fingerprint !== previous.fingerprint || previous.error) await update($, fleet, () => next)
   await toastNewEscalations($, next)
+  if (!lanes.length) return IDLE_POLL_MS
+  if (!(await read($, paneOffered))) {
+    await update($, paneOffered, () => true)
+    void openPane($).catch(() => undefined)
+  }
+  return POLL_MS
+}
+
+// Pre-CON-188 escalations carry no escalationId; ticket + raisedAt identifies them.
+const escalationKey = (l: Lane): string | null => {
+  const esc = l.run.escalation
+  return esc ? (esc.escalationId ?? `${l.run.ticket}:${esc.raisedAt}`) : null
 }
 
 async function toastNewEscalations($: EngineInterface, state: FleetState): Promise<void> {
   const seen = await read($, seenEscalations)
   const fresh = state.lanes.filter(l => {
-    const id = l.run.escalation?.escalationId
-    return id && !seen.includes(id)
+    const key = escalationKey(l)
+    return key && !seen.includes(key)
   })
   if (!fresh.length) return
   for (const lane of fresh) await $.ui.toast(`${lane.run.ticket} needs you: ${lane.run.escalation!.question.slice(0, 80)}`)
-  await update($, seenEscalations, s => [...s, ...fresh.map(l => l.run.escalation!.escalationId!)].slice(-200))
+  await update($, seenEscalations, s => [...s, ...fresh.map(l => escalationKey(l)!)].slice(-200))
 }
 
 async function openPane($: EngineInterface, focus?: true): Promise<void> {
@@ -76,12 +92,16 @@ async function openPane($: EngineInterface, focus?: true): Promise<void> {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'fleet', description: 'Show concertino lanes in a pane (`/fleet off` closes it)', argumentHint: '[off]' })
-    void openPane($)
-    $.clock.every(POLL_MS, () => {
-      if (inFlight) return
+    const tick = (): void => {
+      if (inFlight) { $.clock.after(POLL_MS, tick); return }
       inFlight = true
-      void refresh($).catch(() => undefined).finally(() => { inFlight = false })
-    })
+      let delay = IDLE_POLL_MS
+      void refresh($).then(d => { delay = d }, () => undefined).finally(() => {
+        inFlight = false
+        $.clock.after(delay, tick)
+      })
+    }
+    $.clock.after(POLL_MS, tick)
     return next(e)
   })
 

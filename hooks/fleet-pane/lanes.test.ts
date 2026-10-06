@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { AgentInfo, SessionMessage } from 'claude-code'
 import type { Run } from '../../types'
-import { agentIdsByTicket, correlate, summarize, fingerprint } from './lanes'
+import { agentIdsByTicket, correlate, summarize, fingerprint, displayStatus } from './lanes'
 
 const run = (over: Partial<Run>): Run => ({
   ticket: 'CON-1', changeName: null, branch: null, worktree: null, phase: null, cycle: null, gates: [],
@@ -28,6 +28,37 @@ test('agentIdsByTicket: maps TICKET_ID in an Agent prompt to its agentId; newest
     agentCall('b', 'CON-2'),
   ])
   expect([...map.entries()]).toEqual([['CON-1', 'a-new'], ['CON-2', 'b']])
+})
+
+const promptCall = (id: string, prompt: string, subagent_type = 'concertino-orchestrator'): SessionMessage => ({
+  role: 'assistant', text: '',
+  toolUses: [{ tool_use_id: 'tu-' + id, tool: 'Agent', agentId: id, input: { subagent_type, prompt } }],
+})
+
+test('agentIdsByTicket: the real orchestrator prompt shapes all map', async () => {
+  const map = agentIdsByTicket([
+    promptCall('a', 'TICKET_ID=HEL-1027. AGENT_MERGE_OVERRIDE=1'),
+    promptCall('b', 'TICKET_ID=`HEL-1028`. SPEED=fast'),
+    promptCall('c', 'TICKET_ID: HEL-1029 go'),
+  ])
+  expect([...map.entries()]).toEqual([['HEL-1027', 'a'], ['HEL-1028', 'b'], ['HEL-1029', 'c']])
+})
+
+test('agentIdsByTicket: ignores Agent calls that are not the orchestrator', async () => {
+  const map = agentIdsByTicket([promptCall('o', 'TICKET_ID=CON-1.'), promptCall('x', 'TICKET_ID=CON-1', 'Explore')])
+  expect([...map.entries()]).toEqual([['CON-1', 'o']])
+  expect([...agentIdsByTicket([promptCall('x', 'TICKET_ID=CON-1', 'Explore')]).keys()]).toEqual([])
+})
+
+test('correlate: a lower-case run ticket matches an upper-case TICKET_ID', async () => {
+  const [lane] = correlate([run({ ticket: 'con-79' })], [agent('z', 'running')], agentIdsByTicket([promptCall('z', 'TICKET_ID=CON-79.')]))
+  expect(lane).toMatchObject({ agentId: 'z', liveness: 'running' })
+})
+
+test('displayStatus: unknown with a running agent reads running, otherwise the run status', async () => {
+  expect(displayStatus({ run: run({ status: 'unknown' }), liveness: 'running' })).toBe('running')
+  expect(displayStatus({ run: run({ status: 'unknown' }), liveness: 'external' })).toBe('unknown')
+  expect(displayStatus({ run: run({ status: 'failed' }), liveness: 'running' })).toBe('failed')
 })
 
 test('correlate: liveness is running for a live agent, external with no match, stalled when the agent ended but the run did not, ended when the run has a terminal run.end', async () => {
@@ -60,17 +91,17 @@ test('correlate: orders needs-you, then running/unknown, then failed; ties keep 
   expect(lanes.map(l => l.run.ticket)).toEqual(['N', 'U1', 'R', 'U2', 'F'])
 })
 
-test('summarize: counts running and needs-you; undefined with no lanes', async () => {
+test('summarize: running by liveness, idle for the rest, needs-you; undefined with no lanes', async () => {
   expect(summarize([])).toBeUndefined()
   const lanes = correlate([
     run({ ticket: 'A', status: 'needs-you' }), run({ ticket: 'B' }), run({ ticket: 'C' }),
   ], [agent('b', 'running')], new Map([['B', 'b']]))
-  expect(summarize(lanes)).toBe('fleet: 2 running · 1 needs you')
+  expect(summarize(lanes)).toBe('fleet: 1 running · 1 idle · 1 needs you')
 })
 
-test('summarize: singular and failed', async () => {
+test('summarize: idle and failed; running is always shown', async () => {
   const lanes = correlate([run({ ticket: 'A' }), run({ ticket: 'B', status: 'failed' })], [], new Map())
-  expect(summarize(lanes)).toBe('fleet: 1 running · 1 failed')
+  expect(summarize(lanes)).toBe('fleet: 0 running · 1 idle · 1 failed')
 })
 
 test('fingerprint: stable across identical input, changes on phase, escalation, liveness, answer', async () => {

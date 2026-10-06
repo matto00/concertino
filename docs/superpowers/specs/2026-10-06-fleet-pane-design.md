@@ -136,8 +136,12 @@ type Lane = {
 ```
 
 - Correlation: scan `$.session.messages()` (main transcript) for `toolUses`
-  with `tool === 'Agent'` whose `input.prompt` matches `/\bTICKET_ID=(\S+)/`
-  and that carry an `agentId`; the newest match per ticket wins. Then
+  with `tool === 'Agent'`, `input.subagent_type === 'concertino-orchestrator'`
+  and an `agentId`, whose `input.prompt` matches
+  `/\bTICKET_ID\s*[=:]\s*`?([A-Za-z][A-Za-z0-9]*-\d+)/` (so `TICKET_ID=HEL-1027.`,
+  ``TICKET_ID=`HEL-1027`.`` and `TICKET_ID: HEL-1027` all match); tickets
+  compare case-insensitively (run dirs can be lower-case); the newest match per
+  ticket wins. Then
   `$.agent.list()` supplies `status`. No match → `external` (run started by
   the TUI, another session, or before this session began).
 - `stalled`: matched agent `completed` / `failed` / `killed` while the run has
@@ -150,9 +154,12 @@ type Lane = {
 
 **Poll** (`register.tsx` + `snapshot.ts`):
 
-- `session.start`: register `/fleet`, `$.ui.open({ id: 'fleet', title: 'Fleet' })`
-  unasked (docks from 144 columns; `/fleet` places it at any width), arm
-  `$.clock.every(2000, refresh)`.
+- `session.start`: register `/fleet` and arm the poll. The pane is not opened
+  at start: `refresh` opens it unasked (`$.ui.open({ id: 'fleet', title: 'Fleet' })`,
+  docks from 144 columns) the first time a snapshot has at least one run;
+  `/fleet` opens it at any width, any time. The poll is chained with
+  `$.clock.after`: 2 s while the last snapshot had a run, 15 s when it had none
+  or the CLI failed.
 - `refresh`: `$.process.run(['concertino', 'fleet', '--json'], { cwd: await $.session.root(), timeoutMs: 5000 })`.
   Build lanes, compute a fingerprint (ticket, status, phase, cycle, gate
   count, liveness, escalation id, last timeline `t`, pendingAnswer presence,
@@ -160,8 +167,11 @@ type Lane = {
   redraw every tick. On failure, set `error` (exit code + stderr tail), keep
   the last lanes, clear the status line. A `refresh` never throws out of the
   timer.
-- Status line: `fleet: 2 running · 1 needs you`; `undefined` with no lanes or
-  on error.
+- Status line: `fleet: 2 running · 1 idle · 1 needs you`: `running` counts
+  lanes whose agent is live, `idle` the rest that are neither running, needs-you
+  nor failed (zero parts omitted except `running`); `undefined` with no lanes or
+  on error. A row's status shows `running` when the CLI said `unknown` but the
+  lane's agent is live (display status).
 - Toast `CON-231 needs you: <question, truncated>` once per new
   `escalation_id`, recorded in `seenEscalations`.
 
@@ -202,7 +212,8 @@ type Lane = {
 - Phase bar: six cells over `PHASE_ORDER` (Setup … Cleanup), filled up to
   `run.phase`. Gates: passed/total from `run.gates`.
 - Colours: `needs-you` yellow, `failed` red, `running` default, `unknown` /
-  `external` / `stalled` dim (`stalled` also labelled). Every line truncated
+  `external` / `stalled` dim (`stalled` also labelled, except on a `needs-you`
+  row, where the orchestrator's pause is expected). Every line truncated
   to `bodyColumns`.
 - Sub-questions (`escalation.subQuestions`) render as numbered question
   blocks, each with its own lettered options. Letters are display only.

@@ -83,6 +83,8 @@ declare module 'claude-code' {
       fleet: FleetState
       selected: string | null
       seenEscalations: string[]
+      /** Whether the pane was opened unasked once a run existed. */
+      paneOffered: boolean
     }
   }
 }
