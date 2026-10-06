@@ -1,8 +1,10 @@
 // hooks/fleet-pane/register.tsx
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 import type { FleetState } from '../../types'
 import { renderPane } from './render'
+import { runFleetSnapshot, POLL_MS } from './snapshot'
+import { agentIdsByTicket, correlate, summarize, fingerprint } from './lanes'
 
 export const PANE = 'fleet'
 const EMPTY: FleetState = { lanes: [], error: null, fingerprint: '', generatedAt: 0, root: '' }
@@ -11,7 +13,71 @@ export const fleet = atom({ plugin: 'concertino', key: 'fleet' } as const, EMPTY
 export const selected = atom({ plugin: 'concertino', key: 'selected' } as const, null as string | null)
 export const seenEscalations = atom({ plugin: 'concertino', key: 'seenEscalations' } as const, [] as string[])
 
+async function mainMessages($: EngineInterface): Promise<readonly SessionMessage[]> {
+  try {
+    const found = await $.session.messages()
+    return Array.isArray(found) ? found : []
+  } catch {
+    return []
+  }
+}
+
+/** One poll. Never throws: a failure is recorded in state, the last lanes stay. */
+export async function refresh($: EngineInterface): Promise<void> {
+  const cwd = await $.session.root()
+  const previous = await read($, fleet)
+  // The engine follows `$` only into same-file functions, never across an import, so the snapshot
+  // runner gets a narrow `process.run` shim whose `$` is spelled at the call site.
+  const got = await runFleetSnapshot({ process: { run: (argv, init) => $.process.run(argv, init) } } as EngineInterface, cwd)
+  if (!got.ok) {
+    await $.ui.status(undefined)
+    if (previous.error !== got.error) await update($, fleet, f => ({ ...f, error: got.error }))
+    return
+  }
+  const [agents, messages] = await Promise.all([$.agent.list().catch(() => []), mainMessages($)])
+  const lanes = correlate(got.snapshot.runs, agents, agentIdsByTicket(messages))
+  const next: FleetState = {
+    lanes, error: null, fingerprint: fingerprint(lanes, null),
+    generatedAt: got.snapshot.generatedAt, root: got.snapshot.root,
+  }
+  await $.ui.status(summarize(lanes))
+  if (next.fingerprint !== previous.fingerprint || previous.error) await update($, fleet, () => next)
+  await toastNewEscalations($, next)
+}
+
+async function toastNewEscalations($: EngineInterface, state: FleetState): Promise<void> {
+  const seen = await read($, seenEscalations)
+  const fresh = state.lanes.filter(l => {
+    const id = l.run.escalation?.escalationId
+    return id && !seen.includes(id)
+  })
+  if (!fresh.length) return
+  for (const lane of fresh) await $.ui.toast(`${lane.run.ticket} needs you: ${lane.run.escalation!.question.slice(0, 80)}`)
+  await update($, seenEscalations, s => [...s, ...fresh.map(l => l.run.escalation!.escalationId!)].slice(-200))
+}
+
+async function openPane($: EngineInterface, focus?: true): Promise<void> {
+  const isUp = (await $.ui.panes()).some(p => p.id === PANE)
+  if (!isUp || focus) await $.ui.open(focus ? { id: PANE, title: 'Fleet', focus } : { id: PANE, title: 'Fleet' })
+}
+
 export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    await $.command.register({ name: 'fleet', description: 'Show concertino lanes in a pane (`/fleet off` closes it)', argumentHint: '[off]' })
+    void openPane($)
+    $.clock.every(POLL_MS, () => { void refresh($).catch(() => undefined) })
+    return next(e)
+  })
+
+  on('command.run', { command: 'fleet' }, async ($, e) => {
+    if (e.args.trim() === 'off') {
+      await $.ui.close({ id: PANE })
+      return { text: 'Fleet pane closed.' }
+    }
+    await openPane($, true)
+    return { text: 'Fleet pane opened.' }
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const model = {
