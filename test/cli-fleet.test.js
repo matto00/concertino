@@ -57,8 +57,8 @@ test('buildSnapshot: live run carries reducer fields plus ticket_doc, pendingAns
   assert.equal(run.pendingAnswer, null);
   assert.equal(run.currentAgent, 'executor');
   assert.equal(run.timeline.length, 4);
-  assert.deepEqual(run.timeline[1], { t: T0 + 1000, kind: 'phase.enter', phase: 'Execution', cycle: 1 });
-  assert.deepEqual(run.timeline[3], { t: T0 + 3000, kind: 'gate.result', gate: 'phase:setup', status: 'pass' });
+  assert.deepEqual(run.timeline[1], { t: T0 + 1000, kind: 'phase.enter', phase: 'Execution', cycle: 1, role: 'script' });
+  assert.deepEqual(run.timeline[3], { t: T0 + 3000, kind: 'gate.result', gate: 'phase:setup', status: 'pass', role: 'script' });
 });
 
 test('buildSnapshot: ticket_doc is null fields when evidence/ticket.md is missing; excerpt is capped at 1024 chars', () => {
