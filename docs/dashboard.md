@@ -675,8 +675,7 @@ opens by itself once a run exists (at 144 columns or wider), or via `/fleet`
 any time; `/fleet off` closes it. The pane is read-only in this release —
 answer escalations and steer lanes by talking to the driver.
 
-The pane is fed by `concertino fleet --json`, a read-only snapshot you can
-run yourself: `concertino fleet` prints one line per active run.
+`concertino fleet --json` is a read-only snapshot of every active run under `.concertino/runs` — the feed the Claude Code fleet pane polls — and `concertino fleet` prints one line per active run.
 
 ## The cross-screen escalation banner
 
