@@ -18,7 +18,7 @@ const SNAP = {
   runs: [{ ticket: 'CON-1', changeName: 'x', branch: 'feature/x/CON-1', worktree: '/w', phase: 'Planning', cycle: 1,
     gates: [], lastVerdict: null, escalation: null, costUsd: null, startedAt: 0, endedAt: null, endStatus: null,
     elapsedMs: 5, status: 'unknown', malformed: 0, ticket_doc: { title: 'X', excerpt: null }, pendingAnswer: null,
-    timeline: [], currentAgent: null }],
+    timeline: [{ t: 0, kind: 'phase.enter' }], currentAgent: null }],
 }
 
 test('runFleetSnapshot: parses the CLI output and passes cwd + timeout', async () => {
@@ -73,10 +73,12 @@ function world(on: On, w: World = {}) {
   const closed: string[] = []
   let stateSets = 0
   const fleetSets: any[] = []
+  const showAllSets: unknown[] = []
   let runs = 0
   on('state.get', async (_$: unknown, e: { key: string }) => ({ value: { value: store.get(e.key), version: 1 } }))
   on('state.set', async (_$: unknown, e: { key: string; value: unknown }) => {
     if (e.key === 'fleet') { stateSets++; fleetSets.push(e.value) }
+    if (e.key === 'showAll') showAllSets.push(e.value)
     store.set(e.key, e.value)
     return { value: { isSet: true, version: 2 } }
   })
@@ -92,7 +94,7 @@ function world(on: On, w: World = {}) {
   on('ui.close', async (_$: unknown, e: { id: string }) => { closed.push(e.id); return { value: undefined } })
   on('command.register', async (_$: unknown, e: { name: string }) => ({ value: { command: e.name } }))
   const clock = mock.clock(on as never)
-  return { fleetSets, store, statuses, toasts, opened, closed, clock, stateSets: () => stateSets, runs: () => runs }
+  return { fleetSets, showAllSets, store, statuses, toasts, opened, closed, clock, stateSets: () => stateSets, runs: () => runs }
 }
 
 const start = ($: any) => $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
@@ -251,4 +253,30 @@ test('refresh: a denied agent.list still renders lanes as external and writes st
   await start($)
   await w.clock.advance(2000)
   expect((w.store.get('fleet') as any).lanes[0]?.liveness).toBe('external')
+})
+
+const STALE = { ...SNAP, runs: [{ ...SNAP.runs[0], timeline: [{ t: -31 * 60_000, kind: 'phase.enter' }] }] }
+
+test('refresh: all lanes stale opens no pane, clears the status line and backs off to 15 s, yet still stores the lanes', async ($, on) => {
+  const w = world(on, { stdout: async () => okRun(JSON.stringify(STALE)) })
+  await start($)
+  await w.clock.advance(2000)
+  expect(w.runs()).toBe(1)
+  expect(w.opened).toEqual([])
+  expect(w.statuses.at(-1)).toBeUndefined()
+  expect((w.store.get('fleet') as any).lanes).toHaveLength(1)
+  await w.clock.advance(13000)
+  expect(w.runs()).toBe(1)
+  await w.clock.advance(2000)
+  expect(w.runs()).toBe(2)
+})
+
+test('/fleet all toggles showAll and says which way', async ($, on) => {
+  const w = world(on)
+  await start($)
+  const first = await $.command.run({ command: 'fleet', args: 'all' })
+  expect(first.text).toBe('Fleet pane: showing all lanes.')
+  const second = await $.command.run({ command: 'fleet', args: 'all' })
+  expect(second.text).toBe('Fleet pane: showing live lanes only.')
+  expect(w.showAllSets).toEqual([true, false])
 })

@@ -67,11 +67,25 @@ export function summarize(lanes: Lane[]): string | undefined {
   return 'fleet: ' + parts.join(' · ')
 }
 
-export function fingerprint(lanes: Lane[], error: string | null): string {
+export const RECENT_MS = 30 * 60_000
+
+/** Shown by default: this session's lanes (liveness running|stalled) or any lane with an event in the last RECENT_MS. */
+export function isShown(lane: Lane, now: number): boolean {
+  if (lane.liveness === 'running' || lane.liveness === 'stalled') return true
+  const t = lane.run.timeline.at(-1)?.t
+  return t !== undefined && now - t < RECENT_MS
+}
+
+export function partition(lanes: Lane[], now: number): { shown: Lane[]; hidden: number } {
+  const shown = lanes.filter(l => isShown(l, now))
+  return { shown, hidden: lanes.length - shown.length }
+}
+
+export function fingerprint(lanes: Lane[], error: string | null, hidden = 0): string {
   const rows = lanes.map(l => [
     l.run.ticket, l.run.status, l.run.phase, l.run.cycle, l.run.gates.length,
     l.liveness, l.run.escalation?.escalationId ?? l.run.escalation?.raisedAt ?? null,
     l.run.timeline.at(-1)?.t ?? null, l.run.pendingAnswer !== null, l.run.currentAgent,
   ])
-  return JSON.stringify([error, rows])
+  return JSON.stringify([error, hidden, rows])
 }

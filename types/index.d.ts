@@ -85,6 +85,8 @@ declare module 'claude-code' {
       seenEscalations: string[]
       /** Whether the pane was opened unasked once a run existed. */
       paneOffered: boolean
+      /** Whether the pane draws every lane (`/fleet all`) instead of only live and recent ones. */
+      showAll: boolean
     }
   }
 }

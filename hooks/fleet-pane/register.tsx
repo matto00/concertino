@@ -4,7 +4,7 @@ import type { AgentInfo, EngineInterface, Register, SessionMessage } from 'claud
 import type { FleetState, Lane } from '../../types'
 import { renderPane } from './render'
 import { runFleetSnapshot, POLL_MS, IDLE_POLL_MS } from './snapshot'
-import { agentIdsByTicket, correlate, summarize, fingerprint } from './lanes'
+import { agentIdsByTicket, correlate, summarize, fingerprint, partition } from './lanes'
 
 export const PANE = 'fleet'
 const EMPTY: FleetState = { lanes: [], error: null, fingerprint: '', generatedAt: 0, root: '' }
@@ -12,6 +12,7 @@ const EMPTY: FleetState = { lanes: [], error: null, fingerprint: '', generatedAt
 export const fleet = atom({ plugin: 'concertino', key: 'fleet' } as const, EMPTY)
 export const selected = atom({ plugin: 'concertino', key: 'selected' } as const, null as string | null)
 export const paneOffered = atom({ plugin: 'concertino', key: 'paneOffered' } as const, false)
+export const showAll = atom({ plugin: 'concertino', key: 'showAll' } as const, false)
 export const seenEscalations = atom({ plugin: 'concertino', key: 'seenEscalations' } as const, [] as string[])
 
 async function mainMessages($: EngineInterface): Promise<readonly SessionMessage[]> {
@@ -52,14 +53,15 @@ export async function refresh($: EngineInterface): Promise<number> {
   }
   const [agents, messages] = await Promise.all([listAgents($), mainMessages($)])
   const lanes = correlate(got.snapshot.runs, agents, agentIdsByTicket(messages))
+  const { shown, hidden } = partition(lanes, await $.clock.now())
   const next: FleetState = {
-    lanes, error: null, fingerprint: fingerprint(lanes, null),
+    lanes, error: null, fingerprint: fingerprint(lanes, null, hidden),
     generatedAt: got.snapshot.generatedAt, root: got.snapshot.root,
   }
-  await $.ui.status(summarize(lanes))
+  await $.ui.status(summarize(shown))
   if (next.fingerprint !== previous.fingerprint || previous.error) await update($, fleet, () => next)
   await toastNewEscalations($, next)
-  if (!lanes.length) return IDLE_POLL_MS
+  if (!shown.length) return IDLE_POLL_MS
   if (!(await read($, paneOffered))) {
     await update($, paneOffered, () => true)
     void openPane($).catch(() => undefined)
@@ -91,7 +93,7 @@ async function openPane($: EngineInterface, focus?: true): Promise<void> {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'fleet', description: 'Show concertino lanes in a pane (`/fleet off` closes it)', argumentHint: '[off]' })
+    await $.command.register({ name: 'fleet', description: 'Show concertino lanes in a pane (`/fleet off` closes it, `/fleet all` toggles stale lanes)', argumentHint: '[off|all]' })
     const tick = (): void => {
       if (inFlight) { $.clock.after(POLL_MS, tick); return }
       inFlight = true
@@ -110,6 +112,11 @@ export const register: Register = on => {
       await $.ui.close({ id: PANE })
       return { text: 'Fleet pane closed.' }
     }
+    if (e.args.trim() === 'all') {
+      const nowAll = !(await read($, showAll))
+      await update($, showAll, () => nowAll)
+      return { text: nowAll ? 'Fleet pane: showing all lanes.' : 'Fleet pane: showing live lanes only.' }
+    }
     await openPane($, true)
     return { text: 'Fleet pane opened.' }
   })
@@ -119,6 +126,7 @@ export const register: Register = on => {
     const model = {
       fleet: await read($, fleet),
       selected: await read($, selected),
+      showAll: await read($, showAll),
       ...(e.props.view.agentId ? { viewAgentId: e.props.view.agentId } : {}),
       bodyColumns: e.props.bodyColumns,
       placement: e.props.placement,

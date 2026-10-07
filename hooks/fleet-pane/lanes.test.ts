@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { AgentInfo, SessionMessage } from 'claude-code'
-import type { Run } from '../../types'
-import { agentIdsByTicket, correlate, summarize, fingerprint, displayStatus } from './lanes'
+import type { Lane, Run } from '../../types'
+import { agentIdsByTicket, correlate, summarize, fingerprint, displayStatus, isShown, partition, RECENT_MS } from './lanes'
 
 const run = (over: Partial<Run>): Run => ({
   ticket: 'CON-1', changeName: null, branch: null, worktree: null, phase: null, cycle: null, gates: [],
@@ -113,4 +113,38 @@ test('fingerprint: stable across identical input, changes on phase, escalation, 
   expect(fingerprint(correlate([run({ phase: 'Execution' })], [], new Map()), null)).not.toBe(fingerprint(base, null))
   expect(fingerprint(correlate([run({ phase: 'Planning', pendingAnswer: { answer: 'a' } })], [], new Map()), null)).not.toBe(fingerprint(base, null))
   expect(fingerprint(base, 'boom')).not.toBe(fingerprint(base, null))
+})
+
+const NOW = 10 * 3_600_000
+const aged = (min: number, liveness: Lane['liveness'], ticket = 'CON-1'): Lane =>
+  ({ run: run({ ticket, timeline: [{ t: NOW - min * 60_000, kind: 'phase.enter' }] }), liveness })
+
+test('isShown: a session lane is shown however old its last event', async () => {
+  expect(RECENT_MS).toBe(30 * 60_000)
+  expect(isShown(aged(180, 'running'), NOW)).toBe(true)
+  expect(isShown(aged(180, 'stalled'), NOW)).toBe(true)
+})
+
+test('isShown: an external lane is shown inside 30 minutes and hidden outside', async () => {
+  expect(isShown(aged(29, 'external'), NOW)).toBe(true)
+  expect(isShown(aged(31, 'external'), NOW)).toBe(false)
+})
+
+test('isShown: an ended lane follows the same rule; a lane with no events is hidden', async () => {
+  expect(isShown(aged(31, 'ended'), NOW)).toBe(false)
+  expect(isShown(aged(5, 'ended'), NOW)).toBe(true)
+  expect(isShown({ run: run({}), liveness: 'external' }, NOW)).toBe(false)
+})
+
+test('partition: splits shown lanes from the hidden count', async () => {
+  const lanes = [aged(1, 'external', 'A'), aged(60, 'external', 'B'), aged(90, 'ended', 'C'), aged(500, 'running', 'D')]
+  const { shown, hidden } = partition(lanes, NOW)
+  expect(shown.map(l => l.run.ticket)).toEqual(['A', 'D'])
+  expect(hidden).toBe(2)
+})
+
+test('fingerprint: the hidden count is part of it', async () => {
+  const l = correlate([run({})], [], new Map())
+  expect(fingerprint(l, null, 0)).not.toBe(fingerprint(l, null, 1))
+  expect(fingerprint(l, null)).toBe(fingerprint(l, null, 0))
 })

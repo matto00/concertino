@@ -2,13 +2,14 @@
 // Pure drawing: a PaneModel in, a tree out. `els` is `$.ui.resolve(e)`.
 import type { Elements, RenderSurface, RenderElement } from 'claude-code'
 import type { FleetState, Lane, TimelineEvent } from '../../types'
-import { summarize, displayStatus } from './lanes'
+import { summarize, displayStatus, partition } from './lanes'
 
 type PaneEls = Elements[RenderSurface]
 
 export type PaneModel = {
   fleet: FleetState
   selected: string | null
+  showAll: boolean
   viewAgentId?: string
   bodyColumns: number
   placement: 'dock' | 'inline'
@@ -57,29 +58,39 @@ export function laneRow(lane: Lane, now: number): string {
   ].join(' ').trimEnd()
 }
 
+function visibleLanes(model: PaneModel): { visible: Lane[]; hidden: number } {
+  const { shown, hidden } = partition(model.fleet.lanes, model.now)
+  return { visible: model.showAll ? model.fleet.lanes : shown, hidden }
+}
+
 export function pickDetail(model: PaneModel): Lane | undefined {
-  const { lanes } = model.fleet
+  const { visible } = visibleLanes(model)
   if (model.viewAgentId) {
-    const inView = lanes.find(l => l.agentId === model.viewAgentId)
+    const inView = visible.find(l => l.agentId === model.viewAgentId)
     if (inView) return inView
   }
-  return lanes.find(l => l.run.ticket === model.selected) ?? lanes[0]
+  return visible.find(l => l.run.ticket === model.selected) ?? visible[0]
 }
 
 export function renderPane(els: PaneEls, model: PaneModel): RenderElement {
   const { Box, Text, Button } = els
   const { fleet, bodyColumns: w } = model
+  const { visible, hidden } = visibleLanes(model)
   const detail = pickDetail(model)
+  const suffix = model.showAll ? ' · all' : hidden > 0 ? ` · ${hidden} hidden` : ''
   const rule = '─'.repeat(Math.max(1, w))
   return (
     <Box flexDirection="column">
-      <Box key="header"><Text bold>{truncate(`Fleet · concertino  ${summarize(fleet.lanes)?.replace(/^fleet: /, '') ?? ''}`, w)}</Text></Box>
+      <Box key="header"><Text bold>{truncate(`Fleet · concertino  ${summarize(visible)?.replace(/^fleet: /, '') ?? ''}${suffix}`, w)}</Text></Box>
       <Text dimColor>{rule}</Text>
       {fleet.error && <Box key="error"><Text color="red">{truncate(fleet.error, w)}</Text></Box>}
       {fleet.lanes.length === 0 && !fleet.error && (
         <Box key="empty"><Text dimColor>{truncate(`No concertino runs under ${fleet.root}/.concertino/runs`, w)}</Text></Box>
       )}
-      {fleet.lanes.map((lane, i) => {
+      {fleet.lanes.length > 0 && visible.length === 0 && (
+        <Box key="empty"><Text dimColor>{truncate(`No live lanes · ${hidden} hidden (/fleet all)`, w)}</Text></Box>
+      )}
+      {visible.map((lane, i) => {
         const colour = colourOf(lane)
         return (
           <Box key={`row:${lane.run.ticket}`} flexDirection="row">

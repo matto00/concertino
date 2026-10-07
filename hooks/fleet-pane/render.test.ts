@@ -16,10 +16,10 @@ const lane = (over: Partial<Run>, liveness: Lane['liveness'] = 'running'): Lane 
 
 // The kit's `$` has no `state` noun, so state is seeded through hooks beneath the plugin.
 type On = (name: any, fn: (...a: any[]) => any) => void
-function seed(on: On, lanes: Lane[], error: string | null = null, selected: string | null = null) {
+function seed(on: On, lanes: Lane[], error: string | null = null, selected: string | null = null, showAll = false) {
   const store = new Map<string, unknown>([
     ['fleet', { lanes, error, fingerprint: 'f', generatedAt: 0, root: '/r' }],
-    ['selected', selected],
+    ['selected', selected], ['showAll', showAll],
   ])
   on('state.get', async (_$: unknown, e: { key: string }) => ({ value: { value: store.get(e.key), version: 1 } }))
   on('state.set', async (_$: unknown, e: { key: string; value: unknown }) => { store.set(e.key, e.value); return { value: { isSet: true, version: 2 } } })
@@ -169,6 +169,40 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect((await ui.find({ key: 'detail' }))?.text).toMatch(/^B\s+Bee/)
     await ui.redraw(PANE)
     expect((await ui.find({ key: 'detail' }))?.text).toMatch(/^A\s+Add the thing/)
+  })
+
+  const stale = (ticket: string): Lane => lane({ ticket, timeline: [{ t: -31 * 60_000, kind: 'phase.enter', phase: 'Execution', cycle: 1 }] }, 'external')
+
+  test(`visibility: stale lanes are hidden with a count in the header (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket: 'LIVE' }), stale('OLD')])
+    const ui = await mount($)
+    expect((await ui.find({ key: 'header' }))?.text).toMatch(/ · 1 hidden/)
+    expect(await ui.find({ key: 'lane:LIVE' })).toBeDefined()
+    expect(await ui.find({ key: 'lane:OLD' })).toBeUndefined()
+  })
+
+  test(`visibility: showAll draws every lane and says so in the header (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket: 'LIVE' }), stale('OLD')], null, null, true)
+    const ui = await mount($)
+    expect((await ui.find({ key: 'header' }))?.text).toMatch(/ · all/)
+    expect((await ui.find({ key: 'header' }))?.text).not.toMatch(/hidden/)
+    expect(await ui.find({ key: 'lane:OLD' })).toBeDefined()
+  })
+
+  test(`visibility: selecting a hidden ticket falls back to the first visible lane (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket: 'LIVE' }), stale('OLD')], null, 'OLD')
+    const ui = await mount($)
+    const markers = (await ui.findAll({ type: 'Text' })).map((t: any) => t.text.trim()).filter((s: string) => s === '▶' || s === '●')
+    expect(markers).toEqual(['▶'])
+    expect((await ui.find({ key: 'detail' }))?.text).toMatch(/^LIVE/)
+  })
+
+  test(`visibility: all lanes stale draws the no-live-lanes line (${surface})`, async ($, on) => {
+    seed(on, [stale('A'), stale('B')])
+    const ui = await mount($)
+    expect(await ui.find({ key: 'empty' })).toBeDefined()
+    expect((await ui.find({ key: 'empty' }))?.text).toMatch(/No live lanes · 2 hidden \(\/fleet all\)/)
+    expect(await ui.find({ type: 'Button' })).toBeUndefined()
   })
 
   test(`detail: inline placement draws the list only (${surface})`, async ($, on) => {

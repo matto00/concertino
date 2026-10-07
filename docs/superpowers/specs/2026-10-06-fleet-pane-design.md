@@ -225,6 +225,25 @@ type Lane = {
 The mod is strictly read-only: no `fs.write`, no `tool.call`, `prompt.*` or
 other gating hooks. `claude plugin validate .` should list none.
 
+### Visibility
+
+The pane hides stale lanes by default. A lane is shown when it belongs to this
+session (liveness `running` or `stalled`) or when its newest timeline event is
+under 30 minutes old (`RECENT_MS`). `ended` lanes follow the same rule, so a
+lane that just failed stays for 30 minutes and then drops. Everything else is
+hidden, not discarded: `fleet.lanes` always holds every lane, so toggling needs
+no re-poll.
+
+`/fleet all` toggles the `showAll` atom and replies `Fleet pane: showing all
+lanes.` or `Fleet pane: showing live lanes only.` The header's summary counts
+only the visible lanes and ends with ` · all` when showing everything, else
+` · N hidden` when N > 0. If every lane is hidden the pane draws `No live lanes ·
+N hidden (/fleet all)`. The status line summarises the shown set; the first-run
+auto-open and the 2 s poll cadence both require at least one shown lane, so a
+repo of only stale runs idles at 15 s. The fingerprint includes the hidden count
+so the pane redraws when a lane crosses the 30-minute line. A selected ticket
+that is not visible falls back to the first visible lane.
+
 ## Error handling
 
 | Failure | Behaviour |

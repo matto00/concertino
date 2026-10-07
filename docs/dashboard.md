@@ -672,7 +672,8 @@ Install the plugin once:
 
 or, from a checkout, `claude --plugin-dir ~/Development/concertino`. The pane
 opens by itself once a run exists (at 144 columns or wider), or via `/fleet`
-any time; `/fleet off` closes it. The pane is read-only in this release —
+any time; `/fleet off` closes it. Lanes with no activity for 30 minutes that
+this session didn't start are hidden; `/fleet all` shows them. The pane is read-only in this release —
 answer escalations and steer lanes by talking to the driver.
 
 `concertino fleet --json` is a read-only snapshot of every active run under `.concertino/runs` — the feed the Claude Code fleet pane polls — and `concertino fleet` prints one line per active run.
