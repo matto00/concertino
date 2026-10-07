@@ -1,7 +1,7 @@
 // hooks/fleet-pane/render.tsx
 // Pure drawing: a PaneModel in, a tree out. `els` is `$.ui.resolve(e)`.
 import type { Elements, RenderSurface, RenderElement, ThemeKey } from 'claude-code'
-import type { FleetState, Lane, TimelineEvent, TicketMeta, TicketComment } from '../../types'
+import type { FleetState, Lane, TimelineEvent, TicketMeta } from '../../types'
 import { summaryParts, displayStatus, partition, newestComments, pickDetailLane } from './lanes'
 
 type PaneEls = Elements[RenderSurface]
@@ -58,14 +58,6 @@ function rowParts(lane: Lane, now: number) {
     gates: `${passed}/${r.gates.length}`, gatesOk: r.gates.every(g => g.status === 'pass'),
     elapsed: fmtElapsed(elapsed), agent: agentLabel(lane),
   }
-}
-
-export function laneRow(lane: Lane, now: number): string {
-  const p = rowParts(lane, now)
-  return [
-    p.ticket, p.status, p.phase, p.cycle, `${phaseBar(lane.run.phase)} ${p.gates}`.padEnd(11),
-    p.elapsed.padEnd(7), p.agent,
-  ].join(' ').trimEnd()
 }
 
 type Seg = { text: string; color?: ThemeKey; bold?: boolean; dim?: boolean }
@@ -145,7 +137,7 @@ export function renderPane(els: PaneEls, model: PaneModel): RenderElement {
         const [mk, tk, ...rest] = segs
         return (
           <Box key={`row:${lane.run.ticket}`} flexDirection="row">
-            {mk && <Text {...(mk.color ? { color: mk.color } : {})}>{mk.text}</Text>}
+            {mk && <Text {...(mk.color ? { color: mk.color } : {})} {...(dimmed(lane) ? { dimColor: true } : {})}>{mk.text}</Text>}
             {tk && (
               <Button
                 key={`lane:${lane.run.ticket}`}
@@ -223,13 +215,12 @@ export const NO_DESC = '(no description)'
 
 export function descriptionRows(meta: TicketMeta | null, excerpt: string | null, w: number): { title: 'DESCRIPTION' | 'TICKET'; rows: string[] } {
   if (meta) {
-    const rows = wrapRows(meta.description, w).slice(0, 12)  // only decides the placeholder; the body goes through Markdown
-    return { title: 'DESCRIPTION', rows: rows.length ? rows : [NO_DESC] }
+    // The body goes to Markdown whole; `rows` only carries it (or the placeholder) to the caller.
+    return { title: 'DESCRIPTION', rows: [meta.description.trim() ? meta.description : NO_DESC] }
   }
   return { title: 'TICKET', rows: wrapRows(excerpt ?? '', w).slice(0, 8) }
 }
 
-export const commentRows = (c: TicketComment, w: number): string[] => wrapRows(c.body, w).slice(0, 6)
 
 function timelineLine(ev: TimelineEvent, w: number): string {
   const d = new Date(ev.t)
@@ -340,7 +331,7 @@ export function renderDetail(els: PaneEls, model: PaneModel, lane: Lane): Render
                 <Text color="suggestion">{c.author ?? 'someone'}</Text>
                 <Text color="subtle">{` · ${c.createdAt != null ? fmtAgo(model.now - c.createdAt) : ''}`.trimEnd()}</Text>
               </Box>
-              {commentRows(c, w).length > 0 && <Markdown text={c.body.replace(/\r\n?/g, '\n')} />}
+              {c.body.trim() && <Markdown text={c.body.replace(/\r\n?/g, '\n')} />}
             </Box>
           ))}
           {(more > 0 || truncated) && (

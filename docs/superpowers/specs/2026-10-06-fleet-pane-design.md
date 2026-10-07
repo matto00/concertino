@@ -351,7 +351,7 @@ theme key and never raw colour names: the title, section headings and ticket id
 `claude`; run states `success` / `warning` / `error` / `inactive`; phase bar
 filled `success`, empty `subtle`; the Linear state by its type, priority
 `P0`-`P1` `error`, `P2` `warning`; timeline rows by verdict (`PASS`, `MERGE`,
-`CONFIRM` `success`; `FAIL`, `BLOCKER`, `REFUTE` `error`), `pr` rows `merged`.
+`CONFIRM` `success`; `FAIL`, `BLOCKER`, `REFUTE` `error`), `pr` rows `merged`. External and stalled lanes dim the marker, ticket and agent segments; the status, phase and gate segments keep their theme colours.
 Ticket and PR URLs are `Link` elements, and description and comment bodies are
 `Markdown` elements (scrollable with the pane). `/fleet` is registered
 `immediate`, so it runs mid-turn; its handler reads no turn state.
