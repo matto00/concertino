@@ -205,6 +205,50 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ type: 'Button' })).toBeUndefined()
   })
 
+  const META = {
+    fetchedAt: 0, id: 'u', identifier: 'CON-1', title: 'Linear title', description: 'First line.\n\nSecond line.\n' + Array.from({ length: 20 }, (_, i) => `L${i}`).join('\n'),
+    url: 'https://linear.app/x/CON-1', state: { name: 'In Progress', type: 'started' }, assignee: 'Matt', priority: 2, estimate: 3, labels: ['agent-merge', 'follow-up'],
+    comments: Array.from({ length: 7 }, (_, i) => ({ id: `c${i}`, author: `A${i}`, body: `Comment ${i}\r\nline two\r\n` + 'x\n'.repeat(10), createdAt: -(7 - i) * 60_000 })),
+    commentsTruncated: false,
+  }
+
+  test(`detail: metadata line, DESCRIPTION (12 lines) and COMMENTS (last 5, 6 lines each, "N more") from ticket_meta (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: META })])
+    const ui = await mount($)
+    expect((await ui.find({ key: 'meta' }))?.text).toMatch(/In Progress · Matt · P2 · 3 pts · labels: agent-merge, follow-up · https:\/\/linear\.app\/x\/CON-1/)
+    const desc = (await ui.find({ key: 'ticket' }))?.text ?? ''
+    expect(desc).toMatch(/^DESCRIPTION/)
+    expect(desc).toMatch(/First line\./); expect(desc).toMatch(/L9\b/); expect(desc).not.toMatch(/L10\b/)   // 12 non-empty lines: First, Second, L0..L9
+    const com = (await ui.find({ key: 'comments' }))?.text ?? ''
+    expect(com).toMatch(/^COMMENTS \(7\)/)
+    expect(com).not.toMatch(/Comment 1\b/); expect(com).toMatch(/Comment 2\b/); expect(com).toMatch(/Comment 6\b/)   // last 5
+    expect(com).toMatch(/A6 · 1m ago/)
+    expect(com).toMatch(/2 more — https:\/\/linear\.app\/x\/CON-1/)
+    expect((await ui.find({ key: 'detail' }))?.text).toMatch(/CON-1  Linear title/)   // header prefers the Linear title
+  })
+
+  test(`detail: comment body is capped at six lines and CRLF is normalised (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: { ...META, comments: [META.comments[6]] } })])
+    const ui = await mount($)
+    const com = (await ui.find({ key: 'comments' }))?.text ?? ''
+    expect(com).not.toMatch(/\r/)
+    expect(com.split('\n').filter(l => l === 'x').length).toBe(4)   // "Comment 6", "line two", then 4 of the 10 x-lines = 6 lines
+  })
+
+  test(`detail: without ticket_meta the TICKET excerpt is drawn, and ticket_meta_error dim under the header (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: null, ticket_meta_error: 'linear: HTTP 429 — rate limited' })])
+    const ui = await mount($)
+    expect((await ui.find({ key: 'ticket' }))?.text).toMatch(/^TICKET/)
+    expect(await ui.find({ key: 'comments' })).toBeUndefined()
+    expect((await ui.find({ key: 'meta-error' }))?.text).toMatch(/429/)
+  })
+
+  test(`detail: empty optional metadata parts are omitted (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: { ...META, assignee: null, estimate: null, labels: [], priority: null, url: null } })])
+    const ui = await mount($)
+    expect((await ui.find({ key: 'meta' }))?.text.trim()).toBe('In Progress')
+  })
+
   test(`detail: inline placement draws the list only (${surface})`, async ($, on) => {
     seed(on, [lane({})])
     const ui = await mount($, { ...PANE, placement: 'inline' })
