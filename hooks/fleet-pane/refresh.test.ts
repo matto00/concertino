@@ -70,6 +70,7 @@ function world(on: On, w: World = {}) {
   const statuses: (string | undefined)[] = []
   const toasts: string[] = []
   const opened: string[] = []
+  const registered: any[] = []
   const closed: string[] = []
   const argvs: (readonly string[])[] = []
   let stateSets = 0
@@ -93,9 +94,9 @@ function world(on: On, w: World = {}) {
   on('ui.panes', async () => ({ value: [] }))
   on('ui.open', async (_$: unknown, e: { id: string }) => { opened.push(e.id); return { value: { isPlaced: true } } })
   on('ui.close', async (_$: unknown, e: { id: string }) => { closed.push(e.id); return { value: undefined } })
-  on('command.register', async (_$: unknown, e: { name: string }) => ({ value: { command: e.name } }))
+  on('command.register', async (_$: unknown, e: { name: string }) => { registered.push(e); return { value: { command: e.name } } })
   const clock = mock.clock(on as never)
-  return { argvs, fleetSets, showAllSets, store, statuses, toasts, opened, closed, clock, stateSets: () => stateSets, runs: () => runs }
+  return { registered, argvs, fleetSets, showAllSets, store, statuses, toasts, opened, closed, clock, stateSets: () => stateSets, runs: () => runs }
 }
 
 const start = ($: any) => $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
@@ -118,6 +119,13 @@ test('refresh: writes correlated lanes to state and sets the status line', async
   expect(value.error).toBeNull()
   expect(value.root).toBe('/r')
   expect(w.statuses.at(-1)).toBe('fleet: 1 running')
+})
+
+test('command: /fleet is registered immediate so it runs mid-turn', async ($, on) => {
+  const w = world(on)
+  await start($)
+  const e = w.registered.find((x: any) => x.name === 'fleet')
+  expect(e.immediate).toBe(true)
 })
 
 test('refresh: an identical snapshot does not rewrite state', async ($, on) => {

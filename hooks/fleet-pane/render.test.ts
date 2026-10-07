@@ -43,15 +43,15 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await mount($)
     const rows = await ui.findAll({ type: 'Button' })
     expect(rows.map((r: any) => r.key)).toEqual(['lane:CON-231', 'lane:CON-228', 'lane:CON-219'])
-    expect(rows[0]?.text).toMatch(/CON-231\s+needs-you\s+Evaluation\s+c2\s+\S+ 1\/2\s+12m\s+skeptic/)
-    expect(rows[2]?.text).toMatch(/external$/)
+    expect((await ui.find({ key: 'row:CON-231' }))?.text).toMatch(/CON-231\s+needs-you\s+Evaluation\s+c2\s+\S+ 1\/2\s+12m\s+skeptic/)
+    expect((await ui.find({ key: 'row:CON-219' }))?.text).toMatch(/external$/)
     expect((await ui.find({ key: 'header' }))?.text).toMatch(/2 running · 1 idle · 1 needs you/)
   })
 
   test(`list: stalled lane is labelled (${surface})`, async ($, on) => {
     seed(on, [lane({}, 'stalled')])
     const ui = await mount($)
-    expect((await ui.find({ key: 'lane:CON-1' }))?.text).toMatch(/stalled/)
+    expect((await ui.find({ key: 'row:CON-1' }))?.text).toMatch(/stalled/)
   })
 
   test(`list: pressing a row selects it (${surface})`, async ($, on) => {
@@ -71,8 +71,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`list: truncates every row to bodyColumns (${surface})`, async ($, on) => {
     seed(on, [lane({ ticket: 'CON-123456', currentAgent: 'evaluator' })])
     const ui = await mount($, { ...PANE, bodyColumns: 40 })
-    const row = await ui.find({ key: 'lane:CON-123456' })
-    expect(row?.text.length).toBeLessThanOrEqual(38)
+    const row = await ui.find({ key: 'row:CON-123456' })
+    expect(row?.text.length).toBeLessThanOrEqual(40)
     expect(row?.text).not.toMatch(/\n/)
   })
 
@@ -104,17 +104,15 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`list: unknown status with a running agent reads running and is not dimmed (${surface})`, async ($, on) => {
     seed(on, [lane({ ticket: 'LIVE', status: 'unknown' }, 'running')])
     const ui = await mount($)
-    const row = await ui.find({ key: 'lane:LIVE' })
-    expect(row?.text).toMatch(/LIVE\s+running\s/)
-    expect(row?.props?.dimColor).toBeFalsy()
+    expect((await ui.find({ key: 'row:LIVE' }))?.text).toMatch(/LIVE\s+running\s/)
+    expect((await ui.find({ key: 'lane:LIVE' }))?.props?.dimColor).toBeFalsy()
   })
 
   test(`list: a needs-you lane whose agent ended is neither labelled stalled nor dimmed (${surface})`, async ($, on) => {
     seed(on, [lane({ ticket: 'NEED', status: 'needs-you' }, 'stalled')])
     const ui = await mount($)
-    const row = await ui.find({ key: 'lane:NEED' })
-    expect(row?.text).not.toMatch(/stalled/)
-    expect(row?.props?.dimColor).toBeFalsy()
+    expect((await ui.find({ key: 'row:NEED' }))?.text).not.toMatch(/stalled/)
+    expect((await ui.find({ key: 'lane:NEED' }))?.props?.dimColor).toBeFalsy()
   })
 
   test(`list: header is truncated to bodyColumns (${surface})`, async ($, on) => {
@@ -213,28 +211,31 @@ for (const surface of ['terminal', 'desktop'] as const) {
     commentsTruncated: false,
   }
 
-  test(`detail: metadata line, DESCRIPTION (12 lines) and COMMENTS (last 5, 6 lines each, "N more") from ticket_meta (${surface})`, async ($, on) => {
+  test(`detail: metadata line, DESCRIPTION and COMMENTS (last 5, "N more") from ticket_meta (${surface})`, async ($, on) => {
     seed(on, [lane({ ticket_meta: META })])
     const ui = await mount($)
     expect((await ui.find({ key: 'meta' }))?.text).toMatch(/In Progress · Matt · P2 · 3 pts · labels: agent-merge, follow-up · https:\/\/linear\.app\/x\/CON-1/)
     const desc = (await ui.find({ key: 'ticket' }))?.text ?? ''
     expect(desc).toMatch(/^DESCRIPTION/)
-    expect(desc).toMatch(/First line\./); expect(desc).toMatch(/L9\b/); expect(desc).not.toMatch(/L10\b/)   // 12 non-empty lines: First, Second, L0..L9
+    expect(desc).toMatch(/First line\./); expect(desc).toMatch(/L19\b/)   // no row cap: Markdown scrolls
     const com = (await ui.find({ key: 'comments' }))?.text ?? ''
     expect(com).toMatch(/^COMMENTS \(7\)/)
     expect(com).not.toMatch(/Comment 1\b/); expect(com).toMatch(/Comment 2\b/); expect(com).toMatch(/Comment 6\b/)   // newest 5
     expect(com.indexOf('Comment 2')).toBeLessThan(com.indexOf('Comment 6'))   // oldest first, newest last
     expect(com).toMatch(/A6 · 1m ago/)
     expect(com).toMatch(/2 more — https:\/\/linear\.app\/x\/CON-1/)
-    expect((await ui.find({ key: 'detail' }))?.text).toMatch(/CON-1  Linear title/)   // header prefers the Linear title
+    expect((await ui.find({ key: 'detail' }))?.text).toMatch(/CON-1\s+Linear title/)   // header prefers the Linear title
   })
 
-  test(`detail: comment body is capped at six lines and CRLF is normalised (${surface})`, async ($, on) => {
+  test(`detail: comment bodies are passed whole to Markdown with CRLF normalised (${surface})`, async ($, on) => {
     seed(on, [lane({ ticket_meta: { ...META, comments: [META.comments[0]!] } })])
     const ui = await mount($)
-    const com = (await ui.find({ key: 'comments' }))?.text ?? ''
-    expect(com).not.toMatch(/\r/)
-    expect(com.split('\n').filter(l => l === 'x').length).toBe(4)   // "Comment 6", "line two", then 4 of the 10 x-lines = 6 lines
+    const nodes = await ui.findAll({ type: 'Markdown' })
+    expect(nodes.length).toBe(2)                     // description + the one comment
+    const text = nodes[1]?.props?.text as string
+    expect(text).not.toMatch(/\r/)
+    expect(text).toBe(META.comments[0]!.body.replace(/\r\n/g, '\n'))
+    expect(text.split('\n').filter((l: string) => l === 'x').length).toBe(10)   // no row cap
   })
 
   test(`detail: a truncated comment list says N+ in the header and the more-line (${surface})`, async ($, on) => {
@@ -245,27 +246,92 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(com).toMatch(/2\+ more — https:\/\/linear\.app\/x\/CON-1/)
   })
 
-  test(`detail: a long single-line description wraps to exactly 12 rows within bodyColumns (${surface})`, async ($, on) => {
-    seed(on, [lane({ ticket_meta: { ...META, description: Array.from({ length: 60 }, (_, i) => `w${i}`).join(' ') + ' ' + 'z'.repeat(300) } })])
-    const ui = await mount($, { ...PANE, bodyColumns: 40 })
-    const rows = ((await ui.find({ key: 'ticket' }))?.text ?? '').replace(/^(DESCRIPTION|TICKET)/, '').split('\n')
-    expect(rows.length).toBe(12)
-    expect(Math.max(...rows.map((r: string) => r.length))).toBeLessThanOrEqual(40)
-  })
-
-  test(`detail: a 300-char word hard-splits at bodyColumns (${surface})`, async ($, on) => {
-    seed(on, [lane({ ticket_meta: { ...META, description: 'y'.repeat(300) } })])
-    const ui = await mount($, { ...PANE, bodyColumns: 40 })
-    const rows = ((await ui.find({ key: 'ticket' }))?.text ?? '').replace(/^(DESCRIPTION|TICKET)/, '').split('\n')
-    expect(rows.length).toBe(8)
-    expect(rows.every((r: string) => r.length <= 40)).toBe(true)
-  })
-
-  test(`detail: markdown links and heading marks are stripped (${surface})`, async ($, on) => {
-    seed(on, [lane({ ticket_meta: { ...META, description: '## Title\nSee [HEL-520](https://x) now' } })])
+  test(`detail: the description is one Markdown element with the raw text, links and headings intact (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: { ...META, description: '## Title\r\nSee [HEL-520](https://x) now' } })])
     const ui = await mount($)
-    const desc = (await ui.find({ key: 'ticket' }))?.text ?? ''
-    expect(desc).toMatch(/^DESCRIPTIONTitle\n/); expect(desc).toMatch(/See HEL-520 now/); expect(desc).not.toMatch(/##|https:\/\/x/)
+    const md = await ui.find({ type: 'Markdown' })
+    expect(md?.props?.text).toBe('## Title\nSee [HEL-520](https://x) now')
+  })
+
+  test(`detail: the TICKET excerpt fallback stays plain text wrapped to 8 rows within bodyColumns (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: null, ticket_doc: { title: 't', excerpt: Array.from({ length: 80 }, (_, i) => `w${i}`).join(' ') + ' ' + 'z'.repeat(300) } })])
+    const ui = await mount($, { ...PANE, bodyColumns: 40 })
+    const rows = ((await ui.find({ key: 'ticket' }))?.text ?? '').replace(/^TICKET/, '').split('\n')
+    expect(rows.length).toBe(8)
+    expect(Math.max(...rows.map((r: string) => r.length))).toBeLessThanOrEqual(40)
+    expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+  })
+
+  test(`colour: header pieces carry theme keys (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket: 'A' }), lane({ ticket: 'B', status: 'needs-you' }), lane({ ticket: 'C', status: 'failed' }), lane({ ticket: 'D' }, 'external'), stale('OLD')])
+    const ui = await mount($)
+    const color = async (t: string) => (await ui.findAll({ type: 'Text' })).find((x: any) => x.text === t)?.props?.color
+    expect(await color('Fleet · concertino')).toBe('claude')
+    expect(await color('3 running')).toBe('success')
+    expect(await color('1 idle')).toBe('subtle')
+    expect(await color('1 needs you')).toBe('warning')
+    expect(await color('1 failed')).toBe('error')
+    expect(await color(' · 1 hidden')).toBe('subtle')
+  })
+
+  test(`colour: row status, phase bar and gates (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket: 'N', status: 'needs-you', phase: 'Planning' }), lane({ ticket: 'R', status: 'running' })])
+    const ui = await mount($)
+    const texts = async (t: string) => (await ui.find({ key: 'row:' + t }))
+    const kids = async (t: string) => (await ui.findAll({ type: 'Text' }))
+    expect((await kids('N')).find((x: any) => x.text.trim() === 'needs-you')?.props?.color).toBe('warning')
+    expect((await kids('R')).find((x: any) => x.text.trim() === 'running')?.props?.color).toBe('success')
+    const all = await ui.findAll({ type: 'Text' })
+    expect(all.find((x: any) => x.text === ' ■■')?.props?.color).toBe('success')       // Planning = 2 filled
+    expect(all.find((x: any) => x.text === '□□□□')?.props?.color).toBe('subtle')
+    expect(all.find((x: any) => x.text.trim() === '1/2')?.props?.color).toBe('warning') // a gate is not pass
+    expect(await texts('N')).toBeDefined()
+  })
+
+  test(`colour: meta state, priority, labels and a Link to the ticket url (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: { ...META, priority: 1 } })])
+    const ui = await mount($)
+    const meta = await ui.find({ key: 'meta' })
+    expect(meta).toBeDefined()
+    const texts = await ui.findAll({ type: 'Text' })
+    const color = (t: string) => texts.find((x: any) => x.text === t)?.props?.color
+    expect(color('In Progress')).toBe('success')
+    expect(color('P1')).toBe('error')
+    expect(color('labels: agent-merge, follow-up')).toBe('permission')
+    expect(color('Matt')).toBe('suggestion')
+    const link = (await ui.findAll({ type: 'Link' })).find((l: any) => l.props?.href === META.url)
+    expect(link).toBeDefined()
+  })
+
+  test(`colour: timeline rows by verdict, pr merged (${surface})`, async ($, on) => {
+    seed(on, [lane({ timeline: [
+      { t: 0, kind: 'verdict', role: 'evaluator', verdict: 'FAIL' }, { t: 1, kind: 'verdict', role: 'skeptic', verdict: 'PASS' },
+      { t: 2, kind: 'pr', url: 'https://github.com/x/y/pull/1', label: 'pr' }, { t: 3, kind: 'gate.result', gate: 'g', status: 'pass' } ] })])
+    const ui = await mount($)
+    const tl = (await ui.findAll({ type: 'Text' }))
+    const color = (re: RegExp) => tl.find((x: any) => re.test(x.text))?.props?.color
+    expect(color(/verdict evaluator FAIL/)).toBe('error')
+    expect(color(/verdict skeptic PASS/)).toBe('success')
+    expect(color(/ pr pr/)).toBe('merged')
+    expect(color(/gate\.result/)).toBe('subtle')
+  })
+
+  test(`detail: the PR line has a Link (${surface})`, async ($, on) => {
+    seed(on, [lane({ timeline: [{ t: 0, kind: 'pr', url: 'https://github.com/x/y/pull/1', label: 'pr' }] })])
+    const ui = await mount($)
+    const pr = await ui.find({ key: 'pr' })
+    expect(pr?.text).toMatch(/^PR https:\/\/github.com\/x\/y\/pull\/1.*\$1\.84/)
+    expect((await ui.findAll({ type: 'Link' })).some((l: any) => l.props?.href === 'https://github.com/x/y/pull/1')).toBe(true)
+  })
+
+  test(`detail: Markdown elements under ticket and comments carry the raw bodies (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: META })])
+    const ui = await mount($)
+    expect((await ui.find({ key: 'ticket' }))).toBeDefined()
+    const mds = await ui.findAll({ type: 'Markdown' })
+    expect(mds.length).toBe(6)                       // description + five comments
+    expect(mds[0]?.props?.text).toBe(META.description)
+    expect(mds.at(-1)?.props?.text).toMatch(/^Comment 6\nline two/)
   })
 
   test(`detail: an empty Linear description reads (no description) (${surface})`, async ($, on) => {

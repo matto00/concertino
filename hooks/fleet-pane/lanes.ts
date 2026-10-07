@@ -1,6 +1,6 @@
 // Pure: snapshot runs + the session's agents + its transcript → ordered lanes.
 // No `$`, no I/O, so `claude plugin test` can pin every branch.
-import type { AgentInfo, SessionMessage } from 'claude-code'
+import type { AgentInfo, SessionMessage, ThemeKey } from 'claude-code'
 import type { Lane, Liveness, Run, RunStatus, TicketComment } from '../../types'
 
 export const ORDER: Record<RunStatus, number> = { 'needs-you': 0, running: 1, unknown: 1, failed: 2, done: 3 }
@@ -54,17 +54,23 @@ export function displayStatus(lane: Lane): RunStatus {
   return lane.run.status === 'unknown' && lane.liveness === 'running' ? 'running' : lane.run.status
 }
 
-export function summarize(lanes: Lane[]): string | undefined {
-  if (!lanes.length) return undefined
+/** The summary counts, one per part, each with the theme colour the pane draws it in. */
+export function summaryParts(lanes: Lane[]): { label: string; color: ThemeKey }[] {
+  if (!lanes.length) return []
   const running = lanes.filter(l => l.liveness === 'running').length
   const needsYou = lanes.filter(l => l.run.status === 'needs-you').length
   const failed = lanes.filter(l => l.run.status === 'failed').length
   const idle = lanes.filter(l => l.liveness !== 'running' && l.run.status !== 'needs-you' && l.run.status !== 'failed').length
-  const parts = [`${running} running`]
-  if (idle) parts.push(`${idle} idle`)
-  if (needsYou) parts.push(`${needsYou} needs you`)
-  if (failed) parts.push(`${failed} failed`)
-  return 'fleet: ' + parts.join(' · ')
+  const parts: { label: string; color: ThemeKey }[] = [{ label: `${running} running`, color: 'success' }]
+  if (idle) parts.push({ label: `${idle} idle`, color: 'subtle' })
+  if (needsYou) parts.push({ label: `${needsYou} needs you`, color: 'warning' })
+  if (failed) parts.push({ label: `${failed} failed`, color: 'error' })
+  return parts
+}
+
+export function summarize(lanes: Lane[]): string | undefined {
+  const parts = summaryParts(lanes)
+  return parts.length ? 'fleet: ' + parts.map(p => p.label).join(' · ') : undefined
 }
 
 export const RECENT_MS = 30 * 60_000

@@ -338,16 +338,22 @@ In Progress · Matt · P2 · 3 pts · labels: agent-merge, follow-up · https://
 
 (each part omitted when absent; `P0`–`P4` is Linear's priority number), with a
 dim ` · fetched 2m ago` appended when the meta is older than 60 s. The
-`TICKET` block becomes `DESCRIPTION`: at most 12 *rows* of the Linear
-description (`(no description)` when it is empty), where rows are produced by
-word-wrapping to the pane width after dropping empty lines and stripping
-markdown links (`[text](url)` becomes `text`) and leading `#` marks; when
-`ticket_meta` is null it draws the `ticket.md` excerpt as before (8 rows), and
+`TICKET` block becomes `DESCRIPTION`: the full Linear description rendered through the engine's `Markdown` element (`(no description)` when it is empty), not row-capped or link-stripped; when `ticket_meta` is null it draws the `ticket.md` excerpt as plain text as before (8 wrapped rows), and
 `ticket_meta_error` (if any) dim beneath the header. A `COMMENTS (n)` block
 closes the detail, after `PR`/cost: the newest 5 comments by `createdAt`
 (Linear's order is not relied on), shown oldest to newest, each
-`author · 14m ago` then the body as at most 6 rows, and `N more — <url>` when
+`author · 14m ago` then the full body through `Markdown`, and `N more — <url>` when
 more exist (`N+ more` and `COMMENTS (50+)` when `commentsTruncated` is set).
+
+**Colour, links, Markdown (v1.2).** The pane is drawn in the Claude theme, by
+theme key and never raw colour names: the title, section headings and ticket id
+`claude`; run states `success` / `warning` / `error` / `inactive`; phase bar
+filled `success`, empty `subtle`; the Linear state by its type, priority
+`P0`-`P1` `error`, `P2` `warning`; timeline rows by verdict (`PASS`, `MERGE`,
+`CONFIRM` `success`; `FAIL`, `BLOCKER`, `REFUTE` `error`), `pr` rows `merged`.
+Ticket and PR URLs are `Link` elements, and description and comment bodies are
+`Markdown` elements (scrollable with the pane). `/fleet` is registered
+`immediate`, so it runs mid-turn; its handler reads no turn state.
 
 **Toasts** fire only for shown lanes (a hidden stale lane's old escalation is
 not news). The `/fleet all` toggle is one `update(fn)`.

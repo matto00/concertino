@@ -1,8 +1,8 @@
 // hooks/fleet-pane/render.tsx
 // Pure drawing: a PaneModel in, a tree out. `els` is `$.ui.resolve(e)`.
-import type { Elements, RenderSurface, RenderElement } from 'claude-code'
+import type { Elements, RenderSurface, RenderElement, ThemeKey } from 'claude-code'
 import type { FleetState, Lane, TimelineEvent, TicketMeta, TicketComment } from '../../types'
-import { summarize, displayStatus, partition, newestComments, pickDetailLane } from './lanes'
+import { summaryParts, displayStatus, partition, newestComments, pickDetailLane } from './lanes'
 
 type PaneEls = Elements[RenderSurface]
 
@@ -47,16 +47,47 @@ function agentLabel(lane: Lane): string {
 const dimmed = (lane: Lane) =>
   ((lane.liveness === 'external' || lane.liveness === 'stalled') && lane.run.status !== 'needs-you') || displayStatus(lane) === 'unknown'
 
-export function laneRow(lane: Lane, now: number): string {
+function rowParts(lane: Lane, now: number) {
   const r = lane.run
   const elapsed = r.startedAt != null ? (r.endedAt ?? now) - r.startedAt : r.elapsedMs
   const passed = r.gates.filter(g => g.status === 'pass').length
+  const filled = r.phase ? Math.max(0, PHASE_ORDER.indexOf(r.phase) + 1) : 0
+  return {
+    ticket: r.ticket.padEnd(9), status: displayStatus(lane).padEnd(10), phase: (r.phase ?? '-').padEnd(10),
+    cycle: `c${r.cycle ?? '-'}`.padEnd(3), filled, empty: PHASE_ORDER.length - filled,
+    gates: `${passed}/${r.gates.length}`, gatesOk: r.gates.every(g => g.status === 'pass'),
+    elapsed: fmtElapsed(elapsed), agent: agentLabel(lane),
+  }
+}
+
+export function laneRow(lane: Lane, now: number): string {
+  const p = rowParts(lane, now)
   return [
-    r.ticket.padEnd(9), displayStatus(lane).padEnd(10), (r.phase ?? '-').padEnd(10),
-    `c${r.cycle ?? '-'}`.padEnd(3), `${phaseBar(r.phase)} ${passed}/${r.gates.length}`.padEnd(11),
-    fmtElapsed(elapsed).padEnd(7), agentLabel(lane),
+    p.ticket, p.status, p.phase, p.cycle, `${phaseBar(lane.run.phase)} ${p.gates}`.padEnd(11),
+    p.elapsed.padEnd(7), p.agent,
   ].join(' ').trimEnd()
 }
+
+type Seg = { text: string; color?: ThemeKey; bold?: boolean; dim?: boolean }
+
+/** Clip a run of segments to `max` columns in total, marking the cut with an ellipsis. */
+function clipSegs(segs: Seg[], max: number): Seg[] {
+  const total = segs.reduce((n, s) => n + s.text.length, 0)
+  if (total <= max) return segs
+  const out: Seg[] = []
+  let left = Math.max(0, max)
+  for (const s of segs) {
+    if (left <= 0) break
+    out.push(s.text.length <= left ? s : { ...s, text: s.text.slice(0, left) })
+    left -= s.text.length
+  }
+  const last = out.at(-1)
+  if (last && last.text.length > 0) last.text = max <= 1 ? last.text : last.text.slice(0, -1) + '…'
+  return out
+}
+
+const statusColour = (s: string): ThemeKey =>
+  s === 'running' ? 'success' : s === 'needs-you' ? 'warning' : s === 'failed' ? 'error' : 'inactive'
 
 function visibleLanes(model: PaneModel): { visible: Lane[]; hidden: number } {
   const { shown, hidden } = partition(model.fleet.lanes, model.now)
@@ -74,11 +105,20 @@ export function renderPane(els: PaneEls, model: PaneModel): RenderElement {
   const detail = pickDetail(model)
   const suffix = model.showAll ? ' · all' : hidden > 0 ? ` · ${hidden} hidden` : ''
   const rule = '─'.repeat(Math.max(1, w))
+  const headSegs: Seg[] = [{ text: 'Fleet · concertino', color: 'claude', bold: true }]
+  summaryParts(visible).forEach((p, i) => {
+    headSegs.push(i === 0 ? { text: '  ' } : { text: ' · ', color: 'subtle' }, { text: p.label, color: p.color })
+  })
+  if (suffix) headSegs.push({ text: suffix, color: 'subtle' })
   return (
     <Box flexDirection="column">
-      <Box key="header"><Text bold>{truncate(`Fleet · concertino  ${summarize(visible)?.replace(/^fleet: /, '') ?? ''}${suffix}`, w)}</Text></Box>
+      <Box key="header" flexDirection="row">
+        {clipSegs(headSegs, w).map((s, i) => (
+          <Text key={i} {...(s.color ? { color: s.color } : {})} {...(s.bold ? { bold: true } : {})}>{s.text}</Text>
+        ))}
+      </Box>
       <Text dimColor>{rule}</Text>
-      {fleet.error && <Box key="error"><Text color="red">{truncate(fleet.error, w)}</Text></Box>}
+      {fleet.error && <Box key="error"><Text color="error">{truncate(fleet.error, w)}</Text></Box>}
       {fleet.lanes.length === 0 && !fleet.error && (
         <Box key="empty"><Text dimColor>{truncate(`No concertino runs under ${fleet.root}/.concertino/runs`, w)}</Text></Box>
       )}
@@ -87,17 +127,38 @@ export function renderPane(els: PaneEls, model: PaneModel): RenderElement {
       )}
       {visible.map((lane, i) => {
         const colour = colourOf(lane)
+        const p = rowParts(lane, model.now)
+        const dim = dimmed(lane)
+        const marker: Seg = { text: detail === lane ? '▶ ' : '● ', ...(colour ? { color: colour } : {}) }
+        const ticket: Seg = { text: p.ticket }
+        const segs: Seg[] = clipSegs([
+          marker, ticket,
+          { text: ' ' + p.status, color: statusColour(displayStatus(lane)) },
+          { text: ' ' + p.phase, color: 'text' },
+          { text: ' ' + p.cycle, color: 'subtle' },
+          { text: ' ' + '■'.repeat(p.filled), color: 'success' },
+          { text: '□'.repeat(p.empty), color: 'subtle' },
+          { text: ' ' + (p.agent || p.elapsed.length ? p.gates.padEnd(4) : p.gates), color: p.gatesOk ? 'subtle' : 'warning' },
+          { text: ' ' + (p.agent ? p.elapsed.padEnd(7) : p.elapsed), color: 'subtle' },
+          ...(p.agent ? [{ text: ' ' + p.agent, color: 'suggestion' as ThemeKey, dim }] : []),
+        ], w)
+        const [mk, tk, ...rest] = segs
         return (
           <Box key={`row:${lane.run.ticket}`} flexDirection="row">
-            <Text {...(colour ? { color: colour } : {})}>{detail === lane ? '▶ ' : '● '}</Text>
-            <Button
-              key={`lane:${lane.run.ticket}`}
-              plain
-              {...(i < 9 ? { hotkey: String(i + 1) } : {})}
-              dimColor={dimmed(lane)}
-              label={truncate(laneRow(lane, model.now), w - 2)}
-              onPress={() => model.onSelect(lane.run.ticket)}
-            />
+            {mk && <Text {...(mk.color ? { color: mk.color } : {})}>{mk.text}</Text>}
+            {tk && (
+              <Button
+                key={`lane:${lane.run.ticket}`}
+                plain
+                {...(i < 9 ? { hotkey: String(i + 1) } : {})}
+                dimColor={dim}
+                label={tk.text}
+                onPress={() => model.onSelect(lane.run.ticket)}
+              />
+            )}
+            {rest.map((s, j) => (
+              <Text key={j} {...(s.color ? { color: s.color } : {})} {...(s.dim ? { dimColor: true } : {})}>{s.text}</Text>
+            ))}
           </Box>
         )
       })}
@@ -107,9 +168,9 @@ export function renderPane(els: PaneEls, model: PaneModel): RenderElement {
   )
 }
 
-const colourOf = (lane: Lane): 'yellow' | 'red' | undefined => {
+const colourOf = (lane: Lane): ThemeKey | undefined => {
   const s = displayStatus(lane)
-  return s === 'needs-you' ? 'yellow' : s === 'failed' ? 'red' : undefined
+  return s === 'needs-you' ? 'warning' : s === 'failed' ? 'error' : undefined
 }
 
 const LETTERS = 'abcdefghijklmnopqrstuvwxyz'
@@ -158,10 +219,12 @@ export function wrapRows(text: string, width: number): string[] {
   return rows
 }
 
+export const NO_DESC = '(no description)'
+
 export function descriptionRows(meta: TicketMeta | null, excerpt: string | null, w: number): { title: 'DESCRIPTION' | 'TICKET'; rows: string[] } {
   if (meta) {
-    const rows = wrapRows(meta.description, w).slice(0, 12)
-    return { title: 'DESCRIPTION', rows: rows.length ? rows : ['(no description)'] }
+    const rows = wrapRows(meta.description, w).slice(0, 12)  // only decides the placeholder; the body goes through Markdown
+    return { title: 'DESCRIPTION', rows: rows.length ? rows : [NO_DESC] }
   }
   return { title: 'TICKET', rows: wrapRows(excerpt ?? '', w).slice(0, 8) }
 }
@@ -176,8 +239,29 @@ function timelineLine(ev: TimelineEvent, w: number): string {
   return truncate(`${hhmm} ${rest}`, w)
 }
 
+const VERDICT_OK = new Set(['PASS', 'MERGE', 'CONFIRM'])
+const VERDICT_BAD = new Set(['FAIL', 'BLOCKER', 'REFUTE'])
+function timelineColour(ev: TimelineEvent): ThemeKey {
+  if (ev.kind === 'verdict') {
+    const v = (ev.verdict ?? '').toUpperCase()
+    return VERDICT_OK.has(v) ? 'success' : VERDICT_BAD.has(v) ? 'error' : v === 'ESCALATION' ? 'warning' : 'subtle'
+  }
+  return ev.kind === 'pr' ? 'merged' : ev.kind === 'escalation.raised' ? 'warning' : 'subtle'
+}
+
+function stateColour(type: string | null): ThemeKey {
+  switch (type) {
+    case 'started': return 'success'
+    case 'unstarted': case 'backlog': case 'triage': return 'subtle'
+    case 'completed': return 'merged'
+    case 'canceled': return 'error'
+    default: return 'text'
+  }
+}
+const priorityColour = (p: number): ThemeKey => (p <= 1 ? 'error' : p === 2 ? 'warning' : 'subtle')
+
 export function renderDetail(els: PaneEls, model: PaneModel, lane: Lane): RenderElement {
-  const { Box, Text } = els
+  const { Box, Text, Link, Markdown } = els
   const w = model.bodyColumns
   const r = lane.run
   const colour = colourOf(lane)
@@ -192,17 +276,29 @@ export function renderDetail(els: PaneEls, model: PaneModel, lane: Lane): Render
   const answered = answeredLine(lane)
   return (
     <Box key="detail" flexDirection="column">
-      <Text bold {...(colour ? { color: colour } : {})}>{truncate(`${r.ticket}  ${r.ticket_meta?.title || r.ticket_doc.title || r.changeName || ''}  ${r.branch ?? ''}`, w)}</Text>
+      <Box key="detail-header" flexDirection="row">
+        {clipSegs([
+          { text: r.ticket, color: 'claude', bold: true },
+          { text: '  ' },
+          { text: r.ticket_meta?.title || r.ticket_doc.title || r.changeName || '', color: 'text', bold: true },
+          { text: `  ${r.branch ?? ''}`, color: 'subtle' },
+        ], w).map((sg, i) => <Text key={i} {...(sg.color ? { color: sg.color } : {})} {...(sg.bold ? { bold: true } : {})}>{sg.text}</Text>)}
+      </Box>
       <Text>{truncate(`Phase ${r.phase ?? '-'} · cycle ${r.cycle ?? '-'} · agent ${lane.liveness} · worktree ${r.worktree ?? '-'}`, w)}</Text>
       {meta && (
-        <Box key="meta">
-          <Text wrap="wrap">{metaLine(meta) + (staleMs > 60_000 ? ` · fetched ${fmtAgo(staleMs)}` : '')}</Text>
+        <Box key="meta" flexDirection="row" flexWrap="wrap">
+          {metaItems(meta, staleMs > 60_000 ? `fetched ${fmtAgo(staleMs)}` : null).map((it, i) => (
+            <Box key={`m:${i}`}>
+              {i > 0 && <Text color="subtle">{' · '}</Text>}
+              {it.link ? <Link href={it.link} label={it.link} /> : <Text color={it.color}>{it.text}</Text>}
+            </Box>
+          ))}
         </Box>
       )}
       {r.ticket_meta_error && <Box key="meta-error"><Text dimColor>{truncate(r.ticket_meta_error, w)}</Text></Box>}
       {esc && (
         <Box key="escalation" flexDirection="column" marginTop={1}>
-          <Text bold color="yellow">{truncate(`ESCALATION (${esc.role ?? 'unknown'}, ${fmtAgo(model.now - esc.raisedAt)})`, w)}</Text>
+          <Text bold color="warning">{truncate(`ESCALATION (${esc.role ?? 'unknown'}, ${fmtAgo(model.now - esc.raisedAt)})`, w)}</Text>
           <Text wrap="wrap">{esc.question}</Text>
           {esc.options.length > 0 && <Text wrap="wrap">{lettered(esc.options)}</Text>}
           {(esc.subQuestions ?? []).map((sq, i) => (
@@ -216,31 +312,59 @@ export function renderDetail(els: PaneEls, model: PaneModel, lane: Lane): Render
       )}
       {desc.rows.length > 0 && (
         <Box key="ticket" flexDirection="column" marginTop={1}>
-          <Text bold>{desc.title}</Text>
-          <Text>{desc.rows.join('\n')}</Text>
+          <Text bold color="claude">{desc.title}</Text>
+          {meta && desc.rows.length > 0 && desc.rows[0] !== NO_DESC
+            ? <Markdown text={meta.description.replace(/\r\n?/g, '\n')} />
+            : <Text>{desc.rows.join('\n')}</Text>}
         </Box>
       )}
       {r.timeline.length > 0 && (
         <Box key="timeline" flexDirection="column" marginTop={1}>
-          <Text bold>TIMELINE</Text>
-          {r.timeline.slice(-8).map((ev, i) => <Text key={`tl:${i}`} dimColor>{timelineLine(ev, w)}</Text>)}
+          <Text bold color="claude">TIMELINE</Text>
+          {r.timeline.slice(-8).map((ev, i) => <Text key={`tl:${i}`} color={timelineColour(ev)}>{timelineLine(ev, w)}</Text>)}
         </Box>
       )}
       {(pr || r.costUsd != null) && (
-        <Box key="pr" marginTop={1}><Text>{truncate(`${pr ? `PR  ${pr.url}` : ''}${r.costUsd != null ? `   cost $${r.costUsd.toFixed(2)}` : ''}`.trim(), w)}</Text></Box>
+        <Box key="pr" marginTop={1} flexDirection="row">
+          {pr?.url && <Text>{'PR '}</Text>}
+          {pr?.url && <Link href={pr.url} label={pr.url} />}
+          {r.costUsd != null && <Text color="subtle">{`${pr ? '   ' : ''}cost $${r.costUsd.toFixed(2)}`}</Text>}
+        </Box>
       )}
       {meta && meta.comments.length > 0 && (
         <Box key="comments" flexDirection="column" marginTop={1}>
-          <Text bold>{`COMMENTS (${meta.comments.length}${truncated ? '+' : ''})`}</Text>
+          <Text bold color="claude">{`COMMENTS (${meta.comments.length}${truncated ? '+' : ''})`}</Text>
           {shown.map((c, i) => (
             <Box key={`cm:${i}`} flexDirection="column">
-              <Text dimColor>{truncate(`${c.author ?? 'someone'} · ${c.createdAt != null ? fmtAgo(model.now - c.createdAt) : ''}`.trim(), w)}</Text>
-              <Text>{commentRows(c, w).join('\n')}</Text>
+              <Box flexDirection="row">
+                <Text color="suggestion">{c.author ?? 'someone'}</Text>
+                <Text color="subtle">{` · ${c.createdAt != null ? fmtAgo(model.now - c.createdAt) : ''}`.trimEnd()}</Text>
+              </Box>
+              {commentRows(c, w).length > 0 && <Markdown text={c.body.replace(/\r\n?/g, '\n')} />}
             </Box>
           ))}
-          {(more > 0 || truncated) && <Text dimColor wrap="wrap">{`${more}${truncated ? '+' : ''} more — ${meta.url ?? ''}`.trim()}</Text>}
+          {(more > 0 || truncated) && (
+            <Box flexDirection="row" flexWrap="wrap">
+              <Text color="subtle">{`${more}${truncated ? '+' : ''} more${meta.url ? ' — ' : ''}`}</Text>
+              {meta.url && <Link href={meta.url} label={meta.url} />}
+            </Box>
+          )}
         </Box>
       )}
     </Box>
   )
+}
+
+type MetaItem = { text: string; color: ThemeKey; link?: string }
+
+function metaItems(m: TicketMeta, stale: string | null): MetaItem[] {
+  const out: MetaItem[] = []
+  if (m.state.name) out.push({ text: m.state.name, color: stateColour(m.state.type) })
+  if (m.assignee) out.push({ text: m.assignee, color: 'suggestion' })
+  if (m.priority != null) out.push({ text: `P${m.priority}`, color: priorityColour(m.priority) })
+  if (m.estimate != null) out.push({ text: `${m.estimate} pts`, color: 'subtle' })
+  if (m.labels.length) out.push({ text: `labels: ${m.labels.join(', ')}`, color: 'permission' })
+  if (m.url) out.push({ text: m.url, color: 'text', link: m.url })
+  if (stale) out.push({ text: stale, color: 'subtle' })
+  return out
 }

@@ -99,7 +99,7 @@ async function openPane($: EngineInterface, focus?: true): Promise<void> {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'fleet', description: 'Show concertino lanes in a pane (`/fleet off` closes it, `/fleet all` toggles stale lanes)', argumentHint: '[off|all]' })
+    await $.command.register({ name: 'fleet', description: 'Show concertino lanes in a pane (`/fleet off` closes it, `/fleet all` toggles stale lanes)', argumentHint: '[off|all]', immediate: true })
     const tick = (): void => {
       if (inFlight) { $.clock.after(POLL_MS, tick); return }
       inFlight = true
