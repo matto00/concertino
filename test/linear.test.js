@@ -751,3 +751,59 @@ test('fetchOneTicket propagates a GraphQL error the same way fetchTickets does',
     /Entity not found/,
   );
 });
+
+// --- fetchTicketDetail (v1.1 fleet pane) ------------------------------------
+
+// v1.1 fleet pane (docs/superpowers/specs/2026-10-06-fleet-pane-design.md):
+// one issue, bulk-query shape, for the per-ticket detail cache.
+function detailTransport(issue, calls) {
+  return async ({ body }) => {
+    const parsed = JSON.parse(body);
+    calls.push(parsed);
+    return { status: 200, body: JSON.stringify({ data: { issue } }) };
+  };
+}
+
+const ISSUE_NODE = {
+  id: 'uuid-1', identifier: 'CON-231', number: 231, title: 'Add thing', description: 'Body **md**', url: 'https://linear.app/x/CON-231',
+  estimate: 3, priority: 2, updatedAt: '2026-10-06T10:00:00.000Z', createdAt: '2026-10-01T10:00:00.000Z', completedAt: null,
+  state: { name: 'In Progress', type: 'started' }, assignee: { name: 'Matt', displayName: 'Matt' },
+  labels: { nodes: [{ name: 'agent-merge' }] }, project: null,
+  comments: { pageInfo: { hasNextPage: false }, nodes: [{ id: 'c1', body: 'hi', createdAt: '2026-10-06T11:00:00.000Z', user: { name: 'Matt', displayName: 'Matt' } }] },
+};
+
+test('fetchTicketDetail: posts ISSUE_DETAIL_QUERY with the id and comment limit, returns the normalised ticket', async () => {
+  const calls = [];
+  const t = await linear.fetchTicketDetail({ apiKey: 'k', id: 'CON-231', transport: detailTransport(ISSUE_NODE, calls) });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].query, linear.ISSUE_DETAIL_QUERY);
+  assert.deepEqual(calls[0].variables, { id: 'CON-231', commentLimit: linear.COMMENT_LIMIT });
+  assert.equal(t.identifier, 'CON-231');
+  assert.equal(t.description, 'Body **md**');
+  assert.deepEqual(t.state, { name: 'In Progress', type: 'started' });
+  assert.equal(t.priority, 2);
+  assert.deepEqual(t.labels, ['agent-merge']);
+  assert.equal(t.comments.length, 1);
+  assert.equal(t.comments[0].author, 'Matt');
+  assert.equal(t.commentsTruncated, false);
+});
+
+test('fetchTicketDetail: a null issue is "not found"; a missing key is refused before any request', async () => {
+  const calls = [];
+  await assert.rejects(linear.fetchTicketDetail({ apiKey: 'k', id: 'CON-9', transport: detailTransport(null, calls) }), /ticket "CON-9" was not found/);
+  const saved = process.env.LINEAR_API_KEY;
+  delete process.env.LINEAR_API_KEY;
+  try {
+    await assert.rejects(linear.fetchTicketDetail({ id: 'CON-9', transport: detailTransport(ISSUE_NODE, calls) }), /LINEAR_API_KEY is not set/);
+  } finally {
+    if (saved !== undefined) process.env.LINEAR_API_KEY = saved;
+  }
+  assert.equal(calls.length, 1);
+});
+
+test('ISSUE_DETAIL_QUERY asks for the same fields as the bulk QUERY node', () => {
+  for (const field of ['description', 'url', 'estimate', 'priority', 'state { name type }', 'assignee { name displayName }', 'labels(first: 20)', 'comments(first: $commentLimit)']) {
+    assert.ok(linear.ISSUE_DETAIL_QUERY.includes(field), field);
+  }
+  assert.equal(typeof linear.normaliseTicket, 'function');
+});
