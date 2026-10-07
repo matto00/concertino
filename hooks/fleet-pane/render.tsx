@@ -212,7 +212,7 @@ export function renderDetail(els: PaneEls, model: PaneModel, lane: Lane): Render
               <Text wrap="wrap">{commentLines(c).join('\n')}</Text>
             </Box>
           ))}
-          {more > 0 && <Text dimColor>{truncate(`${more} more — ${meta.url ?? ''}`.trim(), w)}</Text>}
+          {more > 0 && <Text dimColor wrap="wrap">{`${more} more — ${meta.url ?? ''}`.trim()}</Text>}
         </Box>
       )}
     </Box>
