@@ -1,6 +1,6 @@
 // hooks/fleet-pane/register.tsx
 import { atom, read, update } from 'claude-code'
-import type { AgentInfo, EngineInterface, Register, SessionMessage } from 'claude-code'
+import type { AgentInfo, EngineInterface, Register, SessionMessage, UiOpenResult } from 'claude-code'
 import type { FleetState, Lane } from '../../types'
 import { renderPane } from './render'
 import { runFleetSnapshot, POLL_MS, IDLE_POLL_MS } from './snapshot'
@@ -92,9 +92,10 @@ async function toastNewEscalations($: EngineInterface, lanes: Lane[]): Promise<v
   await update($, seenEscalations, s => [...s, ...fresh.map(l => escalationKey(l)!)].slice(-200))
 }
 
-async function openPane($: EngineInterface, focus?: true): Promise<void> {
+async function openPane($: EngineInterface, focus?: true): Promise<UiOpenResult> {
   const isUp = (await $.ui.panes()).some(p => p.id === PANE)
-  if (!isUp || focus) await $.ui.open(focus ? { id: PANE, title: 'Fleet', focus } : { id: PANE, title: 'Fleet' })
+  if (isUp && !focus) return { isPlaced: true }
+  return $.ui.open(focus ? { id: PANE, title: 'Fleet', focus } : { id: PANE, title: 'Fleet' })
 }
 
 export const register: Register = on => {
@@ -123,8 +124,8 @@ export const register: Register = on => {
       await update($, showAll, current => (nowAll = !current))
       return { text: nowAll ? 'Fleet pane: showing all lanes.' : 'Fleet pane: showing live lanes only.' }
     }
-    await openPane($, true)
-    return { text: 'Fleet pane opened.' }
+    const placed = await openPane($, true)
+    return { text: placed.isPlaced ? 'Fleet pane opened.' : `Fleet pane not shown: ${placed.reason}` }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

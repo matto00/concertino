@@ -221,7 +221,8 @@ type Lane = {
   blocks, each with its own lettered options. Letters are display only.
 - Empty states, dim: `No concertino runs under <root>/.concertino/runs`;
   `concertino: <stderr tail>` on a CLI failure, above the stale lanes.
-- `/fleet` opens or focuses the pane; `/fleet off` closes it. Closing the pane
+- `/fleet` opens or focuses the pane, replying `Fleet pane opened.` or, when
+  the surface cannot place it, `Fleet pane not shown: <reason>`; `/fleet off` closes it. Closing the pane
   (either way) leaves the poll and status line running.
 
 The mod is strictly read-only: no `fs.write`, no `tool.call`, `prompt.*` or
