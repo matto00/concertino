@@ -5,7 +5,7 @@ Gives Concertino a read-only, tmux-independent snapshot of every run — folded 
 ## ADDED Requirements
 
 ### Requirement: Fleet snapshot command
-The CLI SHALL provide `concertino fleet [--json] [--all] [--out=DIR]` that reads `.concertino/runs/*/events.jsonl` under the resolved main checkout and prints every run folded by the dashboard reducer, with no tmux window data. The command SHALL NOT write any file or emit any event.
+The CLI SHALL provide `concertino fleet [--json] [--all] [--out=DIR]` that reads `.concertino/runs/*/events.jsonl` under the resolved main checkout and prints every run folded by the dashboard reducer, with no tmux window data. The command SHALL NOT write any file or emit any event, except `.concertino/cache/fleet-tickets.json` when `--tickets` is given.
 
 #### Scenario: JSON snapshot
 - **WHEN** `concertino fleet --json` runs in a repo with active runs
@@ -24,7 +24,7 @@ The CLI SHALL provide `concertino fleet [--json] [--all] [--out=DIR]` that reads
 - **THEN** the command exits 0 with `runs: []` (`--json`) or a dim "no active runs" line
 
 ### Requirement: Linear detail for requested tickets
-`concertino fleet --json --tickets=A,B` SHALL attach `ticket_meta` (state, assignee, priority, estimate, labels, description, url, newest 50 comments, `fetchedAt`) and `ticket_meta_error` to the requested runs only. Detail is fetched from Linear only (`ticketProvider.kind: linear`, `LINEAR_API_KEY`) and cached per ticket in `.concertino/cache/fleet-tickets.json` with a 20 s TTL (`CONCERTINO_FLEET_TICKET_TTL_MS` overrides). The first Linear failure in an invocation SHALL stop further fetches.
+`concertino fleet --json --tickets=A,B` SHALL attach `ticket_meta` (state, assignee, priority, estimate, labels, description, url, newest 50 comments, `fetchedAt`) to any run with a cached entry, and `ticket_meta_error` to the requested runs only. Detail is fetched from Linear only (`ticketProvider.kind: linear`, `LINEAR_API_KEY`) and cached per ticket in `.concertino/cache/fleet-tickets.json` with a 20 s TTL (`CONCERTINO_FLEET_TICKET_TTL_MS` overrides). An invocation-wide Linear failure (HTTP 429, rejected key, timeout, network error, exhausted budget) SHALL stop further fetches; a per-ticket failure (such as not found) SHALL NOT. All fetches in one invocation SHALL share a 2.5 s time budget, and the cache SHALL be written after every fetch.
 
 #### Scenario: Fresh cache served
 - **WHEN** a requested ticket has a cache entry younger than the TTL
@@ -34,10 +34,26 @@ The CLI SHALL provide `concertino fleet [--json] [--all] [--out=DIR]` that reads
 - **WHEN** a requested ticket's cache entry is older than the TTL
 - **THEN** it is refetched from Linear and the cache entry is rewritten
 
-#### Scenario: First failure stops further fetches
-- **WHEN** a Linear fetch fails during an invocation
-- **THEN** `ticket_meta_error` is set for that ticket and no further Linear fetches are made in that invocation
+#### Scenario: Invocation failure stops further fetches
+- **WHEN** a Linear fetch fails with an invocation-wide error (for example HTTP 429) during an invocation
+- **THEN** `ticket_meta_error` is set on every requested run and no further Linear fetches are made in that invocation
+
+#### Scenario: Rate limit backs off
+- **WHEN** a fetch fails with HTTP 429
+- **THEN** the ticket's cache entry records `retryUntil` 60 s ahead and is not refetched until then
+
+#### Scenario: Not found is cached negatively
+- **WHEN** a requested ticket is not found in Linear
+- **THEN** a failure entry is cached, that run reports the error with `ticket_meta: null`, the next requested ticket is still fetched, and the ticket is not refetched until the TTL expires
+
+#### Scenario: Time budget
+- **WHEN** the fetches in one invocation have used the 2.5 s budget
+- **THEN** no further fetch starts, the remaining requested runs carry a budget `ticket_meta_error`, and the cache already holds the earlier results
 
 #### Scenario: Non-linear provider
-- **WHEN** the ticket provider is not linear or `LINEAR_API_KEY` is absent
-- **THEN** `ticket_meta` is null and `ticket_meta_error` says why
+- **WHEN** the ticket provider is not linear
+- **THEN** `ticket_meta` is null unless cached and `ticket_meta_error` is null, with no fetch
+
+#### Scenario: Missing key
+- **WHEN** the provider is linear and `LINEAR_API_KEY` is absent
+- **THEN** `ticket_meta_error` says why and no fetch is made
