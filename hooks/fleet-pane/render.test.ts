@@ -10,7 +10,7 @@ const run = (over: Partial<Run>): Run => ({
   gates: [{ name: 'a', status: 'pass', durationMs: null, firstError: null }, { name: 'b', status: 'fail', durationMs: null, firstError: null }],
   lastVerdict: null, escalation: null, costUsd: 1.84, startedAt: -12 * 60_000, endedAt: null, endStatus: null,
   elapsedMs: 12 * 60_000, status: 'unknown', malformed: 0, ticket_doc: { title: 'Add the thing', excerpt: 'Line one.\nLine two.' },
-  pendingAnswer: null, timeline: [{ t: 0, kind: 'phase.enter', phase: 'Execution', cycle: 1 }], currentAgent: 'executor', ...over,
+  pendingAnswer: null, timeline: [{ t: 0, kind: 'phase.enter', phase: 'Execution', cycle: 1 }], currentAgent: 'executor', ticket_meta: null, ticket_meta_error: null, ...over,
 })
 const lane = (over: Partial<Run>, liveness: Lane['liveness'] = 'running'): Lane => ({ run: run(over), liveness })
 

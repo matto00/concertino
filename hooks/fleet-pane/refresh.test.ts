@@ -18,7 +18,7 @@ const SNAP = {
   runs: [{ ticket: 'CON-1', changeName: 'x', branch: 'feature/x/CON-1', worktree: '/w', phase: 'Planning', cycle: 1,
     gates: [], lastVerdict: null, escalation: null, costUsd: null, startedAt: 0, endedAt: null, endStatus: null,
     elapsedMs: 5, status: 'unknown', malformed: 0, ticket_doc: { title: 'X', excerpt: null }, pendingAnswer: null,
-    timeline: [{ t: 0, kind: 'phase.enter' }], currentAgent: null }],
+    timeline: [{ t: 0, kind: 'phase.enter' }], currentAgent: null, ticket_meta: null, ticket_meta_error: null }],
 }
 
 test('runFleetSnapshot: parses the CLI output and passes cwd + timeout', async () => {
@@ -71,6 +71,7 @@ function world(on: On, w: World = {}) {
   const toasts: string[] = []
   const opened: string[] = []
   const closed: string[] = []
+  const argvs: (readonly string[])[] = []
   let stateSets = 0
   const fleetSets: any[] = []
   const showAllSets: unknown[] = []
@@ -84,7 +85,7 @@ function world(on: On, w: World = {}) {
   })
   on('session.start', async () => ({ cwd: '/repo' }))
   on('session.root', async () => ({ value: '/repo' }))
-  on('process.run', async () => { runs++; return { value: await (w.stdout ? w.stdout() : okRun(JSON.stringify(SNAP))) } })
+  on('process.run', async (_$: unknown, e: { argv: readonly string[] }) => { runs++; argvs.push(e.argv); return { value: await (w.stdout ? w.stdout() : okRun(JSON.stringify(SNAP))) } })
   on('agent.list', async () => ({ value: w.agents ?? [] }))
   on('session.messages', async () => ({ value: w.messages ?? [] }))
   on('ui.status', async (_$: unknown, e: { text?: string }) => { statuses.push(e.text); return { value: undefined } })
@@ -94,7 +95,7 @@ function world(on: On, w: World = {}) {
   on('ui.close', async (_$: unknown, e: { id: string }) => { closed.push(e.id); return { value: undefined } })
   on('command.register', async (_$: unknown, e: { name: string }) => ({ value: { command: e.name } }))
   const clock = mock.clock(on as never)
-  return { fleetSets, showAllSets, store, statuses, toasts, opened, closed, clock, stateSets: () => stateSets, runs: () => runs }
+  return { argvs, fleetSets, showAllSets, store, statuses, toasts, opened, closed, clock, stateSets: () => stateSets, runs: () => runs }
 }
 
 const start = ($: any) => $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
@@ -278,5 +279,38 @@ test('/fleet all toggles showAll and says which way', async ($, on) => {
   expect(first.text).toBe('Fleet pane: showing all lanes.')
   const second = await $.command.run({ command: 'fleet', args: 'all' })
   expect(second.text).toBe('Fleet pane: showing live lanes only.')
+  expect(w.showAllSets).toEqual([true, false])
+})
+
+test('runFleetSnapshot: appends --tickets= for the given tickets, comma-joined', async () => {
+  let seen: readonly string[] = []
+  const $ = fake$(async argv => { seen = argv; return result({ stdout: JSON.stringify(SNAP) }) })
+  await runFleetSnapshot($, '/repo', ['CON-1', 'CON-2'])
+  expect(seen).toEqual(['concertino', 'fleet', '--json', '--tickets=CON-1,CON-2'])
+})
+
+test("refresh: the second poll passes the previous poll's shown lanes as --tickets; hidden lanes are not requested", async ($, on) => {
+  const stale = { ...SNAP.runs[0], ticket: 'CON-9', timeline: [{ t: -3_600_000 * 2, kind: 'phase.enter' }] }
+  const w = world(on, { stdout: async () => okRun(JSON.stringify({ ...SNAP, runs: [SNAP.runs[0], stale] })) })
+  await start($)
+  await w.clock.advance(2000)
+  await w.clock.advance(2000)
+  expect(w.argvs[0]).toEqual(['concertino', 'fleet', '--json'])
+  expect(w.argvs[1]).toEqual(['concertino', 'fleet', '--json', '--tickets=CON-1'])
+})
+
+test('refresh: toasts only for shown lanes', async ($, on) => {
+  const esc = { question: 'Old?', options: [], raisedAt: 0, escalationId: 'old-1', role: 'skeptic' }
+  const stale = { ...SNAP.runs[0], ticket: 'CON-9', status: 'needs-you', escalation: esc, timeline: [{ t: -3_600_000 * 2, kind: 'phase.enter' }] }
+  const w = world(on, { stdout: async () => okRun(JSON.stringify({ ...SNAP, runs: [SNAP.runs[0], stale] })) })
+  await start($)
+  await w.clock.advance(2000)
+  expect(w.toasts).toEqual([])
+})
+
+test('/fleet all toggles through a single update(fn)', async ($, on) => {
+  const w = world(on)
+  await $.command.run({ command: 'fleet', args: 'all' })
+  await $.command.run({ command: 'fleet', args: 'all' })
   expect(w.showAllSets).toEqual([true, false])
 })

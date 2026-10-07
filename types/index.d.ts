@@ -1,4 +1,21 @@
 // The fleet pane's state contract (docs/superpowers/specs/2026-10-06-fleet-pane-design.md).
+export type TicketComment = { id: string | null; author: string | null; body: string; createdAt: number | null }
+export type TicketMeta = {
+  fetchedAt: number
+  id: string | null
+  identifier: string | null
+  title: string
+  description: string
+  url: string | null
+  state: { name: string | null; type: string | null }
+  assignee: string | null
+  priority: number | null
+  estimate: number | null
+  labels: string[]
+  comments: TicketComment[]
+  commentsTruncated: boolean
+}
+
 export type RunStatus = 'needs-you' | 'failed' | 'running' | 'unknown' | 'done'
 
 export type Gate = { name: string; status: string; durationMs: number | null; firstError: string | null }
@@ -55,6 +72,8 @@ export type Run = {
   pendingAnswer: PendingAnswer
   timeline: TimelineEvent[]
   currentAgent: string | null
+  ticket_meta: TicketMeta | null
+  ticket_meta_error: string | null
 }
 
 export type Snapshot = { generatedAt: number; root: string; runs: Run[] }

@@ -7,7 +7,7 @@ const run = (over: Partial<Run>): Run => ({
   ticket: 'CON-1', changeName: null, branch: null, worktree: null, phase: null, cycle: null, gates: [],
   lastVerdict: null, escalation: null, costUsd: null, startedAt: null, endedAt: null, endStatus: null,
   elapsedMs: null, status: 'unknown', malformed: 0, ticket_doc: { title: null, excerpt: null },
-  pendingAnswer: null, timeline: [], currentAgent: null, ...over,
+  pendingAnswer: null, timeline: [], currentAgent: null, ticket_meta: null, ticket_meta_error: null, ...over,
 })
 
 const agentCall = (id: string, ticket: string): SessionMessage => ({
@@ -147,4 +147,16 @@ test('fingerprint: the hidden count is part of it', async () => {
   const l = correlate([run({})], [], new Map())
   expect(fingerprint(l, null, 0)).not.toBe(fingerprint(l, null, 1))
   expect(fingerprint(l, null)).toBe(fingerprint(l, null, 0))
+})
+
+test('fingerprint: changes when ticket_meta.fetchedAt or the last comment id changes', async () => {
+  const meta = (fetchedAt: number, lastId: string) => ({ fetchedAt, id: null, identifier: 'CON-1', title: '', description: '', url: null,
+    state: { name: null, type: null }, assignee: null, priority: null, estimate: null, labels: [], commentsTruncated: false,
+    comments: [{ id: lastId, author: null, body: '', createdAt: null }] })
+  const a = correlate([run({ ticket_meta: meta(1, 'c1') })], [], new Map())
+  const b = correlate([run({ ticket_meta: meta(2, 'c1') })], [], new Map())
+  const c = correlate([run({ ticket_meta: meta(1, 'c2') })], [], new Map())
+  expect(fingerprint(a, null)).not.toBe(fingerprint(b, null))
+  expect(fingerprint(a, null)).not.toBe(fingerprint(c, null))
+  expect(fingerprint(a, null)).toBe(fingerprint(correlate([run({ ticket_meta: meta(1, 'c1') })], [], new Map()), null))
 })

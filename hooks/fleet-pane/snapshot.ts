@@ -13,10 +13,11 @@ export type SnapshotResult = { ok: true; snapshot: Snapshot } | { ok: false; err
 const tail = (s: string, n = 200) => s.trim().split('\n').slice(-3).join(' ').slice(-n)
 
 /** Runs `concertino fleet --json` in `cwd`; never throws. */
-export async function runFleetSnapshot($: EngineInterface, cwd: string): Promise<SnapshotResult> {
+export async function runFleetSnapshot($: EngineInterface, cwd: string, tickets: readonly string[] = []): Promise<SnapshotResult> {
+  const argv = tickets.length ? [...FLEET_ARGV, `--tickets=${tickets.join(',')}`] : [...FLEET_ARGV]
   let ran
   try {
-    ran = await $.process.run([...FLEET_ARGV], { cwd, timeoutMs: CLI_TIMEOUT_MS })
+    ran = await $.process.run(argv, { cwd, timeoutMs: CLI_TIMEOUT_MS })
   } catch (e) {
     return { ok: false, error: `concertino: ${e instanceof Error ? e.message : String(e)}` }
   }

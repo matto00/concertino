@@ -43,9 +43,11 @@ let inFlight = false
 export async function refresh($: EngineInterface): Promise<number> {
   const cwd = await $.session.root()
   const previous = await read($, fleet)
+  const now = await $.clock.now()
+  const previousShown = partition(previous.lanes, now).shown.map(l => l.run.ticket)
   // The engine follows `$` only into same-file functions, never across an import, so the snapshot
   // runner gets a narrow `process.run` shim whose `$` is spelled at the call site.
-  const got = await runFleetSnapshot({ process: { run: (argv, init) => $.process.run(argv, init) } } as EngineInterface, cwd)
+  const got = await runFleetSnapshot({ process: { run: (argv, init) => $.process.run(argv, init) } } as EngineInterface, cwd, previousShown)
   if (!got.ok) {
     await $.ui.status(undefined)
     if (previous.error !== got.error) await update($, fleet, f => ({ ...f, error: got.error }))
@@ -53,14 +55,14 @@ export async function refresh($: EngineInterface): Promise<number> {
   }
   const [agents, messages] = await Promise.all([listAgents($), mainMessages($)])
   const lanes = correlate(got.snapshot.runs, agents, agentIdsByTicket(messages))
-  const { shown, hidden } = partition(lanes, await $.clock.now())
+  const { shown, hidden } = partition(lanes, now)
   const next: FleetState = {
     lanes, error: null, fingerprint: fingerprint(lanes, null, hidden),
     generatedAt: got.snapshot.generatedAt, root: got.snapshot.root,
   }
   await $.ui.status(summarize(shown))
   if (next.fingerprint !== previous.fingerprint || previous.error) await update($, fleet, () => next)
-  await toastNewEscalations($, next)
+  await toastNewEscalations($, shown)
   if (!shown.length) return IDLE_POLL_MS
   if (!(await read($, paneOffered))) {
     await update($, paneOffered, () => true)
@@ -75,9 +77,9 @@ const escalationKey = (l: Lane): string | null => {
   return esc ? (esc.escalationId ?? `${l.run.ticket}:${esc.raisedAt}`) : null
 }
 
-async function toastNewEscalations($: EngineInterface, state: FleetState): Promise<void> {
+async function toastNewEscalations($: EngineInterface, lanes: Lane[]): Promise<void> {
   const seen = await read($, seenEscalations)
-  const fresh = state.lanes.filter(l => {
+  const fresh = lanes.filter(l => {
     const key = escalationKey(l)
     return key && !seen.includes(key)
   })
@@ -113,8 +115,8 @@ export const register: Register = on => {
       return { text: 'Fleet pane closed.' }
     }
     if (e.args.trim() === 'all') {
-      const nowAll = !(await read($, showAll))
-      await update($, showAll, () => nowAll)
+      let nowAll = false
+      await update($, showAll, current => (nowAll = !current))
       return { text: nowAll ? 'Fleet pane: showing all lanes.' : 'Fleet pane: showing live lanes only.' }
     }
     await openPane($, true)

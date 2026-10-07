@@ -86,6 +86,7 @@ export function fingerprint(lanes: Lane[], error: string | null, hidden = 0): st
     l.run.ticket, l.run.status, l.run.phase, l.run.cycle, l.run.gates.length,
     l.liveness, l.run.escalation?.escalationId ?? l.run.escalation?.raisedAt ?? null,
     l.run.timeline.at(-1)?.t ?? null, l.run.pendingAnswer !== null, l.run.currentAgent,
+    l.run.ticket_meta?.fetchedAt ?? null, l.run.ticket_meta?.comments.at(-1)?.id ?? null, l.run.ticket_meta_error,
   ])
   return JSON.stringify([error, hidden, rows])
 }
