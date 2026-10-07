@@ -5,7 +5,7 @@ import type { Lane, Liveness, Run, RunStatus } from '../../types'
 
 export const ORDER: Record<RunStatus, number> = { 'needs-you': 0, running: 1, unknown: 1, failed: 2, done: 3 }
 
-const TICKET_RE = /\bTICKET_ID\s*[=:]\s*`?([A-Za-z][A-Za-z0-9]*-\d+)/
+const TICKET_RE = /\bTICKET_ID\s*[=:]\s*`?([A-Za-z#][A-Za-z0-9_-]*[0-9])/  // mirrors lib/ui/ticket.js TICKET_RE body so GitHub-provider ids like #123 and ids with _ match, while still stopping before a trailing . or backtick
 const ENDED: ReadonlySet<AgentInfo['status']> = new Set(['completed', 'failed', 'killed'])
 
 /** Newest orchestrator `Agent` tool use per ticket (keys upper-cased), read off the main transcript. */

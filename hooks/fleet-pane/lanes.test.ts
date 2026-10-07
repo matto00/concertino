@@ -40,8 +40,11 @@ test('agentIdsByTicket: the real orchestrator prompt shapes all map', async () =
     promptCall('a', 'TICKET_ID=HEL-1027. AGENT_MERGE_OVERRIDE=1'),
     promptCall('b', 'TICKET_ID=`HEL-1028`. SPEED=fast'),
     promptCall('c', 'TICKET_ID: HEL-1029 go'),
+    promptCall('d', 'TICKET_ID=#123. AGENT_MERGE_OVERRIDE='),
+    promptCall('e', 'TICKET_ID=`a_b_c-9`.'),
+    promptCall('f', 'TICKET_ID=PROJ-SUB-12 RESUME'),
   ])
-  expect([...map.entries()]).toEqual([['HEL-1027', 'a'], ['HEL-1028', 'b'], ['HEL-1029', 'c']])
+  expect([...map.entries()]).toEqual([['HEL-1027', 'a'], ['HEL-1028', 'b'], ['HEL-1029', 'c'], ['#123', 'd'], ['A_B_C-9', 'e'], ['PROJ-SUB-12', 'f']])
 })
 
 test('agentIdsByTicket: ignores Agent calls that are not the orchestrator', async () => {
