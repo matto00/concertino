@@ -255,25 +255,53 @@ test('enrichTickets: an unrequested ticket is served from cache when present, ne
   assert.equal(snap.runs[0].ticket_meta.fetchedAt, 1);
 });
 
-test('enrichTickets: a not-found ticket sets ticket_meta_error and leaves others cached; the first failure stops further fetches', async () => {
+test('enrichTickets: the first invocation error (429) stops further fetches and is reported on every requested run', async () => {
   const root = mkTmpDir('concertino-fleet-');
   writeRun(root, 'CON-1', [START]); writeRun(root, 'CON-2', [START]); writeRun(root, 'CON-3', [START]);
   cacheMod.write(root, cacheMod.put(cacheMod.read(root), detail('CON-3'), 1));
   const calls = [];
-  const deps = { fetchDetail: fakeFetch({ 'CON-2': detail('CON-2') }, calls), now: 100, env: { LINEAR_API_KEY: 'k' }, config: LINEAR_CFG };
+  const deps = { fetchDetail: fakeFetch({ 'CON-1': new Error('linear: HTTP 429 — rate limited'), 'CON-2': detail('CON-2') }, calls), now: 100, env: { LINEAR_API_KEY: 'k' }, config: LINEAR_CFG };
   const snap = await fleet.buildSnapshot(root, { now: 100, tickets: ['CON-1', 'CON-2', 'CON-3'], deps });
   const by = Object.fromEntries(snap.runs.map((r) => [r.ticket, r]));
-  assert.deepEqual(calls, ['CON-1']);                    // CON-1 failed first; CON-2 and CON-3 were not fetched
+  assert.deepEqual(calls, ['CON-1']);                    // CON-2 and CON-3 were not fetched
   assert.equal(by['CON-1'].ticket_meta, null);
-  assert.match(by['CON-1'].ticket_meta_error, /was not found/);
+  assert.match(by['CON-1'].ticket_meta_error, /429/);
   assert.equal(by['CON-2'].ticket_meta, null);
-  assert.match(by['CON-2'].ticket_meta_error, /was not found/); // the invocation's error is reported on every requested-but-unfetched run
+  assert.match(by['CON-2'].ticket_meta_error, /429/);
   assert.equal(by['CON-3'].ticket_meta.fetchedAt, 1);    // stale cache still served
-  assert.match(by['CON-3'].ticket_meta_error, /was not found/);
-  assert.equal(cacheMod.get(cacheMod.read(root), 'CON-1'), null);
+  assert.match(by['CON-3'].ticket_meta_error, /429/);
+  // the 429 is stored with a retryUntil backoff
+  assert.equal(cacheMod.get(cacheMod.read(root), 'CON-1').retryUntil, 100 + 60_000);
+  // within the backoff the ticket is not retried
+  await fleet.buildSnapshot(root, { now: 30_000, tickets: ['CON-1'], deps: { ...deps, now: 30_000 } });
+  assert.deepEqual(calls, ['CON-1']);
 });
 
-test('enrichTickets: a 429 keeps the stale entry and reports it', async () => {
+test('enrichTickets: not-found is per-ticket: it is negatively cached and the next ticket is still fetched', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  writeRun(root, 'CON-1', [START]); writeRun(root, 'CON-2', [START]);
+  const calls = [];
+  const deps = { fetchDetail: fakeFetch({ 'CON-2': detail('CON-2') }, calls), now: 100, env: { LINEAR_API_KEY: 'k' }, config: LINEAR_CFG };
+  const snap = await fleet.buildSnapshot(root, { now: 100, tickets: ['CON-1', 'CON-2'], deps });
+  const by = Object.fromEntries(snap.runs.map((r) => [r.ticket, r]));
+  assert.deepEqual(calls, ['CON-1', 'CON-2']);
+  assert.equal(by['CON-1'].ticket_meta, null);
+  assert.match(by['CON-1'].ticket_meta_error, /was not found/);
+  assert.equal(by['CON-2'].ticket_meta.description, 'Desc CON-2');
+  assert.equal(by['CON-2'].ticket_meta_error, null);
+  const stored = cacheMod.get(cacheMod.read(root), 'CON-1');
+  assert.equal(stored.identifier, 'CON-1');
+  assert.match(stored.error, /was not found/);
+  // not refetched within the TTL; the failure still serves as the run's error
+  const again = await fleet.buildSnapshot(root, { now: 5_000, tickets: ['CON-1', 'CON-2'], deps: { ...deps, now: 5_000 } });
+  assert.deepEqual(calls, ['CON-1', 'CON-2']);
+  assert.match(again.runs.find((r) => r.ticket === 'CON-1').ticket_meta_error, /was not found/);
+  // after the TTL it is retried
+  await fleet.buildSnapshot(root, { now: 40_000, tickets: ['CON-1'], deps: { ...deps, now: 40_000 } });
+  assert.deepEqual(calls, ['CON-1', 'CON-2', 'CON-1']);
+});
+
+test('enrichTickets: a 429 on a ticket with a stale good entry keeps the detail and adds retryUntil', async () => {
   const root = mkTmpDir('concertino-fleet-');
   writeRun(root, 'CON-1', [START]);
   cacheMod.write(root, cacheMod.put(cacheMod.read(root), detail('CON-1', { description: 'old' }), 1));
@@ -281,17 +309,69 @@ test('enrichTickets: a 429 keeps the stale entry and reports it', async () => {
   const snap = await fleet.buildSnapshot(root, { now: 999_999, tickets: ['CON-1'], deps: { fetchDetail: fakeFetch({ 'CON-1': new Error('linear: HTTP 429 — rate limited') }, calls), now: 999_999, env: { LINEAR_API_KEY: 'k' }, config: LINEAR_CFG } });
   assert.equal(snap.runs[0].ticket_meta.description, 'old');
   assert.match(snap.runs[0].ticket_meta_error, /429/);
+  assert.equal(cacheMod.get(cacheMod.read(root), 'CON-1').retryUntil, 999_999 + 60_000);
 });
 
-test('enrichTickets: non-linear provider or missing key → null meta with a one-line error, no fetch', async () => {
+test('enrichTickets: an entry fetched under the canonical identifier is found by the requested id on the next poll', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  writeRun(root, 'con-174', [START]);
+  const calls = [];
+  const deps = { fetchDetail: async ({ id }) => { calls.push(id); return detail('CON-174'); }, now: 100, env: { LINEAR_API_KEY: 'k' }, config: LINEAR_CFG };
+  await fleet.buildSnapshot(root, { now: 100, tickets: ['con-174'], deps });
+  await fleet.buildSnapshot(root, { now: 5_000, tickets: ['con-174'], deps: { ...deps, now: 5_000 } });
+  assert.deepEqual(calls, ['con-174']);
+  assert.ok(cacheMod.get(cacheMod.read(root), 'CON-174'));
+});
+
+test('enrichTickets: the total Linear budget stops fetching, reports it, and the cache already holds the earlier fetches', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  writeRun(root, 'CON-1', [START]); writeRun(root, 'CON-2', [START]); writeRun(root, 'CON-3', [START]);
+  let t = 0;
+  const calls = []; const timeouts = [];
+  const deps = {
+    fetchDetail: async ({ id, timeoutMs }) => { calls.push(id); timeouts.push(timeoutMs); t += 1500; return detail(id); },
+    clock: () => t, now: 100, env: { LINEAR_API_KEY: 'k' }, config: LINEAR_CFG,
+  };
+  const snap = await fleet.buildSnapshot(root, { now: 100, tickets: ['CON-1', 'CON-2', 'CON-3'], deps });
+  const by = Object.fromEntries(snap.runs.map((r) => [r.ticket, r]));
+  assert.deepEqual(calls, ['CON-1', 'CON-2']);
+  assert.deepEqual(timeouts, [fleet.FLEET_LINEAR_BUDGET_MS, fleet.FLEET_LINEAR_BUDGET_MS - 1500]);
+  assert.match(by['CON-3'].ticket_meta_error, /budget/);
+  assert.equal(by['CON-1'].ticket_meta.description, 'Desc CON-1');
+  const onDisk = cacheMod.read(root);
+  assert.ok(cacheMod.get(onDisk, 'CON-1') && cacheMod.get(onDisk, 'CON-2'));
+  assert.equal(cacheMod.get(onDisk, 'CON-3'), null);
+});
+
+test('enrichTickets: the cache is written after every fetch, so a later failure keeps earlier ones', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  writeRun(root, 'CON-1', [START]); writeRun(root, 'CON-2', [START]);
+  const deps = { fetchDetail: fakeFetch({ 'CON-1': detail('CON-1'), 'CON-2': new Error('linear: timed out after 900ms') }, []), now: 100, env: { LINEAR_API_KEY: 'k' }, config: LINEAR_CFG };
+  const snap = await fleet.buildSnapshot(root, { now: 100, tickets: ['CON-1', 'CON-2'], deps });
+  assert.match(snap.runs.find((r) => r.ticket === 'CON-2').ticket_meta_error, /timed out/);
+  assert.ok(cacheMod.get(cacheMod.read(root), 'CON-1'));
+  assert.equal(cacheMod.get(cacheMod.read(root), 'CON-2'), null);   // a timeout is not negatively cached
+});
+
+test('isInvocationError classifies invocation-wide failures only', () => {
+  for (const m of ['linear: HTTP 429 — x', 'linear: LINEAR_API_KEY was rejected (HTTP 401)', 'linear: timed out after 5ms', 'getaddrinfo ENOTFOUND api.linear.app', 'ECONNRESET', 'getaddrinfo EAI_AGAIN', 'socket hang up', 'linear: time budget exhausted']) {
+    assert.ok(fleet.isInvocationError(m), m);
+  }
+  assert.ok(!fleet.isInvocationError('linear: ticket "X" was not found'));
+});
+
+test('enrichTickets: non-linear provider is silent (no fetch, no error, cached meta served); a missing key in a linear repo reports', async () => {
   const root = mkTmpDir('concertino-fleet-');
   writeRun(root, 'CON-1', [START]);
   const calls = [];
   let snap = await fleet.buildSnapshot(root, { now: 1, tickets: ['CON-1'], deps: { fetchDetail: fakeFetch({ 'CON-1': detail('CON-1') }, calls), now: 1, env: { LINEAR_API_KEY: 'k' }, config: { ticketProvider: { kind: 'local' } } } });
   assert.equal(snap.runs[0].ticket_meta, null);
-  assert.match(snap.runs[0].ticket_meta_error, /ticketProvider\.kind "local"/);
+  assert.equal(snap.runs[0].ticket_meta_error, null);
+  cacheMod.write(root, cacheMod.put(cacheMod.read(root), detail('CON-1'), 1));
+  snap = await fleet.buildSnapshot(root, { now: 1, tickets: ['CON-1'], deps: { fetchDetail: fakeFetch({}, calls), now: 1, env: { LINEAR_API_KEY: 'k' }, config: { ticketProvider: { kind: 'local' } } } });
+  assert.equal(snap.runs[0].ticket_meta.fetchedAt, 1);
+  assert.equal(snap.runs[0].ticket_meta_error, null);
   snap = await fleet.buildSnapshot(root, { now: 1, tickets: ['CON-1'], deps: { fetchDetail: fakeFetch({ 'CON-1': detail('CON-1') }, calls), now: 1, env: {}, config: LINEAR_CFG } });
-  assert.equal(snap.runs[0].ticket_meta, null);
   assert.match(snap.runs[0].ticket_meta_error, /LINEAR_API_KEY/);
   assert.deepEqual(calls, []);
 });
@@ -314,4 +394,33 @@ test('cmdFleet --json without --tickets adds ticket_meta: null to every run and 
   const run = JSON.parse(out).runs[0];
   assert.equal(run.ticket_meta, null);
   assert.equal(run.ticket_meta_error, null);
+});
+
+test('readConfig: --config wins; else the main checkout, then the cwd; bad JSON is {}', () => {
+  const root = mkTmpDir('concertino-fleet-'); const dir = mkTmpDir('concertino-fleet-');
+  assert.deepEqual(fleet.readConfig({}, dir, root), {});
+  fs.writeFileSync(path.join(dir, 'concertino.config.json'), '{"a":1}');
+  assert.deepEqual(fleet.readConfig({}, dir, root), { a: 1 });
+  fs.writeFileSync(path.join(root, 'concertino.config.json'), '{"a":2}');
+  assert.deepEqual(fleet.readConfig({}, dir, root), { a: 2 });
+  const explicit = path.join(dir, 'x.json'); fs.writeFileSync(explicit, '{"a":3}');
+  assert.deepEqual(fleet.readConfig({ config: explicit }, dir, root), { a: 3 });
+  fs.writeFileSync(path.join(root, 'concertino.config.json'), '{nope');
+  assert.deepEqual(fleet.readConfig({}, dir, root), {});
+});
+
+test('cmdFleet --tickets from a worktree reads concertino.config.json from the main checkout', () => {
+  const root = mkTmpDir('concertino-fleet-');
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'init'], { cwd: root });
+  const wt = path.join(root, '.concertino', 'worktrees', 'feature', 'thing', 'CON-1');
+  fs.mkdirSync(path.dirname(wt), { recursive: true });
+  execFileSync('git', ['worktree', 'add', '-q', wt], { cwd: root });
+  fs.writeFileSync(path.join(root, 'concertino.config.json'), JSON.stringify(LINEAR_CFG));
+  writeRun(root, 'CON-1', [START]);
+  const env = { ...process.env }; delete env.LINEAR_API_KEY;
+  const out = execFileSync('node', [BIN, 'fleet', '--tickets=CON-1', '--json'], { cwd: wt, encoding: 'utf8', env });
+  const run = JSON.parse(out).runs[0];
+  assert.match(run.ticket_meta_error, /LINEAR_API_KEY/);
+  assert.doesNotMatch(run.ticket_meta_error, /ticketProvider/);
 });

@@ -801,6 +801,13 @@ test('fetchTicketDetail: a null issue is "not found"; a missing key is refused b
   assert.equal(calls.length, 1);
 });
 
+test('fetchTicketDetail: forwards timeoutMs to the transport call', async () => {
+  const seen = [];
+  const transport = async (req) => { seen.push(req); return { status: 200, body: JSON.stringify({ data: { issue: ISSUE_NODE } }) }; };
+  await linear.fetchTicketDetail({ apiKey: 'k', id: 'CON-231', transport, timeoutMs: 1234 });
+  assert.equal(seen[0].timeoutMs, 1234);
+});
+
 test('ISSUE_DETAIL_QUERY asks for the same fields as the bulk QUERY node', () => {
   for (const field of ['description', 'url', 'estimate', 'priority', 'state { name type }', 'assignee { name displayName }', 'labels(first: 20)', 'comments(first: $commentLimit)']) {
     assert.ok(linear.ISSUE_DETAIL_QUERY.includes(field), field);

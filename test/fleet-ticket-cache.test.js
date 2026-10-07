@@ -58,3 +58,14 @@ test('write is atomic (temp file then rename; no partial JSON visible) and creat
   assert.deepEqual(fs.readdirSync(path.dirname(cache.cachePath(root))).filter((f) => f.endsWith('.tmp')), []);
   assert.doesNotThrow(() => JSON.parse(fs.readFileSync(cache.cachePath(root), 'utf8')));
 });
+
+test('putFailure stores a negative entry under the requested id; isBlocked honours retryUntil', () => {
+  const c = cache.putFailure({ schemaVersion: 1, tickets: {} }, 'con-9', 'linear: HTTP 429', 100, 160);
+  const e = cache.get(c, 'CON-9');
+  assert.deepEqual(e, { identifier: 'CON-9', error: 'linear: HTTP 429', fetchedAt: 100, retryUntil: 160 });
+  assert.equal(cache.isBlocked(e, 159), true);
+  assert.equal(cache.isBlocked(e, 160), false);
+  assert.equal(cache.isBlocked(null, 0), false);
+  const k = cache.put({ schemaVersion: 1, tickets: {} }, entry('CON-1'), 5, 'con-2');
+  assert.ok(cache.get(k, 'CON-2'));
+});
