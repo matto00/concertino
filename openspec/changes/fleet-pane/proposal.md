@@ -10,7 +10,7 @@ Matt drives batches of tickets from a Claude Code session (the `concertino-fleet
 ## Capabilities
 
 ### New Capabilities
-- `fleet-snapshot-cli`: a read-only `concertino fleet [--json] [--all] [--out=DIR]` command that prints every run folded by the dashboard reducer, with ticket excerpt, pending-answer state and a bounded timeline, and never writes a file or emits an event.
+- `fleet-snapshot-cli`: a read-only `concertino fleet [--json] [--all] [--out=DIR]` command that prints every run folded by the dashboard reducer, with ticket excerpt, pending-answer state and a bounded timeline, and writes nothing except the ticket-detail cache `.concertino/cache/fleet-tickets.json` when `--tickets` is given, and emits no event.
 
 ### Modified Capabilities
 <!-- None. No existing capability's requirements change. -->

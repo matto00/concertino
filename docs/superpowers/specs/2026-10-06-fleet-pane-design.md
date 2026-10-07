@@ -279,7 +279,8 @@ Each run in the snapshot gains:
 - Only `ticketProvider.kind === 'linear'` (after alias resolution) fetches;
   any other provider is silent (`ticket_meta` is the cached value or null, and
   `ticket_meta_error` is null), while a linear repo without `LINEAR_API_KEY`
-  yields `ticket_meta: null` and a one-line `ticket_meta_error` naming why. The
+  yields `ticket_meta` = the cached entry if any, else null, plus a one-line
+  `ticket_meta_error` naming why. The
   config is read from `--config`, else the main checkout, else the cwd, so a
   worktree cwd finds it. The snapshot itself never fails because of Linear.
 
@@ -307,13 +308,16 @@ Errors are classified. *Invocation errors* (HTTP 429, key rejected, timeout,
 network failure, exhausted budget) stop further fetches in that invocation and
 are reported in `ticket_meta_error` on every requested run; already-cached
 entries are served and a stale entry is kept. HTTP 429 additionally stores
-`retryUntil = now + 60 s` on the ticket so the next polls do not retry it.
+`retryUntil = now + 60 s` on the ticket so the next polls do not retry it;
+auth, network and timeout failures back off 30 s per ticket the same way.
 *Per-ticket errors* (e.g. not found) are cached negatively
 (`{ identifier, error, fetchedAt }`, skipped until the TTL expires), serve as
 `ticket_meta: null` with that error on that run, and the next requested ticket
 is still fetched. All fetches in one invocation share a 2.5 s budget
 (`FLEET_LINEAR_BUDGET_MS`; each request gets the remaining time as its
-timeout, and no fetch starts with under 200 ms left), and the cache is written
+timeout, and no fetch starts with under 200 ms left; running out of budget
+is reported as `ticket_meta_error` on every requested run of that invocation,
+not only the remaining ones), and the cache is written
 after every fetch so a later failure or timeout keeps the earlier results.
 Rate budget: three shown lanes at a 20 s TTL is ~540 requests/hour against
 Linear's ~1 500/hour API-key limit; the pane still polls every 2 s and draws
