@@ -195,9 +195,8 @@ export function renderDetail(els: PaneEls, model: PaneModel, lane: Lane): Render
       <Text bold {...(colour ? { color: colour } : {})}>{truncate(`${r.ticket}  ${r.ticket_meta?.title || r.ticket_doc.title || r.changeName || ''}  ${r.branch ?? ''}`, w)}</Text>
       <Text>{truncate(`Phase ${r.phase ?? '-'} · cycle ${r.cycle ?? '-'} · agent ${lane.liveness} · worktree ${r.worktree ?? '-'}`, w)}</Text>
       {meta && (
-        <Box key="meta" flexDirection="row">
-          <Text wrap="wrap">{metaLine(meta)}</Text>
-          {staleMs > 60_000 && <Text dimColor>{` · fetched ${fmtAgo(staleMs)}`}</Text>}
+        <Box key="meta">
+          <Text wrap="wrap">{metaLine(meta) + (staleMs > 60_000 ? ` · fetched ${fmtAgo(staleMs)}` : '')}</Text>
         </Box>
       )}
       {r.ticket_meta_error && <Box key="meta-error"><Text dimColor>{truncate(r.ticket_meta_error, w)}</Text></Box>}

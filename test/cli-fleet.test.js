@@ -312,6 +312,21 @@ test('enrichTickets: a 429 on a ticket with a stale good entry keeps the detail 
   assert.equal(cacheMod.get(cacheMod.read(root), 'CON-1').retryUntil, 999_999 + 60_000);
 });
 
+test('enrichTickets: an auth failure backs off 30 s per ticket', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  writeRun(root, 'CON-1', [START]);
+  const calls = [];
+  const fail = { 'CON-1': new Error('linear: LINEAR_API_KEY was rejected (HTTP 401)') };
+  const mk = (now) => ({ now, tickets: ['CON-1'], deps: { fetchDetail: fakeFetch(fail, calls), now, env: { LINEAR_API_KEY: 'k' }, config: LINEAR_CFG } });
+  await fleet.buildSnapshot(root, mk(100_000));
+  assert.equal(cacheMod.get(cacheMod.read(root), 'CON-1').retryUntil, 100_000 + 30_000);
+  assert.deepEqual(calls, ['CON-1']);
+  await fleet.buildSnapshot(root, mk(110_000));
+  assert.deepEqual(calls, ['CON-1']);
+  await fleet.buildSnapshot(root, mk(131_000));
+  assert.deepEqual(calls, ['CON-1', 'CON-1']);
+});
+
 test('enrichTickets: an entry fetched under the canonical identifier is found by the requested id on the next poll', async () => {
   const root = mkTmpDir('concertino-fleet-');
   writeRun(root, 'con-174', [START]);
@@ -350,7 +365,7 @@ test('enrichTickets: the cache is written after every fetch, so a later failure 
   const snap = await fleet.buildSnapshot(root, { now: 100, tickets: ['CON-1', 'CON-2'], deps });
   assert.match(snap.runs.find((r) => r.ticket === 'CON-2').ticket_meta_error, /timed out/);
   assert.ok(cacheMod.get(cacheMod.read(root), 'CON-1'));
-  assert.equal(cacheMod.get(cacheMod.read(root), 'CON-2'), null);   // a timeout is not negatively cached
+  assert.equal(cacheMod.get(cacheMod.read(root), 'CON-2').retryUntil, 100 + 30_000);   // a timeout backs off 30 s
 });
 
 test('isInvocationError classifies invocation-wide failures only', () => {
