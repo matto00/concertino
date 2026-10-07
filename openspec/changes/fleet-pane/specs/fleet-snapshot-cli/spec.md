@@ -22,3 +22,22 @@ The CLI SHALL provide `concertino fleet [--json] [--all] [--out=DIR]` that reads
 #### Scenario: No runs
 - **WHEN** `.concertino/runs` does not exist
 - **THEN** the command exits 0 with `runs: []` (`--json`) or a dim "no active runs" line
+
+### Requirement: Linear detail for requested tickets
+`concertino fleet --json --tickets=A,B` SHALL attach `ticket_meta` (state, assignee, priority, estimate, labels, description, url, newest 50 comments, `fetchedAt`) and `ticket_meta_error` to the requested runs only. Detail is fetched from Linear only (`ticketProvider.kind: linear`, `LINEAR_API_KEY`) and cached per ticket in `.concertino/cache/fleet-tickets.json` with a 20 s TTL (`CONCERTINO_FLEET_TICKET_TTL_MS` overrides). The first Linear failure in an invocation SHALL stop further fetches.
+
+#### Scenario: Fresh cache served
+- **WHEN** a requested ticket has a cache entry younger than the TTL
+- **THEN** `ticket_meta` is served from the cache and Linear is not called
+
+#### Scenario: Stale entry refetched
+- **WHEN** a requested ticket's cache entry is older than the TTL
+- **THEN** it is refetched from Linear and the cache entry is rewritten
+
+#### Scenario: First failure stops further fetches
+- **WHEN** a Linear fetch fails during an invocation
+- **THEN** `ticket_meta_error` is set for that ticket and no further Linear fetches are made in that invocation
+
+#### Scenario: Non-linear provider
+- **WHEN** the ticket provider is not linear or `LINEAR_API_KEY` is absent
+- **THEN** `ticket_meta` is null and `ticket_meta_error` says why

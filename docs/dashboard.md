@@ -676,7 +676,9 @@ any time; `/fleet off` closes it. Lanes with no activity for 30 minutes that
 this session didn't start are hidden; `/fleet all` shows them. The pane is read-only in this release —
 answer escalations and steer lanes by talking to the driver.
 
-`concertino fleet --json` is a read-only snapshot of every active run under `.concertino/runs` — the feed the Claude Code fleet pane polls — and `concertino fleet` prints one line per active run.
+The detail shows the ticket as Linear has it — state, assignee, priority, labels, description and the latest comments — refreshed at most every 20 s per visible lane (`CONCERTINO_FLEET_TICKET_TTL_MS` overrides); needs `LINEAR_API_KEY` and `ticketProvider.kind: linear`.
+
+`concertino fleet --json` is a read-only snapshot of every active run under `.concertino/runs` — the feed the Claude Code fleet pane polls — and `concertino fleet` prints one line per active run. `concertino fleet --json --tickets=A,B` additionally attaches `ticket_meta` (state, assignee, priority, estimate, labels, description, url, newest 50 comments) to the requested runs, cached per ticket in `.concertino/cache/fleet-tickets.json`.
 
 ## The cross-screen escalation banner
 

@@ -13,3 +13,12 @@
 - [x] 8. The poll — `refresh`, status line, toast, `/fleet`, `session.start`
 - [x] 9. Wire plugin validate/test into `npm test`; type-check
 - [x] 10. Manual verification and PR 2
+
+## 3. v1.1 — Linear ticket detail
+
+- [x] 1. `fetchTicketDetail` — one Linear issue in the launch-pad shape
+- [x] 2. Per-ticket detail cache for `concertino fleet`
+- [x] 3. `concertino fleet --tickets` attaches cached Linear detail
+- [x] 4. Pane requests detail for shown lanes; toast only shown lanes
+- [x] 5. Pane detail: metadata, description, latest comments
+- [x] 6. Docs, OpenSpec deltas, full suite

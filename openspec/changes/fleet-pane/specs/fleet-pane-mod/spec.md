@@ -35,3 +35,18 @@ The mod SHALL NOT write files, call tools or register gating hooks. It SHALL ope
 #### Scenario: Idle session
 - **WHEN** a snapshot has no runs
 - **THEN** no pane is opened and the next poll is 15 s later
+
+### Requirement: Detail shows Linear metadata, description and comments
+The mod SHALL pass its shown lanes to `concertino fleet --json --tickets=…` on each poll, and the detail view SHALL render a metadata line, a DESCRIPTION section (12 lines, falling back to the ticket excerpt) and a COMMENTS section (last 5 comments, 6 lines each, then `N more — <url>`). Toasts SHALL be raised only for shown lanes.
+
+#### Scenario: Metadata line
+- **WHEN** the selected lane has `ticket_meta`
+- **THEN** the detail shows its state, assignee, priority, estimate and labels on one line
+
+#### Scenario: Excerpt fallback
+- **WHEN** `ticket_meta` is null or `ticket_meta_error` is set
+- **THEN** DESCRIPTION shows the ticket excerpt and any error is shown dim
+
+#### Scenario: Last five comments with N more
+- **WHEN** the ticket has more than five comments
+- **THEN** the last five are shown, six lines each, followed by a wrapping `N more — <url>` line
