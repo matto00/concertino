@@ -4,7 +4,7 @@ import type { AgentInfo, EngineInterface, Register, SessionMessage } from 'claud
 import type { FleetState, Lane } from '../../types'
 import { renderPane } from './render'
 import { runFleetSnapshot, POLL_MS, IDLE_POLL_MS } from './snapshot'
-import { agentIdsByTicket, correlate, summarize, fingerprint, partition } from './lanes'
+import { agentIdsByTicket, correlate, summarize, fingerprint, partition, detailTicket } from './lanes'
 
 export const PANE = 'fleet'
 const EMPTY: FleetState = { lanes: [], error: null, fingerprint: '', generatedAt: 0, root: '' }
@@ -44,7 +44,11 @@ export async function refresh($: EngineInterface): Promise<number> {
   const cwd = await $.session.root()
   const previous = await read($, fleet)
   const now = await $.clock.now()
+  const all = await read($, showAll)
   const previousShown = partition(previous.lanes, now).shown.map(l => l.run.ticket)
+  // A revealed (/fleet all) detail lane may be hidden from the list but still needs its detail.
+  const revealed = all ? detailTicket(previous.lanes, await read($, selected), undefined, true, now) : null
+  if (revealed && !previousShown.includes(revealed)) previousShown.push(revealed)
   // The engine follows `$` only into same-file functions, never across an import, so the snapshot
   // runner gets a narrow `process.run` shim whose `$` is spelled at the call site.
   const got = await runFleetSnapshot({ process: { run: (argv, init) => $.process.run(argv, init) } } as EngineInterface, cwd, previousShown)

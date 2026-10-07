@@ -2,7 +2,7 @@
 // Pure drawing: a PaneModel in, a tree out. `els` is `$.ui.resolve(e)`.
 import type { Elements, RenderSurface, RenderElement } from 'claude-code'
 import type { FleetState, Lane, TimelineEvent, TicketMeta, TicketComment } from '../../types'
-import { summarize, displayStatus, partition } from './lanes'
+import { summarize, displayStatus, partition, newestComments, pickDetailLane } from './lanes'
 
 type PaneEls = Elements[RenderSurface]
 
@@ -64,12 +64,7 @@ function visibleLanes(model: PaneModel): { visible: Lane[]; hidden: number } {
 }
 
 export function pickDetail(model: PaneModel): Lane | undefined {
-  const { visible } = visibleLanes(model)
-  if (model.viewAgentId) {
-    const inView = visible.find(l => l.agentId === model.viewAgentId)
-    if (inView) return inView
-  }
-  return visible.find(l => l.run.ticket === model.selected) ?? visible[0]
+  return pickDetailLane(model.fleet.lanes, model.selected, model.viewAgentId, model.showAll, model.now)
 }
 
 export function renderPane(els: PaneEls, model: PaneModel): RenderElement {
@@ -139,14 +134,39 @@ export function metaLine(m: TicketMeta): string {
   return parts.join(' · ')
 }
 
-const nonEmpty = (s: string) => s.replace(/\r\n?/g, '\n').split('\n').filter(l => l.trim())
-
-export function descriptionLines(meta: TicketMeta | null, excerpt: string | null): { title: 'DESCRIPTION' | 'TICKET'; lines: string[] } {
-  if (meta) return { title: 'DESCRIPTION', lines: nonEmpty(meta.description).slice(0, 12) }
-  return { title: 'TICKET', lines: nonEmpty(excerpt ?? '').slice(0, 8) }
+/** Plain-text rows for a pane `width`: CRLF normalised, empty lines dropped, markdown links and leading #'s stripped, words greedily wrapped (an over-long word is hard-split). */
+export function wrapRows(text: string, width: number): string[] {
+  const w = Math.max(1, Math.floor(width))
+  const rows: string[] = []
+  for (const raw of text.replace(/\r\n?/g, '\n').split('\n')) {
+    const line = raw.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/^\s*#+\s*/, '').trim()
+    if (!line) continue
+    let cur = ''
+    for (let word of line.split(/\s+/)) {
+      while (word.length > w) {
+        if (cur) { rows.push(cur); cur = '' }
+        rows.push(word.slice(0, w))
+        word = word.slice(w)
+      }
+      if (!word) continue
+      if (!cur) cur = word
+      else if (cur.length + 1 + word.length <= w) cur += ' ' + word
+      else { rows.push(cur); cur = word }
+    }
+    if (cur) rows.push(cur)
+  }
+  return rows
 }
 
-export const commentLines = (c: TicketComment): string[] => nonEmpty(c.body).slice(0, 6)
+export function descriptionRows(meta: TicketMeta | null, excerpt: string | null, w: number): { title: 'DESCRIPTION' | 'TICKET'; rows: string[] } {
+  if (meta) {
+    const rows = wrapRows(meta.description, w).slice(0, 12)
+    return { title: 'DESCRIPTION', rows: rows.length ? rows : ['(no description)'] }
+  }
+  return { title: 'TICKET', rows: wrapRows(excerpt ?? '', w).slice(0, 8) }
+}
+
+export const commentRows = (c: TicketComment, w: number): string[] => wrapRows(c.body, w).slice(0, 6)
 
 function timelineLine(ev: TimelineEvent, w: number): string {
   const d = new Date(ev.t)
@@ -162,17 +182,24 @@ export function renderDetail(els: PaneEls, model: PaneModel, lane: Lane): Render
   const r = lane.run
   const colour = colourOf(lane)
   const pr = r.timeline.filter(ev => ev.kind === 'pr' && ev.url).at(-1)
-  const desc = descriptionLines(r.ticket_meta, r.ticket_doc.excerpt)
+  const desc = descriptionRows(r.ticket_meta, r.ticket_doc.excerpt, w)
   const meta = r.ticket_meta
-  const shown = meta ? meta.comments.slice(-5) : []
-  const more = meta ? meta.comments.length - shown.length + (meta.commentsTruncated ? 1 : 0) : 0
+  const shown = meta ? newestComments(meta.comments, 5) : []
+  const truncated = !!meta?.commentsTruncated
+  const more = meta ? meta.comments.length - shown.length : 0
+  const staleMs = meta ? model.now - meta.fetchedAt : 0
   const esc = r.escalation
   const answered = answeredLine(lane)
   return (
     <Box key="detail" flexDirection="column">
       <Text bold {...(colour ? { color: colour } : {})}>{truncate(`${r.ticket}  ${r.ticket_meta?.title || r.ticket_doc.title || r.changeName || ''}  ${r.branch ?? ''}`, w)}</Text>
       <Text>{truncate(`Phase ${r.phase ?? '-'} · cycle ${r.cycle ?? '-'} · agent ${lane.liveness} · worktree ${r.worktree ?? '-'}`, w)}</Text>
-      {meta && <Box key="meta"><Text wrap="wrap">{metaLine(meta)}</Text></Box>}
+      {meta && (
+        <Box key="meta" flexDirection="row">
+          <Text wrap="wrap">{metaLine(meta)}</Text>
+          {staleMs > 60_000 && <Text dimColor>{` · fetched ${fmtAgo(staleMs)}`}</Text>}
+        </Box>
+      )}
       {r.ticket_meta_error && <Box key="meta-error"><Text dimColor>{truncate(r.ticket_meta_error, w)}</Text></Box>}
       {esc && (
         <Box key="escalation" flexDirection="column" marginTop={1}>
@@ -188,10 +215,10 @@ export function renderDetail(els: PaneEls, model: PaneModel, lane: Lane): Render
           {answered && <Text dimColor>{truncate(answered, w)}</Text>}
         </Box>
       )}
-      {desc.lines.length > 0 && (
+      {desc.rows.length > 0 && (
         <Box key="ticket" flexDirection="column" marginTop={1}>
           <Text bold>{desc.title}</Text>
-          <Text wrap="wrap">{desc.lines.join('\n')}</Text>
+          <Text>{desc.rows.join('\n')}</Text>
         </Box>
       )}
       {r.timeline.length > 0 && (
@@ -205,14 +232,14 @@ export function renderDetail(els: PaneEls, model: PaneModel, lane: Lane): Render
       )}
       {meta && meta.comments.length > 0 && (
         <Box key="comments" flexDirection="column" marginTop={1}>
-          <Text bold>{`COMMENTS (${meta.comments.length}${meta.commentsTruncated ? '+' : ''})`}</Text>
+          <Text bold>{`COMMENTS (${meta.comments.length}${truncated ? '+' : ''})`}</Text>
           {shown.map((c, i) => (
             <Box key={`cm:${i}`} flexDirection="column">
               <Text dimColor>{truncate(`${c.author ?? 'someone'} · ${c.createdAt != null ? fmtAgo(model.now - c.createdAt) : ''}`.trim(), w)}</Text>
-              <Text wrap="wrap">{commentLines(c).join('\n')}</Text>
+              <Text>{commentRows(c, w).join('\n')}</Text>
             </Box>
           ))}
-          {more > 0 && <Text dimColor wrap="wrap">{`${more} more — ${meta.url ?? ''}`.trim()}</Text>}
+          {(more > 0 || truncated) && <Text dimColor wrap="wrap">{`${more}${truncated ? '+' : ''} more — ${meta.url ?? ''}`.trim()}</Text>}
         </Box>
       )}
     </Box>

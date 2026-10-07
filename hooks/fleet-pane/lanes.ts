@@ -1,7 +1,7 @@
 // Pure: snapshot runs + the session's agents + its transcript → ordered lanes.
 // No `$`, no I/O, so `claude plugin test` can pin every branch.
 import type { AgentInfo, SessionMessage } from 'claude-code'
-import type { Lane, Liveness, Run, RunStatus } from '../../types'
+import type { Lane, Liveness, Run, RunStatus, TicketComment } from '../../types'
 
 export const ORDER: Record<RunStatus, number> = { 'needs-you': 0, running: 1, unknown: 1, failed: 2, done: 3 }
 
@@ -81,12 +81,37 @@ export function partition(lanes: Lane[], now: number): { shown: Lane[]; hidden: 
   return { shown, hidden: lanes.length - shown.length }
 }
 
+/** The newest `n` comments, oldest first. Linear's order is not relied on: sorted by createdAt ascending, nulls last. */
+export function newestComments(comments: readonly TicketComment[], n: number): TicketComment[] {
+  const sorted = comments
+    .map((c, i) => ({ c, i }))
+    .sort((a, b) => {
+      if (a.c.createdAt == null || b.c.createdAt == null) return a.c.createdAt == null && b.c.createdAt == null ? a.i - b.i : a.c.createdAt == null ? 1 : -1
+      return (a.c.createdAt - b.c.createdAt) || (a.i - b.i)
+    })
+    .map(x => x.c)
+  return n <= 0 ? [] : sorted.slice(-n)
+}
+
+/** Which lane the detail block shows: the viewed agent's, else the selected ticket's, else the first visible. */
+export function pickDetailLane(lanes: Lane[], selected: string | null, viewAgentId: string | undefined, showAll: boolean, now: number): Lane | undefined {
+  const visible = showAll ? lanes : partition(lanes, now).shown
+  if (viewAgentId) {
+    const inView = visible.find(l => l.agentId === viewAgentId)
+    if (inView) return inView
+  }
+  return visible.find(l => l.run.ticket === selected) ?? visible[0]
+}
+
+export const detailTicket = (lanes: Lane[], selected: string | null, viewAgentId: string | undefined, showAll: boolean, now: number): string | null =>
+  pickDetailLane(lanes, selected, viewAgentId, showAll, now)?.run.ticket ?? null
+
 export function fingerprint(lanes: Lane[], error: string | null, hidden = 0): string {
   const rows = lanes.map(l => [
     l.run.ticket, l.run.status, l.run.phase, l.run.cycle, l.run.gates.length,
     l.liveness, l.run.escalation?.escalationId ?? l.run.escalation?.raisedAt ?? null,
     l.run.timeline.at(-1)?.t ?? null, l.run.pendingAnswer !== null, l.run.currentAgent,
-    l.run.ticket_meta?.fetchedAt ?? null, l.run.ticket_meta?.comments.at(-1)?.id ?? null, l.run.ticket_meta_error,
+    l.run.ticket_meta?.fetchedAt ?? null, newestComments(l.run.ticket_meta?.comments ?? [], 1)[0]?.id ?? null, l.run.ticket_meta_error,
   ])
   return JSON.stringify([error, hidden, rows])
 }

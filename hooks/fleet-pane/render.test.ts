@@ -208,7 +208,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
   const META = {
     fetchedAt: 0, id: 'u', identifier: 'CON-1', title: 'Linear title', description: 'First line.\n\nSecond line.\n' + Array.from({ length: 20 }, (_, i) => `L${i}`).join('\n'),
     url: 'https://linear.app/x/CON-1', state: { name: 'In Progress', type: 'started' }, assignee: 'Matt', priority: 2, estimate: 3, labels: ['agent-merge', 'follow-up'],
-    comments: Array.from({ length: 7 }, (_, i) => ({ id: `c${i}`, author: `A${i}`, body: `Comment ${i}\r\nline two\r\n` + 'x\n'.repeat(10), createdAt: -(7 - i) * 60_000 })),
+    // newest first, as Linear returns them: the pane must not rely on the order
+    comments: Array.from({ length: 7 }, (_, i) => ({ id: `c${i}`, author: `A${i}`, body: `Comment ${i}\r\nline two\r\n` + 'x\n'.repeat(10), createdAt: -(7 - i) * 60_000 })).reverse(),
     commentsTruncated: false,
   }
 
@@ -221,18 +222,68 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(desc).toMatch(/First line\./); expect(desc).toMatch(/L9\b/); expect(desc).not.toMatch(/L10\b/)   // 12 non-empty lines: First, Second, L0..L9
     const com = (await ui.find({ key: 'comments' }))?.text ?? ''
     expect(com).toMatch(/^COMMENTS \(7\)/)
-    expect(com).not.toMatch(/Comment 1\b/); expect(com).toMatch(/Comment 2\b/); expect(com).toMatch(/Comment 6\b/)   // last 5
+    expect(com).not.toMatch(/Comment 1\b/); expect(com).toMatch(/Comment 2\b/); expect(com).toMatch(/Comment 6\b/)   // newest 5
+    expect(com.indexOf('Comment 2')).toBeLessThan(com.indexOf('Comment 6'))   // oldest first, newest last
     expect(com).toMatch(/A6 · 1m ago/)
     expect(com).toMatch(/2 more — https:\/\/linear\.app\/x\/CON-1/)
     expect((await ui.find({ key: 'detail' }))?.text).toMatch(/CON-1  Linear title/)   // header prefers the Linear title
   })
 
   test(`detail: comment body is capped at six lines and CRLF is normalised (${surface})`, async ($, on) => {
-    seed(on, [lane({ ticket_meta: { ...META, comments: [META.comments[6]] } })])
+    seed(on, [lane({ ticket_meta: { ...META, comments: [META.comments[0]!] } })])
     const ui = await mount($)
     const com = (await ui.find({ key: 'comments' }))?.text ?? ''
     expect(com).not.toMatch(/\r/)
     expect(com.split('\n').filter(l => l === 'x').length).toBe(4)   // "Comment 6", "line two", then 4 of the 10 x-lines = 6 lines
+  })
+
+  test(`detail: a truncated comment list says N+ in the header and the more-line (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: { ...META, commentsTruncated: true } })])
+    const ui = await mount($)
+    const com = (await ui.find({ key: 'comments' }))?.text ?? ''
+    expect(com).toMatch(/^COMMENTS \(7\+\)/)
+    expect(com).toMatch(/2\+ more — https:\/\/linear\.app\/x\/CON-1/)
+  })
+
+  test(`detail: a long single-line description wraps to exactly 12 rows within bodyColumns (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: { ...META, description: Array.from({ length: 60 }, (_, i) => `w${i}`).join(' ') + ' ' + 'z'.repeat(300) } })])
+    const ui = await mount($, { ...PANE, bodyColumns: 40 })
+    const rows = ((await ui.find({ key: 'ticket' }))?.text ?? '').replace(/^(DESCRIPTION|TICKET)/, '').split('\n')
+    expect(rows.length).toBe(12)
+    expect(Math.max(...rows.map((r: string) => r.length))).toBeLessThanOrEqual(40)
+  })
+
+  test(`detail: a 300-char word hard-splits at bodyColumns (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: { ...META, description: 'y'.repeat(300) } })])
+    const ui = await mount($, { ...PANE, bodyColumns: 40 })
+    const rows = ((await ui.find({ key: 'ticket' }))?.text ?? '').replace(/^(DESCRIPTION|TICKET)/, '').split('\n')
+    expect(rows.length).toBe(8)
+    expect(rows.every((r: string) => r.length <= 40)).toBe(true)
+  })
+
+  test(`detail: markdown links and heading marks are stripped (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: { ...META, description: '## Title\nSee [HEL-520](https://x) now' } })])
+    const ui = await mount($)
+    const desc = (await ui.find({ key: 'ticket' }))?.text ?? ''
+    expect(desc).toMatch(/^DESCRIPTIONTitle\n/); expect(desc).toMatch(/See HEL-520 now/); expect(desc).not.toMatch(/##|https:\/\/x/)
+  })
+
+  test(`detail: an empty Linear description reads (no description) (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: { ...META, description: '  \n' } })])
+    const ui = await mount($)
+    expect((await ui.find({ key: 'ticket' }))?.text).toBe('DESCRIPTION(no description)')
+  })
+
+  test(`detail: meta older than a minute is marked "fetched N ago" (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: { ...META, fetchedAt: -120_000 } })])
+    const ui = await mount($)
+    expect((await ui.find({ key: 'meta' }))?.text).toMatch(/fetched 2m ago/)
+  })
+
+  test(`detail: fresh meta carries no fetched marker (${surface})`, async ($, on) => {
+    seed(on, [lane({ ticket_meta: { ...META, fetchedAt: -30_000 } })])
+    const ui = await mount($)
+    expect((await ui.find({ key: 'meta' }))?.text).not.toMatch(/fetched/)
   })
 
   test(`detail: without ticket_meta the TICKET excerpt is drawn, and ticket_meta_error dim under the header (${surface})`, async ($, on) => {

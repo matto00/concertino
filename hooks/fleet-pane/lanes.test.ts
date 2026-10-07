@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { AgentInfo, SessionMessage } from 'claude-code'
 import type { Lane, Run } from '../../types'
-import { agentIdsByTicket, correlate, summarize, fingerprint, displayStatus, isShown, partition, RECENT_MS } from './lanes'
+import { agentIdsByTicket, correlate, summarize, fingerprint, displayStatus, isShown, partition, RECENT_MS, newestComments, detailTicket } from './lanes'
 
 const run = (over: Partial<Run>): Run => ({
   ticket: 'CON-1', changeName: null, branch: null, worktree: null, phase: null, cycle: null, gates: [],
@@ -159,4 +159,26 @@ test('fingerprint: changes when ticket_meta.fetchedAt or the last comment id cha
   expect(fingerprint(a, null)).not.toBe(fingerprint(b, null))
   expect(fingerprint(a, null)).not.toBe(fingerprint(c, null))
   expect(fingerprint(a, null)).toBe(fingerprint(correlate([run({ ticket_meta: meta(1, 'c1') })], [], new Map()), null))
+})
+
+test('fingerprint: the last comment is the newest by createdAt, whatever the array order', async () => {
+  const meta = (comments: { id: string; createdAt: number | null }[]) => ({ fetchedAt: 1, id: null, identifier: 'CON-1', title: '', description: '', url: null,
+    state: { name: null, type: null }, assignee: null, priority: null, estimate: null, labels: [], commentsTruncated: false,
+    comments: comments.map(c => ({ ...c, author: null, body: '' })) })
+  const asc = correlate([run({ ticket_meta: meta([{ id: 'a', createdAt: 1 }, { id: 'b', createdAt: 2 }]) })], [], new Map())
+  const desc = correlate([run({ ticket_meta: meta([{ id: 'b', createdAt: 2 }, { id: 'a', createdAt: 1 }]) })], [], new Map())
+  expect(fingerprint(asc, null)).toBe(fingerprint(desc, null))
+})
+
+test('newestComments: oldest-first slice of the newest n, nulls last', async () => {
+  const c = (id: string, createdAt: number | null) => ({ id, author: null, body: '', createdAt })
+  expect(newestComments([c('3', 3), c('1', 1), c('2', 2), c('n', null)], 3).map(x => x.id)).toEqual(['2', '3', 'n'])
+  expect(newestComments([c('2', 2), c('1', 1)], 5).map(x => x.id)).toEqual(['1', '2'])
+})
+
+test('detailTicket: selected, else first visible; showAll reveals a hidden selection', async () => {
+  const hidden = correlate([run({ ticket: 'CON-9', timeline: [{ t: -3_600_000 * 2, kind: 'phase.enter' }] as any }), run({ ticket: 'CON-1', timeline: [{ t: 0, kind: 'phase.enter' }] as any })], [], new Map())
+  expect(detailTicket(hidden, 'CON-9', undefined, false, 0)).toBe('CON-1')
+  expect(detailTicket(hidden, 'CON-9', undefined, true, 0)).toBe('CON-9')
+  expect(detailTicket([], null, undefined, true, 0)).toBeNull()
 })

@@ -299,6 +299,17 @@ test("refresh: the second poll passes the previous poll's shown lanes as --ticke
   expect(w.argvs[1]).toEqual(['concertino', 'fleet', '--json', '--tickets=CON-1'])
 })
 
+test('refresh: with showAll on, the selected hidden lane is requested too', async ($, on) => {
+  const stale = { ...SNAP.runs[0], ticket: 'CON-9', timeline: [{ t: -3_600_000 * 2, kind: 'phase.enter' }] }
+  const w = world(on, { stdout: async () => okRun(JSON.stringify({ ...SNAP, runs: [SNAP.runs[0], stale] })) })
+  w.store.set('showAll', true)
+  w.store.set('selected', 'CON-9')
+  await start($)
+  await w.clock.advance(2000)
+  await w.clock.advance(2000)
+  expect(w.argvs[1]).toEqual(['concertino', 'fleet', '--json', '--tickets=CON-1,CON-9'])
+})
+
 test('refresh: toasts only for shown lanes', async ($, on) => {
   const esc = { question: 'Old?', options: [], raisedAt: 0, escalationId: 'old-1', role: 'skeptic' }
   const stale = { ...SNAP.runs[0], ticket: 'CON-9', status: 'needs-you', escalation: esc, timeline: [{ t: -3_600_000 * 2, kind: 'phase.enter' }] }
