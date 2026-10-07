@@ -244,9 +244,93 @@ repo of only stale runs idles at 15 s. The fingerprint includes the hidden count
 so the pane redraws when a lane crosses the 30-minute line. A selected ticket
 that is not visible falls back to the first visible lane.
 
+### Ticket detail from Linear (v1.1)
+
+The detail view shows the ticket as Linear has it — description, metadata and
+comments — not the `ticket.md` excerpt a run persisted at Planning time. The
+excerpt remains the fallback when Linear data is unavailable.
+
+**Seam.** The CLI stays the only process that talks to Linear. The mod passes
+the tickets of its currently shown lanes on every poll:
+
+```
+concertino fleet --json --tickets=CON-231,CON-228
+```
+
+Each run in the snapshot gains:
+
+```json
+"ticket_meta": {
+  "fetchedAt": 1759766400000,
+  "identifier": "CON-231", "title": "…", "description": "…", "url": "…",
+  "state": { "name": "In Progress", "type": "started" },
+  "assignee": "Matt", "priority": 2, "estimate": 3, "labels": ["…"],
+  "comments": [ { "id": "…", "author": "Matt", "body": "…", "createdAt": 1759766000000 } ],
+  "commentsTruncated": false
+} | null,
+"ticket_meta_error": "linear: HTTP 429 — …" | null
+```
+
+- Fields are exactly `normaliseTicket`'s output (`lib/ui/linear.js`) minus the
+  epic/launch-pad fields, plus `fetchedAt`. Comments are the newest 50, as the
+  bulk query already returns them.
+- Only `ticketProvider.kind === 'linear'` (after alias resolution) fetches;
+  any other provider, or no `LINEAR_API_KEY`, yields `ticket_meta: null` and a
+  one-line `ticket_meta_error` naming why. The snapshot itself never fails
+  because of Linear.
+
+**Fetching and cache.** A new single-issue query `ISSUE_DETAIL_QUERY` /
+`fetchTicketDetail({ apiKey, id, transport })` in `lib/ui/linear.js` returns
+one issue in the bulk query's shape. A new per-ticket cache
+`.concertino/cache/fleet-tickets.json` (`lib/ui/fleet-ticket-cache.js`):
+
+```json
+{ "schemaVersion": 1, "tickets": { "CON-231": { "fetchedAt": …, "...": "ticket_meta fields" } } }
+```
+
+written atomically (temp file + rename, as `cache.js` does). The TUI's
+`tickets.json` is a whole-team snapshot with one timestamp and manual refresh —
+the wrong shape for a 2 s poll — so it is neither read nor written here.
+
+Per invocation, for each requested ticket in `--tickets`: serve the cached
+entry when it is younger than `FLEET_TICKET_TTL_MS` (20 000 ms; env
+`CONCERTINO_FLEET_TICKET_TTL_MS` overrides), otherwise fetch and rewrite the
+entry. Tickets not requested are served from cache if present, never fetched.
+The first Linear failure in an invocation (including HTTP 429) stops further
+fetches in that invocation: already-cached entries are served, the failing
+ticket keeps its stale entry if any, and `ticket_meta_error` carries the
+message. Rate budget: three shown lanes at a 20 s TTL is ~540 requests/hour
+against Linear's ~1 500/hour API-key limit; the pane still polls every 2 s and
+draws whatever is cached.
+
+**Mod.** `refresh` appends `--tickets=<shown lane tickets, comma-joined>` to
+the CLI argv when the previous state had shown lanes (the first poll passes
+none). `Run` gains `ticket_meta` and `ticket_meta_error`. The fingerprint
+includes `ticket_meta.fetchedAt` and the last comment id so a new comment
+redraws the pane.
+
+**Detail layout.** Below the phase line, a metadata line:
+
+```
+In Progress · Matt · P2 · 3 pts · labels: agent-merge, follow-up · https://linear.app/…
+```
+
+(each part omitted when absent; `P0`–`P4` is Linear's priority number). The
+`TICKET` block becomes `DESCRIPTION`: the first 12 non-empty lines of the Linear
+description, wrapped; when `ticket_meta` is null it draws the `ticket.md`
+excerpt as before, and `ticket_meta_error` (if any) dim beneath the header.
+A `COMMENTS (n)` block closes the detail, after `PR`/cost: the last 5
+comments, each `author · 14m ago` then the body wrapped (first 6 lines), and
+`N more — <url>` when more exist or `commentsTruncated` is set.
+
+**Toasts** fire only for shown lanes (a hidden stale lane's old escalation is
+not news). The `/fleet all` toggle is one `update(fn)`.
+
 ## Error handling
 
 | Failure | Behaviour |
+|---|---|
+| Linear unreachable / 429 / key rejected | `ticket_meta_error` set, cached `ticket_meta` kept; the pane shows the error dim under the detail header and falls back to the excerpt when nothing is cached |
 |---|---|
 | `concertino` not on PATH, non-zero exit, unparsable JSON | `error` set, previous lanes kept, status line cleared, pane shows the error dim |
 | No `.concertino/runs` | CLI exits 0 with `runs: []`; pane shows the empty state |
@@ -275,6 +359,13 @@ that is not visible falls back to the first visible lane.
 - Manual: `claude --plugin-dir ~/Development/concertino` in a repo with live
   runs; `/fleet`; open an orchestrator from the tasks list and confirm the
   detail follows.
+- v1.1 Linear: `test/fleet-ticket-cache.test.js` (TTL serve/refetch, atomic
+  write, bad file → empty, env override) and `test/cli-fleet.test.js` additions
+  with an injected transport (`--tickets` parsing, cached-vs-fetched, first
+  failure stops further fetches, non-linear provider → `null` + error, missing
+  key → `null` + error); kit tests: argv carries `--tickets=` for shown lanes
+  only; render of the metadata line, description, comments, truncation line,
+  excerpt fallback and the dim error.
 
 ## Shipping
 
