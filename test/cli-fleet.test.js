@@ -91,6 +91,31 @@ test('buildSnapshot: timeline keeps the last 20 events and only whitelisted fiel
   assert.equal(run.timeline[19].first_error, undefined);
 });
 
+test('buildSnapshot: runs named in --tickets carry their whole timeline (capped at 300); others keep 20; timelineTruncated says which dropped events', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  const events = [START];
+  for (let i = 0; i < 30; i++) events.push({ kind: 'gate.result', gate: 'g' + i, status: 'pass', first_error: 'noise' });
+  writeRun(root, 'CON-1', events);
+  writeRun(root, 'CON-2', events);
+  writeRun(root, 'CON-3', [START]);
+  const big = [START];
+  for (let i = 0; i < 320; i++) big.push({ kind: 'gate.result', gate: 'b' + i, status: 'pass' });
+  writeRun(root, 'CON-4', big);
+  const snap = await fleet.buildSnapshot(root, { now: T0, tickets: ['con-1', 'CON-3', 'CON-4'], deps: { config: {} } });
+  const by = Object.fromEntries(snap.runs.map((r) => [r.ticket, r]));
+  assert.equal(by['CON-1'].timeline.length, 31);
+  assert.equal(by['CON-1'].timeline[0].kind, 'run.start');
+  assert.equal(by['CON-1'].timeline[30].first_error, undefined);
+  assert.equal(by['CON-1'].timelineTruncated, false);
+  assert.equal(by['CON-2'].timeline.length, 20);
+  assert.equal(by['CON-2'].timelineTruncated, true);
+  assert.equal(by['CON-3'].timelineTruncated, false);
+  assert.equal(fleet.TIMELINE_FULL_MAX, 300);
+  assert.equal(by['CON-4'].timeline.length, 300);
+  assert.equal(by['CON-4'].timeline[299].gate, 'b319');
+  assert.equal(by['CON-4'].timelineTruncated, true);
+});
+
 test('buildSnapshot: done runs are excluded by default and included with all:true', async () => {
   const root = mkTmpDir('concertino-fleet-');
   writeRun(root, 'CON-1', [START, { kind: 'run.end', status: 'delivered' }]);
@@ -232,6 +257,10 @@ test('enrichTickets: requested tickets are fetched once, cached, and served from
   assert.equal(by['CON-1'].ticket_meta.description, 'Desc CON-1');
   assert.equal(by['CON-1'].ticket_meta.fetchedAt, 10_000);
   assert.equal(by['CON-1'].ticket_meta.epicId, undefined);
+  assert.equal(by['CON-1'].ticket_meta.source, 'linear');
+  assert.equal(by['CON-1'].ticket_meta.epic, undefined);
+  assert.deepEqual(Object.keys(by['CON-1'].ticket_meta).sort(), ['assignee', 'comments', 'commentsTruncated', 'description', 'estimate', 'fetchedAt',
+    'id', 'identifier', 'labels', 'priority', 'source', 'state', 'title', 'url']);
   assert.equal(by['CON-1'].ticket_meta_error, null);
   assert.equal(by['CON-2'].ticket_meta, null);          // not requested, nothing cached
   assert.equal(by['CON-2'].ticket_meta_error, null);
@@ -375,20 +404,85 @@ test('isInvocationError classifies invocation-wide failures only', () => {
   assert.ok(!fleet.isInvocationError('linear: ticket "X" was not found'));
 });
 
-test('enrichTickets: non-linear provider is silent (no fetch, no error, cached meta served); a missing key in a linear repo reports', async () => {
+test('enrichTickets: a provider other than linear/local is silent (no fetch, no error, cached meta served); a missing key in a linear repo reports', async () => {
   const root = mkTmpDir('concertino-fleet-');
   writeRun(root, 'CON-1', [START]);
   const calls = [];
-  let snap = await fleet.buildSnapshot(root, { now: 1, tickets: ['CON-1'], deps: { fetchDetail: fakeFetch({ 'CON-1': detail('CON-1') }, calls), now: 1, env: { LINEAR_API_KEY: 'k' }, config: { ticketProvider: { kind: 'local' } } } });
+  let snap = await fleet.buildSnapshot(root, { now: 1, tickets: ['CON-1'], deps: { fetchDetail: fakeFetch({ 'CON-1': detail('CON-1') }, calls), now: 1, env: { LINEAR_API_KEY: 'k' }, config: { ticketProvider: { kind: 'github' } } } });
   assert.equal(snap.runs[0].ticket_meta, null);
   assert.equal(snap.runs[0].ticket_meta_error, null);
   cacheMod.write(root, cacheMod.put(cacheMod.read(root), detail('CON-1'), 1));
-  snap = await fleet.buildSnapshot(root, { now: 1, tickets: ['CON-1'], deps: { fetchDetail: fakeFetch({}, calls), now: 1, env: { LINEAR_API_KEY: 'k' }, config: { ticketProvider: { kind: 'local' } } } });
+  snap = await fleet.buildSnapshot(root, { now: 1, tickets: ['CON-1'], deps: { fetchDetail: fakeFetch({}, calls), now: 1, env: { LINEAR_API_KEY: 'k' }, config: { ticketProvider: { kind: 'github' } } } });
   assert.equal(snap.runs[0].ticket_meta.fetchedAt, 1);
   assert.equal(snap.runs[0].ticket_meta_error, null);
   snap = await fleet.buildSnapshot(root, { now: 1, tickets: ['CON-1'], deps: { fetchDetail: fakeFetch({ 'CON-1': detail('CON-1') }, calls), now: 1, env: {}, config: LINEAR_CFG } });
   assert.match(snap.runs[0].ticket_meta_error, /LINEAR_API_KEY/);
   assert.deepEqual(calls, []);
+});
+
+// --- fleet pane v2: local provider ticket_meta -----------------------------------------------------
+const LOCAL_CFG = { ticketProvider: { kind: 'local' } };
+function writeLocalTicket(root, id, text) {
+  fs.mkdirSync(path.join(root, 'tickets'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'tickets', id + '.md'), text);
+}
+const LONG_BODY = '## Acceptance criteria\n\n' + '- item\n'.repeat(400);
+
+test('enrichTickets (local): a requested ticket gets ticket_meta from tickets/<ID>.md, full body, epic, source local; no cache write', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  writeRun(root, 'CON-1', [START]); writeRun(root, 'CON-2', [START]);
+  writeLocalTicket(root, 'CON-1', '---\ntitle: Do the thing\nstate: started\npriority: 2\nlabels: [ui, fleet]\nepic: Fleet pane\n---\n' + LONG_BODY);
+  writeLocalTicket(root, 'CON-2', '---\ntitle: Other\nstate: backlog\n---\nbody\n');
+  const calls = [];
+  const snap = await fleet.buildSnapshot(root, { now: 42, tickets: ['CON-1'], deps: { fetchDetail: fakeFetch({}, calls), now: 42, env: {}, config: LOCAL_CFG } });
+  const by = Object.fromEntries(snap.runs.map((r) => [r.ticket, r]));
+  assert.deepEqual(by['CON-1'].ticket_meta, {
+    id: 'CON-1', identifier: 'CON-1', title: 'Do the thing', description: LONG_BODY.trim(), url: null,
+    state: { name: 'In Progress', type: 'started' }, estimate: null, assignee: null, priority: 2, labels: ['ui', 'fleet'],
+    comments: [], commentsTruncated: false, epic: 'Fleet pane', source: 'local', fetchedAt: 42,
+  });
+  assert.ok(by['CON-1'].ticket_meta.description.length > fleet.EXCERPT_MAX);
+  assert.equal(by['CON-1'].ticket_meta_error, null);
+  assert.equal(by['CON-2'].ticket_meta, null);          // only --tickets adds ticket_meta
+  assert.equal(by['CON-2'].ticket_meta_error, null);
+  assert.deepEqual(calls, []);
+  assert.equal(fs.existsSync(cacheMod.cachePath(root)), false);
+});
+
+test('enrichTickets (local): state names map to Linear-like types; unknown names give type null; no epic is null', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  const cases = { 'CON-1': 'started', 'CON-2': 'unstarted', 'CON-3': 'completed', 'CON-4': 'canceled', 'CON-5': 'backlog', 'CON-6': 'triage',
+    'CON-7': 'In Progress', 'CON-8': 'Done', 'CON-9': 'waiting-on-legal' };
+  const want = { 'CON-1': ['In Progress', 'started'], 'CON-2': ['Todo', 'unstarted'], 'CON-3': ['Done', 'completed'], 'CON-4': ['Canceled', 'canceled'],
+    'CON-5': ['Backlog', 'backlog'], 'CON-6': ['Triage', 'triage'], 'CON-7': ['In Progress', 'started'], 'CON-8': ['Done', 'completed'], 'CON-9': ['waiting-on-legal', null] };
+  for (const [id, state] of Object.entries(cases)) {
+    writeRun(root, id, [START]);
+    writeLocalTicket(root, id, '---\ntitle: T\nstate: ' + state + '\n---\nb\n');
+  }
+  // `manual` is the deprecated alias for local.
+  const snap = await fleet.buildSnapshot(root, { now: 1, tickets: Object.keys(cases), deps: { now: 1, env: {}, config: { ticketProvider: { kind: 'manual' } } } });
+  assert.equal(snap.runs.length, 9);
+  for (const run of snap.runs) {
+    assert.equal(run.ticket_meta_error, null, run.ticket);
+    assert.deepEqual(run.ticket_meta.state, { name: want[run.ticket][0], type: want[run.ticket][1] }, run.ticket);
+    assert.equal(run.ticket_meta.epic, null);
+    assert.equal(run.ticket_meta.source, 'local');
+  }
+});
+
+test('enrichTickets (local): a missing or malformed ticket file sets ticket_meta_error and the snapshot still builds', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  writeRun(root, 'CON-1', [START]); writeRun(root, 'CON-2', [START]); writeRun(root, 'CON-3', [START]);
+  writeLocalTicket(root, 'CON-2', 'no frontmatter here\n');
+  writeLocalTicket(root, 'CON-3', '---\ntitle: Fine\nstate: started\n---\nok\n');
+  const snap = await fleet.buildSnapshot(root, { now: 1, tickets: ['CON-1', 'CON-2', 'CON-3'], deps: { now: 1, env: {}, config: LOCAL_CFG } });
+  const by = Object.fromEntries(snap.runs.map((r) => [r.ticket, r]));
+  assert.equal(by['CON-1'].ticket_meta, null);
+  assert.match(by['CON-1'].ticket_meta_error, /tickets\/CON-1\.md not found/);
+  assert.equal(by['CON-2'].ticket_meta, null);
+  assert.match(by['CON-2'].ticket_meta_error, /malformed/);
+  assert.equal(by['CON-3'].ticket_meta.title, 'Fine');
+  assert.equal(by['CON-3'].ticket_meta_error, null);
 });
 
 test('enrichTickets: the TTL env override is honoured', async () => {
@@ -438,4 +532,104 @@ test('cmdFleet --tickets from a worktree reads concertino.config.json from the m
   const run = JSON.parse(out).runs[0];
   assert.match(run.ticket_meta_error, /LINEAR_API_KEY/);
   assert.doesNotMatch(run.ticket_meta_error, /ticketProvider/);
+});
+
+// --- fleet pane v2 (docs/superpowers/specs/2026-10-07-fleet-pane-v2-design.md) ---------------------
+
+test('v2: driverSession is the newest event\'s session; null when no event carries one', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  writeRun(root, 'CON-1', [{ ...START, session: 'sess-a' }, { kind: 'phase.enter', phase: 'Planning', cycle: 0 }, { kind: 'agent.spawn', agent: 'skeptic', session: 'sess-b' }, { kind: 'note' }]);
+  writeRun(root, 'CON-2', [START, { kind: 'phase.enter', phase: 'Planning', cycle: 0 }]);
+  const by = Object.fromEntries((await fleet.buildSnapshot(root, { now: T0 })).runs.map((r) => [r.ticket, r]));
+  assert.equal(by['CON-1'].driverSession, 'sess-b');
+  assert.equal(by['CON-2'].driverSession, null);
+});
+
+test('v2: snapshot project is config project.name, else the root basename', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  assert.equal((await fleet.buildSnapshot(root, { now: T0 })).project, path.basename(root));
+  assert.equal((await fleet.buildSnapshot(root, { now: T0, deps: { config: { project: { name: 'slugkit' } } } })).project, 'slugkit');
+  assert.equal((await fleet.buildSnapshot(root, { now: T0, deps: { config: { project: { name: '  ' } } } })).project, path.basename(root));
+  fs.writeFileSync(path.join(root, 'concertino.config.json'), JSON.stringify({ project: { name: 'from-cli' } }));
+  assert.equal(JSON.parse(runFleet(root, ['--json']).out).project, 'from-cli');
+});
+
+test('v2: ticket_doc finds ticket.md nested anywhere under evidence/ and strips a TICKET-ID: title prefix', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  const dir = writeRun(root, 'CON-1', [START]);
+  const nested = path.join(dir, 'evidence', 'spec', 'changes', 'thing');
+  fs.mkdirSync(nested, { recursive: true });
+  fs.writeFileSync(path.join(nested, 'ticket.md'), '# CON-1: Add the thing\n\n## Description\n\nBody.\n\n## Acceptance Criteria\n\n- it works\n');
+  const [run] = (await fleet.buildSnapshot(root, { now: T0 })).runs;
+  assert.equal(run.ticket_doc.title, 'Add the thing');
+  assert.equal(run.ticket_doc.excerpt, '## Description\n\nBody.\n\n## Acceptance Criteria\n\n- it works');
+});
+
+test('v2: escalation question falls back to the first sub-question; context is carried and bounded; gate comes from the raising verdict', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  const subs = JSON.stringify([{ question: 'Dependency or hand-rolled?', options: ['dep', 'hand'] }, { question: 'Bound?', options: ['a', 'b'] }]);
+  writeRun(root, 'CON-1', [
+    START,
+    { kind: 'verdict', role: 'skeptic', verdict: 'ESCALATION', category: 'design-judgment', gate: 'design' },
+    { kind: 'escalation.raised', role: 'skeptic', sub_questions: subs, context: 'c'.repeat(fleet.CONTEXT_MAX + 500), escalation_id: 'CON-1-1-abc' },
+  ]);
+  writeRun(root, 'CON-2', [
+    START,
+    { kind: 'escalation.raised', role: 'orchestrator', question: 'Ship it?', options: 'yes,no', context: 'short' },
+  ]);
+  const by = Object.fromEntries((await fleet.buildSnapshot(root, { now: T0 })).runs.map((r) => [r.ticket, r]));
+  const e1 = by['CON-1'].escalation;
+  assert.equal(e1.question, 'Dependency or hand-rolled?');
+  assert.equal(e1.subQuestions.length, 2);
+  assert.equal(e1.context.length, fleet.CONTEXT_MAX);
+  assert.equal(e1.contextTruncated, true);
+  assert.equal(e1.gate, 'design');
+  assert.equal(e1.escalationId, 'CON-1-1-abc');
+  const e2 = by['CON-2'].escalation;
+  assert.equal(e2.question, 'Ship it?');
+  assert.deepEqual(e2.options, ['yes', 'no']);
+  assert.equal(e2.context, 'short');
+  assert.equal(e2.contextTruncated, false);
+  assert.equal(e2.gate, null);
+});
+
+test('v2: currentAgent is null once the run has ended; escalationStale is not in the snapshot', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  writeRun(root, 'CON-1', [START, { kind: 'agent.spawn', agent: 'skeptic' }, { kind: 'run.end', status: 'delivered' }]);
+  writeRun(root, 'CON-2', [START, { kind: 'agent.spawn', agent: 'executor' }, { kind: 'run.end', status: 'abandoned-stale' }]);
+  writeRun(root, 'CON-3', [START, { kind: 'agent.spawn', agent: 'executor' }]);
+  const by = Object.fromEntries((await fleet.buildSnapshot(root, { now: T0, all: true })).runs.map((r) => [r.ticket, r]));
+  assert.equal(by['CON-1'].currentAgent, null);
+  assert.equal(by['CON-2'].currentAgent, null);
+  assert.equal(by['CON-3'].currentAgent, 'executor');
+  for (const r of Object.values(by)) assert.ok(!('escalationStale' in r), r.ticket);
+});
+
+test('v2: prUrl is the newest pr event anywhere in the log, beyond the timeline window', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  const events = [START, { kind: 'pr', url: 'https://x/pull/1' }, { kind: 'pr', url: 'https://x/pull/2' }];
+  for (let i = 0; i < 30; i++) events.push({ kind: 'note' });
+  writeRun(root, 'CON-1', events);
+  writeRun(root, 'CON-2', [START]);
+  const by = Object.fromEntries((await fleet.buildSnapshot(root, { now: T0 })).runs.map((r) => [r.ticket, r]));
+  assert.equal(by['CON-1'].prUrl, 'https://x/pull/2');
+  assert.ok(!by['CON-1'].timeline.some((e) => e.kind === 'pr'));
+  assert.equal(by['CON-2'].prUrl, null);
+});
+
+test('v2: timeline keeps escalation.answered fields, clipping long free text', async () => {
+  const root = mkTmpDir('concertino-fleet-');
+  writeRun(root, 'CON-1', [
+    START,
+    { kind: 'escalation.answered', role: 'orchestrator', answer: 'b'.repeat(500), resolution_channel: 'cli', answer_source: 'human', escalation_id: 'E1' },
+    { kind: 'escalation.answered', role: 'orchestrator', sub_answers: '["a","b"]', resolution_channel: 'dashboard', answer_source: 'human' },
+  ]);
+  const [run] = (await fleet.buildSnapshot(root, { now: T0 })).runs;
+  const [single, multi] = run.timeline.slice(1);
+  assert.equal(single.answer.length, fleet.TIMELINE_VALUE_MAX);
+  assert.equal(single.resolution_channel, 'cli');
+  assert.equal(single.answer_source, 'human');
+  assert.equal(single.escalation_id, 'E1');
+  assert.equal(multi.sub_answers, '["a","b"]');
+  assert.equal(multi.resolution_channel, 'dashboard');
 });

@@ -14,6 +14,10 @@ export type TicketMeta = {
   labels: string[]
   comments: TicketComment[]
   commentsTruncated: boolean
+  /** The ticket's epic (local provider frontmatter); absent for Linear. */
+  epic?: string | null
+  /** Which provider built it. */
+  source?: 'local' | 'linear'
 }
 
 export type RunStatus = 'needs-you' | 'failed' | 'running' | 'unknown' | 'done'
@@ -29,6 +33,10 @@ export type Escalation = {
   raisedAt: number
   escalationId: string | null
   role: string | null
+  /** Background the raiser attached, bounded by the CLI; absent on older logs. */
+  context?: string | null
+  /** The gate that raised it (`design`, `final`, ...), when recorded. */
+  gate?: string | null
 }
 
 export type TimelineEvent = {
@@ -74,19 +82,40 @@ export type Run = {
   currentAgent: string | null
   ticket_meta: TicketMeta | null
   ticket_meta_error: string | null
+  /** The newest event's `session`: the driver session's CLAUDE_CODE_SESSION_ID. Null or absent when none was recorded. */
+  driverSession?: string | null
+  /** The newest PR url anywhere in the log (older CLIs omit it; the pane falls back to the timeline). */
+  prUrl?: string | null
+  /** True when the CLI dropped older events: runs named in --tickets keep up to 300, others the newest 20. */
+  timelineTruncated?: boolean
 }
 
-export type Snapshot = { generatedAt: number; root: string; runs: Run[] }
+/** `project`: config `project.name`, else the root's basename (older CLIs omit it). */
+export type Snapshot = { generatedAt: number; root: string; project?: string; runs: Run[] }
 
-export type Liveness = 'running' | 'external' | 'stalled' | 'ended'
+/** Who drives a run: `run.driverSession` against this session's id; `none` when no session was recorded. */
+export type Driver = 'here' | 'other' | 'none'
+
+/**
+ * For a run driven here and not ended, its orchestrator agent: `stalled` = matched once and now
+ * ended or dropped from the agent list; `unseen` = no orchestrator agent matched at all.
+ */
+export type AgentFact = 'running' | 'waiting' | 'stalled' | 'unseen'
 
 export type Lane = {
   run: Run
+  driver: Driver
+  agent?: AgentFact
   agentId?: string
   /** Mirrors claude-code's AgentStatus (the contract must not import). */
   agentStatus?: 'pending' | 'running' | 'waiting' | 'idle' | 'completed' | 'failed' | 'killed'
-  liveness: Liveness
 }
+
+/** Which view the detail block shows. */
+export type DetailTab = 'overview' | 'ticket' | 'activity' | 'comments'
+
+/** The person's in-progress answer to one escalation: the picked option per question (or typed text) and a note. */
+export type AnswerDraft = { picks: (string | null)[]; note: string }
 
 export type FleetState = {
   lanes: Lane[]
@@ -94,6 +123,7 @@ export type FleetState = {
   fingerprint: string
   generatedAt: number
   root: string
+  project: string
 }
 
 declare module 'claude-code' {
@@ -106,6 +136,16 @@ declare module 'claude-code' {
       paneOffered: boolean
       /** Whether the pane draws every lane (`/fleet all`) instead of only live and recent ones. */
       showAll: boolean
+      /** Orchestrator agent id per ticket once matched, so a later drop from the agent list reads `stalled`. */
+      knownAgents: Record<string, string>
+      /** Escalation answer drafts, keyed by escalation key. */
+      drafts: Record<string, AnswerDraft>
+      /** Collapsed lane groups the person has opened (`done`, `failed`). */
+      openGroups: string[]
+      /** The detail block's tab. */
+      detailTab: DetailTab
+      /** Per ticket (upper-cased), the newest comment's createdAt the person has seen on the Comments tab. */
+      seenComments: Record<string, number>
     }
   }
 }

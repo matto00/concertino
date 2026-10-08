@@ -13,6 +13,7 @@
     "config/",
     "docs/",
     ".claude-plugin/",
+    "skills/",
     "hooks/",
     "types/",
     "README.md",

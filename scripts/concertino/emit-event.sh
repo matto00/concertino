@@ -227,6 +227,19 @@ fi
 TICKET=""
 ROLE="${CONCERTINO_ROLE:-script}"
 PROJECT="${CONCERTINO_PROJECT:-$(basename "$ROOT")}"
+# Fleet pane v2 (docs/superpowers/specs/2026-10-07-fleet-pane-v2-design.md,
+# "Driver identity"): every orchestrator and sub-agent shell carries the
+# DRIVER session's CLAUDE_CODE_SESSION_ID, so stamping it on every event (not
+# only run.start) tells the fleet pane which session drives a run, and a run
+# re-driven by another session changes owner on its next event. Structural
+# like project/ticket/role, so build_line writes it and it survives every
+# FIELDS reset below (including the over-cap `truncated` fallback); unset or
+# empty means no field at all. Clipped to 128 bytes so a pathological value
+# can never by itself push a line past MAX_LINE.
+SESSION_FIELD=""
+if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+  SESSION_FIELD=",\"session\":$(json_string "$(LC_ALL=C; printf '%s' "${CLAUDE_CODE_SESSION_ID:0:128}")")"
+fi
 FIELDS=""
 # `context` (escalation-only) is captured separately from every other field so
 # the --await path can truncate/persist it on its own if the line doesn't
@@ -299,8 +312,9 @@ for kv in ${ARGS+"${ARGS[@]}"}; do
     # sorts by t) and a stray `kind=` rewrites what the event means. Drop them.
     # No current call site does this, but the emitter is called from role prose
     # by a language model, which is exactly where a plausible-looking `t=` comes
-    # from.
-    t|kind)  ;;
+    # from. `session` is structural too (SESSION_FIELD above, from the
+    # environment only), so a caller-supplied one is dropped the same way.
+    t|kind|session)  ;;
     resolution_channel)
       # CON-188 design.md Decision 4/7: validated here so EVERY caller — the
       # generic write path used by `concertino answer` (lib/cli/answer.js),
@@ -611,12 +625,13 @@ LOG="${RUN_DIR}/events.jsonl"
 ANSWER_FILE="${RUN_DIR}/answer.json"
 
 build_line() {
-  printf '{"t":%s,"kind":%s,"project":%s,"ticket":%s,"role":%s%s}' \
+  printf '{"t":%s,"kind":%s,"project":%s,"ticket":%s,"role":%s%s%s}' \
     "$(now_ms)" \
     "$(json_string "$1")" \
     "$(json_string "$PROJECT")" \
     "$(json_string "$TICKET")" \
     "$(json_string "$ROLE")" \
+    "$SESSION_FIELD" \
     "$FIELDS"
 }
 

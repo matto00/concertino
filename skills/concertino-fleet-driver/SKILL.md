@@ -4,7 +4,7 @@ description: Drive multiple concertino orchestrator runs concurrently from direc
 license: MIT
 metadata:
   author: concertino
-  version: "1.3"
+  version: "1.4"
 ---
 
 Coordinate several concertino ticket-delivery runs at once as their **driver** —
@@ -320,6 +320,32 @@ Three further reasons, each observed:
 
 **So: you hold the queue.** Dispatch the next ticket on each merge notification.
 That is the loop, and it costs you one `Agent` call per ticket.
+
+### The dispatch call, verbatim
+
+Every orchestrator you dispatch uses exactly this shape (its prompt opens the
+way `/concertino-deliver`'s does), with `<TICKET>` the ticket id as the
+board writes it:
+
+```
+Agent({
+  subagent_type: "concertino-orchestrator",
+  name: "<TICKET>",
+  description: "<TICKET> orchestrator",
+  run_in_background: true,
+  prompt: "TICKET_ID=`<TICKET>`. AGENT_MERGE_OVERRIDE=`unset`. SPEED=`unset`. Run the full ticket-delivery workflow end-to-end: Setup → Planning → Execution/Evaluation loop → Delivery → Post-merge cleanup. Surface any `ESCALATION`, `BLOCKER`, or final PR presentation back to me.\n\n<the constraints this lane needs from you, per §12>"
+})
+```
+
+The shape matters because the Claude Code fleet pane links a lane to the
+orchestrator driving it by matching the agent's type, its `name`/`description`
+containing the ticket id, and the ``TICKET_ID=`<TICKET>` `` prompt prefix, so
+a free-form dispatch shows as "driven here, no orchestrator seen" instead of
+its live agent state. Keep `TICKET_ID=` first and backticked, and use the same
+shape (prompt beginning ``TICKET_ID=`<TICKET>`. RESUME — do not start over``)
+when you re-spawn a lane (§10, §16). Where concertino is installed as a
+plugin rather than synced into the project, the type may carry a plugin
+prefix (`<plugin>:concertino-orchestrator`); the pane accepts that too.
 
 The exception is scale, not preference: a run of small mechanical tickets pays
 60–70% orchestrator overhead (setup, planning artifacts, gate rounds, delivery,

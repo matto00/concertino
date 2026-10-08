@@ -1411,5 +1411,41 @@ check "gate.result with none of ticket.filed's fields: appended" \
   "$(grep -c gate.result "$REPO/.concertino/runs/HEL-201/events.jsonl" 2>/dev/null || true)" "1"
 rm -rf "$REPO"
 
+# --- fleet pane v2: `session` iff CLAUDE_CODE_SESSION_ID is set ---------------
+# Spec docs/superpowers/specs/2026-10-07-fleet-pane-v2-design.md, "Driver
+# identity": every event carries the driver session's id when the env var is
+# set and non-empty, and none at all otherwise.
+jfield() { node -e 'const ls=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n");const v=JSON.parse(ls[Number(process.argv[3]||ls.length-1)])[process.argv[2]];console.log(v===undefined?"<absent>":v)' "$@"; }
+REPO="$(new_repo)"
+LOG="$REPO/.concertino/runs/HEL-300/events.jsonl"
+( cd "$REPO" && CLAUDE_CODE_SESSION_ID=sess-abc-123 "$SCRIPT" phase.enter ticket=HEL-300 phase=Design ) >/dev/null 2>&1
+check "session: set -> field present" "$(jfield "$LOG" session)" "sess-abc-123"
+( cd "$REPO" && env -u CLAUDE_CODE_SESSION_ID "$SCRIPT" note ticket=HEL-300 msg=x ) >/dev/null 2>&1
+check "session: unset -> no field" "$(jfield "$LOG" session)" "<absent>"
+( cd "$REPO" && CLAUDE_CODE_SESSION_ID= "$SCRIPT" note ticket=HEL-300 msg=y ) >/dev/null 2>&1
+check "session: empty -> no field" "$(jfield "$LOG" session)" "<absent>"
+( cd "$REPO" && CLAUDE_CODE_SESSION_ID='we"ird\id' "$SCRIPT" note ticket=HEL-300 msg=z ) >/dev/null 2>&1
+check "session: json-escaped" "$(jfield "$LOG" session)" 'we"ird\id'
+( cd "$REPO" && CLAUDE_CODE_SESSION_ID=real "$SCRIPT" note ticket=HEL-300 session=spoofed ) >/dev/null 2>&1
+check "session: caller session= dropped, env wins" "$(jfield "$LOG" session)" "real"
+check "session: no duplicate key" "$(tail -1 "$LOG" | grep -o '"session"' | wc -l | tr -d ' ')" "1"
+( cd "$REPO" && CLAUDE_CODE_SESSION_ID=sess-big "$SCRIPT" note ticket=HEL-300 msg="$(head -c 9000 /dev/zero | tr '\0' 'x')" ) >/dev/null 2>&1
+check "session: kept on the over-cap truncated line" "$(jfield "$LOG" session)" "sess-big"
+check "session: truncated line still truncated" "$(jfield "$LOG" truncated)" "true"
+( cd "$REPO" && CLAUDE_CODE_SESSION_ID="$(head -c 5000 /dev/zero | tr '\0' 's')" "$SCRIPT" note ticket=HEL-300 msg=w ) >/dev/null 2>&1
+check "session: pathological id clipped to 128 bytes" "$(jfield "$LOG" session | tr -d '\n' | wc -c | tr -d ' ')" "128"
+LASTLEN="$(tail -1 "$LOG" | wc -c | tr -d ' ')"
+check "session: clipped line under the cap" "$([ "$LASTLEN" -le 4000 ] && echo yes || echo no)" "yes"
+rm -rf "$REPO"
+
+# escalation --raise-only goes through write_escalation_raised(), not
+# write_line(): it must carry the session too.
+REPO="$(new_repo)"
+( cd "$REPO" && CLAUDE_CODE_SESSION_ID=sess-esc "$SCRIPT" escalation --raise-only ticket=HEL-301 question=q options=a,b ) >/dev/null 2>&1
+check "session: escalation.raised carries it" \
+  "$(node -e 'const ls=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse);const e=ls.find(x=>x.kind==="escalation.raised");console.log(e?e.session:"<none>")' "$REPO/.concertino/runs/HEL-301/events.jsonl")" \
+  "sess-esc"
+rm -rf "$REPO"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

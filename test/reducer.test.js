@@ -739,3 +739,34 @@ test('a mixed log of categorized and uncategorized verdicts both render, neither
 // verdict event is appended" scenario) — so there is nothing for the
 // reducer to mutate. This test protects the read side only; the emitter's
 // own refusal is proven in test/scripts/emit-event.test.sh.
+
+// Fleet pane v2 (docs/superpowers/specs/2026-10-07-fleet-pane-v2-design.md, "Driver identity").
+test('driverSession is the newest event\'s session, null when none carries one', () => {
+  const [run] = reduce(log('HEL-1', [
+    { t: 1, kind: 'run.start', ticket: 'HEL-1', role: 'script', session: 's1' },
+    { t: 3, kind: 'note', ticket: 'HEL-1', role: 'script' },
+    { t: 2, kind: 'phase.enter', ticket: 'HEL-1', role: 'orchestrator', phase: 'Planning', session: 's2' },
+  ]), [], NOW);
+  assert.equal(run.driverSession, 's2');
+  const [bare] = reduce(log('HEL-2', [{ t: 1, kind: 'run.start', ticket: 'HEL-2', role: 'script' }]), [], NOW);
+  assert.equal(bare.driverSession, null);
+});
+
+test('escalation.gate: the raise\'s own gate, else the same role\'s ESCALATION verdict gate, else null', () => {
+  const [fromVerdict] = reduce(log('HEL-1', [
+    { t: 1, kind: 'verdict', ticket: 'HEL-1', role: 'skeptic', verdict: 'ESCALATION', gate: 'final' },
+    { t: 2, kind: 'escalation.raised', ticket: 'HEL-1', role: 'skeptic', question: 'q' },
+  ]), [], NOW);
+  assert.equal(fromVerdict.escalation.gate, 'final');
+  assert.equal(fromVerdict.lastVerdict.gate, 'final');
+  const [own] = reduce(log('HEL-2', [
+    { t: 1, kind: 'verdict', ticket: 'HEL-2', role: 'skeptic', verdict: 'ESCALATION', gate: 'final' },
+    { t: 2, kind: 'escalation.raised', ticket: 'HEL-2', role: 'skeptic', question: 'q', gate: 'design' },
+  ]), [], NOW);
+  assert.equal(own.escalation.gate, 'design');
+  const [otherRole] = reduce(log('HEL-3', [
+    { t: 1, kind: 'verdict', ticket: 'HEL-3', role: 'skeptic', verdict: 'ESCALATION', gate: 'design' },
+    { t: 2, kind: 'escalation.raised', ticket: 'HEL-3', role: 'orchestrator', question: 'q' },
+  ]), [], NOW);
+  assert.equal(otherRole.escalation.gate, null);
+});
