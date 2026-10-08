@@ -1,24 +1,44 @@
 import { test, expect } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 import {
-  familyRate, fmtTokens, fmtUsd, laneShare, laneUsd, limitColour, recordTurn, resetLabel, ticketForAgent, tokensOf, weightOf, windowLabel,
+  fmtTokens, fmtUsd, laneShare, laneUsd, limitColour, priceOf, recordTurn, resetLabel, ticketForAgent, tokensOf, weightOf, windowLabel,
 } from './usage'
 
 const u = (input: number, output: number, cacheWrite = 0, cacheRead = 0) =>
   ({ input_tokens: input, output_tokens: output, cache_creation_input_tokens: cacheWrite, cache_read_input_tokens: cacheRead })
 
-test('familyRate: opus 5, sonnet 3, haiku 1, anything else 3; case-insensitive', async () => {
-  expect(familyRate('claude-opus-5-5')).toBe(5)
-  expect(familyRate('claude-sonnet-4-5')).toBe(3)
-  expect(familyRate('Claude-HAIKU-4')).toBe(1)
-  expect(familyRate('gpt-x')).toBe(3)
-  expect(familyRate('')).toBe(3)
+test('priceOf: the most specific model wins; case-insensitive; suffixes ignored', async () => {
+  expect(priceOf('claude-fable-5-1')).toEqual({ input: 10, output: 50, cacheRead: 0.25 })
+  expect(priceOf('claude-fable-5')).toEqual({ input: 10, output: 50, cacheRead: 1 })
+  expect(priceOf('claude-opus-5-5[1m]')).toEqual({ input: 4, output: 20, cacheRead: 0.2 })
+  expect(priceOf('claude-opus-4-8')).toEqual({ input: 5, output: 25, cacheRead: 0.5 })
+  expect(priceOf('claude-sonnet-5-5')).toEqual({ input: 2, output: 10, cacheRead: 0.1 })
+  expect(priceOf('claude-sonnet-5')).toEqual({ input: 2, output: 10, cacheRead: 0.2 })
+  expect(priceOf('Claude-SONNET-4-6')).toEqual({ input: 3, output: 15, cacheRead: 0.3 })
+  expect(priceOf('claude-haiku-5-5')).toEqual({ input: 0.1, output: 0.5, cacheRead: 0.01 })
+  expect(priceOf('claude-haiku-4-5')).toEqual({ input: 1, output: 5, cacheRead: 0.1 })
 })
 
-test('weightOf: input + 5x output + 1.25x cache writes + 0.1x cache reads, times the family rate', async () => {
-  expect(weightOf(u(100, 10, 40, 1000), 'claude-haiku')).toBe(100 + 50 + 50 + 100)
-  expect(weightOf(u(100, 10, 40, 1000), 'claude-opus')).toBe(5 * 300)
-  expect(weightOf(u(0, 0), 'claude-sonnet')).toBe(0)
+test('priceOf: an unknown model prices as the current Sonnet', async () => {
+  expect(priceOf('gpt-x')).toEqual(priceOf('claude-sonnet-5-5'))
+  expect(priceOf('')).toEqual(priceOf('claude-sonnet-5-5'))
+})
+
+test('priceOf: Haiku 5.5 switches to long-context prices only above 100K prompt tokens', async () => {
+  expect(priceOf('claude-haiku-5-5', 100_000).input).toBe(0.1)
+  expect(priceOf('claude-haiku-5-5', 100_001)).toEqual({ input: 0.5, output: 2.5, cacheRead: 0.05 })
+  expect(priceOf('claude-haiku-4-5', 500_000).input).toBe(1)
+})
+
+test('weightOf: list-price dollars, cache writes at the 1-hour 2x rate', async () => {
+  // 1M of each kind on Sonnet 5.5: $2 input + $10 output + $4 write + $0.10 read.
+  expect(Math.abs(weightOf(u(1e6, 1e6, 1e6, 1e6), 'claude-sonnet-5-5') - 16.1)).toBeLessThan(1e-9)
+  // Fable 5.1's reads are a quarter of Fable 5's.
+  expect(Math.abs(weightOf(u(0, 0, 0, 1e6), 'claude-fable-5-1') - 0.25)).toBeLessThan(1e-9)
+  expect(Math.abs(weightOf(u(0, 0, 0, 1e6), 'claude-fable-5') - 1)).toBeLessThan(1e-9)
+  // The prompt size that picks Haiku 5.5's tier counts cached tokens too.
+  expect(Math.abs(weightOf(u(1000, 0, 0, 200_000), 'claude-haiku-5-5') - ((1000 * 0.5 + 200_000 * 0.05) / 1e6))).toBeLessThan(1e-12)
+  expect(weightOf(u(0, 0), 'claude-sonnet-5-5')).toBe(0)
 })
 
 test('tokensOf: every kind of token, unweighted', async () => {

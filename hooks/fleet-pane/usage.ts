@@ -7,17 +7,50 @@ import { isOrchestratorType, ticketWord } from './lanes'
 
 type Tokens = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
 
-/**
- * Relative input price by model family. Only ratios matter: a lane's dollars are its weighted
- * share of the session's own cost, so no absolute price table can go stale.
- */
-const FAMILY: [RegExp, number][] = [[/opus/i, 5], [/sonnet/i, 3], [/haiku/i, 1]]
-export const familyRate = (model: string) => FAMILY.find(([re]) => re.test(model))?.[1] ?? 3
+/** List prices in dollars per million tokens: input, output, and cache read. */
+export type Price = { input: number; output: number; cacheRead: number }
 
-/** A turn's weight in input-token units at its model's rate: output 5x, cache writes 1.25x, cache reads 0.1x. */
+/**
+ * Per-model list prices (platform.claude.com/docs/en/about-claude/pricing, read 2026-10-08), most
+ * specific pattern first. Cache reads are not one multiplier: 0.025x on Fable 5.1, 0.05x on Opus 5.5
+ * and Sonnet 5.5, 0.1x elsewhere. Only ratios matter, since a lane's dollars are its weighted share
+ * of the session's own cost, but those ratios moved enough between models to need a table.
+ */
+const PRICES: [RegExp, Price][] = [
+  [/(fable|mythos)-5-1/i, { input: 10, output: 50, cacheRead: 0.25 }],
+  [/fable|mythos/i, { input: 10, output: 50, cacheRead: 1 }],
+  [/opus-5-5/i, { input: 4, output: 20, cacheRead: 0.2 }],
+  [/opus/i, { input: 5, output: 25, cacheRead: 0.5 }],
+  [/sonnet-5-5/i, { input: 2, output: 10, cacheRead: 0.1 }],
+  [/sonnet-5/i, { input: 2, output: 10, cacheRead: 0.2 }],
+  [/sonnet/i, { input: 3, output: 15, cacheRead: 0.3 }],
+  [/haiku-5-5/i, { input: 0.1, output: 0.5, cacheRead: 0.01 }],
+  [/haiku/i, { input: 1, output: 5, cacheRead: 0.1 }],
+]
+const FALLBACK: Price = { input: 2, output: 10, cacheRead: 0.1 }
+
+/** Haiku 5.5 bills a prompt over this many tokens at its long-context prices. */
+const HAIKU_LONG_PROMPT = 100_000
+const HAIKU_LONG: Price = { input: 0.5, output: 2.5, cacheRead: 0.05 }
+
+/** A model's prices for a prompt of `promptTokens`; an unknown model prices as the current Sonnet. */
+export function priceOf(model: string, promptTokens = 0): Price {
+  const price = PRICES.find(([re]) => re.test(model))?.[1] ?? FALLBACK
+  return /haiku-5-5/i.test(model) && promptTokens > HAIKU_LONG_PROMPT ? HAIKU_LONG : price
+}
+
+/**
+ * Cache writes at the 1-hour rate, 2x input: the TTL Claude Code requests. A turn's usage does
+ * not split writes by TTL, so a 5-minute write (1.25x) is over-weighted rather than guessed at.
+ */
+const CACHE_WRITE = 2
+
+/** A turn's list-price dollars. Fast mode's premium is not visible in a turn's usage, so it is not priced. */
 export function weightOf(u: Tokens, model: string): number {
-  const units = u.input_tokens + 5 * u.output_tokens + 1.25 * u.cache_creation_input_tokens + 0.1 * u.cache_read_input_tokens
-  return units * familyRate(model)
+  const p = priceOf(model, u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens)
+  const dollars = u.input_tokens * p.input + u.output_tokens * p.output
+    + u.cache_creation_input_tokens * p.input * CACHE_WRITE + u.cache_read_input_tokens * p.cacheRead
+  return dollars / 1_000_000
 }
 
 export const tokensOf = (u: Tokens) => u.input_tokens + u.output_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens

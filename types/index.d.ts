@@ -111,7 +111,7 @@ export type Lane = {
   agentStatus?: 'pending' | 'running' | 'waiting' | 'idle' | 'completed' | 'failed' | 'killed'
 }
 
-/** One lane's metered usage: tokens and price-weighted units of every turn its orchestrator tree ran. */
+/** One lane's metered usage: tokens and list-price dollars (the share weight) of every turn its orchestrator tree ran. */
 export type LaneUsage = { tokens: number; weight: number; turns: number }
 
 /** Everything metered since the pane started, and the session cost at that moment (null until read). */

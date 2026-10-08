@@ -371,7 +371,8 @@ test('refresh: a ticket not yet fetched is not baselined', async ($, on) => {
 // --- usage: turns attributed to lanes, the account read on each poll --------------------------------
 
 const TURN_USAGE = { model: 'claude-sonnet-4-5', input_tokens: 100, output_tokens: 10, cache_creation_input_tokens: 40, cache_read_input_tokens: 1000 }
-const TURN_WEIGHT = 3 * (100 + 50 + 50 + 100)
+// Sonnet 4.5 list dollars: $3 input, $15 output, $6 1-hour cache write, $0.30 cache read per MTok.
+const TURN_WEIGHT = (100 * 3 + 10 * 15 + 40 * 6 + 1000 * 0.3) / 1e6
 const TURN_TOKENS = 1150
 const turn = (over: object = {}) => ({ answer: '', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer', usage: TURN_USAGE, ...over })
 const sub = (id: string, parentId?: string): AgentInfo =>
@@ -401,7 +402,7 @@ test('turn.complete: the result\'s usage is preferred; a turn with none records 
   // Opus usage in the chain's answer beats the sonnet usage on the event.
   const w = world(on, { turnResult: { text: '', usage: { ...TURN_USAGE, model: 'claude-opus-5' } } })
   await ($ as any).turn.complete(turn())
-  expect((w.store.get('usageMeter') as any).weight).toBe(5 * 300)
+  expect((w.store.get('usageMeter') as any).weight).toBe((100 * 5 + 10 * 25 + 40 * 10 + 1000 * 0.5) / 1e6)
 })
 
 test('turn.complete: no usage on the event or the result writes no meter', async ($, on) => {
