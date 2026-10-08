@@ -125,7 +125,9 @@ export const register: Register = on => {
       return { text: nowAll ? 'Fleet pane: showing all lanes.' : 'Fleet pane: showing live lanes only.' }
     }
     const placed = await openPane($, true)
-    return { text: placed.isPlaced ? 'Fleet pane opened.' : `Fleet pane not shown: ${placed.reason}` }
+    const surfaces = await $.session.surfaces().catch(() => [] as readonly string[])
+    const attached = `surfaces: ${surfaces.length ? surfaces.join(', ') : 'none'}`
+    return { text: `${placed.isPlaced ? 'Fleet pane opened' : `Fleet pane not shown: ${placed.reason}`} · ${attached}` }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

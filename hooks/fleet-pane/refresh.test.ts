@@ -60,7 +60,7 @@ test('runFleetSnapshot: a rejected process call is an error, not a throw', async
 // The kit's `$` has no `process`/`state`/`ui.status` nouns, so the plugin's own `$` calls are answered
 // by hooks registered beneath it, and `session.start` + the mock clock fire `refresh` for real.
 type On = (name: any, fn: (...a: any[]) => any) => void
-type World = { open?: object; stdout?: () => Promise<any>; agents?: any; messages?: any }
+type World = { open?: object; stdout?: () => Promise<any>; agents?: any; messages?: any; surfaces?: readonly string[] }
 
 const okRun = (stdout: string) =>
   ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
@@ -91,6 +91,7 @@ function world(on: On, w: World = {}) {
   on('session.messages', async () => ({ value: w.messages ?? [] }))
   on('ui.status', async (_$: unknown, e: { text?: string }) => { statuses.push(e.text); return { value: undefined } })
   on('ui.toast', async (_$: unknown, e: { text: string }) => { toasts.push(e.text); return { value: undefined } })
+  on('session.surfaces', async () => ({ value: w.surfaces ?? ['terminal'] }))
   on('ui.panes', async () => ({ value: [] }))
   on('ui.open', async (_$: unknown, e: { id: string }) => { opened.push(e.id); return { value: w.open ?? { isPlaced: true } } })
   on('ui.close', async (_$: unknown, e: { id: string }) => { closed.push(e.id); return { value: undefined } })
@@ -210,6 +211,7 @@ test('/fleet says why the pane could not be placed', async ($, on) => {
   await start($)
   const r: any = await $.command.run({ command: 'fleet', args: '' })
   expect(r.text).toMatch(/not shown: the terminal is 90 columns wide/)
+  expect(r.text).toMatch(/surfaces: terminal/)
 })
 
 test('refresh: an escalation without an escalationId toasts once, keyed by ticket and raisedAt', async ($, on) => {
@@ -224,10 +226,11 @@ test('refresh: an escalation without an escalationId toasts once, keyed by ticke
 })
 
 test('/fleet opens the pane; /fleet off closes it', async ($, on) => {
-  const w = world(on)
+  const w = world(on, { surfaces: ['terminal', 'desktop'] })
   await start($)
   w.opened.length = 0
-  await $.command.run({ command: 'fleet', args: '' })
+  const r: any = await $.command.run({ command: 'fleet', args: '' })
+  expect(r.text).toMatch(/opened · surfaces: terminal, desktop/)
   expect(w.opened).toEqual([PANE])
   await $.command.run({ command: 'fleet', args: 'off' })
   expect(w.closed).toEqual([PANE])
