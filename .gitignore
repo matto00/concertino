@@ -9,6 +9,9 @@ concertino.config.json
 # endpoints included).
 scripts/concertino/.concertino.env
 scripts/concertino/speeds.json
+# Render-time digest of the scripts above, written by `concertino sync`;
+# setup-worktree.sh reads it from the main checkout, never a worktree.
+scripts/concertino/.instrumentation-manifest.json
 
 # Rendered harness output when this repo is used as a consuming project.
 # Scoped to the concertino-* files each adapter writes, so the openspec
