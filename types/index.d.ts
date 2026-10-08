@@ -111,6 +111,15 @@ export type Lane = {
   agentStatus?: 'pending' | 'running' | 'waiting' | 'idle' | 'completed' | 'failed' | 'killed'
 }
 
+/** One lane's metered usage: tokens and price-weighted units of every turn its orchestrator tree ran. */
+export type LaneUsage = { tokens: number; weight: number; turns: number }
+
+/** Everything metered since the pane started, and the session cost at that moment (null until read). */
+export type UsageMeter = { weight: number; usdAtStart: number | null }
+
+/** The account's figures from $.session.usage(): rate-limit windows (empty off a subscription) and API-equivalent cost. */
+export type AccountUsage = { rateLimits: { kind: string; percentUsed: number; resetsAt?: string }[]; usd: number | null }
+
 /** Which view the detail block shows. */
 export type DetailTab = 'overview' | 'ticket' | 'activity' | 'comments'
 
@@ -146,6 +155,10 @@ declare module 'claude-code' {
       detailTab: DetailTab
       /** Per ticket (upper-cased), the newest comment's createdAt the person has seen on the Comments tab. */
       seenComments: Record<string, number>
+      /** Per ticket (upper-cased), the usage metered for its orchestrator and everything it spawned. */
+      laneUsage: Record<string, LaneUsage>
+      usageMeter: UsageMeter
+      account: AccountUsage | null
     }
   }
 }

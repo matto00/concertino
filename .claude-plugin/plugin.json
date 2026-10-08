@@ -1,7 +1,7 @@
 {
   "name": "concertino",
   "description": "A harness-agnostic, evidence-gated agent orchestra for autonomous ticket delivery (orchestrator + executor + evaluator + cold skeptic).",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "types": "./types/index.d.ts",
   "author": { "name": "Matt" },
   "homepage": "https://github.com/matto00/concertino",

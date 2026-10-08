@@ -3,12 +3,14 @@
 // Layout: docs/superpowers/specs/2026-10-07-fleet-pane-v2-design.md §Layout. Width is handled by
 // flex (titles shrink and truncate first) plus two breakpoints, never by padded fixed columns.
 import type { Elements, RenderSurface, RenderElement, ThemeKey } from 'claude-code'
+import type { AccountUsage, LaneUsage, UsageMeter } from '../../types'
 import type { AnswerDraft, DetailTab, FleetState, Lane, Run, TicketComment, TimelineEvent, TicketMeta } from '../../types'
 import {
   answeredCount, draftFor, escalationKey, escalationTitle, groupLanes, laneState, newestComments,
   pickDetailLane, questionsOf, stateColour, summaryParts, type GroupKey, type LaneGroup, type LaneState,
 } from './lanes'
 import { phaseSpans, priorityName, splitTicketBody } from './ticket'
+import { fmtTokens, fmtUsd, laneShare, laneUsd, limitColour, resetLabel, windowLabel } from './usage'
 
 type PaneEls = Elements[RenderSurface]
 
@@ -20,6 +22,9 @@ export type PaneModel = {
   drafts: Record<string, AnswerDraft>
   detailTab: DetailTab
   seenComments: Record<string, number>
+  laneUsage: Record<string, LaneUsage>
+  usageMeter: UsageMeter
+  account: AccountUsage | null
   viewAgentId?: string
   bodyColumns: number
   placement: 'dock' | 'inline'
@@ -132,12 +137,31 @@ export function renderPane(els: PaneEls, model: PaneModel): RenderElement {
         <Box flexGrow={1} />
         {parts.map((p, i) => <Text key={`c:${i}`} color={p.color}>{p.label}</Text>)}
       </Box>
+      {usageLine(els, model)}
       {fleet.error && <Box key="error" marginTop={1}><Text color="error" wrap="wrap">{fleet.error}</Text></Box>}
       {fleet.lanes.length === 0 && !fleet.error && (
         <Box key="empty" marginTop={1}><Text dimColor wrap="wrap">{`No concertino runs under ${fleet.root}/.concertino/runs`}</Text></Box>
       )}
       {groups.map((g, i) => groupBlock(els, model, g, starts[i]!, detail))}
       {model.placement === 'dock' && detail && renderDetail(els, model, detail)}
+    </Box>
+  )
+}
+
+/** The account under the header: each rate-limit window's use and reset, then the session's API-equivalent cost. */
+function usageLine(els: PaneEls, model: PaneModel): RenderElement | null {
+  const { Box, Text } = els
+  const acct = model.account
+  if (!acct || (!acct.rateLimits.length && acct.usd == null)) return null
+  const wide = model.bodyColumns >= WIDE
+  return (
+    <Box key="usage" flexDirection="row" flexWrap="wrap" columnGap={2}>
+      {acct.rateLimits.map((r, i) => (
+        <Text key={`rl:${i}`} color={limitColour(r.percentUsed)}>
+          {`${windowLabel(r.kind)} ${Math.round(r.percentUsed)}%${wide && r.resetsAt ? ` · ${resetLabel(r.resetsAt, model.now)}` : ''}`}
+        </Text>
+      ))}
+      {acct.usd != null && <Text dimColor>{`${fmtUsd(acct.usd)} API-equivalent`}</Text>}
     </Box>
   )
 }
@@ -155,12 +179,29 @@ export function driverWords(lane: Lane): string {
   return lane.driver === 'other' ? 'driven by another session' : 'no driver session recorded'
 }
 
-export function metaParts(lane: Lane, now: number): string[] {
+/**
+ * What a lane cost, in words: the run's own ledger when it has one (TUI runs record run.cost),
+ * else what this pane metered for its orchestrator tree: tokens, share and API-equivalent dollars.
+ */
+export function costWords(lane: Lane, model: Pick<PaneModel, 'laneUsage' | 'usageMeter' | 'account'>): string | null {
+  if (lane.run.costUsd != null) return fmtUsd(lane.run.costUsd)
+  const used = model.laneUsage[lane.run.ticket.toUpperCase()]
+  if (!used || !used.tokens) return null
+  const usd = laneUsd(used, model.usageMeter, model.account)
+  const share = laneShare(used, model.usageMeter)
+  return [
+    `${fmtTokens(used.tokens)} tokens`,
+    share != null ? `${Math.round(share * 100)}% of session` : null,
+    usd != null ? `≈${fmtUsd(usd)}` : null,
+  ].filter(Boolean).join(' · ')
+}
+
+export function metaParts(lane: Lane, now: number, model?: Pick<PaneModel, 'laneUsage' | 'usageMeter' | 'account'>): string[] {
   const r = lane.run
   return [
     r.branch,
     driverWords(lane),
-    r.costUsd != null ? `$${r.costUsd.toFixed(2)}` : null,
+    model ? costWords(lane, model) : (r.costUsd != null ? fmtUsd(r.costUsd) : null),
     fmtElapsed(elapsedOf(r, now)),
   ].filter((p): p is string => !!p && p !== '-')
 }
@@ -626,7 +667,7 @@ export function renderDetail(els: PaneEls, model: PaneModel, lane: Lane): Render
         <Box flexGrow={1} flexShrink={1} minWidth={0}><Text bold wrap="truncate-end">{titleOf(r)}</Text></Box>
         {pr && <Link href={pr} label={prLabel(pr)} />}
       </Box>
-      <Text dimColor wrap="wrap">{metaParts(lane, model.now).join(' · ')}</Text>
+      <Text dimColor wrap="wrap">{metaParts(lane, model.now, model).join(' · ')}</Text>
       {tabBar(els, model, lane)}
       {body}
     </Box>

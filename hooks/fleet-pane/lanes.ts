@@ -35,7 +35,7 @@ export function agentIdsByTicket(messages: readonly SessionMessage[]): Map<strin
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 /** The ticket as a whole word: `SBX-3` matches "SBX-3 orchestrator", never "SBX-30" or "SBX-3-2". */
-const ticketWord = (ticket: string) => new RegExp(`(?:^|[^A-Za-z0-9_-])${escapeRe(ticket)}(?![A-Za-z0-9_]|-[A-Za-z0-9])`, 'i')
+export const ticketWord = (ticket: string) => new RegExp(`(?:^|[^A-Za-z0-9_-])${escapeRe(ticket)}(?![A-Za-z0-9_]|-[A-Za-z0-9])`, 'i')
 
 /**
  * Orchestrator agent id per ticket (keys upper-cased): first an orchestrator in the agent list whose

@@ -1,7 +1,8 @@
 // hooks/fleet-pane/register.tsx
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register, SessionMessage, UiOpenResult } from 'claude-code'
-import type { AnswerDraft, DetailTab, FleetState, Lane } from '../../types'
+import type { AccountUsage, AnswerDraft, DetailTab, FleetState, Lane, LaneUsage, UsageMeter } from '../../types'
+import { recordTurn, ticketForAgent, tokensOf, weightOf } from './usage'
 import { renderPane } from './render'
 import { runFleetSnapshot, POLL_MS, IDLE_POLL_MS } from './snapshot'
 import {
@@ -21,6 +22,9 @@ export const knownAgents = atom({ plugin: 'concertino', key: 'knownAgents' } as 
 export const drafts = atom({ plugin: 'concertino', key: 'drafts' } as const, {} as Record<string, AnswerDraft>)
 export const openGroups = atom({ plugin: 'concertino', key: 'openGroups' } as const, [] as string[])
 export const detailTab = atom({ plugin: 'concertino', key: 'detailTab' } as const, 'overview' as DetailTab)
+export const laneUsage = atom({ plugin: 'concertino', key: 'laneUsage' } as const, {} as Record<string, LaneUsage>)
+export const usageMeter = atom({ plugin: 'concertino', key: 'usageMeter' } as const, { weight: 0, usdAtStart: null } as UsageMeter)
+export const account = atom({ plugin: 'concertino', key: 'account' } as const, null as AccountUsage | null)
 export const seenComments = atom({ plugin: 'concertino', key: 'seenComments' } as const, {} as Record<string, number>)
 
 /** Marks a lane's comments seen up to its newest one. */
@@ -47,6 +51,22 @@ async function listAgents($: EngineInterface): Promise<readonly AgentInfo[]> {
   } catch {
     return []
   }
+}
+
+/**
+ * The account's rate-limit windows and the session's API-equivalent cost. The meter's starting
+ * cost is taken at the first reading, so lane shares divide only what accrued while metering.
+ */
+async function readAccount($: EngineInterface): Promise<void> {
+  let usage
+  try { usage = await $.session.usage() } catch { return }
+  const next: AccountUsage = {
+    rateLimits: usage.rateLimits.map(r => ({ kind: r.kind, percentUsed: r.percentUsed, ...(r.resetsAt ? { resetsAt: r.resetsAt } : {}) })),
+    usd: usage.cost?.usd ?? null,
+  }
+  const was = await read($, account)
+  if (JSON.stringify(was) !== JSON.stringify(next)) await update($, account, () => next)
+  if (next.usd != null) await update($, usageMeter, m => (m.usdAtStart == null ? { ...m, usdAtStart: next.usd } : m))
 }
 
 async function sessionId($: EngineInterface): Promise<string | null> {
@@ -85,6 +105,7 @@ export async function refresh($: EngineInterface): Promise<number> {
     return IDLE_POLL_MS
   }
   const [agents, messages, me, known] = await Promise.all([listAgents($), mainMessages($), sessionId($), read($, knownAgents)])
+  await readAccount($)
   const lanes = correlate(got.snapshot.runs, agents, me, agentIdsByTicket(messages), known)
   const remembered = rememberAgents(known, lanes)
   if (JSON.stringify(remembered) !== JSON.stringify(known)) await update($, knownAgents, () => remembered)
@@ -170,6 +191,35 @@ export const register: Register = on => {
    * notice) and the hook returns `{}`: the pane is for the person, so its chatter must not
    * enter the model's context, which a returned `text` would.
    */
+  /**
+   * Meters every model turn: the main loop's count toward the session total only, a subagent's
+   * also toward the lane whose orchestrator spawned it (directly or through its sub-agents).
+   */
+  on('turn.complete', async ($, e, next) => {
+    const result = await next(e)
+    const usage = result.usage ?? e.usage
+    if (!usage) return result
+    // Until the starting cost is known, a turn's cost lands inside it: metering the turn too would
+    // charge a lane for cost the share never divides. Take the start now (this turn included) and
+    // skip the turn. A host with no cost ledger never gets a start: meter its tokens regardless.
+    if ((await read($, usageMeter)).usdAtStart == null) {
+      await readAccount($)
+      if ((await read($, usageMeter)).usdAtStart != null) return result
+    }
+    const weight = weightOf(usage, usage.model)
+    let ticket: string | null = null
+    if (e.agentId) {
+      const [agents, known, state] = await Promise.all([listAgents($), read($, knownAgents), read($, fleet)])
+      ticket = ticketForAgent(e.agentId, agents, known, state.lanes.map(l => l.run.ticket))
+    }
+    // Parallel lanes finish turns concurrently: each write applies its delta inside `update` so
+    // none is lost to a read-then-write race.
+    const tokens = tokensOf(usage)
+    await update($, usageMeter, m => recordTurn(m, {}, null, tokens, weight).meter)
+    if (ticket) await update($, laneUsage, lanes => recordTurn({ weight: 0, usdAtStart: null }, lanes, ticket, tokens, weight).lanes)
+    return result
+  })
+
   on('command.run', { command: 'fleet' }, async ($, e) => {
     if (e.args.trim() === 'off') {
       await $.ui.close({ id: PANE })
@@ -199,6 +249,9 @@ export const register: Register = on => {
       drafts: await read($, drafts),
       detailTab: await read($, detailTab),
       seenComments: await read($, seenComments),
+      laneUsage: await read($, laneUsage),
+      usageMeter: await read($, usageMeter),
+      account: await read($, account),
       ...(e.props.view.agentId ? { viewAgentId: e.props.view.agentId } : {}),
       bodyColumns: e.props.bodyColumns,
       placement: e.props.placement,

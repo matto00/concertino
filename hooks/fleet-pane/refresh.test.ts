@@ -4,6 +4,7 @@ import type { AgentInfo, EngineInterface, ProcessRunResult, SessionMessage } fro
 import { runFleetSnapshot } from './snapshot'
 import { PANE } from './register'
 import { draftMessage } from './lanes'
+import { laneShare, laneUsd } from './usage'
 
 // The test kit's `$` carries only the events the engine raises on its own; `process.run` is a call a
 // plugin makes on its own `$`, so the snapshot runner is exercised against a stand-in `$` with the
@@ -79,6 +80,7 @@ type On = (name: any, fn: (...a: any[]) => any) => void
 type World = {
   open?: object; stdout?: () => Promise<any>; agents?: any | (() => any); messages?: any | (() => any)
   surfaces?: readonly string[]; session?: string; fill?: { isFilled: boolean; refusal?: string }
+  usage?: any | (() => any); turnResult?: object
 }
 
 const okRun = (stdout: string) =>
@@ -96,6 +98,7 @@ function world(on: On, w: World = {}) {
   const argvs: (readonly string[])[] = []
   const fills: any[] = []
   let stateSets = 0
+  const sets: Record<string, number> = {}
   const fleetSets: any[] = []
   const showAllSets: unknown[] = []
   let runs = 0
@@ -104,6 +107,7 @@ function world(on: On, w: World = {}) {
   on('state.set', async (_$: unknown, e: { key: string; value: unknown }) => {
     if (e.key === 'fleet') { stateSets++; fleetSets.push(e.value) }
     if (e.key === 'showAll') showAllSets.push(e.value)
+    sets[e.key] = (sets[e.key] ?? 0) + 1
     store.set(e.key, e.value)
     return { value: { isSet: true, version: 2 } }
   })
@@ -122,8 +126,11 @@ function world(on: On, w: World = {}) {
   on('ui.close', async (_$: unknown, e: { id: string }) => { closed.push(e.id); return { value: undefined } })
   on('command.register', async (_$: unknown, e: { name: string }) => { registered.push(e); return { value: { command: e.name } } })
   on('prompt.fill', async (_$: unknown, e: any) => { fills.push(e); return w.fill ?? { isFilled: true } })
+  if (w.usage !== undefined) on('session.usage', async () => ({ value: value(w.usage) }))
+  // The bottom of turn.complete: the engine's own answer, here a turn with no usage of its own.
+  on('turn.complete', async () => w.turnResult ?? { text: '' })
   const clock = mock.clock(on as never)
-  return { logs, registered, argvs, fleetSets, showAllSets, store, statuses, toasts, opened, closed, fills, clock, stateSets: () => stateSets, runs: () => runs }
+  return { sets, logs, registered, argvs, fleetSets, showAllSets, store, statuses, toasts, opened, closed, fills, clock, stateSets: () => stateSets, runs: () => runs }
 }
 
 const start = ($: any) => $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
@@ -359,6 +366,110 @@ test('refresh: a ticket not yet fetched is not baselined', async ($, on) => {
   await start($)
   await w.clock.advance(2000)
   expect(w.store.get('seenComments') ?? {}).toEqual({})
+})
+
+// --- usage: turns attributed to lanes, the account read on each poll --------------------------------
+
+const TURN_USAGE = { model: 'claude-sonnet-4-5', input_tokens: 100, output_tokens: 10, cache_creation_input_tokens: 40, cache_read_input_tokens: 1000 }
+const TURN_WEIGHT = 3 * (100 + 50 + 50 + 100)
+const TURN_TOKENS = 1150
+const turn = (over: object = {}) => ({ answer: '', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer', usage: TURN_USAGE, ...over })
+const sub = (id: string, parentId?: string): AgentInfo =>
+  ({ id, description: 'worker', type: 'general-purpose', status: 'running', ...(parentId ? { parentId } : {}) }) as AgentInfo
+
+test('turn.complete: a sub-agent turn lands on its orchestrator\'s ticket through the parentId chain', async ($, on) => {
+  const w = world(on, { agents: [orch('o1', 'running', 'SBX-1'), sub('exec', 'o1'), sub('grand', 'exec')] })
+  w.store.set('knownAgents', { 'SBX-1': 'o1' })
+  await ($ as any).turn.complete(turn({ agentId: 'grand' }))
+  expect(w.store.get('laneUsage')).toEqual({ 'SBX-1': { tokens: TURN_TOKENS, weight: TURN_WEIGHT, turns: 1 } })
+  expect(w.store.get('usageMeter')).toEqual({ weight: TURN_WEIGHT, usdAtStart: null })
+  await ($ as any).turn.complete(turn({ agentId: 'o1' }))
+  expect(w.store.get('laneUsage')).toEqual({ 'SBX-1': { tokens: 2 * TURN_TOKENS, weight: 2 * TURN_WEIGHT, turns: 2 } })
+  expect((w.store.get('usageMeter') as any).weight).toBe(2 * TURN_WEIGHT)
+})
+
+test('turn.complete: a main-loop turn and an unrelated agent count only toward the meter', async ($, on) => {
+  const w = world(on, { agents: [orch('o1', 'running', 'SBX-1'), sub('loner')] })
+  w.store.set('knownAgents', { 'SBX-1': 'o1' })
+  await ($ as any).turn.complete(turn())
+  await ($ as any).turn.complete(turn({ agentId: 'loner' }))
+  expect(w.store.get('laneUsage') ?? {}).toEqual({})
+  expect(w.store.get('usageMeter')).toEqual({ weight: 2 * TURN_WEIGHT, usdAtStart: null })
+})
+
+test('turn.complete: the result\'s usage is preferred; a turn with none records nothing', async ($, on) => {
+  // Opus usage in the chain's answer beats the sonnet usage on the event.
+  const w = world(on, { turnResult: { text: '', usage: { ...TURN_USAGE, model: 'claude-opus-5' } } })
+  await ($ as any).turn.complete(turn())
+  expect((w.store.get('usageMeter') as any).weight).toBe(5 * 300)
+})
+
+test('turn.complete: no usage on the event or the result writes no meter', async ($, on) => {
+  const w = world(on)
+  const { usage: _drop, ...bare } = turn() as any
+  const r = await ($ as any).turn.complete(bare)
+  expect(r).toMatchObject({ text: '' })
+  expect(w.store.get('usageMeter')).toBeUndefined()
+})
+
+test('refresh: reads the account from $.session.usage and starts the meter at the first known cost', async ($, on) => {
+  let usage: any = { startedAt: 0, context: { window: 1 }, rateLimits: [{ kind: 'five_hour', percentUsed: 42, resetsAt: '2026-10-07T22:00:00Z' }] }
+  const w = world(on, { usage: () => usage })
+  await start($)
+  await w.clock.advance(2000)
+  expect(w.store.get('account')).toEqual({ rateLimits: [{ kind: 'five_hour', percentUsed: 42, resetsAt: '2026-10-07T22:00:00Z' }], usd: null })
+  expect(w.store.get('usageMeter')).toBeUndefined()                         // no cost yet: no start
+  usage = { ...usage, rateLimits: [{ kind: 'seven_day', percentUsed: 10 }], cost: { usd: 1.25 } }
+  await w.clock.advance(2000)
+  expect(w.store.get('account')).toEqual({ rateLimits: [{ kind: 'seven_day', percentUsed: 10 }], usd: 1.25 })
+  expect(w.store.get('usageMeter')).toEqual({ weight: 0, usdAtStart: 1.25 })
+  usage = { ...usage, cost: { usd: 3 } }
+  await w.clock.advance(2000)
+  expect((w.store.get('account') as any).usd).toBe(3)
+  expect((w.store.get('usageMeter') as any).usdAtStart).toBe(1.25)          // set once
+})
+
+test('refresh: an unchanged account is not rewritten, and the meter start is set once', async ($, on) => {
+  const w = world(on, { usage: { startedAt: 0, context: { window: 1 }, rateLimits: [], cost: { usd: 2 } } })
+  await start($)
+  await w.clock.advance(2000)
+  await w.clock.advance(2000)
+  expect(w.runs()).toBe(2)
+  expect(w.sets['account']).toBe(1)
+  expect(w.store.get('usageMeter')).toEqual({ weight: 0, usdAtStart: 2 })
+})
+
+test('refresh: a session.usage that refuses leaves the lanes alone and writes no account', async ($, on) => {
+  const w = world(on, { usage: () => { throw new Error('no usage here') } })
+  await start($)
+  await w.clock.advance(2000)
+  expect(fleetOf(w).lanes).toHaveLength(1)
+  expect(w.store.get('account')).toBeUndefined()
+})
+
+test('turn.complete then refresh: a lane\'s share and dollars come out of the meter', async ($, on) => {
+  let usd = 1
+  const w = world(on, { agents: [orch('o1', 'running', 'CON-1'), sub('exec', 'o1')], session: 'me',
+    usage: () => ({ startedAt: 0, context: { window: 1 }, rateLimits: [], cost: { usd } }) })
+  await start($)
+  await w.clock.advance(2000)                                   // matches o1 to CON-1, meter starts at $1
+  expect(w.store.get('knownAgents')).toEqual({ 'CON-1': 'o1' })
+  await ($ as any).turn.complete(turn({ agentId: 'exec' }))
+  await ($ as any).turn.complete(turn())                        // the main loop, same weight
+  usd = 3
+  await w.clock.advance(2000)
+  const lane = (w.store.get('laneUsage') as any)['CON-1']
+  const meter = w.store.get('usageMeter') as any
+  expect(laneShare(lane, meter)).toBe(0.5)
+  expect(laneUsd(lane, meter, w.store.get('account') as any)).toBe(1)
+})
+
+test('refresh: with no session.usage answer the poll still writes lanes and no account', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await w.clock.advance(2000)
+  expect(fleetOf(w).lanes).toHaveLength(1)
+  expect(w.store.get('account')).toBeUndefined()
 })
 
 // --- pane opening and polling ----------------------------------------------------------------------

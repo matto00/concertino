@@ -25,7 +25,9 @@ const ESC: Escalation = {
 }
 const needs = (over: Partial<Run> = {}): Lane => lane({ ticket: 'SBX-4', status: 'needs-you', escalation: ESC, ...over })
 
-type Seed = { selected?: string | null; showAll?: boolean; openGroups?: string[]; drafts?: Record<string, AnswerDraft>; error?: string | null; project?: string; detailTab?: 'overview' | 'ticket' | 'activity' | 'comments'; seenComments?: Record<string, number> }
+type Seed = { selected?: string | null; showAll?: boolean; openGroups?: string[]; drafts?: Record<string, AnswerDraft>; error?: string | null; project?: string; detailTab?: 'overview' | 'ticket' | 'activity' | 'comments'; seenComments?: Record<string, number>
+  laneUsage?: Record<string, { tokens: number; weight: number; turns: number }>; usageMeter?: { weight: number; usdAtStart: number | null }
+  account?: { rateLimits: { kind: string; percentUsed: number; resetsAt?: string }[]; usd: number | null } | null }
 
 // The kit's `$` has no `state` noun of its own here, so state is seeded through hooks beneath the plugin.
 type On = (name: any, fn: (...a: any[]) => any) => void
@@ -33,6 +35,7 @@ function seed(on: On, lanes: Lane[], s: Seed = {}) {
   const store = new Map<string, unknown>([
     ['fleet', { lanes, error: s.error ?? null, fingerprint: 'f', generatedAt: 0, root: '/r', project: s.project ?? 'sandbox' }],
     ['selected', s.selected ?? null], ['showAll', s.showAll ?? false], ['openGroups', s.openGroups ?? []], ['drafts', s.drafts ?? {}], ['detailTab', s.detailTab ?? 'overview'], ['seenComments', s.seenComments ?? {}],
+    ['laneUsage', s.laneUsage ?? {}], ['usageMeter', s.usageMeter ?? { weight: 0, usdAtStart: null }], ['account', s.account ?? null],
   ])
   on('state.get', async (_$: unknown, e: { key: string }) => ({ value: { value: store.get(e.key), version: 1 } }))
   on('state.set', async (_$: unknown, e: { key: string; value: unknown }) => { store.set(e.key, e.value); return { value: { isSet: true, version: 2 } } })
@@ -755,6 +758,78 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect(await textOf(ui, 'comments-empty')).toBe(said)
       expect(await ui.find({ key: 'cm:0' })).toBeUndefined()
     }
+  })
+
+  // ── usage and cost ───────────────────────────────────────────────────────────────────────────
+
+  const RESET = new Date(new Date(NOW).getFullYear(), new Date(NOW).getMonth(), new Date(NOW).getDate(), 23, 30).toISOString()
+  const LIMITS = [
+    { kind: 'five_hour', percentUsed: 42.4, resetsAt: RESET }, { kind: 'seven_day', percentUsed: 75 }, { kind: 'spend_limit', percentUsed: 95 },
+  ]
+
+  test(`usage: one coloured Text per window with its reset when wide, then the API-equivalent cost (${surface})`, async ($, on) => {
+    seed(on, [lane({})], { account: { rateLimits: LIMITS, usd: 12.3 } })
+    const ui = await mount($)
+    const row = (await ui.find({ key: 'usage' }))!
+    expect(row.text).toBe('5h 42% · resets 23:307d 75%spend 95%$12 API-equivalent')
+    const all = await texts(ui)
+    expect(all.find(x => x.text === '5h 42% · resets 23:30')?.props?.color).toBe('subtle')
+    expect(all.find(x => x.text === '7d 75%')?.props?.color).toBe('warning')
+    expect(all.find(x => x.text === 'spend 95%')?.props?.color).toBe('error')
+    expect(all.find(x => x.text === '$12 API-equivalent')?.props?.dimColor).toBe(true)
+    // Directly under the header.
+    const boxes = (await ui.findAll({ type: 'Box' })).map((b: any) => b.key).filter(Boolean)
+    expect(boxes.indexOf('usage')).toBe(boxes.indexOf('header') + 1)
+  })
+
+  test(`usage: below WIDE columns the reset times are dropped (${surface})`, async ($, on) => {
+    seed(on, [lane({})], { account: { rateLimits: LIMITS, usd: 1.5 } })
+    const ui = await mount($, { ...PANE, bodyColumns: 47 })
+    expect(await textOf(ui, 'usage')).toBe('5h 42%7d 75%spend 95%$1.50 API-equivalent')
+  })
+
+  test(`usage: the cost alone, the limits alone, or no row at all (${surface})`, async ($, on) => {
+    const store = seed(on, [lane({})], { account: { rateLimits: [], usd: 0.42 } })
+    const ui = await mount($)
+    expect(await textOf(ui, 'usage')).toBe('$0.42 API-equivalent')
+    store.set('account', { rateLimits: [{ kind: 'seven_day', percentUsed: 10 }], usd: null })
+    await ui.redraw(PANE)
+    expect(await textOf(ui, 'usage')).toBe('7d 10%')
+    store.set('account', { rateLimits: [], usd: null })
+    await ui.redraw(PANE)
+    expect(await ui.find({ key: 'usage' })).toBeUndefined()
+    store.set('account', null)
+    await ui.redraw(PANE)
+    expect(await ui.find({ key: 'usage' })).toBeUndefined()
+  })
+
+  const metaText = async (ui: any) => (await ui.find({ type: 'Text', text: /^feature\// }))?.text
+
+  test(`cost: the run's own cost wins over metered usage (${surface})`, async ($, on) => {
+    seed(on, [lane({ costUsd: 12.6 })], { laneUsage: { 'CON-1': { tokens: 15000, weight: 25, turns: 3 } },
+      usageMeter: { weight: 100, usdAtStart: 2 }, account: { rateLimits: [], usd: 6 } })
+    const ui = await mount($)
+    expect(await metaText(ui)).toBe('feature/thing/CON-1 · driven here · orchestrator running · $13 · 12m')
+  })
+
+  test(`cost: metered tokens, share of the session and the dollar estimate (${surface})`, async ($, on) => {
+    const store = seed(on, [lane({ ticket: 'con-1', costUsd: null })], { laneUsage: { 'CON-1': { tokens: 15000, weight: 25, turns: 3 } },
+      usageMeter: { weight: 100, usdAtStart: 2 }, account: { rateLimits: [], usd: 6 } })
+    const ui = await mount($)
+    expect(await metaText(ui)).toBe('feature/thing/CON-1 · driven here · orchestrator running · 15k tokens · 25% of session · ≈$1.00 · 12m')
+    // No session cost known yet: tokens and share only.
+    store.set('account', null)
+    await ui.redraw(PANE)
+    expect(await metaText(ui)).toBe('feature/thing/CON-1 · driven here · orchestrator running · 15k tokens · 25% of session · 12m')
+  })
+
+  test(`cost: nothing metered for the lane, no cost words (${surface})`, async ($, on) => {
+    const store = seed(on, [lane({ costUsd: null })], { laneUsage: { 'OTHER': { tokens: 5, weight: 5, turns: 1 } }, usageMeter: { weight: 5, usdAtStart: 0 } })
+    const ui = await mount($)
+    expect(await metaText(ui)).toBe('feature/thing/CON-1 · driven here · orchestrator running · 12m')
+    store.set('laneUsage', { 'CON-1': { tokens: 0, weight: 0, turns: 1 } })
+    await ui.redraw(PANE)
+    expect(await metaText(ui)).toBe('feature/thing/CON-1 · driven here · orchestrator running · 12m')
   })
 
   test(`inline placement draws the list only (${surface})`, async ($, on) => {

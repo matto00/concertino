@@ -6,7 +6,7 @@
       "name": "concertino",
       "description": "Harness-agnostic evidence-gated agent orchestra for autonomous ticket delivery. Ships the `concertino` CLI (init/sync) that renders the four-agent orchestra into your project from core/ + concertino.config.json.",
       "source": "./",
-      "version": "0.1.0"
+      "version": "0.1.1"
     }
   ]
 }
