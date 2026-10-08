@@ -114,20 +114,28 @@ export const register: Register = on => {
     return next(e)
   })
 
+  /**
+   * `/fleet`, `/fleet off`, `/fleet all`. Replies go through `$.ui.log` (drawn like a system
+   * notice) and the hook returns `{}`: the pane is for the person, so its chatter must not
+   * enter the model's context, which a returned `text` would.
+   */
   on('command.run', { command: 'fleet' }, async ($, e) => {
     if (e.args.trim() === 'off') {
       await $.ui.close({ id: PANE })
-      return { text: 'Fleet pane closed.' }
+      $.ui.log('Fleet pane closed.')
+      return {}
     }
     if (e.args.trim() === 'all') {
       let nowAll = false
       await update($, showAll, current => (nowAll = !current))
-      return { text: nowAll ? 'Fleet pane: showing all lanes.' : 'Fleet pane: showing live lanes only.' }
+      $.ui.log(nowAll ? 'Fleet pane: showing all lanes.' : 'Fleet pane: showing live lanes only.')
+      return {}
     }
     const placed = await openPane($, true)
     const surfaces = await $.session.surfaces().catch(() => [] as readonly string[])
     const attached = `surfaces: ${surfaces.length ? surfaces.join(', ') : 'none'}`
-    return { text: `${placed.isPlaced ? 'Fleet pane opened' : `Fleet pane not shown: ${placed.reason}`} · ${attached}` }
+    $.ui.log(`${placed.isPlaced ? 'Fleet pane opened' : `Fleet pane not shown: ${placed.reason}`} · ${attached}`)
+    return {}
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

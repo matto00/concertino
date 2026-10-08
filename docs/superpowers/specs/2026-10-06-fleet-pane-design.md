@@ -225,7 +225,8 @@ type Lane = {
   the surface cannot place it, `Fleet pane not shown: <reason>`, either followed by
   `· surfaces: <attached surfaces>` (`none` when empty) so a person can tell whether their
   Desktop or mobile client is registered; `/fleet off` closes it. Closing the pane
-  (either way) leaves the poll and status line running.
+  (either way) leaves the poll and status line running. Every `/fleet` reply is logged with
+  `$.ui.log` as a notice the model never reads (the hook returns `{}`, no `text`).
 
 The mod is strictly read-only: no `fs.write`, no `tool.call`, `prompt.*` or
 other gating hooks. `claude plugin validate .` should list none.
