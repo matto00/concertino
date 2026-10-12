@@ -120,6 +120,12 @@ binding doc):
   Never invoke `npm`/`vite`/`sbt`/`npx playwright` bare as a substitute — a bare
   invocation silently inherits an ambient default port/cwd instead of this
   run's pinned config, and nothing complains (CON-165).
+  To stop the servers, use the canonical
+  `scripts/concertino/stop-servers.sh "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"`.
+  Never write your own kill loop, and never kill a server's parent or grandparent
+  (anything found by walking `PPid`): a detached server's parent is the user's
+  `systemd --user` manager, and a SIGTERM to it logs the whole desktop session
+  out.
 - Navigate to **each changed view**. **Take screenshots and look at them** — this
   is a visual-judgment task, not an accessibility-tree task.
 - Judge against the design standard: token usage (no hardcoded values where a token

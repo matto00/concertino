@@ -46,6 +46,19 @@ REPO_ROOT="$(git_child rev-parse --show-toplevel)"
 BACKEND_LOG="${WORKTREE_PATH}/.concertino-backend.log"
 FRONTEND_LOG="${WORKTREE_PATH}/.concertino-frontend.log"
 
+# Pidfiles for stop-servers.sh. Kept in the worktree's git admin dir so they
+# can never be committed and go away with the worktree; stop-servers.sh
+# resolves the same path.
+server_pid_dir() {
+  local gd
+  if gd="$(git_child -C "$WORKTREE_PATH" rev-parse --absolute-git-dir 2>/dev/null)" && [ -n "$gd" ]; then
+    printf '%s/concertino-servers' "$gd"
+  else
+    printf '%s/.concertino-servers' "$WORKTREE_PATH"
+  fi
+}
+PID_DIR="$(server_pid_dir)"
+
 # Safety net: re-copy any env files setup-worktree.sh should have placed.
 for f in ${CONCERTINO_ENV_FILES:-}; do
   if [ ! -f "${WORKTREE_PATH}/${f}" ] && [ -f "${REPO_ROOT}/${f}" ]; then
@@ -175,7 +188,14 @@ start_one() {
     fi
     echo "note: ${label} already healthy at ${url}, reusing" >&2
   else
-    ( cd "${WORKTREE_PATH}/${cwd}" && eval "nohup env $cmd >\"$log\" 2>&1 & disown" )
+    # Under setsid (where available) the server leads its own process group,
+    # so stop-servers.sh can take it and its children down by group without
+    # ever looking at its parent — which, once this subshell exits, is the
+    # user's systemd --user manager (see stop-servers.sh's header).
+    local launcher=""
+    command -v setsid >/dev/null 2>&1 && launcher="setsid"
+    mkdir -p "$PID_DIR"
+    ( cd "${WORKTREE_PATH}/${cwd}" && eval "$launcher nohup env $cmd >\"$log\" 2>&1 & echo \$! >\"${PID_DIR}/${label}.pid\"; disown" )
     if ! timeout "$timeout" bash -c \
         "until curl -sf '$url' >/dev/null 2>&1; do sleep 3; done"; then
       echo "FAIL ${label} did not become healthy at ${url} within ${timeout}s (log: ${log})" >&2

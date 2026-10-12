@@ -182,6 +182,9 @@ BASE_BRANCH="${CONCERTINO_BASE_BRANCH:-main}"
 T="${TICKET_ID:-${WORKTREE_PATH##*/}}"
 
 # Stop dev servers on this ticket's ports (no-op if already down).
+# stop-servers.sh takes recorded server process groups down first; fuser
+# stays as the backstop for anything still listening.
+"${SCRIPT_DIR}/stop-servers.sh" "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT" >/dev/null 2>&1 || true
 [ -n "$DEV_PORT" ]     && fuser -k "${DEV_PORT}/tcp"     2>/dev/null || true
 [ -n "$BACKEND_PORT" ] && fuser -k "${BACKEND_PORT}/tcp" 2>/dev/null || true
 

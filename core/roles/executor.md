@@ -129,6 +129,13 @@ the canonical `scripts/concertino/start-servers.sh` — never invoke
 invocation silently inherits an ambient default port/cwd instead of this
 run's pinned config, and nothing complains (CON-165).
 
+To stop the servers, use the canonical
+`scripts/concertino/stop-servers.sh "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"`.
+Never write your own kill loop, and never kill a server's parent or grandparent
+(anything found by walking `PPid`): a detached server's parent is the user's
+`systemd --user` manager, and a SIGTERM to it logs the whole desktop session
+out.
+
 Fix any failure before proceeding. Never skip a failing gate. When a gate fails or
 you hit a bug, follow `systematic-debugging.md`: **no fix without a probe-confirmed
 root cause** — name the failing layer, run a minimal probe that confirms the cause,

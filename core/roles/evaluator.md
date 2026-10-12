@@ -192,6 +192,13 @@ Never invoke `npm`/`vite`/`sbt`/`npx playwright` bare (e.g. `npm run dev`) as a
 substitute — a bare invocation silently inherits an ambient default port/cwd
 instead of this run's pinned config, and nothing complains (CON-165).
 
+To stop the servers, use the canonical
+`scripts/concertino/stop-servers.sh "$WORKTREE_PATH" "$DEV_PORT" "$BACKEND_PORT"`.
+Never write your own kill loop, and never kill a server's parent or grandparent
+(anything found by walking `PPid`): a detached server's parent is the user's
+`systemd --user` manager, and a SIGTERM to it logs the whole desktop session
+out.
+
 If the script prints `FAIL` (a server never became healthy): include the
 referenced log excerpt and tag as `BLOCKER` — environmental, requires human
 intervention. Do not debug the dev environment as a code change request.
