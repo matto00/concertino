@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { emitClaude, emitCodex, emitOpencode, copyAssets, mergeCostHookSettings } = require('../lib/cli/emit');
+const { emitClaude, emitCodex, emitOpencode, copyAssets, mergeCostHookSettings, writeRenderManifest, readRenderedList } = require('../lib/cli/emit');
 const { withDefaults } = require('../lib/config');
 const { mkTmpDir } = require('./support/tmp');
 
@@ -165,6 +165,44 @@ test('copyAssets does not write .instrumentation-manifest.json on a dry run', ()
   const out = tmpOut();
   silently(() => copyAssets(out, CORE, true, true));
   assert.equal(fs.existsSync(path.join(out, 'scripts', 'concertino', '.instrumentation-manifest.json')), false);
+});
+
+// CON-253: writeRenderManifest declares the rendered paths setup-worktree.sh
+// copies into a worktree. Repo-relative, forward-slash, sorted, including the
+// manifest itself; the CON-191 digest keys are kept.
+test('writeRenderManifest records rendered paths relative to out, plus itself', () => {
+  const out = tmpOut();
+  silently(() => copyAssets(out, CORE, false, true));
+  const agent = path.join(out, '.claude', 'agents', 'concertino-executor.md');
+  fs.mkdirSync(path.dirname(agent), { recursive: true });
+  fs.writeFileSync(agent, 'x');
+  silently(() => writeRenderManifest(out, [agent, path.join(out, 'scripts', 'concertino', 'cleanup.sh'), path.join(out, '..', 'outside.md')]));
+  const onDisk = JSON.parse(fs.readFileSync(path.join(out, 'scripts', 'concertino', '.instrumentation-manifest.json'), 'utf8'));
+  assert.deepEqual(onDisk.rendered, [
+    '.claude/agents/concertino-executor.md',
+    'scripts/concertino/.instrumentation-manifest.json',
+    'scripts/concertino/cleanup.sh',
+  ]);
+  assert.equal(typeof onDisk.digest, 'string');
+  assert.ok(onDisk.files['cleanup.sh']);
+  assert.deepEqual(readRenderedList(out), onDisk.rendered);
+});
+
+// A `sync --harness` narrowed render carries over earlier entries that still
+// exist, and drops ones whose file is gone.
+test('writeRenderManifest carries over earlier entries that still exist on disk', () => {
+  const out = tmpOut();
+  silently(() => copyAssets(out, CORE, false, true));
+  const agent = path.join(out, '.claude', 'agents', 'concertino-executor.md');
+  fs.mkdirSync(path.dirname(agent), { recursive: true });
+  fs.writeFileSync(agent, 'x');
+  silently(() => writeRenderManifest(out, [path.join(out, 'AGENTS.md')],
+    ['.claude/agents/concertino-executor.md', '.claude/agents/concertino-gone.md']));
+  assert.deepEqual(readRenderedList(out), [
+    '.claude/agents/concertino-executor.md',
+    'AGENTS.md',
+    'scripts/concertino/.instrumentation-manifest.json',
+  ]);
 });
 
 // track-per-run-cost-spend, tasks.md 2.2/design.md Decision 1/3:

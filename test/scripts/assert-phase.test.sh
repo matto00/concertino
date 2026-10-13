@@ -25,6 +25,11 @@ new_repo() {
   local d; d="$(mktemp -d)"
   git -C "$d" init -q
   git -C "$d" commit -q --allow-empty -m init
+  # CON-253: setup requires the main checkout's render manifest. An empty
+  # rendered-path list keeps the cases below about what they test; the
+  # rendered-path postcondition has its own section at the end.
+  mkdir -p "$d/scripts/concertino"
+  printf '{"rendered":[]}\n' > "$d/scripts/concertino/.instrumentation-manifest.json"
   printf '%s' "$d"
 }
 

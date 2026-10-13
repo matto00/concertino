@@ -34,6 +34,9 @@ new_scripts() {
   cp "$ROOT/core/scripts/lib/git-child-env.sh" "$d/lib/"
   cp "$ROOT/core/scripts/lib/auditor-lease.sh" "$d/lib/"
   chmod +x "$d/resolve-speed.sh" "$d/setup-worktree.sh" "$d/emit-event.sh"
+  # CON-253: setup-worktree.sh requires the render manifest. With no
+  # `files` key it carries no digest baseline (case 1's "no baseline").
+  printf '{"rendered":[]}\n' > "$d/.instrumentation-manifest.json"
   cat > "$d/speeds.json" <<'JSON'
 {
   "budgets": { "executionCycles": 3, "skepticDesignRounds": 3, "skepticFinalRounds": 2, "debugAttempts": 2 },
@@ -83,7 +86,7 @@ write_manifest_from_dir() {
       agg.update(f + ":" + h + "\n");
     }
     fs.writeFileSync(path.join(dir, ".instrumentation-manifest.json"),
-      JSON.stringify({ digest: agg.digest("hex"), files: fileHashes }, null, 2) + "\n");
+      JSON.stringify({ digest: agg.digest("hex"), files: fileHashes, rendered: [] }, null, 2) + "\n");
   ' "$1"
 }
 

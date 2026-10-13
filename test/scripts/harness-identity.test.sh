@@ -100,6 +100,9 @@ new_scripts() {
   mkdir -p "$d/lib"
   cp "$ROOT/core/scripts/lib/git-child-env.sh" "$d/lib/"
   chmod +x "$d/resolve-speed.sh"
+  # CON-253: setup-worktree.sh requires the render manifest; an empty
+  # rendered-path list keeps these harness cases about harness detection.
+  printf '{"rendered":[]}\n' > "$d/.instrumentation-manifest.json"
   cat > "$d/speeds.json" <<'JSON'
 {
   "budgets": { "executionCycles": 3, "skepticDesignRounds": 3, "skepticFinalRounds": 2, "debugAttempts": 2 },

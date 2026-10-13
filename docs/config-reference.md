@@ -544,6 +544,83 @@ missing from `.claude/settings.json` — run `concertino sync` to add it.
 | ----- | ---- | ------- | ------- |
 | `enabled` | boolean | `false` | Wires the `report-cost.sh` hook into `.claude/settings.json` when `true`. `false` (the default) leaves `hooks` completely untouched — not even created if absent. |
 
+## Rendered output: track it or gitignore it
+
+`concertino sync` writes rendered files into your project: everything under
+`scripts/concertino/`, the `concertino-*` agents and commands for each
+configured harness, and `.concertino/laws/` plus
+`.concertino/workflow-state.template.md`. It also merges Concertino's part
+into a few shared files that keep your own content: `.claude/settings.json`,
+`AGENTS.md`, `.codex/config.toml` and `opencode.json`.
+
+Never edit a rendered file. The next sync overwrites it; change `core/` in
+Concertino, or this config, instead.
+
+Every lane works in a git worktree, and **a git worktree contains only
+tracked files**. Sync records every path it wrote, relative to the project
+root, in the `rendered` list of `scripts/concertino/.instrumentation-manifest.json`
+(the render manifest, next to its CON-191 script digest). `setup-worktree.sh`
+reads that list from the main checkout. For each path git did not check out
+into the new worktree, it copies the main checkout's file in with `cp -p`.
+A file git did check out (tracked on the lane's branch) is never
+overwritten. Two setups are supported.
+
+**(a) Track the rendered output.** Commit everything sync renders. Lanes get
+it from git like any other file, and setup behaves as it always has. Each
+re-render shows up as a diff you commit on its own, so set
+[`cleanup.skipSync`](#cleanup) to `true`, or `cleanup.sh`'s end-of-run sync
+leaves that diff for the next ticket's `git add -A` to sweep up. The render
+manifest itself can be tracked or ignored. An ignored manifest is copied in
+like any other untracked rendered path.
+
+**(b) Gitignore the rendered output** and let `setup-worktree.sh` copy it in.
+The ignore block (keep it exactly to these patterns):
+
+```gitignore
+# Concertino rendered output (`concertino sync`); setup-worktree.sh copies it into each worktree.
+/.concertino/
+/scripts/concertino/
+/.claude/agents/concertino-*.md
+/.claude/commands/concertino-*.md
+/.codex/agents/concertino-*.toml
+/.codex/prompts/concertino-*.md
+/.codex/roles/concertino-*.md
+/.opencode/agents/concertino-*.md
+/.opencode/commands/concertino-*.md
+```
+
+It covers only files sync owns outright. Keep tracking the shared files
+(`.claude/settings.json`, `AGENTS.md`, `.codex/config.toml`, `opencode.json`)
+and your project's own commands and agents: a broader pattern such as
+`/.claude/` or `/.claude/commands/` would also hide files sync never writes.
+Moving an existing project from (a) to (b): run `concertino sync`, add the
+block, then `git rm -r --cached` the paths it covers.
+
+What (b) means in practice:
+
+- **Sync the main checkout before lanes start.** Lanes copy from the main
+  checkout, so it must hold a complete render. A missing manifest, a
+  manifest from an older sync, or a listed path absent from the main checkout
+  fails `setup-worktree.sh` with "run `concertino sync` in the main checkout",
+  before any worktree is created.
+- **A lane is pinned to the render that existed at its setup.** A sync after
+  that does not reach a running lane's worktree. Re-running
+  `setup-worktree.sh` for the same branch refreshes its copies.
+- **`cleanup.skipSync` does not matter.** There is no tracked diff for an
+  end-of-run sync to leave behind, so either value is safe.
+- **Rendered-file history lives in Concertino, not your project.** Your repo
+  no longer records which render a past lane ran. The CON-191
+  `instrumentation_digest` on each `run.start` event still identifies the
+  scripts it ran.
+
+`setup-worktree.sh` also refuses a rendered path that is untracked **and not
+gitignored** on the lane's branch. A copy there would show as untracked and
+the next `git add -A` would commit it into the ticket's PR. The error names
+each path: commit it (setup (a)) or ignore it (setup (b)).
+
+`assert-phase.sh setup` checks that every path in the manifest exists in the
+worktree, in either setup.
+
 ## `cleanup`
 
 ```json
@@ -555,8 +632,9 @@ Whether `cleanup.sh`'s end-of-run `concertino sync` is skipped. When `true`,
 which `cleanup.sh` sources before reading the variable — so the setting
 survives every re-render instead of being erased by the next sync.
 
-**Set this when your project tracks `scripts/concertino/` in git.** With the
-rendered scripts tracked *and* auto-sync on, every `cleanup.sh --phase4`
+**Set this when your project tracks its rendered output in git** (setup (a)
+under [Rendered output](#rendered-output-track-it-or-gitignore-it)). With the
+rendered files tracked *and* auto-sync on, every `cleanup.sh --phase4`
 leaves uncommitted render changes in the working tree at the end of a ticket,
 and the next ticket's `git add -A` sweeps them into an unrelated PR. That
 failure is silent and crosses ticket boundaries — it corrupts a later PR, not
@@ -565,8 +643,10 @@ the one that caused it.
 The trade is that renders become deliberate: you run `concertino sync` when
 you mean to, and its diff is its own reviewable commit rather than a stray
 addition to whatever ticket happened to finish last. For a project that
-gitignores the rendered scripts, leave this off — auto-sync is the right
-behavior there, since there is no working-tree diff to leak.
+gitignores its rendered output (setup (b)), this setting does not matter:
+there is no working-tree diff to leak. Gitignoring rendered output is safe
+only because `setup-worktree.sh` copies it into each worktree; a worktree
+contains only tracked files.
 
 | Field | Type | Default | Purpose |
 | ----- | ---- | ------- | ------- |
