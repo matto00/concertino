@@ -143,7 +143,7 @@ file — so they stay generic and the config is the single source of truth.
 
 | Script              | Purpose                                                    | Args                                                        |
 | ------------------- | ---------------------------------------------------------- | ----------------------------------------------------------- |
-| `setup-worktree.sh` | Create worktree, copy env files, derive ports, run hooks, resolve speed | `<TICKET_ID> <BRANCH> [SPEED]`                 |
+| `setup-worktree.sh` | Create worktree, copy in untracked rendered output (CON-253) and env files, derive ports, run hooks, resolve speed | `<TICKET_ID> <BRANCH> [SPEED]`                 |
 | `resolve-speed.sh`  | (speed, harness) -> resolved budgets + per-role models + slow-only flags | `[SPEED] [HARNESS]`                          |
 | `start-servers.sh`  | Start backend/frontend dev servers, health-wait            | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT> [TICKET_ID]`     |
 | `stop-servers.sh`   | Stop this run's dev servers by recorded process group, then by port listener — never a parent pid (a detached server's parent is the user's `systemd --user` manager; SIGTERM to it logs the desktop session out) | `<WORKTREE_PATH> <DEV_PORT> <BACKEND_PORT>` |
@@ -166,6 +166,16 @@ file — so they stay generic and the config is the single source of truth.
 defaulting/merge logic itself, only the final (speed, harness) lookup. See
 its own header comment for the full contract, and `docs/config-reference.md`
 for the config shape.
+
+`.instrumentation-manifest.json` is the render manifest, written by
+`concertino sync` beside these scripts. `files`/`digest` are the CON-191
+script digest; `rendered` lists every path the sync wrote, relative to the
+project root. `setup-worktree.sh` copies each listed path that git did not
+check out into a new worktree, and fails before creating one if the manifest
+is missing or lists a path the main checkout lacks. `assert-phase.sh setup`
+checks every listed path exists in the worktree. That is what lets a project
+gitignore its rendered output; see "Rendered output" in
+`docs/config-reference.md`.
 
 ## Ports
 

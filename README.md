@@ -79,6 +79,8 @@ Prefer a starting profile over the prompts? `concertino init --example=helio` (o
 
 After editing `concertino.config.json`, re-render with `concertino sync`.
 
+Rendered files are never edited by hand. Either commit them, or gitignore them and let `setup-worktree.sh` copy them into each lane's worktree (a worktree holds only tracked files). Both setups, and the exact ignore block, are in [docs/config-reference.md](docs/config-reference.md#rendered-output-track-it-or-gitignore-it).
+
 ## CLI reference
 
 ```

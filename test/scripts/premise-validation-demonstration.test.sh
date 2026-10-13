@@ -44,6 +44,11 @@ new_repo() {
   local d; d="$(mktemp -d)"
   git -C "$d" init -q
   git -C "$d" -c user.email=t@t.com -c user.name=t commit -q --allow-empty -m init
+  # CON-253: assert-phase.sh setup requires the main checkout's render
+  # manifest; an empty rendered-path list keeps these fixtures about
+  # premise validation.
+  mkdir -p "$d/scripts/concertino"
+  printf '{"rendered":[]}\n' > "$d/scripts/concertino/.instrumentation-manifest.json"
   printf '%s' "$d"
 }
 

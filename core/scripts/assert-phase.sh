@@ -143,6 +143,32 @@ case "$PHASE" in
     # invocation, not gated behind any diff classification.
     # -------------------------------------------------------------------
     PV_ROOT="$(main_checkout "$WORKTREE_PATH")" || PV_ROOT=""
+
+    # -------------------------------------------------------------------
+    # CON-253: every rendered path `concertino sync` declared in the main
+    # checkout's render manifest must exist in the worktree, whether git
+    # checked it out (tracked rendered output) or setup-worktree.sh copied
+    # it (gitignored rendered output). A lane missing a script its role
+    # calls must not reach Planning.
+    # -------------------------------------------------------------------
+    if [ -n "${PV_ROOT:-}" ] && [ -d "$WORKTREE_PATH" ]; then
+      RM_FILE="${PV_ROOT}/scripts/concertino/.instrumentation-manifest.json"
+      if [ ! -f "$RM_FILE" ]; then
+        fail "render manifest missing: ${RM_FILE} (run \`concertino sync\` in the main checkout)"
+      elif ! RM_LIST="$(jq -r 'if (.rendered | type) == "array" then .rendered[] else error("no rendered list") end' "$RM_FILE" 2>/dev/null)"; then
+        fail "render manifest has no rendered path list: ${RM_FILE} (run \`concertino sync\` in the main checkout)"
+      else
+        RM_MISSING=()
+        while IFS= read -r _rp; do
+          [ -z "$_rp" ] && continue
+          [ -f "${WORKTREE_PATH}/${_rp}" ] || RM_MISSING+=("$_rp")
+        done <<< "$RM_LIST"
+        if [ "${#RM_MISSING[@]}" -gt 0 ]; then
+          fail "rendered path(s) missing from worktree (${#RM_MISSING[@]}): ${RM_MISSING[*]}"
+        fi
+      fi
+    fi
+
     if [ -z "${PV_ROOT:-}" ]; then
       fail "premise-validation check: could not resolve main checkout to look up evidence"
     else
